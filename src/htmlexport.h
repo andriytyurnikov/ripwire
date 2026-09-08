@@ -2158,12 +2158,16 @@ inline constexpr const char* kLangColors[] = {
                  // ObjC's #9b59b6 (the two nearest hues) so three purples stay separable on the #111 canvas.
     "#29b6f6",   // Dart — the language's conventional cyan-blue, pushed lighter/more saturated than Go's
                  // #00acd7 and Cpp's #4a90d9 so the three blues stay separable on the #111 canvas.
+    "#e0607e",   // Kotlin — deliberately NOT the language's own purple-toned brand mark: CSharp/ObjC/Elixir
+                 // already occupy that hue and a fourth purple is exactly the separability collision the
+                 // Elixir row above exists to avoid. A warm rose, closer to Ruby's #c9455f than to any
+                 // purple but still one step around the wheel from it.
 };
 inline constexpr std::size_t kLangColorCount = sizeof( kLangColors ) / sizeof( kLangColors[0] );
-// NB the bound names the LAST enumerator, so appending one to Lang leaves this assert TRUE and silently
-// unprotecting: Elixir landed with no swatch and compiled clean, and test/htmlrendercheck.sh's (N2) arm —
-// which walks langTag() against the emitted LANG_COLORS — is what actually caught it. Move this bound in
-// the same commit that appends a Lang, and trust (N2), not this line, to notice if you forget.
+// Bound on kLangCount (model.h), NOT on the last enumerator: anchored on the enumerator, appending a Lang
+// left this assert TRUE and silently unprotecting — Elixir landed with no swatch and compiled clean, and
+// only test/htmlrendercheck.sh's (N2) arm (which walks langTag() against the emitted LANG_COLORS) caught
+// it. Bumping kLangCount without adding a row here now fails the build instead.
 static_assert( kLangColorCount == kLangCount,
                "kLangColors must carry one hex colour per Lang enumerator, in declaration order — a language with "
                "no swatch renders as an unlabelled grey the legend cannot explain" );

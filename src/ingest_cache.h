@@ -206,7 +206,42 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 88;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 91;           // bump on any grammar/.scm/extraction change
+                                                      // 91 = 2026-09-10 (Kotlin, post-PR review): vendor patch
+                                                      //    kotlin/002-triple-dollar-escape fixes a real mis-tokenization
+                                                      //    on real input (a triple-quoted string ending right after an
+                                                      //    escaped `\$`, e.g. """a\$""", lost its first closing quote) —
+                                                      //    a cached extraction from before this version predates the
+                                                      //    fix. kotlin/001-stack-push-no-abort (same review round,
+                                                      //    same commit) does NOT bump this: it only changes behavior
+                                                      //    on previously-ABORTING input (deep interpolation nesting),
+                                                      //    never on anything that used to parse and cache successfully
+                                                      //    — the yaml/001 and markdown/001 precedent for this class of
+                                                      //    fix. See third_party/patches/kotlin/.
+                                                      // 90 = 2026-09-08 (Kotlin, adversarial-corpus follow-up):
+                                                      //    measureFileHealth now also validates UTF-8 in the leading
+                                                      //    sample (a file that only trips this check needs a cold
+                                                      //    re-measure to pick up the new degraded-parse disclosure —
+                                                      //    a cached FileHealth from before this version predates the
+                                                      //    check and would read as healthy); enum_class_body added to
+                                                      //    the Kotlin positional body-fallback (an `enum class` was
+                                                      //    read as bodyless, same collapse bug as 89's class_body
+                                                      //    fix, just for the enum-class node shape). RE-BUMPED from
+                                                      //    87 on rebase: main independently spent 86 (Ruby receiver),
+                                                      //    87 (markdown scanner counter saturation) and 88 (Dart)
+                                                      //    while this branch was in progress, and 86/87 collided
+                                                      //    EXACTLY with this branch's own prior use of those numbers.
+                                                      //    quality.h's kIngestParserVerMirror bumped in the SAME
+                                                      //    commit.
+                                                      // 89 = 2026-09-08 (Kotlin): grammar + queries/kotlin/tags.scm;
+                                                      //    positional body/scope lookups (function_body, class_body and
+                                                      //    type_identifier are children, not fields — a def read as
+                                                      //    bodyless is deleted by graph.h's decl/def collapse);
+                                                      //    captureBases reads delegation_specifier; when_entry/
+                                                      //    when_expression/do_while_statement/catch_block count as
+                                                      //    decisions; function_value_parameters counts `parameter`
+                                                      //    children. Originally 86, RE-BUMPED for the same
+                                                      //    collision reason as 90 above.
                                                       // 88 = 2026-09-10 (Dart, test/dartcheck.sh): a 23rd grammar joins
                                                       //    kLangTable, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED —
                                                       //    a v87 blob has no record for the `.dart` it never saw, so the

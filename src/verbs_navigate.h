@@ -1653,7 +1653,12 @@ std::optional<int> runVerify( const MainDispatch& d )
 // by the Lang enum (model.h; small and POD) rather than a hashable composite key or nested map.
 struct ExtSurfaceAcc  { std::uint32_t refs = 0; std::uint32_t calls = 0; };
 struct ExtSurfaceName { std::string name; rw::Lang lang; std::uint32_t refs; std::uint32_t calls; };
-constexpr std::size_t kExtSurfaceLangSlots = rw::kLangCount;   // cardinality of enum class rw::Lang (model.h)
+// Was `std::size_t( rw::Lang::Elixir ) + 1` — a hand-maintained literal that appending Kotlin left
+// stale: any out-of-range r.lang below clamps to slot 0 (Lang::Cpp), which does not drop an
+// unrecognized-language external reference, it MISATTRIBUTES it to C++. Routing through
+// rw::kLangCount (model.h) — which itself is `Lang::<last> + 1`, but maintained in exactly one place
+// — is what keeps this array's extent from silently lagging the enum again.
+constexpr std::size_t kExtSurfaceLangSlots = rw::kLangCount;
 
 inline rw::HashMap<std::string, std::array<ExtSurfaceAcc, kExtSurfaceLangSlots>>
 accumulateExternalSurface( const rw::IngestResult& ing, const rw::HashMap<std::string, char>& defined )

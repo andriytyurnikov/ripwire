@@ -165,6 +165,21 @@ inline const char* provLabel( std::uint8_t prov ) noexcept
 // header — lives on the C++ side of the language split; without this bridge a vendored C library's
 // `.c`/`.h` pair (or a C++ `extern "C"` caller of it) could never resolve a single call. All OTHER
 // language pairs stay strictly separate (a Python `draw` never resolves to a C++ `draw`).
+//
+// Kotlin/Java share a SECOND, independent bridge for the same reason: a mixed Android/JVM module's
+// Kotlin call sites and Java definitions (and vice versa) live in one JVM classpath, exactly as
+// C++/ObjC/C live in one link unit — without this a Nanidroid-shaped module (61 .kt + 16 .java in one
+// app/) would resolve zero cross-language calls, not just the ones that happen to be ambiguous.
+//
+// Disclosed limitation, not fixed here: this predicate is BARE-NAME admission — same mechanism the
+// C-family bridge above already uses in production — so an unrelated same-named Kotlin `Builder` and
+// Java `Builder` become indistinguishable CANDIDATES at this gate; the graph reports such a pair as
+// ambiguous= with BOTH getting the edge (test/kotlincheck.sh §5) rather than guessing, and --uses=<name>
+// shows both (defs="2"). Narrowing further by import/type evidence is a resolver feature, not a
+// language-support one, and is out of scope for this port. NB that honesty depends on the decl/def
+// collapse below SEEING a Kotlin definition's body: it is a positional child, not a `body:` field, and a
+// definition read as bodyless is deleted from the candidate pool as a forward declaration before
+// ambiguous= is ever consulted — ingest_sidecap.h's positional body fallback is what keeps it in.
 inline bool langCompatible( Lang a, Lang b ) noexcept
 {
     if( a == b )
@@ -173,7 +188,13 @@ inline bool langCompatible( Lang a, Lang b ) noexcept
     }
     const bool aCish = ( a == Lang::Cpp || a == Lang::ObjC || a == Lang::C );
     const bool bCish = ( b == Lang::Cpp || b == Lang::ObjC || b == Lang::C );
-    return aCish && bCish;
+    if( aCish && bCish )   // short-circuit before the JVM check below: langCompatible runs per candidate
+    {                       // in graph.h's hot reference-resolution loops, and the common C-family-only
+        return true;        // corpus case should not pay for two extra enum comparisons it doesn't need.
+    }
+    const bool aJvm = ( a == Lang::Kotlin || a == Lang::Java );
+    const bool bJvm = ( b == Lang::Kotlin || b == Lang::Java );
+    return aJvm && bJvm;
 }
 
 // langCompatible's sibling: which definition KINDS a reference of a given ROLE may bind to. One predicate
@@ -1527,7 +1548,20 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // name has ≥1 real DEFINITION (body present: endByte > sigEndByte), keep only the definitions as
     // resolution targets — forward declarations of one function aren't an ambiguity and must not shadow or
     // block it. Names with no def anywhere (extern / pure-virtual only) keep their decls (best available).
-    const auto hasBody = [ & ]( NodeId id ) noexcept { return ing.symbols[id].endByte > ing.symbols[id].sigEndByte; };
+    //
+    // Kotlin has no forward-declaration syntax for types: a bodyless `interface Foo` / `class Foo` IS the
+    // type's sole, complete definition (unlike a C header prototype, or a bodyless Kotlin FUNCTION — an
+    // interface member signature / `expect fun` — which really is a declaration). ingest_sidecap.h's
+    // positional-body fallback can only find bodyByte when a class/interface HAS braces; a genuinely
+    // bodyless one leaves bodyByte==0 like a real decl, so without this clause a same-named Java definition
+    // anywhere in the JVM bridge's candidate pool silently evicts the Kotlin type from the graph entirely
+    // (not merely mis-scored — GONE, along with every call edge into it). GATED to SymKind::Class so
+    // Kotlin functions/methods keep the ordinary bodyless-is-a-decl rule. test/kotlincheck.sh.
+    const auto hasBody = [ & ]( NodeId id ) noexcept
+    {
+        const Symbol& sym = ing.symbols[id];
+        return sym.endByte > sym.sigEndByte || ( sym.lang == Lang::Kotlin && sym.kind == SymKind::Class );
+    };
     {
         PROFILE_SCOPE_DESCRIBE( "buildGraph/1e: decl/def collapse" );
         for( auto& [ name, ids ] : byName )
@@ -3890,8 +3924,13 @@ inline void declToDefFollowThrough( const IngestResult& ing, std::string_view fi
     {
         return;
     }
+    // Kept identical to buildGraph's decl/def collapse (§1e, above) on purpose — see that clause's comment
+    // for why a bodyless Kotlin class/interface counts as a definition here too, not a decl to widen past.
     const auto hasBody = [ & ]( NodeId id ) noexcept
-    { return ing.symbols[id].endByte > ing.symbols[id].sigEndByte; };
+    {
+        const Symbol& sym = ing.symbols[id];
+        return sym.endByte > sym.sigEndByte || ( sym.lang == Lang::Kotlin && sym.kind == SymKind::Class );
+    };
 
     for( NodeId id : sel )
     {

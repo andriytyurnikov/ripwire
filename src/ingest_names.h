@@ -50,23 +50,6 @@ inline bool isCppCastKeyword( std::string_view name ) noexcept
     return name == "static_cast" || name == "reinterpret_cast" || name == "const_cast" || name == "dynamic_cast";
 }
 
-// First DIRECT child of `n` whose node type is `type`, or a null node when none exists — the one
-// child-scan shape shared by the using-declaration keyword guard below and the phantom-`::` probe
-// (hasPhantomScopeSeparator), so the two cannot drift into near-clones of each other.
-inline TSNode firstChildOfType( TSNode n, const char* type ) noexcept
-{
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < childCount; ++i )
-    {
-        const TSNode child = ts_node_child( n, i );
-        if( std::strcmp( ts_node_type( child ), type ) == 0 )
-        {
-            return child;
-        }
-    }
-    return TSNode {};
-}
-
 // using-declaration re-exports (r9 loss bucket 1): TRUE when a C++ `using_declaration` node is a grammar
 // KEYWORD form rather than a single-symbol re-export — `using namespace ns;` (its qualified spelling
 // `using namespace lib::nested;` carries a qualified_identifier and so matches the tags pattern) or
@@ -440,6 +423,39 @@ inline std::string enclosingScopeOf( TSNode node, std::string_view src )
             const std::uint32_t a = ts_node_start_byte( nm ), b = ts_node_end_byte( nm );
             return ( a <= b && b <= src.size() ) ? std::string( src.substr( a, b - a ) ) : std::string{};
         }
+    }
+    return {};
+}
+
+// Kotlin: the enclosing class/object/companion-object of a definition. Not folded into the shared
+// enclosingScopeOf for two reasons, each sufficient alone. (1) Its scope-owner kinds carry NO `name:`
+// field in this grammar — class_declaration/object_declaration/companion_object expose the name only as
+// a positional `type_identifier` child — so the shared walker's field lookup would read "no scope" on
+// every call rather than fail loudly. (2) `class_declaration` is also a node kind in the Java, C#,
+// TypeScript and Swift grammars, WITH a `name:` field there, so listing it in the shared walker would
+// silently start scoping those languages' definitions too — Ruby's bare-word collision argument (below)
+// in a different spelling. Anonymous companion objects (`companion object { ... }`) have no
+// type_identifier child and are walked THROUGH, exactly like Ruby's `class << self` singleton_class,
+// so a member of one scopes to the class that owns it.
+inline std::string kotlinEnclosingScopeOf( TSNode nameNode, std::string_view src )
+{
+    for( TSNode p = ts_node_parent( nameNode ); !ts_node_is_null( p ); p = ts_node_parent( p ) )
+    {
+        const char* t = ts_node_type( p );
+        const bool scopeOwner =    kindIs( t, "class_declaration" )
+                                 || kindIs( t, "object_declaration" )
+                                 || kindIs( t, "companion_object" );
+        if( !scopeOwner )
+        {
+            continue;
+        }
+        const TSNode nm = firstChildOfType( p, "type_identifier" );
+        if( ts_node_is_null( nm ) || ts_node_eq( nm, nameNode ) )
+        {
+            continue;   // anonymous companion object (walk through to whatever encloses IT), OR this
+                         // IS the definition being scoped (its scope is what encloses it) — same outcome
+        }
+        return std::string( nodeTextOf( nm, src ) );
     }
     return {};
 }

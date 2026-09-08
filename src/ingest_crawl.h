@@ -56,8 +56,9 @@ struct LangEntry
 
 // Order does not matter (linear scan); kept grouped by language for readability.
 // The extent is EXACT, not headroom: it was 32 with 32 rows, .toml made it 33, .pyi made it 34 and the
-// .yml/.yaml pair made it 36, the .php/.phtml/.lua trio made it 40, and the .rst/.adoc/.org/.mdx prose
-// quartet made it 46. Sizing it to the row count is what makes
+// .yml/.yaml pair made it 36, the .php/.phtml/.lua trio made it 40, the .ex/.exs pair made it 42, .kt
+// made it 43, and the .rst/.adoc/.org/.mdx prose quartet made it 47. Sizing it to the row count is what
+// makes
 // `std::array<bool, kLangTable.size()> present` (the grammar-prewarm set,
 // below) exact too, and it turns "added a row and forgot the extent" into a compile error rather than a
 // silent drop.
@@ -85,7 +86,7 @@ struct LangEntry
 // the latter a list item), so those files carry the file-level node alone and serve as ONE whole-file
 // unit. A heading detector per format is a later lane with its own measurement. `.mdx` is markdown with
 // JSX, which the block grammar already reads as html blocks (opaque). Gate: test/textdocscheck.sh.
-constexpr std::array<LangEntry, 47> kLangTable = {{
+constexpr std::array<LangEntry, 48> kLangTable = {{
     { ".cpp",  Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
     { ".cc",   Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
     { ".cxx",  Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
@@ -179,6 +180,9 @@ constexpr std::array<LangEntry, 47> kLangTable = {{
     // Lua: no classes, no imports. The five function-definition spellings and the one call node are the
     // whole extractable structure (queries/lua/tags.scm states the metatable/dynamic-dispatch floor).
     { ".lua",  Lang::Lua,        &tree_sitter_lua,        "lua"        },   // Lua — function/method defs (5 shapes) + calls
+    // Kotlin: `.kts` (Gradle script DSL) is deliberately NOT a row here yet — its trailing-lambda
+    // density needs its own parse-quality probe before riding this grammar; `.kt` only for now.
+    { ".kt",   Lang::Kotlin,     &tree_sitter_kotlin,     "kotlin"     },   // Kotlin — classes/objects/interfaces/functions + calls; JVM-bridged to Java (graph.h langCompatible)
     { ".md",   Lang::Markdown,   &tree_sitter_markdown,   ""           },   // Markdown DOC tier — headings/sections via extractMarkdown()'s custom tree walk; NO tags.scm (query stays "")
     { ".markdown", Lang::Markdown, &tree_sitter_markdown, ""           },   // sibling extension, same walk
     { ".rst",  Lang::Markdown,   &tree_sitter_markdown,   ""           },   // reStructuredText — underlined titles tile as setext
@@ -469,30 +473,67 @@ bool isDenylistedName( std::string_view name ) noexcept
 // ERROR, so errBytes is a true byte measure of "what the parser could not interpret". MISSING nodes are
 // zero-width by construction (the parser inserted a token that was not there), so they contribute to
 // errNodes and nothing to errBytes — which is exactly why BOTH numbers are disclosed, not just a ratio.
+//
+// errNodes/errBytes ALSO count invalid UTF-8 byte sequences found in the leading whitespace-sample window
+// (one per bad sequence, since tree-sitter's error recovery does not reliably flag them as ERROR/MISSING —
+// a garbage byte run can parse as an unrecognized leaf with no error node at all).
 FileHealth measureFileHealth( TSNode root, std::string_view bytes )
 {
     FileHealth h;
     h.fileBytes = std::uint32_t( bytes.size() > 0xFFFFFFFFull ? 0xFFFFFFFFull : bytes.size() );
 
-    const std::size_t sample = bytes.size() < kHealthWsSampleBytes ? bytes.size() : kHealthWsSampleBytes;
-    std::uint32_t     ws     = 0;
-    for( std::size_t i = 0; i < sample; ++i )
+    // Walks the sample codepoint-by-codepoint (jsonesc::utf8SeqLen, already the shared UTF-8 validator
+    // for mcp.h/ccjson.h) rather than byte-by-byte: a whitespace byte is only meaningful outside a
+    // multi-byte sequence, and this lets the same pass also catch invalid UTF-8 — see below — for free.
+    // A bad sequence resyncs one byte at a time, same as any decoder recovering from garbage. Bad
+    // sequences are recorded as ascending START POSITIONS (the scan runs left to right), which is what
+    // lets the ERROR walk below dedup against them with std::lower_bound instead of a per-span scan.
+    const std::size_t         sample = bytes.size() < kHealthWsSampleBytes ? bytes.size() : kHealthWsSampleBytes;
+    std::uint32_t              ws    = 0;
+    std::vector<std::uint32_t> badUtf8Positions;
+    for( std::size_t i = 0; i < sample; )
     {
-        const unsigned char c = ( unsigned char ) bytes[ i ];
-        if( c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' )
+        const int seqLen = jsonesc::utf8SeqLen( bytes.data(), i, bytes.size() );
+        if( seqLen == 0 )
         {
-            ++ws;
+            badUtf8Positions.push_back( std::uint32_t( i ) );
+            ++i;
+            continue;
         }
+        if( seqLen == 1 )
+        {
+            const unsigned char c = ( unsigned char ) bytes[ i ];
+            if( c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' )
+            {
+                ++ws;
+            }
+        }
+        i += std::size_t( seqLen );
     }
     h.wsBytes = ws;
 
+    // Invalid UTF-8 in the leading sample is unparseable content by construction, but tree-sitter's own
+    // error recovery does not reliably surface it as an ERROR/MISSING node (a garbage byte run can be
+    // swallowed as an unrecognized leaf with no error flag at all — confirmed empirically on a random-byte
+    // .kt file: ts_node_has_error(root) came back false). Fold it into errNodes/errBytes rather than adding
+    // a parallel disclosure field: it is exactly what those two attributes already mean to a reader —
+    // "bytes this build could not interpret" — just found by a byte-level scan instead of a tree walk.
+    // A position that falls inside a top-most ERROR span below is the SAME problem tree-sitter already
+    // flagged there, and counting it twice would push err_ratio (errBytes/fileBytes) past its documented
+    // <=1.0 ceiling — so coverage is tallied WHILE walking and folded in ONCE, after, rather than adding
+    // every position up front and backing out duplicates mid-walk: `h` holds a correct value at every
+    // point in this function, never a transiently over-counted one a reader mid-function could observe.
     if( !ts_node_has_error( root ) )
     {
+        // no ERROR span for a bad sequence to overlap — every one found is a genuinely new finding
+        h.errNodes += std::uint32_t( badUtf8Positions.size() );
+        h.errBytes += std::uint32_t( badUtf8Positions.size() );
         return h;
     }
 
     std::vector<TSNode> stack;
     stack.push_back( root );
+    std::uint32_t coveredBadUtf8 = 0;   // badUtf8Positions entries already inside a counted top-most ERROR span
     while( !stack.empty() )
     {
         const TSNode n = stack.back();
@@ -503,6 +544,12 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             const std::uint32_t lo = ts_node_start_byte( n );
             const std::uint32_t hi = ts_node_end_byte( n );
             h.errBytes += hi > lo ? hi - lo : 0u;
+            if( hi > lo && !badUtf8Positions.empty() )
+            {
+                const auto lo_it = std::lower_bound( badUtf8Positions.begin(), badUtf8Positions.end(), lo );
+                const auto hi_it = std::lower_bound( lo_it, badUtf8Positions.end(), hi );
+                coveredBadUtf8 += std::uint32_t( hi_it - lo_it );
+            }
             continue;   // top-most only — see the note above
         }
         if( ts_node_is_missing( n ) )
@@ -520,6 +567,10 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             }
         }
     }
+    // Fold in only the bad-UTF-8 positions NOT already covered by a top-most ERROR span above.
+    const std::uint32_t uncoveredBadUtf8 = std::uint32_t( badUtf8Positions.size() ) - coveredBadUtf8;
+    h.errNodes += uncoveredBadUtf8;
+    h.errBytes += uncoveredBadUtf8;
     return h;
 }
 

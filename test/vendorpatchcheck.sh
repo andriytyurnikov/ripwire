@@ -55,6 +55,12 @@
 #      EXACTLY 256 and gated as ==, because the wrong parse only fires while the wrapped value lands
 #      under the threshold tested (N mod 256 in 0..3) — at a round 300 the parse is accidentally
 #      correct and every plain-build assertion here would go inert while asan stayed green.
+#   J  kotlin/001 + kotlin/002 — a DELIBERATE abort() (not UB, so no sanitizer catches it and no
+#      corpus/fuzz sweep found it) when 700 nested interpolated strings overrun the delimiter stack's
+#      TREE_SITTER_SERIALIZATION_BUFFER_SIZE budget, generated fresh like arm G; plus the plain-build
+#      exit-0 mis-tokenization from an escaped `$` right before a triple-quoted string's closing
+#      delimiter (test/vendorpatchfix/tripledollar.kt, committed like arm F's fixture) — checked via
+#      degraded_parse=0 and that the symbol declared right after the tricky string still extracts.
 #
 # Usage:
 #   test/vendorpatchcheck.sh
@@ -238,6 +244,14 @@ serializeClassOf(){
         markdown)         echo upfront ;;  # patch 001-serialize-bounds: whole-write clamp BEFORE the
                                            # memcpy (upstream had NO guard at all — the yaml class,
                                            # minus even the bare per-iteration check)
+        kotlin)           echo upfront ;;  # `n = stack->size; if (n > BUFFER_SIZE) n = BUFFER_SIZE;`
+                                           # THEN one memcpy(buffer, contents, n) — upstream's own
+                                           # whole-write clamp, verified in third_party/deps/kotlin/
+                                           # src/scanner.c (no vendored patch needed). The separate
+                                           # `stack->size + 1 >= BUFFER_SIZE) abort()` in stack_push is
+                                           # a DIFFERENT, independent guard — it caps how large the
+                                           # dynamic stack may grow, not the serialize buffer write;
+                                           # the write-side safety is entirely the clamp above.
         cpp|cuda)         echo static ;;
         python)           echo loop1 ;;
         yaml)             echo loopwide ;;
@@ -368,6 +382,53 @@ if "$BIN" "$WRAPFIX" --no-cache > "$TMP/wrap.xml" 2> "$TMP/wrap.err"; then
 else
     no "I: ripwire ABORTED on the narrow-counter fixture (rc=$?) — markdown/002-counter-saturate or a rust|lua|csharp/001-delimiter-count-cast patch is not in effect"
     head -3 "$TMP/wrap.err" | sed 's/^/        /'
+fi
+
+# ── J: kotlin/001 (stack-push-no-abort) + kotlin/002 (triple-dollar-escape) live tripwires ────────
+# kotlin/001: the delimiter stack's abort() is a DELIBERATE process termination, not UB — no sanitizer
+# flags it, so it is invisible to every fuzz/ASan sweep that found every other patch in this file
+# (found instead by an automated PR review, 2026-09-10). A file whose interpolated strings nest deep
+# enough (>=512 unterminated string-opens, TREE_SITTER_SERIALIZATION_BUFFER_SIZE / 2 bytes-per-entry)
+# used to SIGABRT the whole process; it must now degrade to ERROR nodes like any other malformed input.
+mkdir -p "$TMP/deepinterp"
+python3 - "$TMP/deepinterp/deep.kt" <<'PYEOF'
+import sys
+with open( sys.argv[1], 'w' ) as f:
+    f.write( 'package deepinterp\n\nval x = "' + '${"' * 700 + '\n' )
+PYEOF
+if [ "$( wc -c < "$TMP/deepinterp/deep.kt" )" -gt 2000 ]; then
+    ok "J: presence — generated deep-interpolation Kotlin file (700 nested string-opens)"
+else
+    no "J: presence — deep-interpolation file generation failed"
+fi
+if "$BIN" "$TMP/deepinterp" --no-cache > "$TMP/deepinterp.xml" 2> "$TMP/deepinterp.err"; then
+    if xmllint --noout "$TMP/deepinterp.xml" 2>/dev/null; then
+        ok "J: 700-deep nested interpolated strings parse without aborting (well-formed, degraded is fine)"
+    else
+        no "J: deep-interpolation parse ran but produced malformed output"
+    fi
+else
+    no "J: ripwire ABORTED on 700-deep nested interpolated strings (rc=$?) — kotlin/001-stack-push-no-abort is not in effect"
+    head -3 "$TMP/deepinterp.err" | sed 's/^/        /'
+fi
+
+# kotlin/002: an escaped `$` immediately before a triple-quoted string's closing delimiter used to
+# consume only the FIRST of three closing quotes as STRING_END, corrupting the tokens after it. The
+# committed fixture (test/vendorpatchfix/tripledollar.kt, shared with arm F's directory) pins this on
+# the plain build too (an exit-0 mis-tokenization, not a crash arm F/G/I's exit-code check would ever
+# see): the file must parse with NO degraded-parse signal, and the function declared right after the
+# tricky string literal must still extract as its own symbol — proof the scanner resynced correctly.
+TDOLLAR_XML="$( "$BIN" "$FIX" --no-cache 2>/dev/null )"
+TDOLLAR_SK="$( "$BIN" "$FIX" --skipped --no-cache 2>/dev/null )"
+if echo "$TDOLLAR_XML" | grep -q 'n="afterTripleDollarEscape"'; then
+    ok "J: kotlin/002 fixture — afterTripleDollarEscape extracts cleanly right after the tricky string"
+else
+    no "J: kotlin/002 fixture — afterTripleDollarEscape missing/not extracted (the scanner did not resync — kotlin/002-triple-dollar-escape is not in effect)"
+fi
+if echo "$TDOLLAR_SK" | grep -q 'degraded_parse="0"'; then
+    ok "J: kotlin/002 fixture — degraded_parse=\"0\" (no ERROR/MISSING nodes from the escaped-dollar edge case)"
+else
+    no "J: kotlin/002 fixture — degraded_parse is non-zero: $( echo "$TDOLLAR_SK" | grep -o 'degraded_parse="[^"]*"' )"
 fi
 
 # ── verdict ─────────────────────────────────────────────────────────────────────────────────────

@@ -294,7 +294,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 // Capture base classes for the inheritance/Lego view: walk a class node's base clause and emit an
 // inherit RawRef per base (derived → base). startByte sits inside the class header, so the enclosing
 // attribution assigns fromSymbol = the derived class. Explicit-syntax langs: C++/TS/JS/Java/Python/Swift/
-// C#/PHP. Lua is deliberately absent and it is a DISCLOSED non-goal, not an omission: Lua inheritance IS
+// C#/PHP/Kotlin. Lua is deliberately absent and it is a DISCLOSED non-goal, not an omission: Lua inheritance IS
 // `setmetatable( Derived, { __index = Base } )`, an ordinary runtime call over an ordinary table, so there
 // is no syntax to read and a Lua corpus correctly reports no inheritance edges at all.
 //
@@ -313,6 +313,9 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 //               Java super_interfaces → type_list → type_identifier
 //               C# base_list → primary_constructor_base_type → (its `type` field child) — a record's
 //               base with constructor args (`record Foo(int X) : Base(X)`)
+//               Kotlin delegation_specifier → constructor_invocation → user_type (`class Foo : Bar(args)`);
+//               a bare interface (`class Foo : Baz`, no call) hits DIRECT instead — user_type sits right
+//               under delegation_specifier with no constructor_invocation wrapper.
 // So after matching a clause we scan its children for type nodes AND recurse one level into any wrapper
 // child, collecting type nodes at both depths (Rust is a separate pass — impl Trait for T is a sibling).
 void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
@@ -331,7 +334,8 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
                                 || kindIs( ct, "inheritance_specifier" ) // Swift  : Protocol
                                 || kindIs( ct, "base_list" )             // C#     : Base, IBar
                                 || kindIs( ct, "base_clause" )           // PHP    extends Base
-                                || kindIs( ct, "class_interface_clause" ); // PHP  implements I, J
+                                || kindIs( ct, "class_interface_clause" ) // PHP  implements I, J
+                                || kindIs( ct, "delegation_specifier" ); // Kotlin : Base(), Interface (one per base)
         if( !isClause )
         {
             continue;
@@ -1418,6 +1422,13 @@ inline constexpr std::array<std::string_view, 6> kElixirImportContainers = {
     "call", "do_block", "stab_clause", "body", "arguments", "keywords"
 };
 
+// KOTLIN. Unlike every other language in this table, an `import` is not a general statement that CAN
+// appear inside a function/class body — the language itself only allows it at file top level, before
+// any other declaration. Empirically confirmed (not assumed from the grammar): every import_header in
+// two real corpora (Nanidroid, the socialite sample app), across single- and multi-import files, has
+// the SAME two-deep parent chain with no variation — `import_list -> source_file`. One entry.
+inline constexpr std::array<std::string_view, 1> kKotlinImportContainers = { "import_list" };
+
 // The FUNCTION-BODY node kinds — read off real parses, not predicted. Entering ANY one of these means
 // everything inside it is written INSIDE a function's body, so a require()/import() found there only runs
 // when and if that function runs: a real dependency (kParserVer 72's whole point — the importer tier must
@@ -1508,7 +1519,7 @@ inline constexpr std::array<std::string_view, 34> kJsImportContainers = {
 // language has is DATA, and a language absent from the table simply has none.
 struct LangImportContainers { Lang lang; std::span<const std::string_view> nodes; };
 
-inline constexpr std::array<LangImportContainers, 8> kImportContainersByLang = { {
+inline constexpr std::array<LangImportContainers, 9> kImportContainersByLang = { {
     { Lang::Python,     kPythonImportContainers },
     { Lang::Rust,       kRustImportContainers   },
     { Lang::CSharp,     kCsharpImportContainers },
@@ -1516,7 +1527,8 @@ inline constexpr std::array<LangImportContainers, 8> kImportContainersByLang = {
     { Lang::JavaScript, kJsImportContainers     },
     { Lang::Bash,       kBashImportContainers   },
     { Lang::Lua,        kLuaImportContainers    },
-    { Lang::Elixir,     kElixirImportContainers }
+    { Lang::Elixir,     kElixirImportContainers },
+    { Lang::Kotlin,     kKotlinImportContainers }
 } };
 
 inline bool isImportContainer( Lang lang, const char* type ) noexcept
@@ -1658,6 +1670,22 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         // call_expression branch above. The `MyApp.{A, B}` group form returns empty here and is emitted
         // by captureIncludes through elixirAliasGroup, one Include per member.
         target = elixirDirectiveTarget( n, src );
+    }
+    else if( kindIs( t, "import_header" ) && lang == Lang::Kotlin )   // Kotlin `import a.b.C` / `import a.b.*`
+    {
+        // No `source:`/`name:` field (this grammar exposes none on import_header — verified against
+        // node-types.json, same reason kotlinEnclosingScopeOf walks positionally): find the flat
+        // `identifier` child and take its WHOLE span, mirroring Python's dotted-module-head branch
+        // above. That span already covers every dotted segment (`kotlin.math.max`), including the
+        // wildcard case (`import a.b.*` has `identifier`="a.b" plus a separate wildcard_import
+        // sibling this branch does not need to read) and the aliased case (`import a.b.C as D` has
+        // `identifier`="a.b.C" plus a separate import_alias sibling naming "D" — the alias is not
+        // resolved here, matching every other language's import branch above: none of them resolve
+        // a rename either, they all just name the imported target).
+        if( const TSNode id = firstChildOfType( n, "identifier" );  !ts_node_is_null( id ) )
+        {
+            target = importSpecifierText( id, src );
+        }
     }
     else if( kindIs( t, "use_declaration" ) )                  // Rust `use crate::a::b;`
     {

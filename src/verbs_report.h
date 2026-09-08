@@ -1640,8 +1640,9 @@ constexpr const char* kSkippedLegend =
                  " .json/.yaml config ceilings that flag does not raise, json_ceiling=), excluded (matched an exclude substring; ext= is"
                  " its extension), or unsupported-ext (ext= has no grammar and no doc handler in this build — the class that hides a whole"
                  " LANGUAGE). <h p= why= .../> = a file that IS indexed and stays indexed, flagged for the reader: why=degraded-parse means"
-                 " the parse contains ERROR/MISSING nodes (err= counts them, err_ratio= is the share of the file's bytes covered by top-most"
-                 " ERROR spans) and is a PARSER-STATE fact, never a syntax verdict — a valid file in a dialect this grammar predates reads"
+                 " the parse contains ERROR/MISSING nodes, or invalid UTF-8 in the leading sample (err= counts both, err_ratio= is the share"
+                 " of the file's bytes covered by top-most ERROR spans plus one byte per bad UTF-8 sequence) and is a PARSER-STATE fact, never"
+                 " a syntax verdict — a valid file in a dialect this grammar predates reads"
                  " degraded too; why=minified-suspect means whitespace frequency ws_freq= is under 0.070 across the leading 4096 bytes"
                  " (files under 256 bytes are never flagged — too little text to judge). Nothing here is dropped by these two flags."
                  " <lang n= files= symbols=/> = corpus composition BY LANGUAGE: one row per language this build extracted at"
@@ -1858,7 +1859,10 @@ std::vector<LangCount> computeLangCounts( const rw::IngestResult& ing )
     // grammar, Metal/CUDA's C++/CUDA-as-a-language routing included, so there is nothing to disambiguate
     // — the last write among a file's own symbols is the same value every earlier one already wrote).
     std::vector<Lang> fileLangOf( ing.files.size(), Lang::Unknown );
-    std::array<std::uint64_t, kLangCount> symbolTally {};   // model.h kLangCount — NEVER a spelled-out enumerator
+    std::array<std::uint64_t, kLangCount> symbolTally {};   // was hand-sized on the last enum member — Kotlin's addition
+                                                              // silently dropped from the census under that pattern
+                                                              // (guarded by < size(), so no crash, just a quiet zero);
+                                                              // kLangCount (model.h) is the one place that stays current
     for( const Symbol& s : ing.symbols )
     {
         if( s.fileId < fileLangOf.size() )
@@ -1870,7 +1874,7 @@ std::vector<LangCount> computeLangCounts( const rw::IngestResult& ing )
             ++symbolTally[ std::size_t( s.lang ) ];
         }
     }
-    std::array<std::uint64_t, kLangCount> fileTally {};     // model.h kLangCount — NEVER a spelled-out enumerator
+    std::array<std::uint64_t, kLangCount> fileTally {};      // see symbolTally's comment above
     for( Lang l : fileLangOf )
     {
         if( l != Lang::Unknown && std::size_t( l ) < fileTally.size() )
