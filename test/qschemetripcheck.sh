@@ -34,6 +34,19 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-10, DART (test/dartcheck.sh): kParserVer 87 -> 88 and kIngestParserVerMirror -> 88. A 23rd
+#   grammar joins kLangTable, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED: a v87 blob's file list has
+#   no record for the `.dart` it never saw, the file is ABSENT rather than stale, and only the header
+#   version can reject the blob — the same class as the plain-text prose tier below. The commit also
+#   extends the definition SPAN for Dart only (dartFollowingBody, adopted in ingest_sidecap.h) and adds
+#   formal_parameter_list to cc_isParamList; both are extraction identity, which is exactly what parserVer
+#   covers, and every other language is byte-identical (verified against the pre-change binary on src/ and
+#   on a 1 406-file multi-language corpus). Record SHAPES are unchanged, so kCacheVersion stays 18. No
+#   Snapshot-side function changed and kQSnapCacheScheme stays 8: what a cached Snapshot MEANS is
+#   untouched — the corpus it is computed over is what grew. RE-ANSWERED TWICE on the landing rebase: the
+#   branch was written against 81 -> 82, and 87 (below) was taken by the markdown-saturation lane while
+#   this PR was open — the kParserVer DECLARATION auto-merged clean at that same wrong 87 and only the
+#   comment conflicted, which is why the number is re-derived from main rather than carried.
 # 2026-09-10, MARKDOWN COUNTER SATURATION (test/vendorpatchcheck.sh arm I,
 #   third_party/patches/markdown/002-counter-saturate): kParserVer 86 -> 87 and
 #   kIngestParserVerMirror -> 87. A uint8_t counter in four vendored external scanners overflowed past 255 —
