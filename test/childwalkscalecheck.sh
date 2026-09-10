@@ -72,7 +72,12 @@
 #     `ts_node_field_name_for_child( n, i )`, which is itself index-based, so collecting the children
 #     would leave the loop quadratic in the field lookup. The cursor's own O(1)
 #     `ts_tree_cursor_current_field_name` is the real fix and is a SEMANTIC change (alias/extra handling)
-#     that needs its own gate — not folded into a no-output-change lane.
+#     that needs its own gate — not folded into a no-output-change lane. It is worth that gate: on a cold
+#     llvm-project map of the FIXED binary (`sample`, 12 s of a 46 s run, 127 453 busy leaf samples),
+#     `ts_node_child_iterator_next` is still the #1 leaf at 14.26%, and attributing each of its samples to
+#     the nearest non-tree-sitter caller puts bindsVisitNode SECOND at 5 614 samples — 30% of that leaf's
+#     whole cost, behind captureTagsFacts' 7 304 (the tags-query pass, a different shape). Then
+#     qualifierOf 2 629, enclosingScopeOf 1 040, cc_isCountableLocalDecl 676, cc_walk 531.
 #   * src/ingest_names.h:61 (firstChildOfType) keeps the indexed form: both callers pass a
 #     `using_declaration` / `qualified_identifier`, whose width comes from the grammar, and a per-call
 #     cursor allocation would cost more than the scan it replaces. Class 3 in practice, not class 2.
