@@ -77,10 +77,24 @@ namespace packpartition
 
 // N bounds. 2 because a 1-way "split" is just --pack-task (refused at the CLI seam, VERIFYed here); 16 to
 // match the multi-root cap — the same "an orchestrator fanning out past this is doing something else" line.
+//
+// NEITHER of this file's two docs/LIMITS.md-listed constants is an OUTPUT-class silent cap, so neither
+// gets a `*_capped` attribute (2026-09-10 lift-disclosure audit):
+//   - kMaxPartitions is a REFUSAL boundary, never a silent clamp. Every path that bounds a request against
+//     it — --partition=N (cli.h validateConfig, ~line 4379: "--partition=N is out of range — N must be
+//     2..16"), --plan-lanes=N (cli.h validatePlanLanes: "--plan-lanes=N is out of range"), and
+//     --plan-lanes --brief=FILE's derived count (verbs_change.h: "has N non-blank line(s) ... the lane
+//     count must be 2..16") — refuses LOUDLY on stderr and exits non-zero BEFORE any bundle is built. An
+//     out-of-range N never reaches a truncated answer for a `_capped` bit to mark; the disclosure already
+//     exists, in the strongest form available (refusal, not a degrade).
+//   - kCoreBudgetShare (below) is a PROPORTION, not a ceiling — it splits one already-known budget in two
+//     fixed parts; nothing measured against it can "exceed" it the way a row count exceeds kFileRowCap, so
+//     there is no crossing event to disclose.
 inline constexpr std::uint32_t kMinPartitions = 2;
 inline constexpr std::uint32_t kMaxPartitions = 16;
 
 // the share of ONE AGENT's token budget the shared core takes; the partition gets the rest (see decision 4).
+// A proportion, not a cap — see the note above kMinPartitions/kMaxPartitions.
 inline constexpr double kCoreBudgetShare = 0.34;
 
 // how much ranked surface each partition is sized for — the assembler's own ranking window, so a partition

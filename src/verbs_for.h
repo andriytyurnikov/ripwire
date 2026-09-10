@@ -25,6 +25,42 @@ namespace
 // rw::LensRanking itself now lives in packtask.h (L4) — shared with the MCP explore/pack_task verb's own
 // routed-ranking path (mcpverbs.h), which populates the SAME struct via the same low-level ranking calls.
 
+// r4/r6 (2026-09-10 lift-disclosure round): apply the lift and build its disclosure note in one call — "" for
+// either "the lift did not run" or "it ran and moved nothing" (the same silence-means-nothing-happened
+// convention mentionNote/boostNote/docMentionNote already follow). Pulled OUT of computeLensRanking (below,
+// already one of the largest functions in this file) rather than inlined at the call site like its three
+// siblings: those three predate this round and are not this change's to restructure, but two MORE
+// inlined branch-and-format blocks measurably worsened computeLensRanking's own complexity
+// (--quality-delta, 2026-09-10) for no reason the format text itself needs — the branch belongs beside the
+// mechanism it discloses, not beside the other three unrelated boosts it happens to run next to.
+inline std::string applySiblingLiftNoted( const rw::IngestResult& ing, std::vector<float>& lensRank, std::size_t sibSeed, std::size_t sibPer )
+{
+    rw::SibliftLiftInfo liftInfo;
+    if( !rw::applySiblingLift( ing, lensRank, sibSeed, sibPer, &liftInfo ) )
+    {
+        return {};
+    }
+    char nb[ 180 ];
+    rw::formatTo( nb, sizeof( nb ), " [sibling lift: promoted {} symbol{} in {} same-directory file{} of the top-ranked files (RIPWIRE_SIBLIFT={},{})]",
+                   liftInfo.symbolCount, liftInfo.symbolCount == 1 ? "" : "s",
+                   liftInfo.fileCount, liftInfo.fileCount == 1 ? "" : "s", sibSeed, sibPer );
+    return nb;
+}
+
+inline std::string applyStructuralExpansionNoted( const rw::IngestResult& ing, std::vector<float>& lensRank, std::size_t expSeeds, std::size_t expPer )
+{
+    rw::ExpandLiftInfo liftInfo;
+    if( !rw::applyStructuralExpansion( ing, lensRank, expSeeds, expPer, &liftInfo ) )
+    {
+        return {};
+    }
+    char nb[ 200 ];
+    rw::formatTo( nb, sizeof( nb ), " [structural expansion: promoted {} symbol{} in {} file{} reached via resolved import/reference edges from the top-ranked files (RIPWIRE_EXPAND={},{})]",
+                   liftInfo.symbolCount, liftInfo.symbolCount == 1 ? "" : "s",
+                   liftInfo.fileCount, liftInfo.fileCount == 1 ? "" : "s", expSeeds, expPer );
+    return nb;
+}
+
 // Compute the lens rank for `task` exactly as the --for path does (all existing boosts: routing, --anchor,
 // the B8 mention anchor, the B3 opt-in co-change prior). Pure function of (d, task): reads d.cfg for the same
 // flags --for reads, so both callers get identical rankings for the same query + flags.
@@ -157,7 +193,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
     {
         if( const auto [ sibSeed, sibPer ] = sibliftParams(); sibSeed > 0 )
         {
-            applySiblingLift( ing, lensRank, sibSeed, sibPer );
+            out.sibliftNote = applySiblingLiftNoted( ing, lensRank, sibSeed, sibPer );
         }
     }
 
@@ -183,7 +219,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
     {
         if( const auto [ expSeeds, expPer ] = expandParams(); expSeeds > 0 )
         {
-            applyStructuralExpansion( ing, lensRank, expSeeds, expPer );
+            out.expandNote = applyStructuralExpansionNoted( ing, lensRank, expSeeds, expPer );
         }
     }
 
@@ -346,6 +382,8 @@ struct ForLensNotes
     const std::string& route;
     const std::string& mention;
     const std::string& boost;
+    const std::string& siblift;    // r4 EXPERIMENT — "" unless RIPWIRE_SIBLIFT actually promoted a symbol
+    const std::string& expand;     // r6 EXPERIMENT — "" unless RIPWIRE_EXPAND actually promoted a symbol
     const std::string& docMention;
     // §L10b: the XML twins of mention_anchored=/doc_mentions= (verbs_for.h ForLensHeaderParts) — same
     // absent-unless-present convention as `mention`/`docMention` above (0 only when the note above is
@@ -392,6 +430,7 @@ struct ForLensHeaderParts
     std::string_view rootOpenStr;      // ctxRootOpen( task, routeNoteRaw ), pre-built (its size is charged)
     std::string_view taskNote;         // the comment's scrubbed echo of `task` (xmlCommentText)
     std::string_view adaptiveNote, mentionNote, boostNote, docMentionNote;
+    std::string_view sibliftNote, expandNote;   // r4/r6 EXPERIMENTS — present only when the env-gated lift actually promoted something
     std::string_view floorNote;        // LB-A: present only when the relevance floor actually shrank the quota
     // Ranking-confidence disclosure (paper-shape lane; arXiv 2607.24882 names abstention/confidence as the
     // unsolved retrieval axis). ALWAYS present — facts derived from the SAME adaptiveCut gap statistic
@@ -478,6 +517,8 @@ inline void appendCompactForLegend( std::string& h, const ForLensHeaderParts& p,
     h.append( p.adaptiveNote );
     h.append( p.mentionNote );
     h.append( p.boostNote );
+    h.append( p.sibliftNote );
+    h.append( p.expandNote );
     h.append( p.docMentionNote );
     h.append( p.floorNote );
     // P1 (L7): the compact dialect's reader meets the same two root facts (confidence=/margin_pct=) — in the
@@ -537,7 +578,7 @@ inline std::string forLensHeaderText( const ForLensHeaderParts& p, bool withRout
 {
     std::string h;
     h.reserve( 640 + std::max( kForAutoBundleLegend.size(), kForCompactBundleLegend.size() ) + p.rootOpenStr.size() + p.taskNote.size() + p.adaptiveNote.size()
-               + p.mentionNote.size() + p.boostNote.size() + p.docMentionNote.size() + p.floorNote.size()
+               + p.mentionNote.size() + p.boostNote.size() + p.sibliftNote.size() + p.expandNote.size() + p.docMentionNote.size() + p.floorNote.size()
                + p.confidenceAttrs.size() + p.confidenceNote.size() + p.gitAtAttr.size() + p.mentionDocAttrs.size() + extraNotes.size() );
     h += rootOpenWithSchema( rootOpenWithExtraAttrs( rootOpenWithExtraAttrs( rootOpenWithExtraAttrs( withRouteAttr ? std::string( p.rootOpenStr )
                                                                    : rw::ctxRootOpen( p.task, {}, p.rootArg ),
@@ -563,6 +604,8 @@ inline std::string forLensHeaderText( const ForLensHeaderParts& p, bool withRout
     h.append( p.adaptiveNote );
     h.append( p.mentionNote );      // B8: present only when the task named something indexed (else "")
     h.append( p.boostNote );        // B3: present only when the co-change prior actually promoted something
+    h.append( p.sibliftNote );      // r4: present only when RIPWIRE_SIBLIFT actually promoted a symbol
+    h.append( p.expandNote );       // r6: present only when RIPWIRE_EXPAND actually promoted a symbol
     h.append( p.docMentionNote );   // R5: present only when a resolved symbol's mentioning docs surfaced
     h.append( p.floorNote );        // LB-A: present only when the relevance floor shrank the quota (else "")
     h.append( p.confidenceNote );   // ALWAYS present — defines the confidence=/margin_pct= root facts
@@ -648,6 +691,14 @@ inline std::string forLensJsonHeader( std::string_view task, const ForLensNotes&
     if( !notes.boost.empty() )
     {
         h += ",\"boost\":\"" + jsonStr( notes.boost ) + "\"";
+    }
+    if( !notes.siblift.empty() )
+    {
+        h += ",\"siblift\":\"" + jsonStr( notes.siblift ) + "\"";
+    }
+    if( !notes.expand.empty() )
+    {
+        h += ",\"expand\":\"" + jsonStr( notes.expand ) + "\"";
     }
     if( !notes.docMention.empty() )
     {
@@ -1551,6 +1602,8 @@ std::optional<int> runForLens( const MainDispatch& d )
         const std::string  routeNoteRaw = std::move( lr.routeNote ); // verbatim; lands ONLY in route= (attribute-escaped) + the JSON twin — L1: the comment no longer echoes it
         const std::string  mentionNote( std::move( lr.mentionNote ) );
         const std::string  boostNote( std::move( lr.boostNote ) );
+        const std::string  sibliftNote( std::move( lr.sibliftNote ) );
+        const std::string  expandNote( std::move( lr.expandNote ) );
         const std::string  docMentionNote( std::move( lr.docMentionNote ) );
         const bool         conceptualRoute = isConceptualRoute( lr.routeTag );   // see the predicate for what "no-route" means here
         // the route's own anchors, resolved — read ONLY by the T3 auto-body allowance below (anchor-only)
@@ -1745,7 +1798,7 @@ std::optional<int> runForLens( const MainDispatch& d )
         // root ATTRIBUTE is kept, paid for out of its own reserve). A tight explicit budget no longer
         // turns the disclosure off on EITHER serving shape — test/fordisclosurecheck.sh.
         ForLensHeaderParts headerParts{ cfg.forTask, rootOpenStr, taskNote, adaptiveNote,
-                                        mentionNote, boostNote, docMentionNote, floorNote,
+                                        mentionNote, boostNote, docMentionNote, sibliftNote, expandNote, floorNote,
                                         forConf.attrs, forConf.note, forAtAttrStr, mentionDocAttrsStr,
                                         cfg.anchor, plan.autoBodies, plan.compact, cfg.legend == "compact",
                                         /*tailLegend=*/true, flRootArg };
@@ -1867,6 +1920,7 @@ std::optional<int> runForLens( const MainDispatch& d )
 
             const int jsonRc = emitForLensJson( stdout,
                                                 forLensJsonHeader( cfg.forTask, ForLensNotes{ routeNoteRaw, mentionNote, boostNote,
+                                                                                              sibliftNote, expandNote,
                                                                                               docMentionNote, lr.anchorLifts, lr.docMentionCount,
                                                                                               adaptiveNote, floorNote,
                                                                                               forConf.level,

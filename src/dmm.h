@@ -76,6 +76,17 @@ namespace rw::dmm
 
 // The SIG risk-profile boundaries, as PyDriller spells them (Method.UNIT_*_LOW_RISK_THRESHOLD). Named, not
 // inlined as three literals, so a reader can check them against the package without decoding an expression.
+//
+// NOT an OUTPUT-class cap, so no `*_capped` attribute belongs beside them (2026-09-10 lift-disclosure
+// audit). A truncating cap silently DROPS content past a ceiling — kDefsPerNameCap, kSymbolRowCap, the
+// truncating caps LIMITS.md lists elsewhere. These three do the opposite job: they CLASSIFY every unit
+// measured (never drop one), and the thresholds they classify against are themselves unconditionally on
+// the root every run — `low_loc="{kUnitSizeLowRiskMax}" low_cx="{kUnitComplexityLowRiskMax}" `
+// `low_params="{kUnitInterfacingLowRiskMax}"` (writeDmmReport, below) — so there is no silent state for a
+// `_capped` bit to distinguish; the classification boundary is printed on every single report, capped or
+// not. docs/limits_build.py's static scan still lists them (their names contain "Max", its one keyword
+// filter), which is why LIMITS.md's "Discloses" column reads "none" for this file — that column tracks
+// only the `*_capped` shape, and disclosure here takes the always-present-attribute shape instead.
 inline constexpr std::uint32_t kUnitSizeLowRiskMax        = 15;   // lines
 inline constexpr std::uint32_t kUnitComplexityLowRiskMax  = 5;    // cyclomatic complexity
 inline constexpr std::uint32_t kUnitInterfacingLowRiskMax = 2;    // parameters
