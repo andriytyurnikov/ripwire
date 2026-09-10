@@ -88,7 +88,7 @@ import sys, xml.etree.ElementTree as ET
 rows = [c for c in ET.parse(sys.argv[1]).iter('c') if c.get('n') == 'grammars']
 assert len(rows) == 1
 assert rows[0].get('loaded') == rows[0].get('expected') == '23', rows[0].attrib
-print('  PASS doctor loads all 22 grammars and queries')
+print('  PASS doctor loads all 23 grammars and queries')
 PYDOC
 
 mkdir "$TMP/boundaries"

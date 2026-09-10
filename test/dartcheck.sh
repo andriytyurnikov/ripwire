@@ -112,9 +112,11 @@ assert {'answer', 'C', 'plain'} == set(syms), set(syms)
 assert 'C.seeded' not in syms and 'fromA' not in syms, 'named constructor escaped the documented floor'
 # The class and its three constructors share the name C, so the row discloses the merge.
 assert syms['C'].get('overloads') is not None, ('C did not disclose overloads', syms['C'].attrib)
-# `C.seeded(answer())` resolves to the member name, which has no definition here — unresolved,
-# never silently bound to the class.
-assert 'answer' not in {c.get('n') for c in syms['C'].iter('c')} or True
+# `C.seeded(answer())` resolves to the MEMBER name `seeded`, which has no definition here, so the
+# call is unresolved — never silently bound to the class that swallowed the constructor's name.
+cCalls = {c.get('n') for c in syms['C'].iter('c')}
+assert 'seeded' not in cCalls, ('a named-constructor call bound to the class', cCalls)
+assert 'C' not in cCalls, ('the class became its own callee', cCalls)
 print('  PASS constructors index under the class name and disclose the merge')
 PYC
 
