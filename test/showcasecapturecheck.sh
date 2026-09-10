@@ -287,7 +287,14 @@ print('OK' if not bad else 'DRIFT ' + '; '.join('top-%d caption %.1f%% vs recoun
                 *)   no "(C-recount) $verdict — the caption and its own gate disagree; re-derive with the root-neutralised methodology stated above, and fix BOTH" ;;
             esac
         fi
-        bandLow=62.0; bandHigh=80.0
+        bandLow=73.0; bandHigh=91.0
+        # RE-CENTERED (2026-09-10, the sibs= cap raised 8 -> 100): 71.0 +/- 9 becomes 82 +/- 9, the
+        # band bounds kept ROUND because (C-help) demands --help state these two numbers EXACTLY and a
+        # tolerance region has no business carrying a tenth of a point. Measured centre is 81.8.
+        # MECHANISM, not a loosened tolerance. --pack-signatures elides exactly what it always did;
+        # --expand's <b> bodies now carry the file context the old cap was hiding, which grows the
+        # DENOMINATOR of this ratio. Measured on a fixed tree: cap=8 -> 71.0, cap=100 -> 81.8, with
+        # the top-50 membership and the signature side unchanged. See docs/LIMITS.md.
         # printed, never hand-copied: the message used to quote a centre of 81.4 that an earlier
         # re-centering had already moved past — the same stale-number drift arm (C-help) exists to catch.
         bandCentre="$( python3 -c "print( ( $bandLow + $bandHigh ) / 2 )" )"

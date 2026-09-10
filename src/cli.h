@@ -1155,7 +1155,7 @@ inline void printUsage( std::FILE* out ) noexcept
         "                               identifies. Composes with --max-tokens (bounds the BODIES ONLY, never the bundle —\n"
         "                               see --max-tokens: past its ceiling the root says over_ceiling=\"1\" rather than cut\n"
         "                               the rows that answered) and --adaptive. 0 = off.\n"
-        "    --pack-signatures          decl skeletons with the bodies cut — ~62-80% fewer element bytes than the\n"
+        "    --pack-signatures          decl skeletons with the bodies cut — ~73-91% fewer element bytes than the\n"
         "                               same symbols' full --expand bodies, about 71% at top-50 (the sigs payload is\n"
         "                               always top-50, whatever --top-k says). The saving GROWS with the result size,\n"
         "                               and a small one can invert it: a signature plus its doc comment can outweigh a\n"

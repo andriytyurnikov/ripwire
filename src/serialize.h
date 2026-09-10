@@ -4531,7 +4531,15 @@ struct FileExpandContext
     std::vector<std::string_view>                     includes;   // this file's #include/import targets, source order
 };
 
-inline constexpr std::size_t kMaxExpandSibs     = 8;    // sibs= cap — P16 (L7): 40 names were 582 B of a 3,067 B --expand answer (19%; ~3.5 KB per --pack-task bundle); sibs_total= keeps the true count
+inline constexpr std::size_t kMaxExpandSibs     = 100;  // sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the
+                                                       // typical case. Symbols-per-file on this repo: median 4, p90 18, p99 85,
+                                                       // max 562, so 100 clears p99 and fires on 15.8% of bodies. The previous 8
+                                                       // fired on 68.5% of them and hid 89.3% of all sibling names — and its stated
+                                                       // cost, "~3.5 KB per --pack-task bundle", is not reproducible: --pack-task
+                                                       // emits NO sibs= at all, before P16 or after (measured 2026-09-09 against the
+                                                       // pre-P16 binary). sibs= reaches exactly one verb, --expand, where 100 costs
+                                                       // +36% on a single-symbol answer; --for and --pack-task are byte-identical.
+                                                       // sibs_total= keeps the true count either way.
 inline constexpr std::size_t kMaxExpandIncludes = 24;   // inc= cap
 
 inline HashMap<std::uint32_t, FileExpandContext> buildFileExpandContexts(
