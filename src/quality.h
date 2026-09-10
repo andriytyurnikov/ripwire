@@ -57,6 +57,7 @@
 #include <string>
 #include <type_traits>  // std::is_trivially_copyable_v — the qsnap POD put/get static_assert
 #include <utility>
+#include <span>          // mergeBuiltinsWithConfig — a non-owning view over either built-in list
 #include <vector>
 
 namespace rw
@@ -93,6 +94,19 @@ constexpr std::uint32_t   kMinorCcxDelta   = 3;    // complexity: delta < 3 → 
 constexpr std::uint32_t   kMinorLocDelta   = 10;   // verbosity:  delta < 10 LOC → minor
 constexpr std::uint32_t   kMinorParamDelta = 2;    // params:     +1 param → minor; +2 or more → major
 
+// Q-DIAL-3 (2026-09-10) — GROWTH IS A SIGNAL, and the bar alone was not one. `now > was && now > BAR` says
+// nothing about how much this change added: audit lane Q1 measured the median growth of a GATING complexity
+// row at 6% and of a gating verbosity row at 6% (§2d) — +3% on a function that was 1,068 lines before the
+// change gated, while 6 → 55 LOC (9x) and ccx 5 → 13 (+160%) were invisible because neither ends up over the
+// bar. Two thresholds fix both halves, and they apply to complexity and verbosity ONLY (params is the
+// highest-precision kind in the table at 77% and nesting has no measured false positive — neither is moved
+// on a hunch):
+constexpr std::uint32_t   kMaterialGrowthPct = 25;    // over the bar: gate on a bar CROSSING, or on growth >= this. Otherwise the row is real, reported, and sev="minor" — chronic debt the change did not create.
+constexpr std::uint32_t   kSubBarGrowthPct   = 100;   // UNDER the bar: a DOUBLING is worth a minor row rather than silence (synthetics S4b/S8) — never gating, because nothing is over the bar yet.
+// …with a floor so a 3 → 6 line helper is not a finding. Two thirds of the kind's own bar, so the floor moves
+// with the bar it belongs to and there is no third number to keep in sync: ccx 10, loc 40.
+inline constexpr std::uint32_t subBarGrowthFloor( std::uint32_t bar ) noexcept { return ( bar * 2 ) / 3; }
+
 // Signal-to-noise round — the per-finding ACK RATCHET sidecar (`--quality-ack[=REASON]`): each line records one
 // deliberately-accepted finding; --quality-delta suppresses it (honestly, via acked="N") until the finding
 // WORSENS past the acked magnitude, at which point it reappears. Committable, like the baseline sidecar.
@@ -125,7 +139,7 @@ inline std::string acksPath( const std::string& root )     { return rootQualifie
 // reader, no `RIPWIRE_CONFIG` constant). Smallest thing consistent with the two house sidecar
 // conventions already in the tree — `.ripwire_notes` (committed, degrade-don't-throw, absent=inert) and
 // `.ripwire_quality_acks` (root-qualified via rootQualifiedSidecar, never the process CWD): a committed,
-// human-editable key=value text file at the repo root. ONE recognized key today (readRegisterMacrosConfig
+// human-editable key=value text file at the repo root. TWO recognized keys today (readRegisterMacrosConfig
 // below); an unrecognized key is skipped rather than refused, so the file can grow new keys later without
 // a binary that predates them choking on it — notes.h's own forward-compat rule, restated here for a new
 // file rather than invented twice.
@@ -166,7 +180,7 @@ inline std::string baselineCanonId( const IngestResult& ing, NodeId i, std::stri
 struct Snapshot
 {
     gtl::btree_map<std::uint64_t, std::uint32_t> ccxBySym;    // hash(canonId) → MAX ccx (btree = sorted iteration for the byte-stable sidecar)
-    gtl::btree_map<std::uint64_t, std::uint32_t> locBySym;    // Q1 verbosity  — hash(canonId) → MAX physical LOC (the master variable, §1d)
+    gtl::btree_map<std::uint64_t, std::uint32_t> locBySym;    // Q1 verbosity  — hash(canonId) → MAX CODE lines (Q-DIAL-3: blank and comment-only lines are not debt; see codeLinesInBody). ALSO the r26 ORIGIN oracle, which reads MEMBERSHIP only, so the value change does not touch it.
     gtl::btree_map<std::uint64_t, std::uint32_t> nestBySym;   // Q1 erosion    — hash(canonId) → MAX control-nesting depth
     gtl::btree_map<std::uint64_t, std::uint32_t> paramsBySym; // Q1 erosion    — hash(canonId) → MAX parameter count
     gtl::btree_map<std::uint64_t, std::uint32_t> defsBySym;   // hash(canonId) → COUNT of definitions sharing the id (an overload set's CARDINALITY, deliberately NOT a MAX — see computeSnapshot)
@@ -324,10 +338,16 @@ inline bool isValidMacroToken( std::string_view token ) noexcept
 struct RegisterMacrosConfig
 {
     std::vector<std::string> names;              // valid register_macros=NAME tokens, sorted + deduped
-    std::vector<std::string> unrecognizedKeys;    // distinct non-"register_macros" keys seen, sorted + deduped
+    std::vector<std::string> vendoredPaths;      // Q-DIAL-5: vendored_paths=PATH[, PATH...] tokens, sorted + deduped
+    std::vector<std::string> unrecognizedKeys;    // distinct key seen that is neither of the two above, sorted + deduped
 };
+// NAME NOTE: this type and its reader are spelled for the FIRST key they carried, and they keep those names
+// on purpose — test/qschemetripcheck.sh's manifest keys the determinism guard on the function NAME
+// `readRegisterMacrosConfig`, so renaming it for tidiness would silently retire a guard. It is the
+// .ripwire_config reader; it reads two keys.
 
-// `.ripwire_config`'s ONE recognized key: `register_macros = NAME[, NAME...]`. Grammar: one directive per
+// `.ripwire_config`'s TWO recognized keys: `register_macros = NAME[, NAME...]` and, since 2026-09-10,
+// `vendored_paths = PATH[, PATH...]` (Q-DIAL-5 — code this repo carries but did not write). Grammar: one directive per
 // line, '#' full-line comments, blank lines ignored; a line with no '=' at all carries no key/value shape
 // this file defines anything for, so it is left alone rather than guessed at (same "never throws, never
 // guesses" posture as the malformed-token skip below). A line that DOES have that shape but whose key is
@@ -336,6 +356,39 @@ struct RegisterMacrosConfig
 // accepted. Absent/unreadable/empty file yields two empty lists — INERTNESS CONTRACT: no config file
 // changes nothing about this run's set of exempted names (kBuiltinRegisterMacros still applies), and an
 // unrecognized key is disclosed, never a refusal — a typo in an otherwise-inert config must not fail a run.
+// One directive's VALUE list: comma-separated tokens, each trimmed, each admitted by its key's own rule.
+// Hoisted out of the line loop so that loop stays readable (and under its bars) now that the file carries two
+// keys. A PATH is root-relative with no '..' segment and no leading '/'; anything else is a value this file's
+// grammar defines nothing for and is dropped rather than guessed at, the same posture the macro-token check
+// takes. Never throws, never warns: a malformed VALUE is inert, and only a malformed KEY is disclosed.
+inline void appendConfigValueTokens( std::string_view rest, bool isVendor, RegisterMacrosConfig& out )
+{
+    std::size_t start = 0;
+    while( start <= rest.size() )
+    {
+        const std::size_t comma = rest.find( ',', start );
+        std::string_view  tok( rest.data() + start, ( comma == std::string_view::npos ? rest.size() : comma ) - start );
+        while( !tok.empty() && ( tok.back()  == ' ' || tok.back()  == '\t' ) ) { tok.remove_suffix( 1 ); }
+        while( !tok.empty() && ( tok.front() == ' ' || tok.front() == '\t' ) ) { tok.remove_prefix( 1 ); }
+        if( isVendor )
+        {
+            if( !tok.empty() && tok.front() != '/' && tok.find( ".." ) == std::string_view::npos )
+            {
+                out.vendoredPaths.emplace_back( tok );
+            }
+        }
+        else if( isValidMacroToken( tok ) )
+        {
+            out.names.emplace_back( tok );
+        }
+        if( comma == std::string_view::npos )
+        {
+            break;
+        }
+        start = comma + 1;
+    }
+}
+
 inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
 {
     RegisterMacrosConfig out;
@@ -363,33 +416,20 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
         }
         std::string_view key = line.substr( 0, eq );
         while( !key.empty() && ( key.back() == ' ' || key.back() == '\t' ) ) { key.remove_suffix( 1 ); }
-        constexpr std::string_view kKey = "register_macros";
-        if( key != kKey )
+        constexpr std::string_view kKey       = "register_macros";
+        constexpr std::string_view kVendorKey = "vendored_paths";   // Q-DIAL-5
+        const bool                 isVendor   = key == kVendorKey;
+        if( key != kKey && !isVendor )
         {
             out.unrecognizedKeys.emplace_back( key );   // F-13: disclosed, not skipped
             continue;
         }
-        std::string_view rest = line.substr( eq + 1 );
-        std::size_t      start = 0;
-        while( start <= rest.size() )
-        {
-            const std::size_t comma = rest.find( ',', start );
-            std::string_view  tok( rest.data() + start, ( comma == std::string_view::npos ? rest.size() : comma ) - start );
-            while( !tok.empty() && ( tok.back() == ' ' || tok.back() == '\t' ) ) { tok.remove_suffix( 1 ); }
-            while( !tok.empty() && ( tok.front() == ' ' || tok.front() == '\t' ) ) { tok.remove_prefix( 1 ); }
-            if( isValidMacroToken( tok ) )
-            {
-                out.names.emplace_back( tok );
-            }
-            if( comma == std::string_view::npos )
-            {
-                break;
-            }
-            start = comma + 1;
-        }
+        appendConfigValueTokens( line.substr( eq + 1 ), isVendor, out );
     }
     std::sort( out.names.begin(), out.names.end() );
     out.names.erase( std::unique( out.names.begin(), out.names.end() ), out.names.end() );
+    std::sort( out.vendoredPaths.begin(), out.vendoredPaths.end() );
+    out.vendoredPaths.erase( std::unique( out.vendoredPaths.begin(), out.vendoredPaths.end() ), out.vendoredPaths.end() );
     std::sort( out.unrecognizedKeys.begin(), out.unrecognizedKeys.end() );
     out.unrecognizedKeys.erase( std::unique( out.unrecognizedKeys.begin(), out.unrecognizedKeys.end() ), out.unrecognizedKeys.end() );
     return out;
@@ -397,16 +437,75 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
 
 // The combined, sorted, deduped registered-macro name list for ONE run: the built-ins above plus whatever
 // .ripwire_config's register_macros= adds. Sorted so nothing downstream needs its own re-sort.
+// The ONE shape both .ripwire_config consumers need: this tool's built-in list, plus whatever the repo's own
+// config adds, sorted and deduped so nothing downstream re-sorts. Factored the moment the second consumer
+// existed — `--quality-delta` reported vendoredPathPrefixes as a 114-token clone of this function the first
+// time it was written out longhand, which is the kind's whole job.
+inline std::vector<std::string> mergeBuiltinsWithConfig( std::span<const std::string_view> builtins,
+                                                         std::vector<std::string> fromConfig )
+{
+    std::vector<std::string> out;
+    out.reserve( builtins.size() + fromConfig.size() );
+    for( std::string_view b : builtins )
+    {
+        out.emplace_back( b );
+    }
+    for( std::string& extra : fromConfig )
+    {
+        out.push_back( std::move( extra ) );
+    }
+    std::sort( out.begin(), out.end() );
+    out.erase( std::unique( out.begin(), out.end() ), out.end() );
+    return out;
+}
+
 inline std::vector<std::string> registeredMacroNames( std::string_view root )
 {
-    std::vector<std::string> names( kBuiltinRegisterMacros.begin(), kBuiltinRegisterMacros.end() );
-    for( std::string& extra : readRegisterMacrosConfig( root ).names )
+    return mergeBuiltinsWithConfig( kBuiltinRegisterMacros, readRegisterMacrosConfig( root ).names );
+}
+
+// Q-DIAL-5 (2026-09-10) — VENDORED PATHS: code this repo CARRIES but did not WRITE. No such notion existed
+// anywhere in this file, and the clone kinds paid for it: one commit (08416403, the timsort landing) produced
+// 9 duplication rows, 8 of 8 dead-code:new-symbol acks and 37 api-surface acks against an upstream body whose
+// shape is not this repo's to fix. The ledger says so in its own words, 11 times.
+//
+// Built-in conventions plus whatever `.ripwire_config`'s vendored_paths= adds. The built-ins are the four
+// directory names the ecosystem agrees on; a vendored file that lives somewhere else (this repo's own
+// src/infra/timsort.hpp) is exactly what the config key is for, because no convention can guess it.
+// HONEST SCOPE, measured while writing the gate for this: the CRAWLER already drops third_party/, vendor/
+// and node_modules/, so those three names are here for completeness rather than effect — `external/` is the
+// only built-in the indexer actually reaches, and everything else vendored is reached through the config key.
+inline constexpr std::array<std::string_view, 4> kBuiltinVendoredPrefixes = { "third_party/", "vendor/", "node_modules/", "external/" };
+
+inline std::vector<std::string> vendoredPathPrefixes( std::string_view root )
+{
+    return mergeBuiltinsWithConfig( kBuiltinVendoredPrefixes, readRegisterMacrosConfig( root ).vendoredPaths );
+}
+
+// `rel` is ROOT-RELATIVE (the relForHash spelling every sidecar key uses). A prefix ending in '/' names a
+// DIRECTORY and matches everything under it; one that does not is a whole path and must match exactly, so
+// `vendored_paths = src/infra/timsort.hpp` cannot silently swallow src/infra/timsort_extra.hpp.
+inline bool isVendoredPath( std::string_view rel, const std::vector<std::string>& prefixes ) noexcept
+{
+    for( const std::string& p : prefixes )
     {
-        names.push_back( std::move( extra ) );
+        if( p.empty() )
+        {
+            continue;
+        }
+        if( p.back() == '/' )
+        {
+            if( rel.size() >= p.size() && rel.compare( 0, p.size(), p ) == 0 )
+            {
+                return true;
+            }
+        }
+        else if( rel == p )
+        {
+            return true;
+        }
     }
-    std::sort( names.begin(), names.end() );
-    names.erase( std::unique( names.begin(), names.end() ), names.end() );
-    return names;
+    return false;
 }
 
 // A registered macro's own call syntax, read starting at the CALLEE's own signature start byte (`region`
@@ -475,8 +574,70 @@ inline std::vector<std::uint64_t> topLevelCalleeNameHashes( const IngestResult& 
     return hashes;
 }
 
+// Q-DIAL-2 (2026-09-10) — THE SYMBOLS A LANGUAGE INVOKES, for which "zero in-edges in a name-based call
+// graph" is evidence of nothing at all. This is what the dead kind's blanket header exclusion was a PROXY
+// for, stated directly, and it is measurable in both directions: all ten dead-code rows the verb produced
+// across 40 replayed commits were exactly these shapes (audit Q1 §2e W1), and the header rule that hid them
+// also hid 96.8% of this repo's own source from the kind (Q1 §3, synthetic S6 — the sole caller of a header
+// function deleted, silently missed).
+//
+// Each clause names a call site the parser cannot see as a named CALL:
+//   * a TYPE (class/struct/interface) is never invoked at all — its in-edge count is not a liveness signal;
+//   * `main` is invoked by the runtime;
+//   * `operator...` is invoked by the OPERATOR'S SYNTAX (`a + b`, `p[i]`, `new T`, `f( x )` on a functor);
+//   * a leading `~` is a C++ destructor — the language runs it at scope exit;
+//   * name == the innermost scope segment is a CONSTRUCTOR in every language that spells one that way
+//     (C++, Java, C#, PHP-in-part), built by object creation rather than by a call to that name;
+//   * a Python-style dunder (`__enter__`, `__repr__`, `__init__`) is invoked by a protocol, never by name;
+//   * a METHOD named init/deinit/constructor is Swift's / JavaScript's spelling of the same constructor
+//     protocol. Scoped to Method deliberately: a free function called `init` is an ordinary function, and
+//     excluding it would be the header rule's over-reach in a smaller costume.
+// FLOOR, stated: this is a NAME-level rule, exactly like the resolver's own bare-name matching, and it errs
+// toward false-LIVE (a symbol wrongly considered invoked is silently not reported) rather than false-dead,
+// which is the direction a deletion candidate must err in.
+inline bool languageInvokedSymbol( const Symbol& s ) noexcept
+{
+    if( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface )
+    {
+        return true; // a type is declared, never called
+    }
+    if( s.name == "main" )
+    {
+        return true; // the runtime's entry point
+    }
+    if( s.name.rfind( "operator", 0 ) == 0 )
+    {
+        return true; // invoked by the operator's own syntax
+    }
+    if( !s.name.empty() && s.name.front() == '~' )
+    {
+        return true; // C++ destructor
+    }
+    if( s.name.size() > 4 && s.name.rfind( "__", 0 ) == 0
+        && s.name.compare( s.name.size() - 2, 2, "__" ) == 0 )
+    {
+        return true; // Python dunder — invoked by a protocol
+    }
+    if( s.kind == SymKind::Method && ( s.name == "init" || s.name == "deinit" || s.name == "constructor" ) )
+    {
+        return true; // Swift init/deinit, JavaScript constructor
+    }
+    if( !s.scope.empty() )
+    {
+        const std::size_t     sep  = s.scope.rfind( "::" );
+        const std::string_view tail = sep == std::string::npos ? std::string_view( s.scope )
+                                                               : std::string_view( s.scope ).substr( sep + 2 );
+        if( !tail.empty() && tail == s.name )
+        {
+            return true; // constructor: the member that shares its type's name
+        }
+    }
+    return false;
+}
+
 // A "dead deletion-candidate": has a body, no caller in the indexed tree, not invoked from file scope, not
-// header-exported, not a test fixture, not produced by a registered self-registering macro. A SIMPLE,
+// invoked by the LANGUAGE itself (languageInvokedSymbol, above), not a test fixture, not produced by a
+// registered self-registering macro. A SIMPLE,
 // internally-consistent heuristic — the delta only needs baseline↔current consistency, not parity with the
 // fuller --dead-code verb. `topLevelCallees` is the sorted set topLevelCalleeNameHashes builds and
 // `registeredMacroIds` the sorted set registeredMacroSymbolIds builds (below, past forEachSymbolBody) —
@@ -511,13 +672,11 @@ inline bool isDeadCandidate( const IngestResult& ing, const Graph& g, NodeId i,
     {
         return false; // W1-S2: invoked from file scope (a top-level script statement) — a use the CSR drops
     }
-    const std::string& p = ing.files[ s.fileId ];
-    const auto ends = [ & ]( std::string_view e )
-    { return p.size() >= e.size() && p.compare( p.size() - e.size(), e.size(), e ) == 0; };
-    if( ends( ".h" ) || ends( ".hpp" ) || ends( ".hh" ) || ends( ".hxx" ) )
+    if( languageInvokedSymbol( s ) )
     {
-        return false; // header-exported by convention
+        return false; // Q-DIAL-2: the LANGUAGE calls it — see languageInvokedSymbol (this replaced a blanket header exclusion)
     }
+    const std::string& p = ing.files[ s.fileId ];
     if( isFixturePath( p ) )
     {
         return false; // fixtures are dead by design (noise rules)
@@ -707,6 +866,216 @@ inline void forEachSymbolBody( const IngestResult& ing, Fn&& visit )
         }
     }
 }
+
+// Q-DIAL-3 (2026-09-10) — THE VERBOSITY KIND'S METRIC: CODE lines, not physical lines.
+//
+// `Symbol::loc` is the def's physical line span, and the verbosity kind judged it directly. That makes blank
+// lines and comments debt: audit lane Q1 added 60 PURE BLANK lines inside an 18-LOC body and got
+// `verbosity was="18" now="78"`, gating, exit 2 — and the same for 60 pure COMMENT lines, in a repo whose own
+// CONTRIBUTING.md requires the reasoning to be written down. It is not hypothetical either: landed commit
+// 7d5dd201 ("comment(caps): update three stale cap justifications") added 7 comment lines and 1 code line and
+// produced two verbosity regression rows. Measured composition of what the kind judges, over 60 rows:
+// 72.8% code, 23.3% comment, 3.9% blank.
+//
+// A LINE HEURISTIC, NOT A LEXER, and the floor is stated rather than implied: a line counts as code unless it
+// is blank or its first non-space characters open a comment. So a trailing comment after code counts as code
+// (correct), a comment marker inside a string literal makes that line read as a comment (wrong, and rare), and
+// a multi-line raw string full of blank lines reads as blank (wrong, and rarer). The alternative is a second
+// tokenization pass per symbol on every --quality-delta, for a metric whose whole job is to say "this body is
+// big". Both sides of every comparison run the identical rule, which is the property the delta actually needs.
+//
+// Markers by language family, from the symbol's own `lang`: `//` plus `/* … */` for the C family and its
+// descendants, `#` for the shell/Python/Ruby/Elixir/config family (in the C family `#` opens a PREPROCESSOR
+// directive, which is code — that is why this is per-language and not one union set), `--` for Lua. Markdown
+// and JSON have no comment syntax, so every non-blank line there is content.
+inline bool langUsesHashComment( Lang l ) noexcept
+{
+    return l == Lang::Python || l == Lang::Bash || l == Lang::Ruby || l == Lang::Elixir
+        || l == Lang::Toml   || l == Lang::Yaml;
+}
+
+inline std::uint32_t codeLinesInBody( std::string_view body, Lang lang ) noexcept
+{
+    const bool hash   = langUsesHashComment( lang );
+    const bool cLike  = !hash && lang != Lang::Markdown && lang != Lang::Json && lang != Lang::Lua;
+    const bool lua    = lang == Lang::Lua;
+    std::uint32_t  code    = 0;
+    bool           inBlock = false;
+    std::size_t    at      = 0;
+    while( at <= body.size() )
+    {
+        const std::size_t nl   = body.find( '\n', at );
+        std::string_view  line = body.substr( at, ( nl == std::string_view::npos ? body.size() : nl ) - at );
+        at = ( nl == std::string_view::npos ) ? body.size() + 1 : nl + 1;
+        while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' || line.front() == '\r' ) )
+        {
+            line.remove_prefix( 1 );
+        }
+        while( !line.empty() && ( line.back() == ' ' || line.back() == '\t' || line.back() == '\r' ) )
+        {
+            line.remove_suffix( 1 );
+        }
+        if( inBlock )
+        {
+            const std::size_t close = line.find( "*/" );
+            if( close == std::string_view::npos )
+            {
+                continue;   // still inside the block comment
+            }
+            inBlock = false;
+            line.remove_prefix( close + 2 );
+            while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' ) )
+            {
+                line.remove_prefix( 1 );
+            }
+        }
+        if( line.empty() )
+        {
+            continue;   // blank
+        }
+        if( cLike && line.rfind( "//", 0 ) == 0 )
+        {
+            continue;
+        }
+        if( hash && line.front() == '#' )
+        {
+            continue;
+        }
+        if( lua && line.rfind( "--", 0 ) == 0 )
+        {
+            continue;
+        }
+        if( cLike && line.rfind( "/*", 0 ) == 0 )
+        {
+            inBlock = line.find( "*/", 2 ) == std::string_view::npos;
+            if( !inBlock )
+            {
+                const std::size_t close = line.find( "*/", 2 );
+                std::string_view  rest  = line.substr( close + 2 );
+                while( !rest.empty() && ( rest.front() == ' ' || rest.front() == '\t' ) )
+                {
+                    rest.remove_prefix( 1 );
+                }
+                if( rest.empty() )
+                {
+                    continue;   // `/* … */` alone on the line
+                }
+            }
+            else
+            {
+                continue;
+            }
+        }
+        ++code;
+    }
+    return code;
+}
+
+// The per-NODE code-line count for THIS tree, read off each symbol's own body bytes in ONE pass over the
+// files (forEachSymbolBody). A symbol with no readable body — a declaration, a prototype, an unreadable file —
+// keeps its physical `loc`: that span IS its signature, there is nothing to discount, and a silent 0 there
+// would read as "this symbol shrank to nothing" on the next delta.
+inline std::vector<std::uint32_t> codeLocByNode( const IngestResult& ing )
+{
+    std::vector<std::uint32_t> out( ing.symbols.size(), 0 );
+    for( NodeId i = 0; i < ing.symbols.size(); ++i )
+    {
+        out[i] = ing.symbols[i].loc;
+    }
+    forEachSymbolBody( ing, [ & ]( NodeId i, const Symbol& s, std::string_view body )
+    {
+        if( s.kind == SymKind::Section )
+        {
+            return;   // a markdown SECTION is prose: there is no code/comment line to separate, and counting
+                      // its non-blank lines as "code" makes an in-place doc rewrite that swaps 5 blank lines
+                      // for 5 sentences read as +5 verbosity. Measured on the ref-pair replay before this
+                      // clause: 03ec6f14 (a docs correction) went from a clean report to three minor rows.
+                      // Sections keep the physical span they always had — the churn kind exempts them for the
+                      // same reason ("doc sections churn by design").
+        }
+        out[i] = codeLinesInBody( body, s.lang );
+    } );
+    return out;
+}
+
+// Q-DIAL-4 (2026-09-10) — DOES THE LAST DECLARED PARAMETER CARRY A DEFAULT?
+//
+// 113 of the 132 `api-surface` acks in this repo's own committed ledger (85.6%) say the same sentence: "one
+// trailing DEFAULTED parameter, every existing caller compiles unchanged". A kind whose acks are 86% one
+// shape is describing that shape, so the shape is read off the signature and reported sev="minor" instead of
+// being acked one row at a time. It is still a row — the contract DID change, and a defaulted parameter is
+// how most contract rot starts.
+//
+// A BRACE-DEPTH SCAN, NOT A PARSER, and the floor is stated: the signature's first '(' opens the parameter
+// list, its matching ')' closes it, the last comma at depth 0 starts the final parameter, and an '=' in that
+// final parameter is a default. Depth counts ( ) [ ] { } and, for C++ templates, < > — which is where the
+// heuristic can be fooled (`a < b` inside a default expression, an `operator<`), and where being fooled costs
+// exactly one severity tier on one row. Languages that spell defaults the same way (Python, TypeScript, PHP,
+// Ruby, C#, Swift) are covered by the same scan for free; a language that does not spell them at all simply
+// never matches.
+inline bool trailingParamHasDefault( std::string_view signature ) noexcept
+{
+    const std::size_t open = signature.find( '(' );
+    if( open == std::string_view::npos )
+    {
+        return false;
+    }
+    int         depth      = 0;
+    int         angle      = 0;
+    std::size_t lastComma  = std::string_view::npos;
+    std::size_t close      = std::string_view::npos;
+    for( std::size_t i = open; i < signature.size(); ++i )
+    {
+        const char c = signature[i];
+        if( c == '(' || c == '[' || c == '{' ) { ++depth; }
+        else if( c == ')' || c == ']' || c == '}' )
+        {
+            --depth;
+            if( depth == 0 ) { close = i; break; }
+        }
+        else if( c == '<' ) { ++angle; }
+        else if( c == '>' && angle > 0 ) { --angle; }
+        else if( c == ',' && depth == 1 && angle == 0 ) { lastComma = i; }
+    }
+    if( close == std::string_view::npos || close <= open + 1 )
+    {
+        return false;   // unclosed, or an empty parameter list
+    }
+    const std::size_t     from = ( lastComma == std::string_view::npos ) ? open + 1 : lastComma + 1;
+    const std::string_view last = signature.substr( from, close - from );
+    for( std::size_t i = 0; i < last.size(); ++i )
+    {
+        if( last[i] != '=' )
+        {
+            continue;
+        }
+        const bool cmp = ( i + 1 < last.size() && last[ i + 1 ] == '=' )
+                      || ( i > 0 && ( last[ i - 1 ] == '=' || last[ i - 1 ] == '!' || last[ i - 1 ] == '<' || last[ i - 1 ] == '>' ) );
+        if( !cmp )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The per-NODE answer for THIS tree, read off each symbol's own signature bytes in the same one-pass shape
+// codeLocByNode uses. forEachSymbolBody hands back [sigStartByte, endByte), and the signature is its prefix.
+inline std::vector<std::uint8_t> trailingDefaultByNode( const IngestResult& ing )
+{
+    std::vector<std::uint8_t> out( ing.symbols.size(), 0 );
+    forEachSymbolBody( ing, [ & ]( NodeId i, const Symbol& s, std::string_view body )
+    {
+        const std::size_t sigLen = s.sigEndByte > s.sigStartByte ? std::size_t( s.sigEndByte - s.sigStartByte ) : 0;
+        if( sigLen == 0 || sigLen > body.size() )
+        {
+            return;
+        }
+        out[i] = trailingParamHasDefault( body.substr( 0, sigLen ) ) ? 1 : 0;
+    } );
+    return out;
+}
+
 
 // P2.2 — every symbol in THIS tree whose own signature text is a registered-macro call (built ONCE per
 // computeSnapshot/computeDelta run, exactly like topLevelCallees above), reading each file's bytes once via
@@ -2253,7 +2622,20 @@ inline void evictOldHeadSnapCaches( const std::string& dir, const std::string& r
 // Benchmark BENCHMARK bodies reported as newly-dead the moment an agent added a test). No extraction
 // change — the underlying symbols were always indexed; only the dead-SET predicate narrowed — so
 // kParserVer/the mirrors deliberately did NOT move. Bumped 7 -> 8 to retire every blob written before it.
-constexpr std::uint32_t kQSnapCacheScheme = 8;
+// v9 (Q-DIAL-2, 2026-09-10) — `isDeadCandidate`'s header exclusion was REPLACED by languageInvokedSymbol,
+// so the dead SET both grew (every header symbol with no caller is now eligible) and shrank (constructors,
+// destructors, operators, bare types and main are out). Same shape as v6/v8 in the opposite direction, and
+// the direction is what makes the bump load-bearing rather than hygienic: a v8 blob's dead set was computed
+// while 96.8% of this repo's source was invisible to the predicate, so served to this binary every
+// newly-eligible dead symbol would read as ABSENT from the baseline dead set and be reported as freshly
+// dead — a whole tree of phantom regressions on the first run after an upgrade. No extraction change (the
+// symbols were always indexed; only the dead-SET predicate moved), so kParserVer and its mirrors deliberately
+// did NOT move. Bumped 8 -> 9 to retire every blob written before it.
+// v10 (Q-DIAL-3, 2026-09-10) — locBySym's VALUES are CODE lines now, not the physical span. Keys unchanged,
+// which is exactly what makes a stale blob dangerous rather than obvious: a v9 blob deserializes cleanly and
+// every symbol reads as having SHRUNK (its recorded physical loc exceeds the current code count), so the
+// verbosity kind reports NOTHING and says nothing about why. Bumped 9 -> 10.
+constexpr std::uint32_t kQSnapCacheScheme = 10;
 constexpr char          kQSnapMagic[4]    = { 'Q', 'S', 'N', 'P' };
 
 // The qsnap EXCLUDES-config key folds the qsnap SCHEME (independent of the ingest cache's kHeadSnapCacheScheme)
@@ -3169,6 +3551,7 @@ inline std::vector<std::vector<std::uint32_t>> gitCoChangeAndChurnCached(
 inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::string_view root = {} )
 {
     Snapshot snap;
+    const std::vector<std::uint32_t> codeLoc         = codeLocByNode( ing );                     // Q-DIAL-3: the verbosity kind's metric is CODE lines
     const std::vector<std::uint64_t> topLevelCallees = topLevelCalleeNameHashes( ing );          // W1-S2: dead-kind evidence, built once
     const std::vector<std::string>   macroNames      = registeredMacroNames( root );             // P2.2: built-ins + .ripwire_config
     const std::vector<NodeId>        macroIds        = registeredMacroSymbolIds( ing, macroNames );
@@ -3184,7 +3567,7 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
         // last-writer-wins; otherwise a low-metric overload written last makes every later delta report a
         // phantom regression forever (THE trap). Every new per-symbol kind mirrors this MAX exactly.
         { std::uint32_t& slot = snap.ccxBySym[ key ];    slot = std::max( slot, s.ccx ); }
-        { std::uint32_t& slot = snap.locBySym[ key ];    slot = std::max( slot, s.loc ); }
+        { std::uint32_t& slot = snap.locBySym[ key ];    slot = std::max( slot, codeLoc[i] ); }   // Q-DIAL-3: CODE lines, not the physical span
         { std::uint32_t& slot = snap.nestBySym[ key ];   slot = std::max( slot, std::uint32_t( s.maxNest ) ); }
         { std::uint32_t& slot = snap.paramsBySym[ key ]; slot = std::max( slot, std::uint32_t( s.params ) ); }
         // THE ONE KIND THAT IS NOT A MAX, and the reason is the MAX itself. Every metric above collapses the
@@ -3251,7 +3634,12 @@ inline bool writeBaseline( const Snapshot& s, const std::string& path, std::stri
     // v4 (2026-08-25): every per-symbol key is pathQualifiedKey, not fnv1a64(baselineCanonId). readBaseline
     // REFUSES v3 and older rather than reading it — see there for why a silent read would be the dishonest
     // option here.
-    f << "# ripwire quality baseline v4 — regenerate with --quality-baseline; do not hand-edit\n";
+    // v5 (Q-DIAL-3, 2026-09-10): the `loc` record's VALUE changed meaning — CODE lines, not the physical span
+    // (codeLinesInBody). The key space is untouched, so a v4 sidecar would read perfectly and be WRONG in one
+    // direction only: its loc values are larger, every symbol reads as having SHRUNK, and the verbosity kind
+    // silently reports nothing at all. A kind that quietly stops firing is the worst of the three outcomes, so
+    // this is a version refusal like v4's, not a graceful skip.
+    f << "# ripwire quality baseline v5 — regenerate with --quality-baseline; do not hand-edit\n";
     // STALENESS STAMP: the HEAD commit the baseline was pinned at. --quality-delta compares this to the
     // current HEAD and, if they differ (a baseline left by an abandoned/parallel session, or from before a
     // commit), IGNORES the sidecar and falls back to the git-HEAD auto-baseline instead of reporting a wall
@@ -3329,7 +3717,7 @@ inline bool writeBaseline( const Snapshot& s, const std::string& path, std::stri
 // cost of refusing is one `--quality-baseline` re-pin.
 inline bool baselineHeaderIsForeign( const std::string& line ) noexcept
 {
-    return line.rfind( "# ripwire quality baseline v", 0 ) == 0 && line.find( " v4 " ) == std::string::npos;
+    return line.rfind( "# ripwire quality baseline v", 0 ) == 0 && line.find( " v5 " ) == std::string::npos;
 }
 
 // 2026-09-06 stranger audit: the sidecar readers dropped what they could not parse with no trace a Release
@@ -3366,7 +3754,7 @@ inline bool readBaseline( const std::string& path, Snapshot& out, BaselineReadSt
             // The refusal is a USER-FACING disclosure, so it must survive NDEBUG: behind only a
             // DEGRADED_PATH_ALERT a Release binary refuses SILENTLY and the caller reads "no baseline
             // found" — a refusal that hides its reason misleads exactly like the misread it prevents.
-            rw::emitRaw( stderr, "ripwire: quality: baseline sidecar predates the pathQualifiedKey scheme — refused, re-pin with --quality-baseline\n" );
+            rw::emitRaw( stderr, "ripwire: quality: baseline sidecar predates this binary's baseline format — refused, re-pin with --quality-baseline\n" );
             out = Snapshot{};
             return false;
         }
@@ -3676,10 +4064,15 @@ inline BaselineSelection selectBaseline( const std::string& root, const std::str
 //
 // The three existing gates (file churn-hot / this diff rewrites the symbol / committed thrash evidence)
 // establish that a symbol IS short-horizon churn. This pass answers a NARROWER question about the CURRENT
-// uncommitted edit specifically: does it MODIFY pre-existing (committed) lines that were themselves last
-// touched inside the churn window (SELF — genuine thrash, keep current severity), or does it only ADD new
-// lines / touch lines that predate the window (AMBIENT — the file is hot, but this particular edit isn't
-// touching hot content) — sev=minor, facet churn="ambient".
+// uncommitted edit specifically: how many COMMITTED commits inside the churn window last wrote the
+// pre-existing lines this edit modifies. One or more ⇒ the edit touches hot content, facet churn="self"; none
+// (the edit only ADDS lines, or touches lines that predate the window) ⇒ churn="ambient".
+//
+// Q-DIAL-1 (2026-09-10) — SEVERITY no longer follows that facet. BOTH facets are informational; what GATES is
+// the count reaching kShortHorizonMinCommits, i.e. "rewritten by >= 2 COMMITTED commits inside the window, the
+// working edit not counted". SELF-gates was measured at 0% precision over twelve landed commits (135 of 171
+// gating rows, audit Q1 §2b/§2d) for a structural reason: on an active branch every symbol you wrote this week
+// and are touching again modifies a line you yourself committed inside the window.
 //
 // Mechanism: `git diff --unified=0 HEAD -- path` gives zero-context unified-diff hunks
 // ("@@ -oldStart[,oldCount] +newStart[,newCount] @@"; git omits a count of 1). A hunk with oldCount==0 is a
@@ -3717,15 +4110,36 @@ inline std::string gitBlameConfigPins( const std::string& root )
     return hasFile ? " -c blame.ignoreRevsFile=" + shSingleQuote( ignoreRevs ) : std::string( " -c blame.ignoreRevsFile=" );
 }
 
-// Blame `root`'s HEAD over `relPath`'s [startLine, startLine+lineCount-1] and report whether ANY line in that
-// range was last committed at or after `windowCutoffEpoch` (the same cutoff basis gitFileCommitCountsInDayWindow
-// and gitWindowRefSha use: HEAD's own committer epoch minus the window, never wall-clock).
-inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::string& relPath,
-                                          std::uint32_t startLine, std::uint32_t lineCount, std::int64_t windowCutoffEpoch )
+// Blame `root`'s HEAD over `relPath`'s [startLine, startLine+lineCount-1] and APPEND, to `outShas`, the
+// fnv1a64 of every DISTINCT commit that last wrote a line in that range at or after `windowCutoffEpoch` (the
+// same cutoff basis gitFileCommitCountsInDayWindow and gitWindowRefSha use: HEAD's own committer epoch minus
+// the window, never wall-clock).
+//
+// Q-DIAL-1 (2026-09-10) — this used to answer a BOOL ("is any line in this range hot"), which is the SELF vs
+// AMBIENT question and nothing more. The churn kind's GATING question is narrower and needs a count: was this
+// symbol rewritten by >= kShortHorizonMinCommits COMMITTED commits inside the window, not counting the working
+// edit? One in-window commit is a single touch — the branch you are on — and gating on it made 135 of 171
+// gating rows on twelve landed commits the agent's own footprint (audit Q1 §2b/§2d). Blame runs on HEAD, so
+// the uncommitted edit is excluded BY CONSTRUCTION rather than by subtraction.
+//
+// The accumulator is a caller-owned vector rather than a return value because one symbol spans several diff
+// hunks and a commit that wrote lines in two of them must count ONCE; the caller sorts + uniques the union.
+// Ordering: blame output order, which is deterministic for a fixed HEAD + path, and the caller's sort makes
+// the count order-independent anyway. NO short-circuit any more (the bool arm could stop at the first hot
+// line): the whole range is read, which costs the rest of ONE already-spawned blame and no extra subprocess.
+//
+// PORCELAIN SHAPE, and why the sha is tracked separately from the time: `git blame --porcelain` prints a
+// commit's metadata (committer-time among it) only the FIRST time that commit appears; later lines from the
+// same commit carry the bare "<sha> <orig> <final> <n>" header alone. So the header line sets the CURRENT
+// sha and the committer-time line decides whether that sha counts — a repeat header with no metadata needs no
+// second decision, because the sha is already in (or already out of) the set.
+inline void gitBlameRangeWindowCommits( const std::string& root, const std::string& relPath,
+                                        std::uint32_t startLine, std::uint32_t lineCount, std::int64_t windowCutoffEpoch,
+                                        std::vector<std::uint64_t>& outShas )
 {
     if( startLine == 0 || lineCount == 0 )
     {
-        return false;
+        return;
     }
     const std::string cmd = "git -c core.quotepath=false" + gitBlameConfigPins( root ) + " -C " + shSingleQuote( root )
                           + " blame --porcelain -L " + std::to_string( startLine ) + ",+" + std::to_string( lineCount )
@@ -3733,9 +4147,9 @@ inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::st
     std::FILE* pipe = popen( cmd.c_str(), "r" );
     if( !pipe )
     {
-        return false;
+        return;
     }
-    bool hot = false;
+    std::uint64_t curSha = 0;
     char buf[ 512 ];
     while( std::fgets( buf, sizeof( buf ), pipe ) )
     {
@@ -3750,16 +4164,19 @@ inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::st
             && ( ln.size() == 40 || ln[40] == ' ' );
         if( isHeaderSha )
         {
-            continue; // the sha itself carries no date — wait for its committer-time line
+            curSha = fnv1a64( ln.substr( 0, 40 ) );   // the sha itself carries no date — wait for its committer-time line
+            continue;
         }
         if( ln.rfind( "committer-time ", 0 ) == 0 )
         {
             const std::int64_t t = std::strtoll( std::string( ln.substr( 15 ) ).c_str(), nullptr, 10 );
-            if( t >= windowCutoffEpoch ) { hot = true; break; }     // one hot line is enough — short-circuit
+            if( t >= windowCutoffEpoch && curSha != 0 )
+            {
+                outShas.push_back( curSha );
+            }
         }
     }
     pclose( pipe );
-    return hot;
 }
 
 // One zero-context unified-diff hunk, in the two coordinate systems the SELF test needs: the OLD-side range
@@ -3776,7 +4193,7 @@ static_assert( sizeof( DiffHunk ) == 16, "DiffHunk is a 4×u32 POD" );
 
 // P3 (r27) — the RUN-SCOPED hunk memo. `git diff --unified=0 HEAD -- <path>` is a pure function of (HEAD,
 // working tree), both FIXED for the life of one --quality-delta call (the code's own section comment says so),
-// yet churnEditTouchesHotLine spawned it once PER SYMBOL: a subprocess-shim log showed EIGHT byte-identical
+// yet the churn blame pass spawned it once PER SYMBOL: a subprocess-shim log showed EIGHT byte-identical
 // spawns for a single dirty file. Caller owns the storage (house rule — views/handles at seams, no hidden
 // process-global state that a second root or a second MCP request would silently share).
 using DiffHunkMemo = HashMap<std::string, std::vector<DiffHunk>>;
@@ -3843,17 +4260,26 @@ inline const std::vector<DiffHunk>& diffHunksMemoized( DiffHunkMemo& memo, const
     return memo.emplace( relPath, gitDiffHunksVsHead( root, relPath ) ).first->second;
 }
 
-// Does the CURRENT uncommitted edit to `relPath` (vs HEAD) modify any pre-existing line that overlaps the
-// symbol's current [symStart, symStart+symLoc-1] span AND was itself last committed inside the window? See the
-// section comment above for the full mechanism. `symStart`/`symLoc` come straight from the working-tree
-// Symbol (s.line / s.loc). `memo` is the caller-owned per-run hunk cache (P3).
-inline bool churnEditTouchesHotLine( DiffHunkMemo& memo, const std::string& root, const std::string& relPath,
-                                     std::uint32_t symStart, std::uint32_t symLoc, std::int64_t windowCutoffEpoch )
+// HOW MANY DISTINCT in-window COMMITS last wrote the pre-existing lines that the CURRENT uncommitted edit to
+// `relPath` (vs HEAD) modifies inside the symbol's [symStart, symStart+symLoc-1] span. See the section comment
+// above for the full mechanism. `symStart`/`symLoc` come straight from the working-tree Symbol (s.line /
+// s.loc). `memo` is the caller-owned per-run hunk cache (P3).
+//
+// Q-DIAL-1: the two facts the churn kind reads off this ONE number, so they cannot drift apart —
+//   >= 1  the edit touches hot content at all  → churn="self" (informational; it was the GATING rule until
+//         2026-09-10, and it is the agent's own edit window on any active branch);
+//   >= kShortHorizonMinCommits  the lines were rewritten by that many COMMITTED commits inside the window,
+//         the working edit excluded (blame is on HEAD) → this is the rewrite-thrash the kind exists to name,
+//         and the only form of it that gates.
+// 0 (no hunk, no git, no blame) stays AMBIENT, the degrade that never inflates severity on missing evidence.
+inline std::uint32_t churnEditWindowCommitCount( DiffHunkMemo& memo, const std::string& root, const std::string& relPath,
+                                                 std::uint32_t symStart, std::uint32_t symLoc, std::int64_t windowCutoffEpoch )
 {
     if( symStart == 0 )
     {
-        return false;
+        return 0;
     }
+    std::vector<std::uint64_t> shas;
     const std::uint32_t symEnd = symStart + ( symLoc > 0 ? symLoc - 1 : 0 );
 
     for( const DiffHunk& h : diffHunksMemoized( memo, root, relPath ) )
@@ -3886,12 +4312,11 @@ inline bool churnEditTouchesHotLine( DiffHunkMemo& memo, const std::string& root
             continue; // this hunk falls outside the symbol
         }
 
-        if( gitBlameRangeHasWindowCommit( root, relPath, h.oldStart, h.oldCount, windowCutoffEpoch ) )
-        {
-            return true;                                             // one hot line is enough — short-circuit
-        }
+        gitBlameRangeWindowCommits( root, relPath, h.oldStart, h.oldCount, windowCutoffEpoch, shas );
     }
-    return false;
+    std::sort( shas.begin(), shas.end() );
+    shas.erase( std::unique( shas.begin(), shas.end() ), shas.end() );   // a commit spanning two hunks of one symbol counts ONCE
+    return std::uint32_t( shas.size() );
 }
 
 // one reported regression (something the change made WORSE).
@@ -5627,12 +6052,17 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                                              std::string_view root = {},
                                              const std::vector<std::string>& excludes = {},
                                              std::size_t maxFileBytes = kDefaultMaxFileBytes,
-                                             std::size_t* registerMacroExcludedOut = nullptr )   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
+                                             std::size_t* registerMacroExcludedOut = nullptr,   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
+                                             std::size_t* apiNewSurfaceOut = nullptr )          // Q-DIAL-4: the api-surface new-symbol COUNT that replaced N never-gating rows
 {
     std::vector<Regression> regs;
     if( registerMacroExcludedOut )
     {
         *registerMacroExcludedOut = 0;
+    }
+    if( apiNewSurfaceOut )
+    {
+        *apiNewSurfaceOut = 0;
     }
 
     // A4-P10 — HOIST the per-symbol quality key. It materializes a path-qualified string + hashes it; the
@@ -5792,8 +6222,18 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     // the trap is handled the same way for every one of them.
     // `minorDelta` is the kind's materiality tier: a regression whose growth (now − was) is under it is
     // reported sev="minor" and does not gate exit 2 (0 = no tier, every regression is major).
+    //
+    // Q-DIAL-3 — `growthTiered` swaps that flat delta tier for the pair of thresholds kMaterialGrowthPct /
+    // kSubBarGrowthPct define, for complexity and verbosity only:
+    //   OVER the bar   — gate on a bar CROSSING (was <= bar < now) or on growth >= 25%; anything else is a
+    //                    real row, printed, sev="minor". It names debt the change did not create.
+    //   UNDER the bar  — a DOUBLING that clears the floor is a minor row instead of silence. Nothing here can
+    //                    gate: the symbol is still under its bar, and the row exists to be seen, not to stop
+    //                    a commit.
+    // `metricOf` takes the NodeId rather than the Symbol because verbosity's metric is not on the Symbol any
+    // more (codeLoc is read off the body bytes); the other three still just read a field.
     const auto perSymbolKind =
-        [ & ]( const char* kindName, std::uint32_t bar, std::uint32_t minorDelta,
+        [ & ]( const char* kindName, std::uint32_t bar, std::uint32_t minorDelta, bool growthTiered,
                const gtl::btree_map<std::uint64_t, std::uint32_t>& baseMap,
                auto metricOf )
     {
@@ -5805,7 +6245,7 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 continue;
             }
             std::uint32_t& slot = nowBySym[ keyByNode[i] ];
-            slot = std::max( slot, metricOf( ing.symbols[i] ) );
+            slot = std::max( slot, metricOf( i ) );
         }
         ScratchMap<std::uint8_t> reported( ing.symbols.size() );
         for( NodeId i = 0; i < ing.symbols.size(); ++i )
@@ -5827,19 +6267,41 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             const std::uint32_t now = nowIt->second;
             const auto          it  = baseMap.find( key );
             const std::uint32_t was = ( it == baseMap.end() ) ? 0u : it->second;
-            if( now > was && now > bar )
+            if( now <= was )
             {
-                regs.push_back( { kindName, g.canonId[i], was, now, key, minorDelta > 0 && now - was < minorDelta,
+                continue;   // nothing got worse on this axis
+            }
+            const std::uint64_t growthPct = ( std::uint64_t( now - was ) * 100 ) / std::max( was, 1u );
+            if( now > bar )
+            {
+                const bool crossed  = was <= bar;
+                const bool material = !growthTiered ? ( minorDelta == 0 || now - was >= minorDelta )
+                                                    : ( crossed || growthPct >= kMaterialGrowthPct );
+                regs.push_back( { kindName, g.canonId[i], was, now, key, !material,
                                   {}, !existedAtBaseline( key ) } );          // origin: the finding IS this symbol
+                stampLoc( i );
+            }
+            else if( growthTiered && was > 0 && growthPct >= kSubBarGrowthPct && now >= subBarGrowthFloor( bar ) )
+            {
+                // Q-DIAL-3 — still UNDER the bar, so this can never gate; it is the row that turns synthetics
+                // S4b (6 → 55 LOC) and S8-sub-bar (ccx 5 → 13) from silence into something a reader can see.
+                // `was > 0` is load-bearing, not defensive: growth is a RATIO and a brand-new symbol has
+                // nothing to double from, so without it every added function of 40 code lines or ccx 10
+                // reported as "grew 4200%". Measured on the 40-commit ref-pair replay: 38 of the 57 rows this
+                // tier first produced were exactly that (`was="0"`), including every symbol of the vendored
+                // timsort landing at 08416403.
+                regs.push_back( { kindName, g.canonId[i], was, now, key, /*isMinor=*/true,
+                                  {}, !existedAtBaseline( key ) } );
                 stampLoc( i );
             }
         }
     };
 
-    perSymbolKind( "complexity", kCcxBar,   kMinorCcxDelta,   base.ccxBySym,    []( const Symbol& s ){ return s.ccx; } );
-    perSymbolKind( "verbosity",  kLocBar,   kMinorLocDelta,   base.locBySym,    []( const Symbol& s ){ return s.loc; } );
-    perSymbolKind( "nesting",    kNestBar,  0,                base.nestBySym,   []( const Symbol& s ){ return std::uint32_t( s.maxNest ); } );
-    perSymbolKind( "params",     kParamBar, kMinorParamDelta, base.paramsBySym, []( const Symbol& s ){ return std::uint32_t( s.params ); } );
+    const std::vector<std::uint32_t> nowCodeLoc = codeLocByNode( ing );   // Q-DIAL-3 — the same rule computeSnapshot recorded the baseline with
+    perSymbolKind( "complexity", kCcxBar,   kMinorCcxDelta,   true,  base.ccxBySym,    [ & ]( NodeId i ){ return ing.symbols[i].ccx; } );
+    perSymbolKind( "verbosity",  kLocBar,   kMinorLocDelta,   true,  base.locBySym,    [ & ]( NodeId i ){ return nowCodeLoc[i]; } );
+    perSymbolKind( "nesting",    kNestBar,  0,                false, base.nestBySym,   [ & ]( NodeId i ){ return std::uint32_t( ing.symbols[i].maxNest ); } );
+    perSymbolKind( "params",     kParamBar, kMinorParamDelta, false, base.paramsBySym, [ & ]( NodeId i ){ return std::uint32_t( ing.symbols[i].params ); } );
 
     // PERF (P5W2) — the working-tree clone pass is the dominant --quality-delta cost: on a large private C++ corpus the
     // Type-3 pass alone is ~2.7-3.2 s (60 M intra-bucket pair-visits; tokenization is only ~3 %). It is a PURE
@@ -5860,6 +6322,68 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     // group that classifies but fails the rest of the conjunction gates as before, name and all.
     const std::vector<CloneIdiomVerdict> exactIdioms = classifyCloneGroupIdioms( ing, exactClones );
     const std::vector<CloneIdiomVerdict> type3Idioms = classifyCloneGroupIdioms( ing, type3Clones );
+
+    // ── Q-DIAL-5 (2026-09-10) — three shapes that are not THIS CHANGE'S duplication ─────────────────────
+    // Duplication's gating precision over 40 replayed commits was 0%: 11 gating rows, 9 noise and 2 wrong.
+    // Three mechanisms produced them, and each is a property of the GROUP rather than of its text, so each is
+    // decidable here without touching the clone matcher:
+    //   (a) ONE OVERLOAD SET — every member shares one canonical id. Overloads of a function are near-
+    //       identical by construction (emitTo|emitTo, sort::stable|sort::stable); reporting them as a copy is
+    //       reporting the language.
+    //   (b) WITHDRAWN — see the note below.
+    //   (c) VENDORED — every member sits under a vendored path (see isVendoredPath). Upstream's shape is not
+    //       this repo's to fix, and one commit produced 9 such rows.
+    // ONE-FILE IS NOT ON THIS LIST, and the reason is worth more than the rows it would have dropped. The
+    // audit's labelling rule W3b called a group whose members share one file "sibling/alternate
+    // implementations" (mergeHi|mergeLo, gallopLeft|gallopRight) and 13 groups were labelled WRONG by it. The
+    // clause was written, and TWO of this repo's own gates went red on it: test/clonededupcheck.sh's whole
+    // positive case is a copy of a reused helper appended to the SAME file, and test/qualitycheck.sh §3 pins
+    // a dup1/dup2 pair inside one new file as a duplication finding. Both were written deliberately, and both
+    // are right: a copy-pasted body is duplication wherever it lands, and file identity cannot tell a
+    // deliberate specialization from a paste. A hand rule in a labelling script does not outrank two gates
+    // that encode the opposite policy, so the drop is withdrawn rather than argued around. The rows it aimed
+    // at need the discriminator the acks themselves use — no shared domain identifier — which is a
+    // cloneidiom.h round, not a group-shape predicate.
+    //
+    // NOT a token floor either: raising kMinCloneTokens was measured and REFUTED. The canonical true positive
+    // (synthetic S1, a 12-line copy of a reused helper) is 59 tokens, while the idiom collisions in the same
+    // replay run 22, 24, 31, 36, 56, 65, 66, 74, 78, 91, 92, 96, 114 and 127 — a floor above 22 loses true
+    // positives before it clears any noise. Token count is the wrong axis.
+    const std::vector<std::string> vendoredPrefixes = vendoredPathPrefixes( root );
+    const auto cloneGroupIsOutOfScope = [ & ]( const CloneGroup& cg )
+    {
+        if( cg.members.size() < 2 )
+        {
+            return false;
+        }
+        bool             oneId   = true;
+        bool             allVend = true;
+        std::string_view firstId;
+        bool             haveFirst = false;
+        for( NodeId m : cg.members )
+        {
+            if( m >= ing.symbols.size() || m >= g.canonId.size() )
+            {
+                return false;   // unclassifiable member — never claim a whole-group property
+            }
+            const std::uint32_t f = ing.symbols[m].fileId;
+            if( f >= ing.files.size() )
+            {
+                return false;
+            }
+            if( !isVendoredPath( relForHash( ing.files[f], root ), vendoredPrefixes ) )
+            {
+                allVend = false;
+            }
+            if( !haveFirst )
+            {
+                firstId = g.canonId[m]; haveFirst = true;
+                continue;
+            }
+            if( g.canonId[m] != firstId ) { oneId = false; }
+        }
+        return oneId || allVend;
+    };
 
     gtl::btree_map<std::uint64_t, std::uint8_t> dupSeen;
     const auto reportNewClones =
@@ -5886,6 +6410,10 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             if( allTestScript )
             {
                 continue;
+            }
+            if( cloneGroupIsOutOfScope( cg ) )
+            {
+                continue;   // Q-DIAL-5 — an overload set, one file, or vendored upstream (see the block above)
             }
             if( !dupSeen.insert( { h, 1 } ).second )
             {
@@ -5983,6 +6511,17 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
         std::uint32_t& slot = nowParamsBySym[ keyByNode[i] ];
         slot = std::max( slot, std::uint32_t( ing.symbols[i].params ) );
     }
+    // Q-DIAL-4 — the two inputs the tiering below reads. `paramsRowKeys` is derived from the rows ALREADY
+    // pushed rather than plumbed out of perSymbolKind: `params` is the only kind that can have reported an
+    // arity change by now, and reading it off `regs` keeps the fold honest even if that kind's own gate moves.
+    std::vector<std::uint64_t> paramsRowKeys;
+    for( const Regression& r : regs )
+    {
+        if( r.kind == "params" ) { paramsRowKeys.push_back( r.key ); }
+    }
+    std::sort( paramsRowKeys.begin(), paramsRowKeys.end() );
+    const std::vector<std::uint8_t> trailingDefaults = trailingDefaultByNode( ing );
+
     ScratchMap<std::uint8_t> apiSeen( ing.symbols.size() );
     for( NodeId i = 0; i < ing.symbols.size(); ++i )
     {
@@ -5999,7 +6538,21 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
         if( !std::binary_search( base.publicApi.begin(), base.publicApi.end(), key ) )
         {
             const bool isNewSymbol = !existedAtBaseline( key );                // SAME oracle the r26 origin axis uses — one source of truth
-            regs.push_back( { "api-surface", g.canonId[i], 0, 0, key, isNewSymbol, isNewSymbol ? "new-symbol" : "contract-change", isNewSymbol } );
+            if( isNewSymbol )
+            {
+                // Q-DIAL-4 — A COUNT, NOT N ROWS. This row could never gate (the legend says so), it is one
+                // per new export, and it dominated the document: 103 of 119 api-surface rows over 40 replayed
+                // commits, 193 of the 1,177 rows in this repo's own committed ack ledger — acked one at a
+                // time, by hand, for a fact the header can state in one attribute. api-new-surface= on the
+                // root says how much new public surface arrived; nothing is hidden, and nothing about it was
+                // ever actionable per row.
+                if( apiNewSurfaceOut )
+                {
+                    ++( *apiNewSurfaceOut );
+                }
+                continue;
+            }
+            regs.push_back( { "api-surface", g.canonId[i], 0, 0, key, false, "contract-change", false } );   // a visibility flip: it existed, and it is public now
             stampLoc( i );
             continue;
         }
@@ -6010,11 +6563,30 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             continue; // no baseline params recorded — nothing to compare
         }
         const std::uint32_t nowParams = nowParamsBySym[ key ];                // MAX-aggregated — see the overload-trap note above
-        if( nowParams != pit->second )
+        if( nowParams == pit->second )
         {
-            regs.push_back( { "api-surface", g.canonId[i], pit->second, nowParams, key, false, "contract-change", false } );   // origin: reached only for a symbol already in the baseline public set
-            stampLoc( i );
+            continue;
         }
+        if( nowParams < pit->second )
+        {
+            continue;   // Q-DIAL-4 — the surface got SMALLER. This document's first sentence is "only what a
+                        // change made WORSE"; three rows over 40 commits reported an arity DROP as a
+                        // regression (probeBodyCost 7->5, selectMonotoneBodySubset 7->5,
+                        // liftPackageDirMention 4->3). Drift is not the contract this verb publishes.
+        }
+        if( std::binary_search( paramsRowKeys.begin(), paramsRowKeys.end(), key ) )
+        {
+            continue;   // Q-DIAL-4 — ONE FACT, ONE ROW. The `params` kind already reported this symbol's arity
+                        // change, and it is the highest-precision kind in the table (77% TRUE); a second row
+                        // saying the same thing under another kind is what agents ack. Synthetic S3
+                        // (3 -> 7 parameters) produced two rows for one edit.
+        }
+        // Q-DIAL-4 — one ADDED parameter that carries a DEFAULT is source-compatible by construction: every
+        // existing caller still compiles, which is what 113 of this repo's 132 api-surface acks say in those
+        // words. Still a row (the contract moved), reported sev="minor".
+        const bool trailingDefault = nowParams == pit->second + 1 && i < trailingDefaults.size() && trailingDefaults[i] != 0;
+        regs.push_back( { "api-surface", g.canonId[i], pit->second, nowParams, key, trailingDefault, "contract-change", false } );   // origin: reached only for a symbol already in the baseline public set
+        stampLoc( i );
     }
 
     // ── §D#4-1 error-masking (GitClear +47%) ──────────────────────────────────────────────────────────────
@@ -6092,7 +6664,7 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 // B10.2d — SELF-vs-AMBIENT window cutoff, same basis as gates 1/3 (HEAD's own committer epoch
                 // minus the window, never wall-clock). A failed lookup (should not happen here since refOk
                 // already proved resolvable history, but kept defensive) leaves churnCutoffEpoch==0, which
-                // degrades every symbol below to AMBIENT (churnEditTouchesHotLine is gated on `> 0`).
+                // degrades every symbol below to AMBIENT (churnEditWindowCommitCount is gated on `> 0`).
                 std::int64_t churnCutoffEpoch = 0;
                 {
                     const std::string epochStr = gitOneLine( std::string( root ), "log -1 --format=%ct HEAD 2>/dev/null" );
@@ -6160,13 +6732,23 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                     }
 
                     // B10.2d: SELF vs AMBIENT — does THIS diff modify a pre-existing line that was itself
-                    // last committed inside the window? See the section comment above churnEditTouchesHotLine.
-                    const bool self = churnCutoffEpoch > 0
-                                    && churnEditTouchesHotLine( churnHunkMemo, std::string( root ),
-                                                                std::string( relForHash( ing.files[ s.fileId ], root ) ),
-                                                                s.line, s.loc, churnCutoffEpoch );
+                    // last committed inside the window? See the section comment above churnEditWindowCommitCount.
+                    // Q-DIAL-1 — ONE blame-derived number decides both the facet and the severity (see
+                    // churnEditWindowCommitCount): >=1 in-window commit on the edited lines is SELF, and it
+                    // is now INFORMATIONAL exactly as AMBIENT already was; >= kShortHorizonMinCommits is the
+                    // rewrite-thrash that gates. Measured on twelve LANDED commits of this repo (audit Q1
+                    // §2b): the old "SELF gates" rule fired 135 of 171 gating rows, 0% of them a finding a
+                    // reviewer would act on, because on an active branch the symbol you wrote this week and
+                    // are touching again is churn="self" by construction.
+                    const std::uint32_t windowCommits = churnCutoffEpoch > 0
+                                                      ? churnEditWindowCommitCount( churnHunkMemo, std::string( root ),
+                                                                                    std::string( relForHash( ing.files[ s.fileId ], root ) ),
+                                                                                    s.line, s.loc, churnCutoffEpoch )
+                                                      : 0u;
+                    const bool self  = windowCommits > 0;
+                    const bool gates = windowCommits >= kShortHorizonMinCommits;
                     regs.push_back( { "short-horizon-churn", g.canonId[i], 0, commitCounts[ s.fileId ], key,
-                                      !self, self ? "self" : "ambient", false } );   // now = window commit count on the file; origin: ALWAYS preexisting (gate 2 above required a baseline body)
+                                      !gates, self ? "self" : "ambient", false } );   // now = window commit count on the file; origin: ALWAYS preexisting (gate 2 above required a baseline body)
                     stampLoc( i );
                 }
             }
@@ -6219,6 +6801,11 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 if( maxFanin < kReusedHelperMinFanin )
                 {
                     continue; // no PREEXISTING reused helper in the group
+                }
+                if( cloneGroupIsOutOfScope( cg ) )
+                {
+                    continue;   // Q-DIAL-5 — the same three shapes, on the same groups: a helper cannot have
+                                // eroded its own reuse by being overloaded, and an upstream body is not ours.
                 }
                 if( !reuseSeen.insert( { h, 1 } ).second )
                 {

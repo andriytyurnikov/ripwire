@@ -1060,9 +1060,54 @@ inline constexpr std::array<ErrorMaskRule, 7> kErrorMaskRules = { {
     { "(call_expression function: (member_expression property: (property_identifier) @p (#eq? @p \"then\"))  arguments: (arguments (_) (arrow_function body: (statement_block) @m)))", "swallow-then-arrow",  true  },  // .then(_, ()=>{})
 } } ;
 
-// Is the collapsed source of a captured block "empty" — only braces and whitespace? astQuery returns the
+// Does the captured block SWALLOW — is there nothing in it that could handle the error? astQuery returns the
 // @m span text with \n/\r/\t already flattened to spaces and truncated to 120 chars; an empty `{}` (even
 // `{  }` / `{ }`) is far under 120, so the collapsed check is exact for the shapes we target. Deterministic.
+//
+// Q-DIAL-6 (2026-09-10) — A COMMENT IS NOT A HANDLER. This asked one question, "is the collapsed text exactly
+// {}", and audit lane Q1's synthetic S2b — `catch( const std::exception& ) { /* ignore */ }` — walked straight
+// past it, as does every `// intentionally ignored`. The comment is where the intent is WRITTEN DOWN; it is
+// the most likely spelling of a deliberate swallow, and it was the one spelling the kind could not see. A
+// block whose only content is a comment counts. Measured on 40 replayed commits of this repo: +0 rows — the
+// widening finds nothing in this history and turns S2b from a silent miss into a reported row.
+//
+// TWO FLOORS, stated. (1) astQuery truncates the span at 120 characters, so a comment-only block longer than
+// that does not end in '}' here and is not recognized — a miss, never a false hit. (2) The scan is over
+// flattened text, so a ';' or a '{' anywhere inside means "a statement survives" and the block is not a
+// swallow, which is what keeps `catch { log( x ); }` out; a semicolon inside the comment PROSE therefore also
+// keeps the block out. Both directions of the imprecision lose recall rather than manufacturing a finding.
+// The @p capture filter in findErrorMasking depends on a bare identifier ("catch"/"then") answering false
+// here, and it still does: no braces, no match.
+// The comment-only half, factored out so neither this test nor its caller crosses a complexity bar: is
+// `collapsed` a brace pair whose entire interior is one comment? Called only after the exact-`{}` test has
+// already failed.
+inline bool errorMaskBlockIsCommentOnly( std::string_view collapsed ) noexcept
+{
+    std::string_view t = collapsed;
+    while( !t.empty() && ( t.front() == ' ' || t.front() == '\t' ) ) { t.remove_prefix( 1 ); }
+    while( !t.empty() && ( t.back()  == ' ' || t.back()  == '\t' ) ) { t.remove_suffix( 1 ); }
+    if( t.size() < 2 || t.front() != '{' || t.back() != '}' )
+    {
+        return false;
+    }
+    const std::string_view mid = t.substr( 1, t.size() - 2 );
+    if( mid.find( ';' ) != std::string_view::npos || mid.find( '{' ) != std::string_view::npos )
+    {
+        return false;   // a statement survives inside it — not a swallow
+    }
+    std::size_t first = std::string_view::npos;
+    for( std::string_view opener : { std::string_view( "//" ), std::string_view( "/*" ), std::string_view( "#" ) } )
+    {
+        const std::size_t at = mid.find( opener );
+        if( at != std::string_view::npos && ( first == std::string_view::npos || at < first ) ) { first = at; }
+    }
+    if( first == std::string_view::npos )
+    {
+        return false;   // content that is not a comment at all
+    }
+    return mid.substr( 0, first ).find_first_not_of( " \t" ) == std::string_view::npos;
+}
+
 inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
 {
     std::string stripped;
@@ -1073,7 +1118,7 @@ inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
             stripped.push_back( c );
         }
     }
-    return stripped == "{}";
+    return stripped == "{}" || errorMaskBlockIsCommentOnly( collapsed );
 }
 
 // One error-masking hit: the suppressing block's file + start byte (so a caller can attribute it to the

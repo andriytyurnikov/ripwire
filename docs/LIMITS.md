@@ -303,7 +303,7 @@ Discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4218 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4221 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
 
