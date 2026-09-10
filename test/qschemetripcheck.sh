@@ -34,6 +34,29 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-10, MARKDOWN COUNTER SATURATION (test/vendorpatchcheck.sh arm I,
+#   third_party/patches/markdown/002-counter-saturate): kParserVer 86 -> 87 and
+#   kIngestParserVerMirror -> 87. A uint8_t counter in four vendored external scanners overflowed past 255 —
+#   a hard abort under G1's -fno-sanitize-recover=all (rc=134), found on rails/guides/source/
+#   getting_started.md, a pipe-table row padded to 301 columns; 64 tabs also suffice, since advance()
+#   charges a tab at tab stop 4. Only ONE of the two remedies in that lane moves extraction. markdown's
+#   indentation counters AND its fence `level` SATURATE, because both are read by ordering tests against a
+#   FIXED threshold (`>= 4` indented chunk, `< 4` thematic break, `< list_item_indentation` max 17; `>= 3`
+#   before a fence may open) and 255 answers each exactly as any larger true value would. Wrapping inverted
+#   those predicates inside a narrow window: measured N=255 correct, N=256/257 WRONG at exit 0, N=300 correct
+#   again by luck — at 256 an indented code block parsed as a heading and a fence never opened, leaking its
+#   body out as live markdown, both minting phantom symbols. The rust/lua/csharp siblings take an explicit
+#   CAST instead: those counters close a token by matching the opening count, saturation is not more correct
+#   there, and measurement found no extraction difference at any width (255/256/257/300), so the cast half
+#   contributes NOTHING to this bump. Measured both ways rather than assumed: map output is byte-identical
+#   over 3 538 real files, and a constructed 256-column ATX line changes from n="BuriedHeading" emitted to
+#   absent. Record shapes unchanged, kCacheVersion stays 18. No Snapshot-side function changed and
+#   kQSnapCacheScheme stays 8: what a cached Snapshot MEANS is untouched.
+#   RE-DERIVED OVER main's OWN RE-PIN, not carried over: this lane landed on top of the printf-family
+#   -> std::print conversion, which had itself re-pinned this hash for a source-text move in
+#   bodyHashesBySym. Both sides of that conflict were stale — main's value predates kParserVer 87 and
+#   this lane's predates the conversion — so the correct hash exists only on the MERGED tree and was
+#   regenerated there with UPDATE_GOLDEN=1. Taking either side would have pinned a hash no tree has.
 # 2026-09-09, REBASED onto main c38d3eea (parser 85, text-docs tier): the entry below is RE-ANSWERED
 #   against THAT tree rather than carried over — --quality-baseline written by main's own binary and by
 #   this lane's, on the same corpus, is BYTE-IDENTICAL at 930,546 B. So the conversion is still the

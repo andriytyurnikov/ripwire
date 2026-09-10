@@ -206,7 +206,37 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 86;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 87;           // bump on any grammar/.scm/extraction change
+                                                      // 87 = 2026-09-10 (test/vendorpatchcheck.sh arm I,
+                                                      //    third_party/patches/markdown/002-counter-saturate):
+                                                      //    the vendored markdown scanner accumulated consumed
+                                                      //    whitespace, and its fence delimiter count, into
+                                                      //    uint8_t counters with a bare `+=` and WRAPPED. Both
+                                                      //    are read by ordering tests against a FIXED threshold
+                                                      //    (`>= 4` indented chunk; `>= 3` before a fence may
+                                                      //    open), so wrapping did not blur them, it INVERTED
+                                                      //    them — and only inside a narrow window. MEASURED:
+                                                      //    N=255 correct, N=256/257 WRONG at exit 0, N=300
+                                                      //    correct again by luck (300-256=44, still over both
+                                                      //    thresholds). At 256 an indented code block came back
+                                                      //    as a heading, and a fence never opened so its body
+                                                      //    leaked out as live markdown; ripwire minted phantom
+                                                      //    symbols for both. Counters now saturate at 255, which
+                                                      //    is exact for every threshold in that file.
+                                                      //    Map output is byte-identical over 3 538 real files —
+                                                      //    no corpus file reaches 256 columns of indent — but a
+                                                      //    constructed 256-column line does move, so a v86 blob
+                                                      //    can hold a phantom heading and the extraction
+                                                      //    identity must move with it.
+                                                      //    The sibling patches rust|lua|csharp/001-delimiter-
+                                                      //    count-cast take an explicit CAST, not saturation:
+                                                      //    those counters close a token by matching the opening
+                                                      //    count, and measurement found NO extraction difference
+                                                      //    at any width (255/256/257/300), so they contribute
+                                                      //    nothing to this bump.
+                                                      //    Record shapes unchanged, so kCacheVersion stays 18.
+                                                      //    quality.h's kIngestParserVerMirror bumped in the
+                                                      //    SAME commit.
                                                       // 86 = 2026-09-09 (test/rubyrecvcheck.sh): a Ruby constant
                                                       //    RECEIVER's lazy bit is the AND over its occurrences —
                                                       //    a later load-time site clears the bit the first,
