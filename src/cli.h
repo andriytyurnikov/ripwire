@@ -2363,11 +2363,13 @@ inline constexpr char kHelpTail[] =
         "                               --whereis --grep/--regex --match --pattern --impact --uses --exercises --seams\n"
         "                               --zoom --external-surface --dead-code --mentions --graph-query --stray-content\n"
         "                               --test-gate --readability --ensemble --quality-panel --context-ratio\n"
-        "                               --nonlocal-state --comment-coherence --naming-consistency --safe-delete --pr-context.\n"
+        "                               --nonlocal-state --comment-coherence --naming-consistency --safe-delete --pr-context\n"
+        "                               --edit-check.\n"
         "                               Emit at most N rows, skipping the first M; N overrides the verb's own display cap\n"
         "                               (40 hotspot files, 30 co-change pairs, 60 whereis hits, 100 grep/match hits, 40\n"
         "                               impact rows, 20 seam pairs, 40 readability rows, 40 ensemble symbol rows, 40 context-ratio\n"
-        "                               symbol rows, 40 nonlocal-state rows, 200 graph-query rows / --top-k).\n"
+        "                               symbol rows, 40 nonlocal-state rows, 200 graph-query rows / --top-k, 40\n"
+        "                               unflagged --edit-check caller rows).\n"
         "                               With --offset alone (no --limit) the verb's own default page size applies and\n"
         "                               the root discloses limit=\"0\" — on OUTPUT that 0 means 'no explicit --limit',\n"
         "                               never a zero-row page (the flag itself refuses --limit=0). A BARE run whose\n"
@@ -2384,7 +2386,13 @@ inline constexpr char kHelpTail[] =
         "                               shown_modules=/modules_capped= + shown_bridges=/bridges_capped=, --ensemble and\n"
         "                               --context-ratio shown_syms=/syms_capped= + shown_files=/files_capped=; the window\n"
         "                               takes the PRIMARY listing (--test-gate's <u> rows; its <t> rows repeat on every\n"
-        "                               page, complete).\n"
+        "                               page, complete). --edit-check is the same shape for a different reason: its\n"
+        "                               <c> rows split into the ANSWER (callers flagged incompatible=\"1\", with their\n"
+        "                               complete sites_l=) and the CONTEXT (unflagged callers). Only the context pages\n"
+        "                               — shown_unflagged=/unflagged_capped=, with total= the unflagged count — while\n"
+        "                               the flagged rows and the <def> overload census ride every page in full and\n"
+        "                               status=/defs=/callers=/incompatible= are computed over the FULL caller set\n"
+        "                               before any window, so a page can never make the verdict say less than it knows.\n"
         "                               Any verb NOT in that list REFUSES both flags (exit 1) rather than accepting and\n"
         "                               ignoring them: budget/top-k verbs (--for/--recall/--pack-task/--from-trace/\n"
         "                               --expand/--outline/--pack-signatures/--format=candidates) are shaped by\n"
@@ -3370,7 +3378,7 @@ constexpr const char* kPagingHonoringVerbs =
     "--communities --community --whereis --grep/--regex --match --pattern --impact --uses --exercises "
     "--seams --zoom --external-surface --dead-code --mentions --graph-query --stray-content --test-gate "
     "--readability --ensemble --quality-panel --context-ratio --nonlocal-state --comment-coherence "
-    "--naming-consistency --safe-delete --pr-context";
+    "--naming-consistency --safe-delete --pr-context --edit-check";
 
 inline bool honorsPaging( const Config& c ) noexcept
 {
@@ -3381,7 +3389,8 @@ inline bool honorsPaging( const Config& c ) noexcept
         || c.seams || ( c.zoom && !c.mermaid ) || c.externalSurface || c.deadCode || !c.mentionsSym.empty()
         || !c.graphQuery.empty() || ( c.strayContent && !c.landingPlan && !c.abiFlag ) || c.testGate
         || c.readability || c.ensemble || c.qualityPanel || c.contextRatio || c.nonlocalState || c.commentCoherence
-        || c.namingConsistency || !c.safeDeleteSym.empty() || c.prContext;   // P4 (L7): the changed-file window
+        || c.namingConsistency || !c.safeDeleteSym.empty() || c.prContext   // P4 (L7): the changed-file window
+        || !c.editCheckSym.empty();   // 2026-09-10: --edit-check windows its UNFLAGGED caller rows (editcheck.h)
 }
 
 // --limit/--offset on a verb that windows NOTHING. Same accept-then-silently-ignore class as every guard in
@@ -3633,8 +3642,12 @@ struct ShapingVerb
 //                         --pr-context, --from-trace, --for --detail=N                    [6 shapes]
 //   HONOURS --top-k       default map (+ the same riders), --query, --format=candidates, --recall,
 //                         --graph-query, and the MCP/batch/--listen pass-throughs
-//   IGNORES both          --pack-task, --exemplar, --around, --path, --lego, --report, --edit-check,
+//   IGNORES both          --pack-task, --exemplar, --around, --path, --lego, --report,
 //                         --situ, --scan-skills, --merge-scout, and --for for --top-k (R12's residual)
+//                         (--edit-check LEFT this class on 2026-09-10: it joined honorsPaging when its
+//                         unflagged caller rows became windowable, so it refuses all three like every
+//                         other paging member instead of accepting them and ignoring them. A verb cannot
+//                         hold a row in BOTH tables — the header sentence above is the invariant.)
 //   IGNORES --top-k only  --connect, --pr-context, --from-trace — the three the verifier first read as
 //                         ignoring --max-tokens too. They were INERT on its probes: --connect answered a
 //                         705 B subgraph, so a 200-token ceiling had nothing to trim. On a shape where the
@@ -3658,7 +3671,6 @@ inline constexpr ShapingVerb kShapingVerbs[] = {
     { "--path",         nullptr, &Config::pathSpec     },
     { "--lego",         nullptr, &Config::legoType     },
     { "--report",       &Config::report,       nullptr },
-    { "--edit-check",   nullptr, &Config::editCheckSym },
     { "--slice",        nullptr, &Config::sliceSpec    },
     { "--at",           nullptr, &Config::atSpec       },
     { "--situ",         &Config::situ,         nullptr },

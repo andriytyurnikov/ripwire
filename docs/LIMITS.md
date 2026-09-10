@@ -55,12 +55,12 @@ Discloses: **none**
 
 ### `src/cli.h`
 
-Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `untested_capped`
+Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kConnectRadiusMax` | `12` | 3085 | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
-| `kIntFlagMax` | `1000000000` | 3084 | parsePosInt/parseNonNegInt's own overflow ceiling |
+| `kConnectRadiusMax` | `12` | 3093 | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
+| `kIntFlagMax` | `1000000000` | 3092 | parsePosInt/parseNonNegInt's own overflow ceiling |
 | `kPageValueMax` | `1000000000` | 591 | — |
 
 ### `src/commentcoherence.h`
@@ -247,7 +247,7 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4187 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4193 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — |
 

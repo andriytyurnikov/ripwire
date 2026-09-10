@@ -626,6 +626,11 @@ TABLE = {
     "--naming-consistency": ( [ "--naming-consistency" ], None ),
     "--safe-delete":        ( [ "--safe-delete=escapeXml" ], None ),
     "--pr-context":         ( [ "--pr-context" ], None ),   # P4 (L7): the changed-file window pages (plain quintet on the root)
+    # 2026-09-10: --edit-check's <c> rows split into the ANSWER (flagged callers, never windowed) and the
+    # CONTEXT (unflagged callers, which page) — so the PRIMARY listing is noun-prefixed, like --test-gate's
+    # <u> rows, and for the same reason: one bare shown= could not describe a listing whose other half
+    # deliberately prints outside the window.
+    "--edit-check":         ( [ "--edit-check=escapeXml" ], "unflagged" ),
 }
 fail = 0
 missing = [ v for v in universe if v not in TABLE ]
