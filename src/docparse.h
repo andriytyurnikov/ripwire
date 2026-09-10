@@ -204,7 +204,10 @@ inline bool readWholeFile( const std::string& path, std::string& out )
     out.resize( std::size_t( len ) );
     const std::size_t want = out.size();
     const std::size_t got  = want == 0 ? 0 : std::fread( out.data(), 1, want, fp );
-    const bool ok = ( got == want ) && ( std::fclose( fp ) == 0 );
+    // fclose unconditionally: `( got == want ) && ( std::fclose( fp ) == 0 )` short-circuited past it and leaked the
+    // FILE on every short read (clang-analyzer-unix.Stream) — githarden's git-config probe and the notebook reader share this.
+    const bool closedOk = std::fclose( fp ) == 0;
+    const bool ok       = got == want && closedOk;
     if( !ok )
     {
         out.clear();

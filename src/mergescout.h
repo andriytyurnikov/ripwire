@@ -202,7 +202,7 @@ inline SymTreeIndex buildTreeIndex( const IngestResult& ing, std::string_view ro
 }
 
 // Y1 (P1) — the per-sha committish INGEST cache family. `committish` is always a fully-resolved
-// commit sha by the time it reaches here (resolveCommittish / merge-base already peeled any symbolic
+// commit sha by the time it reaches here (resolveAllRefs / merge-base already peeled any symbolic
 // ref), so its tree is immutable — the SAME per-sha cache convention quality.h uses for its own
 // qheadsnap/qbody families (shaKeyedCachePath + a real cacheFile handed to ingest()), but its OWN "qms"
 // family so a multi-arm scout run's ~2*refCount+1 distinct trees don't thrash quality.h's own 2-slot
@@ -292,14 +292,6 @@ inline std::vector<ChangedSym> diffTreeIndex( const SymTreeIndex& base, const Sy
     return out;   // already key-sorted (built from the sorted `keys` vector)
 }
 
-// Resolve REF to a commit sha via `git rev-parse --verify --quiet REF^{commit}` (the ^{commit} peel
-// rejects anything that isn't a committish — a blob/tree hash, a malformed ref). "" ⇒ unresolvable, the
-// caller's loud-refusal gate. Mirrors gitmine.h's resolveSinceScope rev probe.
-inline std::string resolveCommittish( const std::string& root, std::string_view ref )
-{
-    return quality::gitOneLine( root, "rev-parse --verify --quiet " + shSingleQuote( std::string( ref ) + "^{commit}" ) + " 2>/dev/null" );
-}
-
 // Split "A,B,C" on commas, dropping empty tokens — the same primitive workspace.h's segmentsOf uses for
 // path segments, reused here with ',' instead of hand-rolling a second copy of the same loop.
 inline std::vector<std::string_view> splitRefs( std::string_view csv )
@@ -377,6 +369,12 @@ private:
 
 // Resolve + validate EVERY ref BEFORE any archive work — a bad ref is a loud refusal, never a partial/
 // empty arm silently buried in otherwise-good output. Empty `badRef` (2nd of the pair) on success.
+//
+// Every ref resolves through quality::gitResolveCommitSha, the one resolver a user-supplied revision goes through: a
+// ref beginning with '-' never reaches git, and rev-parse's answer counts only when it is a bare object name. The
+// second half is not hypothetical here — `rev-parse --verify --quiet '^REF^{commit}'` answers `^<sha>` at rc 0, and
+// the raw read this replaced took that as resolved and handed the negation to `git merge-base`, so the verb printed
+// an empty ok="0" arm at exit 0 where this refusal belongs (test/mergescoutcheck.sh, the `nonbare` rows).
 inline std::pair<std::vector<std::string>, std::string> resolveAllRefs( const std::string& root, const std::vector<std::string_view>& refs )
 {
     std::vector<std::string> shas( refs.size() );
@@ -386,7 +384,7 @@ inline std::pair<std::vector<std::string>, std::string> resolveAllRefs( const st
         {
             return { {}, std::string( refs[i] ) }; // reserved — collides with the implicit arm
         }
-        shas[i] = resolveCommittish( root, refs[i] );
+        shas[i] = quality::gitResolveCommitSha( root, std::string( refs[i] ) );
         if( shas[i].empty() )
         {
             return { {}, std::string( refs[i] ) };
