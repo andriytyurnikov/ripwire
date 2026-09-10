@@ -1,6 +1,6 @@
 # ripwire documentation
 
-Fourteen entries, each written for one reader. Start with the row that matches why you are here.
+Fifteen entries, each written for one reader. Start with the row that matches why you are here.
 
 | File | Who it is for | What it answers |
 | --- | --- | --- |
@@ -8,6 +8,7 @@ Fourteen entries, each written for one reader. Start with the row that matches w
 | **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | A reader deciding whether to trust or extend it | The `ingest → graph → rank → serialize → cli/mcp` pipeline, the data model, the determinism contract, how ranking works, the output-honesty contract ("a zero is a measurement; absent is not zero"), and why CI builds twice. |
 | **[`EVALS.md`](EVALS.md)** | Anyone checking whether the tool is oversold | Every published number with its instrument, corpus and pinning file — plus the honest counterexamples, and the claims this project deliberately does *not* publish. |
 | **[`LIMITS.md`](LIMITS.md)** | Anyone tuning what an agent can find, or adding a cap | Every compile-time cap in `src/` — value, site, and whether its file discloses a truncation when it fires. A cap is a routing decision, so this exists to stop one being set where nobody can see it. **Generated** by `limits_build.py`, gated by `test/limitstablecheck.sh`. |
+| **[`TUNING.md`](TUNING.md)** | Anyone about to retune a cap | What each cap actually COSTS, measured: 23 of 107 tunable caps move any real invocation at all and 84 move nothing, so most of them should be left alone. Measured by patching a scratch copy of the tree so caps read an env var — production keeps its `constexpr`. **Generated** by `bench/capsweep/capsweep.py emit`, gated by `test/capsweepcheck.sh`. |
 | **[`METHODOLOGY.md`](METHODOLOGY.md)** | Anyone building something similar | The process, as transferable method: write the gate before the code, capture-audit your own output, the sibling-completeness rule — the defect class where a fix lands on one member of a family and never on the rest — and the six principles (§9) that reconcile a complete one-shot answer with a bounded one. |
 | **[`OPTREMARKS.md`](OPTREMARKS.md)** | Anyone tempted to act on a compiler remark | The clang optimization-remarks build (`-DRIPWIRE_OPT_REMARKS=ON`), the triage that turns ~1.1 M remarks into a short list, and the findings — including the two that measured a win (`-DRIPWIRE_LTO=ON`, `-DRIPWIRE_PGO=use`) and every remark that was real, correctly fixed, and moved nothing. |
 | **[`FIELDAFFINITY.md`](FIELDAFFINITY.md)** | Anyone weighing `--field-affinity` | What the cache-locality lens is, what is 1999 prior art (nearly all of it — Chilimbi PLDI 1999, Hundt CGO 2006), why it advises and never transforms, and the one end-to-end measurement that took the static hypothesis to hardware — including the access regime in which the hypothesis was **refuted**. |

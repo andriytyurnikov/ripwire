@@ -1,0 +1,367 @@
+{
+ "kBatchCap": {
+  "value": 16,
+  "probe": 128,
+  "site": "src/mcpverbs.h:4163",
+  "moved": {
+   ". --batch=$RIPWIRE_CAPSWEEP_TMP": [
+    408,
+    409
+   ]
+  }
+ },
+ "kCallHierarchyRowCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/pageview.h:164",
+  "moved": {
+   ". --impact=rankGraphTeleport": [
+    7860,
+    8975
+   ]
+  }
+ },
+ "kCellsPerRowCap": {
+  "value": 12,
+  "probe": 96,
+  "site": "src/nonlocalstate.h:116",
+  "moved": {
+   ". --nonlocal-state --limit=8": [
+    10220,
+    10394
+   ]
+  }
+ },
+ "kCommonNameDefThreshold": {
+  "value": 5,
+  "probe": 40,
+  "site": "src/graph.h:244",
+  "moved": {
+   ". --communities": [
+    17385,
+    17378
+   ],
+   ". --tree": [
+    11779,
+    11750
+   ],
+   ". --zoom": [
+    8409,
+    8457
+   ],
+   ". --zoom --zoom-levels=3": [
+    12518,
+    12590
+   ]
+  }
+ },
+ "kDefsPerNameCap": {
+  "value": 8,
+  "probe": 64,
+  "site": "src/contextratio.h:94",
+  "moved": {
+   ". --context-ratio --limit=8": [
+    13312,
+    13708
+   ]
+  }
+ },
+ "kEnsembleFileRowCap": {
+  "value": 20,
+  "probe": 160,
+  "site": "src/ensemble.h:108",
+  "moved": {
+   ". --ensemble --limit=8": [
+    10616,
+    27723
+   ]
+  }
+ },
+ "kExternalSurfaceRowCap": {
+  "value": 100,
+  "probe": 800,
+  "site": "src/pageview.h:186",
+  "moved": {
+   ". --external-surface": [
+    5593,
+    38690
+   ],
+   ". --external-surface --include-builtins": [
+    5547,
+    38643
+   ]
+  }
+ },
+ "kFileRowCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/contextratio.h:89",
+  "moved": {
+   ". --context-ratio --limit=8": [
+    13312,
+    64424
+   ]
+  }
+ },
+ "kForAutoBodyBudgetBytes": {
+  "value": 6000,
+  "probe": 48000,
+  "site": "src/serialize.h:759",
+  "moved": {
+   ". --for=\"rankGraphTeleport\" --no-route": [
+    15836,
+    22117
+   ]
+  }
+ },
+ "kForFileTailShownCap": {
+  "value": 24,
+  "probe": 192,
+  "site": "src/serialize.h:814",
+  "moved": {
+   ". --for=\"rankGraphTeleport\" --no-route": [
+    15836,
+    21403
+   ]
+  }
+ },
+ "kForLensDefaultTopN": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/serialize.h:739",
+  "moved": {
+   ". --for=\"rankGraphTeleport\"": [
+    2128,
+    2130
+   ],
+   ". --for=\"rankGraphTeleport\" --no-route": [
+    15836,
+    15628
+   ],
+   ". --for=\"rankGraphTeleport\" --signatures-only": [
+    1523,
+    1525
+   ]
+  }
+ },
+ "kForPayloadBudgetBytes": {
+  "value": 7500,
+  "probe": 60000,
+  "site": "src/serialize.h:725",
+  "moved": {
+   ". --for=\"rankGraphTeleport\" --no-route": [
+    15836,
+    29649
+   ]
+  }
+ },
+ "kGrepMatchedLineMaxBytes": {
+  "value": 512,
+  "probe": 4096,
+  "site": "src/search.h:939",
+  "moved": {
+   ". --grep=deterministic": [
+    44342,
+    63729
+   ]
+  }
+ },
+ "kLintMaxPerRule": {
+  "value": 5000,
+  "probe": 40000,
+  "site": "src/lintrules.h:819",
+  "moved": {
+   ". --lint": [
+    70938,
+    70885
+   ],
+   ". --lint --lint-ignore=naming-,cache-": [
+    66898,
+    66845
+   ],
+   ". --lint --naming-locals": [
+    73640,
+    73587
+   ],
+   ". --lint --sarif": [
+    1137832,
+    1645970
+   ]
+  }
+ },
+ "kMaxExpandIncludes": {
+  "value": 24,
+  "probe": 192,
+  "site": "src/serialize.h:4543",
+  "moved": {
+   ". --expand=readAckRecords --top-k=0 --no-redact": [
+    11317,
+    11632
+   ]
+  }
+ },
+ "kMaxExpandSibs": {
+  "value": 100,
+  "probe": 800,
+  "site": "src/serialize.h:4534",
+  "moved": {
+   ". --expand=compressBody --top-k=0 --compress": [
+    8077,
+    9675
+   ],
+   ". --expand=rankGraphTeleport --top-k=0": [
+    4936,
+    6010
+   ],
+   ". --expand=rankGraphTeleport:1-12 --top-k=0": [
+    4324,
+    5398
+   ],
+   ". --expand=readAckRecords --top-k=0 --no-redact": [
+    11317,
+    16612
+   ],
+   ". --top-k=0 --expand=rankGraphTeleport": [
+    4936,
+    6010
+   ]
+  }
+ },
+ "kOrdinalWindowCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/ensemble.h:112",
+  "moved": {
+   ". --ensemble --limit=8": [
+    10616,
+    10647
+   ],
+   ". --quality-panel": [
+    15876,
+    15974
+   ]
+  }
+ },
+ "kPanelRowCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/qualitypanel.h:145",
+  "moved": {
+   ". --quality-panel": [
+    15876,
+    63771
+   ]
+  }
+ },
+ "kSliceFlowDefaultDepth": {
+  "value": 8,
+  "probe": 64,
+  "site": "src/slice.h:2093",
+  "moved": {
+   ". --slice=rankGraphTeleport:teleport --slice-flow=fwd": [
+    7203,
+    7204
+   ]
+  }
+ },
+ "kSpecificMinLen": {
+  "value": 8,
+  "probe": 64,
+  "site": "src/graph.h:250",
+  "moved": {
+   ".": [
+    24432,
+    24403
+   ],
+   ". --communities": [
+    17385,
+    17597
+   ],
+   ". --ignore-tests --top-k=5": [
+    2028,
+    2036
+   ],
+   ". --impact=rankGraphTeleport": [
+    7860,
+    7823
+   ],
+   ". --no-cache --top-k=3": [
+    1920,
+    1825
+   ],
+   ". --no-ignore --top-k=3": [
+    1920,
+    1825
+   ],
+   ". --no-stable --top-k=3": [
+    1920,
+    1825
+   ],
+   ". --pack-signatures --top-k=10": [
+    12175,
+    12179
+   ],
+   ". --pack-top-n=3 --top-k=0": [
+    65670,
+    65729
+   ],
+   ". --report": [
+    3546,
+    3543
+   ],
+   ". --seams": [
+    12969,
+    12992
+   ],
+   ". --tree": [
+    11779,
+    11858
+   ],
+   ". --zoom": [
+    8409,
+    8523
+   ],
+   ". --zoom --zoom-levels=3": [
+    12518,
+    12689
+   ]
+  }
+ },
+ "kSymbolRowCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/contextratio.h:88",
+  "moved": {
+   ". --quality-panel": [
+    15876,
+    18013
+   ]
+  }
+ },
+ "kTreeRowCap": {
+  "value": 80,
+  "probe": 640,
+  "site": "src/pageview.h:184",
+  "moved": {
+   ". --tree": [
+    11779,
+    93405
+   ]
+  }
+ },
+ "kZoomTopModuleCap": {
+  "value": 40,
+  "probe": 320,
+  "site": "src/pageview.h:185",
+  "moved": {
+   ". --zoom": [
+    8409,
+    49550
+   ],
+   ". --zoom --zoom-levels=3": [
+    12518,
+    72408
+   ]
+  }
+ }
+}
