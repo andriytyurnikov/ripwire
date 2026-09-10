@@ -148,7 +148,7 @@ TABLE = {
     ( "src/lanes.h", "buf" ): ( 10, "safe",       "buf[640] x3: snprintf-THEN-escape. :723 interpolates an UNBOUNDED file path and is still safe for exactly that reason — the warning text is escaped downstream, so a cut shortens prose and can never land inside markup. This is the shape §B14's six were not." ),
     # ── src/main.cpp ─────────────────────────────────────────────────────────────────────────────────────
     ( "src/main.cpp", "tail" ): ( 2, "not-markup", "tail[48]: the cache FILENAME ('rich'/'lean' + a %016llx). Bounded and never emitted." ),
-    ( "src/verbs_for.h", "nb" ): ( 12, "safe",       "nb[160] x2: the mention/doc-mention header notes. Every %s is the plural '' or 's'; everything else is %u." ),
+    ( "src/verbs_for.h", "nb" ): ( 14, "safe",       "nb[160] x2: the mention/doc-mention/siblift/expand header notes. Every %s is the plural '' or 's'; everything else is %u." ),
     ( "src/verbs_report.h", "exemptAttr" ): ( 1, "safe",       "exemptAttr[40]: ' exempt=\"%s\"' with groupExemptKind's fixed vocabulary (longest 'fixture' = 7 B, total 19 B)." ),
     ( "src/verbs_report.h", "hdr" ):    ( 1, "safe",       "hdr[512]: runSkipped's <skipped ...> root (§L1). 175 B of literal + ELEVEN %zu/%llu counters at 20 B worst case = 395 B, plus the ONE %s, which is the compile-time literal ' rows_capped=\"1\"' or '' (18 B) = 413 B against 511 usable. No path, no name, nothing user-supplied reaches this buffer — every emitted path goes through escapeXml straight into the writer, outside it." ),
     ( "src/verbs_report.h", "row" ): ( 5, "safe",       "row[96] + row[192], runSkipped's two row emitters (§L1). row[96] at the <f> drop row: '\" why=\"%s\" bytes=\"%llu\" ext=\"' where %s is the CLOSED vocabulary {oversize, excluded, unsupported-ext} (15 B longest) = ~60 B. row[192] at the <h> parse-health row: three %s from the closed why= vocabulary (31 B for the joined 'degraded-parse,minified-suspect'), one %u, two %.3f of ratios that are <=1.0 by construction (errBytes sums DISJOINT top-most ERROR spans, ws sample is its own denominator) and 14 B even if a future edit broke that, one %u = ~131 B. Both p= values are written by escapeXml OUTSIDE the buffer." ),
@@ -397,7 +397,7 @@ if not bad:
 #            the same buffer is now written from six sites rather than three. formatToRuntime is gone with
 #            them: it was the only format in the tree not checked at compile time, and the only one that
 #            could fail at runtime and return an empty buffer.
-EXPECTED = { "mentions": 314, "calls": 211, "sites": 211, "rows": 89, "widthforms": 0 }
+EXPECTED = { "mentions": 316, "calls": 213, "sites": 213, "rows": 89, "widthforms": 0 }
 #            2026-09-04 (capture-audit L6, H9): +1 call/+1 mention, sites/rows UNCHANGED — re-read, not
 #            re-counted. packConnect gained ONE snprintf into a new `char connectCeiling[32]` for the
 #            H9 ` max_tokens="%d"` ceiling disclosure: a single %d of a caller-supplied INTEGER, no %s,
