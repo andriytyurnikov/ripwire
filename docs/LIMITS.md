@@ -178,7 +178,7 @@ Discloses: **none**
 
 ### `src/gitmine.h`
 
-Discloses: **none**
+Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
@@ -301,7 +301,7 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 ### `src/mention.h`
 
-Discloses: **none**
+Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`, `mention_tokens_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
@@ -358,7 +358,7 @@ Discloses: `cells_capped`, `decls_capped`
 
 ### `src/packtask.h`
 
-Discloses: `ranking_capped`
+Discloses: `mention_syms_capped`, `ranking_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |

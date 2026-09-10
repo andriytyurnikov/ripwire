@@ -58,6 +58,16 @@ struct LensRanking
     std::uint32_t      docMentionCount = 0;        // §L10b: docMentionInfo.docCount, the machine form of the
                                                     // note above (0 = the boost moved nothing) — the doc_mentions=
                                                     // root attribute reads this, mirroring anchorLifts below.
+    // The INDEXING caps that cut this ranking, accumulated across the three lift passes in the order they
+    // run (mention.h CapDisclosure). Both "" on the overwhelmingly common run where no cap bit, so a bundle
+    // that lost nothing pays nothing. The prose half already rides mentionNote/boostNote/docMentionNote,
+    // which is how --pack-task and both JSON dialects get the same fact for free.
+    std::string        capAttrs;                   // ` mention_syms_capped="1" …` — spliced onto the XML root
+    std::string        capJson;                    // `,"mention_syms_capped":true,…` — the --json twin
+    std::string        capNote;                    // the self-defining prose clause (mention.h capDisclosureNote).
+                                                    // Deliberately NOT folded into the three notes above: on --for
+                                                    // it is spliced in AFTER the sigs ladder has run, so a
+                                                    // disclosure is paid for in bytes and never in ranked rows.
     float              maxLexicalScore = 0.0f;    // R4: top raw BM25 score BEFORE --anchor/mention/cochange
                                                    // reshape it — the honest "how much real textual evidence
                                                    // is there" number the weak="1" signal reads.
@@ -1211,7 +1221,9 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
     const std::string boostNote      = xmlCommentText( lr.boostNote );
     const std::string sibliftNote    = xmlCommentText( lr.sibliftNote );
     const std::string expandNote     = xmlCommentText( lr.expandNote );
-    const std::string docMentionNote = xmlCommentText( lr.docMentionNote );
+    // …plus the indexing-cap clause, which rides the LAST note so it reads after the boosts it qualifies.
+    // "" on every run where no cap fired, and charged exactly here like every other user-length part.
+    const std::string docMentionNote = xmlCommentText( lr.docMentionNote + lr.capNote );
 
     // ── the deterministic byte budget (default 6K tokens; in.budgetTokens overrides) ────────────────────────
     const std::size_t budgetTokens = in.budgetTokens > 0 ? in.budgetTokens : std::size_t( kPackTaskDefaultTokens );
