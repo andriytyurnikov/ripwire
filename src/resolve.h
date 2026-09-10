@@ -48,6 +48,7 @@
 #include "model.h"
 #include "arch.h"        // §B1.3: relForHash — the root-relative path segment canonicalIdRelTo keys on
 #include "smallvec.h"
+#include "infra/profileScope.h"  // PROFILE_SCOPE self-profiling — gated by PROFILE_ENABLED (off unless -DRIPWIRE_PROFILE=ON)
 
 #include <algorithm>
 #include <cstddef>
@@ -1272,6 +1273,7 @@ inline std::uint32_t resolveElixirModule( std::string_view target, const HashMap
 // edges; `--callers`/`--callees` still resolve those languages' calls by the global name ladder alone.
 inline HashMap<std::string, std::uint32_t> buildElixirModuleIndex( const IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "resolve/elixir: module index" );
     HashMap<std::string, std::uint32_t> modules;
     const std::uint32_t F = std::uint32_t( ing.files.size() );
     bool anyElixirDirective = false;
@@ -1373,6 +1375,7 @@ inline std::uint32_t rubyInnermostOpen( const std::vector<RubyOpenRec>& opens, s
 
 inline RubyConstantIndex buildRubyConstantIndex( const IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "resolve/ruby: constant index" );
     RubyConstantIndex ix;
     bool anySymbolic = false;
     for( const Include& inc : ing.includes )
@@ -1690,6 +1693,7 @@ inline void recordLazyPair( HashMap<std::uint64_t, char>& lazyPairs, std::uint32
 inline std::pair<std::vector<std::vector<std::uint32_t>>, WsIncludeCtx> buildPreciseIncludeAdjWithContext( const IngestResult& ing, bool dedup = true,
                                                                        HashMap<std::uint64_t, char>* lazyPairsOut = nullptr )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2a: precise include adjacency (resolve.h)" );
     const std::uint32_t F = std::uint32_t( ing.files.size() );
     std::vector<std::vector<std::uint32_t>> adj( F );
     if( ing.includes.empty() )
@@ -1876,6 +1880,7 @@ inline std::vector<std::vector<std::uint32_t>> buildPreciseIncludeAdj( const Ing
 // set is re-sorted+deduped, so it is a pure function of the adjacency regardless of visit order.
 inline std::vector<std::vector<NodeId>> transitiveIncludeSet( const std::vector<std::vector<std::uint32_t>>& adj )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2b: transitive include closure (resolve.h)" );
     const std::uint32_t          F = std::uint32_t( adj.size() );
     std::vector<std::vector<NodeId>> trans( F );
     std::vector<std::uint32_t>   seenEpoch( F, 0 );

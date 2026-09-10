@@ -745,6 +745,7 @@ struct FnPtrBindTables
 
 inline FnPtrBindTables buildFnPtrBindTables( const IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2f: L3 fn-pointer bind tables" );
     FnPtrBindTables   t;
     std::string       key;
     const std::string emptyTarget;
@@ -847,6 +848,7 @@ struct FieldNarrowTables
 
 inline FieldNarrowTables buildFieldNarrowTables( const IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2d: Rule-2b field-narrow tables" );
     FieldNarrowTables t;
     std::string       key;   // reused "Class#field" / "<fromSymbol>#var" key buffer
     for( const Reference& cr : ing.references )
@@ -905,6 +907,7 @@ struct ExternalVetoTables
 
 inline ExternalVetoTables buildExternalVetoTables( const IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2e: Phase-5 external-veto tables" );
     ExternalVetoTables t;
     std::string        key;   // reused "<fileId>#name" buffer
     const auto fileKey = [ & ]( std::uint32_t fileId, std::string_view name )
@@ -1312,6 +1315,7 @@ inline std::pair<std::uint32_t, JsImportOutcome> resolveJsImportModule( std::str
 
 inline JsImportTables buildJsImportTables( const IngestResult& ing, const WsIncludeCtx* workspace )
 {
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2g: JS/TS import tables" );
     JsImportTables tables;
     if( std::none_of( ing.bindings.begin(), ing.bindings.end(), []( const Binding& b ) { return b.kind == LocalBindKind::JsImport; } ) )
     {
@@ -1424,31 +1428,37 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // resolution locality tie-break (below) and serialize's `id=` attribute share one definition. Deterministic.
     g.canonId.resize( N );
     g.localityKey.resize( N );
-    for( const Symbol& s : ing.symbols )
     {
-        g.canonId[ s.id ]     = canonicalId( ing.files[ s.fileId ], s.scope, s.name );
-        g.localityKey[ s.id ] = localityKeyOf( ing.files[ s.fileId ], s.scope, s.name );   // == canonId when scoped
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1a: canonId + localityKey (per symbol)" );
+        for( const Symbol& s : ing.symbols )
+        {
+            g.canonId[ s.id ]     = canonicalId( ing.files[ s.fileId ], s.scope, s.name );
+            g.localityKey[ s.id ] = localityKeyOf( ing.files[ s.fileId ], s.scope, s.name );   // == canonId when scoped
+        }
     }
 
     // A4-R5 JNI: decode every `Java_pkg_Cls_method` C/C++ def to its readable dotted Java name and stash it as
     // the symbol's binding label. No ingest capture / cache change — it is a pure function of the def NAME. The
     // vector stays EMPTY (no allocation) when the tree holds no JNI export, so a JNI-free corpus is unaffected.
-    for( const Symbol& s : ing.symbols )
     {
-        if( ( s.lang != Lang::Cpp && s.lang != Lang::ObjC ) || s.name.size() <= 5 || s.name.compare( 0, 5, "Java_" ) != 0 )
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1b: JNI name decode (per symbol)" );
+        for( const Symbol& s : ing.symbols )
         {
-            continue;
+            if( ( s.lang != Lang::Cpp && s.lang != Lang::ObjC ) || s.name.size() <= 5 || s.name.compare( 0, 5, "Java_" ) != 0 )
+            {
+                continue;
+            }
+            std::string readable = decodeJniName( s.name );
+            if( readable.empty() )
+            {
+                continue;
+            }
+            if( g.bindLabel.empty() )
+            {
+                g.bindLabel.assign( N, std::string() );
+            }
+            g.bindLabel[ s.id ] = std::move( readable );
         }
-        std::string readable = decodeJniName( s.name );
-        if( readable.empty() )
-        {
-            continue;
-        }
-        if( g.bindLabel.empty() )
-        {
-            g.bindLabel.assign( N, std::string() );
-        }
-        g.bindLabel[ s.id ] = std::move( readable );
     }
 
     // ── Multi-root workspace: name-based resolution NEVER crosses roots. Every
@@ -1466,12 +1476,15 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // file → directory id (path up to the last '/')
     HashMap<std::string, std::uint32_t> dirIds;
     std::vector<std::uint32_t>          fileDir( ing.files.size(), 0 );
-    for( std::size_t f = 0; f < ing.files.size(); ++f )
     {
-        std::string_view p     = ing.files[f];
-        const std::size_t sl   = p.rfind( '/' );
-        std::string       dir  = ( sl == std::string_view::npos ) ? std::string() : std::string( p.substr( 0, sl ) );
-        fileDir[f] = dirIds.emplace( std::move( dir ), std::uint32_t( dirIds.size() ) ).first->second;
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1c: fileDir (dir interning)" );
+        for( std::size_t f = 0; f < ing.files.size(); ++f )
+        {
+            std::string_view p     = ing.files[f];
+            const std::size_t sl   = p.rfind( '/' );
+            std::string       dir  = ( sl == std::string_view::npos ) ? std::string() : std::string( p.substr( 0, sl ) );
+            fileDir[f] = dirIds.emplace( std::move( dir ), std::uint32_t( dirIds.size() ) ).first->second;
+        }
     }
 
     // name → candidate definition ids. rw::svector<,2>: most names define 1-2 symbols, so the id-list is
@@ -1480,9 +1493,12 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // insertion order exactly like std::vector, so the resolved graph — and the output — is unchanged.
     HashMap<std::string, rw::SmallVec<NodeId, 2>> byName;
     byName.reserve( N );                          // ≤ one entry per symbol → skip the rehash cascade
-    for( const Symbol& s : ing.symbols )
     {
-        byName[ s.name ].push_back( s.id );
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1d: byName (name -> def ids)" );
+        for( const Symbol& s : ing.symbols )
+        {
+            byName[ s.name ].push_back( s.id );
+        }
     }
 
     // decl/def collapse (adversarial-review #1): a C++ header decl + its .cpp def are TWO same-named
@@ -1493,66 +1509,69 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // resolution targets — forward declarations of one function aren't an ambiguity and must not shadow or
     // block it. Names with no def anywhere (extern / pure-virtual only) keep their decls (best available).
     const auto hasBody = [ & ]( NodeId id ) noexcept { return ing.symbols[id].endByte > ing.symbols[id].sigEndByte; };
-    for( auto& [ name, ids ] : byName )
     {
-        if( !multiRoot )
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1e: decl/def collapse" );
+        for( auto& [ name, ids ] : byName )
         {
-            bool anyDef = false;
-            for( NodeId id : ids )
+            if( !multiRoot )
             {
-                if( hasBody( id ) )
-                {
-                    anyDef = true;
-                    break;
-                }
-            }
-            if( !anyDef )
-            {
-                continue;
-            }
-            rw::SmallVec<NodeId, 2> defs;
-            for( NodeId id : ids )
-            {
-                if( hasBody( id ) )
-                {
-                    defs.push_back( id );
-                }
-            }
-            ids = std::move( defs );
-        }
-        else
-        {
-            // multi-root: collapse PER ROOT — root A's def must not evict root B's decl-only best-available
-            // target (each root's solo resolution behavior is preserved exactly; lookups are root-filtered).
-            bool anyRootCollapses = false;
-            const auto rootHasDef = [ & ]( std::uint32_t r ) noexcept
-            {
+                bool anyDef = false;
                 for( NodeId id : ids )
                 {
-                    if( ing.fileRoot[ing.symbols[id].fileId] == r && hasBody( id ) )
+                    if( hasBody( id ) )
                     {
-                        return true;
+                        anyDef = true;
+                        break;
                     }
                 }
-                return false;
-            };
-            for( NodeId id : ids )
-            {
-                if( !hasBody( id ) && rootHasDef( ing.fileRoot[ ing.symbols[id].fileId ] ) ) { anyRootCollapses = true; break; }
-            }
-            if( !anyRootCollapses )
-            {
-                continue;
-            }
-            rw::SmallVec<NodeId, 2> kept;
-            for( NodeId id : ids )
-            {
-                if( hasBody( id ) || !rootHasDef( ing.fileRoot[ing.symbols[id].fileId] ) )
+                if( !anyDef )
                 {
-                    kept.push_back( id );
+                    continue;
                 }
+                rw::SmallVec<NodeId, 2> defs;
+                for( NodeId id : ids )
+                {
+                    if( hasBody( id ) )
+                    {
+                        defs.push_back( id );
+                    }
+                }
+                ids = std::move( defs );
             }
-            ids = std::move( kept );
+            else
+            {
+                // multi-root: collapse PER ROOT — root A's def must not evict root B's decl-only best-available
+                // target (each root's solo resolution behavior is preserved exactly; lookups are root-filtered).
+                bool anyRootCollapses = false;
+                const auto rootHasDef = [ & ]( std::uint32_t r ) noexcept
+                {
+                    for( NodeId id : ids )
+                    {
+                        if( ing.fileRoot[ing.symbols[id].fileId] == r && hasBody( id ) )
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                for( NodeId id : ids )
+                {
+                    if( !hasBody( id ) && rootHasDef( ing.fileRoot[ ing.symbols[id].fileId ] ) ) { anyRootCollapses = true; break; }
+                }
+                if( !anyRootCollapses )
+                {
+                    continue;
+                }
+                rw::SmallVec<NodeId, 2> kept;
+                for( NodeId id : ids )
+                {
+                    if( hasBody( id ) || !rootHasDef( ing.fileRoot[ing.symbols[id].fileId] ) )
+                    {
+                        kept.push_back( id );
+                    }
+                }
+                ids = std::move( kept );
+            }
         }
     }
 
@@ -1563,15 +1582,18 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     HashMap<std::string, rw::SmallVec<NodeId, 2>> canonByName;
     canonByName.reserve( N );
     std::string canonKey;
-    for( const Symbol& s : ing.symbols )
     {
-        if( s.scope.empty() || !hasBody( s.id ) )
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1f: canonByName (scope::name -> def ids)" );
+        for( const Symbol& s : ing.symbols )
         {
-            continue;
+            if( s.scope.empty() || !hasBody( s.id ) )
+            {
+                continue;
+            }
+            canonKey.clear();
+            canonKey.append( s.scope ).append( "::" ).append( s.name );
+            canonByName[ canonKey ].push_back( s.id );
         }
-        canonKey.clear();
-        canonKey.append( s.scope ).append( "::" ).append( s.name );
-        canonByName[ canonKey ].push_back( s.id );
     }
 
     // P2-D Rule 2 binding table: per-scope `(fromSymbol, var) → type` from ingest's local var→type bindings,
@@ -1584,6 +1606,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     HashMap<std::string, std::string> varType;
     varType.reserve( ing.bindings.size() );
     {
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1g: varType binding table" );
         std::string key;   // reused key buffer — same "<fromSymbol>#var" bytes as before, one alloc amortized
         for( const Binding& b : ing.bindings )
         {
@@ -1614,11 +1637,14 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // corpus, so `Cls.m()` can read its receiver token as the type it names. Consumed via Narrower::rule2cClassNameRecv.
     HashMap<std::string, char> classNames;
     classNames.reserve( N / 8 + 1 );
-    for( const Symbol& s : ing.symbols )
     {
-        if( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface )
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1h: classNames set" );
+        for( const Symbol& s : ing.symbols )
         {
-            classNames.try_emplace( s.name, '\0' );
+            if( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface )
+            {
+                classNames.try_emplace( s.name, '\0' );
+            }
         }
     }
 
@@ -1646,9 +1672,12 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     const JsImportTables jsImports = buildJsImportTables( ing, includeContext.fileRoot ? &includeContext : nullptr );
     // per-symbol fileId view for Rule 3 (group a candidate def by its file without passing the whole IngestResult).
     std::vector<std::uint32_t> symFileId( N );
-    for( const Symbol& s : ing.symbols )
     {
-        symFileId[s.id] = s.fileId;
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/1i: symFileId view" );
+        for( const Symbol& s : ing.symbols )
+        {
+            symFileId[s.id] = s.fileId;
+        }
     }
 
     // ── A4-R5 cross-language FFI binding alias tables ────────────────────────────────────────────────
@@ -1665,6 +1694,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     HashMap<std::string, char>                    ctypesHandle;   // "<fileId>#<var>"      → a ctypes CDLL handle var
     if( !ing.bindingAliases.empty() )
     {
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/2i: FFI binding alias tables" );
         std::string        sk;    // reused scope::name / "<fileId>#var" key buffer
         std::vector<NodeId> tgt;
         const auto pushCFamily = [ & ]( const rw::SmallVec<NodeId, 2>& srcIds )
@@ -1805,6 +1835,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     {
         const auto isClassLikeK = []( SymKind k ) noexcept
         { return k == SymKind::Class || k == SymKind::Struct || k == SymKind::Interface; };
+        PROFILE_SCOPE_DESCRIBE( "buildGraph/2h: CHA-lite inheritance name graph" );
         for( const Reference& ir : ing.references )
         {
             if( !ir.isInherit )
