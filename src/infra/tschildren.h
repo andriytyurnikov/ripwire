@@ -23,6 +23,19 @@
 // gets broken, so the rule and the helper now live where every walk can reach them. Gates:
 // test/padscalecheck.sh (the comment flood) and test/preprocdeadscalecheck.sh (the include-guard flood,
 // which the `#if`-text gate in preprocdead.h hides from the first).
+//
+// WHICH WIDE NODES ACTUALLY COST O(C²) — MEASURED, 2026-09-10 (lane W2, test/childwalkscalecheck.sh). A
+// FLAT child list does; a grammar REPEAT does not. tree-sitter stores a repetition as a balanced tree of
+// invisible `_repeat` nodes, and `ts_node__child` skips a whole invisible subtree in O(1) by reading its
+// stored `visible_child_count` (`ts_node__relevant_child_count`, node.c) — so indexing the 128 000th
+// declaration of a file scope is ~O(log C), and a declaration flood measured dead linear on the
+// pre-change binary (8k/64k/128k children = 0.04 / 0.33 / 0.63 s). What is NOT balanced is anything the
+// parser splices into the child array itself: EXTRAS (comments, above all) and preprocessor-conditional
+// bodies. A root of 16 000 COMMENTS measured 117× its own control on the same binary. The practical rule
+// is therefore not "wide node" but "wide node whose width can come from EXTRAS", which — since a comment
+// can appear between any two children of anything — is every walk whose node comes from the FILE. It is
+// also why a scaling gate must flood with comments: a declaration flood of identical width goes green
+// over a live defect.
 
 #include <vector>
 
@@ -40,6 +53,32 @@ struct ChildCursor   // RAII — several walkers return mid-loop, so deletion mu
     ~ChildCursor() { ts_tree_cursor_delete( &cur ); }
 };
 
+// VISIT n's children, left to right, without materialising them — the one spelling of the cursor idiom
+// every other function here is written on. `fn( TSNode ) -> bool` returns false to STOP, which is the
+// `break` a filtering or searching walk needs and the `continue` case falls out of returning true.
+//
+// It takes the node AND the cursor because the two lifetimes differ: a walk that only filters can hand
+// the same cursor to every node it visits, while a walk that RECURSES from inside `fn` cannot — the
+// recursive call resets the cursor out from under the loop — and must own one per frame (`ChildCursor
+// cursor( n ); forEachChild( n, cursor.cur, … )`). Making the cursor implicit would have hidden exactly
+// that distinction, which is the bug this whole header exists to prevent.
+template< class Fn >
+inline void forEachChild( TSNode n, TSTreeCursor& cur, const Fn& fn )   // A4-F25: NOT noexcept — `fn` may allocate
+{
+    ts_tree_cursor_reset( &cur, n );
+    if( ts_tree_cursor_goto_first_child( &cur ) )
+    {
+        do
+        {
+            if( !fn( ts_tree_cursor_current_node( &cur ) ) )
+            {
+                return;
+            }
+        }
+        while( ts_tree_cursor_goto_next_sibling( &cur ) );
+    }
+}
+
 // APPEND n's children, left to right, to whatever `out` already holds. This is the form a DFS-STACK walk
 // needs: there the collected list IS the work list, so clearing it would throw the frontier away. Routing
 // such a walk through collectChildren instead costs it a scratch vector plus a copy of every node; the two
@@ -47,15 +86,7 @@ struct ChildCursor   // RAII — several walkers return mid-loop, so deletion mu
 // reproduced with the opposite sign), so this exists for the shape, not for a measured win.
 inline void appendChildren( TSNode n, TSTreeCursor& cur, std::vector<TSNode>& out )   // A4-F25: NOT noexcept — `out` allocates
 {
-    ts_tree_cursor_reset( &cur, n );
-    if( ts_tree_cursor_goto_first_child( &cur ) )
-    {
-        do
-        {
-            out.push_back( ts_tree_cursor_current_node( &cur ) );
-        }
-        while( ts_tree_cursor_goto_next_sibling( &cur ) );
-    }
+    forEachChild( n, cur, [ &out ]( TSNode child ) { out.push_back( child ); return true; } );
 }
 
 // REPLACE `out` with n's children — the form a walker uses when it wants one node's child list as a
