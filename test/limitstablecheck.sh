@@ -30,6 +30,15 @@
 #   (G) THE COLUMN MATCHES THE SIDECAR. Every INDEXING/OUTPUT cell is read back out of the RENDERED
 #       document and compared against the sidecar, so a classification cannot be right in the file and
 #       wrong on the page. Control: flipping a class in a copy must move the rendered cell.
+#   (I) PINNED BY WHAT A CAP IS, NEVER BY ITS LINE. (B) again, on a scratch copy of the REAL src/, under
+#       mutation. Lines inserted above a cap, a blank line deleted above it, and every file shifted down
+#       two lines must each leave --check GREEN; the cap's value changed, its declaration deleted, a
+#       disclosure attribute renamed away and a class flipped must each turn it RED as STALE. Every
+#       mutation is asserted to have taken before its outcome is read, and the restored copy must be
+#       green again.
+#   (J) ONE NAME DECLARED TWICE IN ONE FILE. With no line to tell them apart, identical declarations
+#       render as ONE row marked ×2 (beside a separate row for a different value), and deleting one of
+#       them must still make --check fail: a multiplicity is part of the cap set, not a duplicate to drop.
 #
 # WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — 114 caps that truncate, 6
 # parameters that weight — because they need different instruments: a cap is judged by what it cuts and
@@ -72,6 +81,191 @@ else
         ok "(C) mutation control: an added cap goes RED, and regenerating clears it"
     else
         no "(C) mutation control: regenerating the synthetic table did not clear the failure"
+    fi
+fi
+
+# ── (I) pinned by what a cap IS, never by the line it sits on — (B) under mutation, on the real tree ──
+# WHY. docs/LIMITS.md used to carry each cap's LINE, so an edit that only added or removed lines ABOVE a
+# cap — a rewritten comment, a deleted helper — turned (B) red while no claim in the document had
+# changed. On 2026-09-10 PRs #115, #116 and #117 were all red on this gate; each of #117's six failed CI
+# jobs was `fail=1 limitstablecheck.sh`, caused only by kPrDefaultBudgetTokens moving from line 452 of
+# src/prcontext.h to 431 after an unrelated deletion. Every src/ PR cut from one main pins the same
+# lines, so each landing re-staled the next. The document is now keyed by what a cap IS, and this arm
+# holds both halves of that: a line move must stay GREEN, and each real claim — value, the cap set,
+# disclosure, class — must still go RED. Either half alone is a gate that is noisy or a gate that is blind.
+#
+# The mutations edit a scratch COPY of src/, never src/ itself: gates run in parallel, and a probe edit
+# in the live tree perturbs every crawl beside this one. The target cap is chosen from the copy by rule —
+# declared once, unclassified (so deleting it reads as STALE, not as a sidecar refusal), one row in the
+# rendered document, a blank line somewhere above it — so a rename in src/ moves the probe, never blinds it.
+python3 - "$ROOT" "$TMP" <<'PINNED' || fail=1
+import collections, os, re, shutil, subprocess, sys
+ROOT, TMP = sys.argv[ 1 ], sys.argv[ 2 ]
+bad = []
+def ok( m ): print( "  PASS  %s" % m )
+def no( m ): print( "  FAIL  %s" % m ); bad.append( m )
+def read( p ):
+    with open( p, encoding="utf-8", errors="surrogateescape", newline="" ) as fh:
+        return fh.read()
+def write( p, t ):
+    with open( p, "w", encoding="utf-8", errors="surrogateescape", newline="" ) as fh:
+        fh.write( t )
+
+MUT = os.path.join( TMP, "pinned" )
+shutil.copytree( os.path.join( ROOT, "src" ), os.path.join( MUT, "src" ) )
+os.makedirs( os.path.join( MUT, "docs" ) )
+for f in ( "limits_build.py", "LIMITS.md", "limits_classes.tsv", "EVALS.md" ):
+    if os.path.exists( os.path.join( ROOT, "docs", f ) ):
+        shutil.copy( os.path.join( ROOT, "docs", f ), os.path.join( MUT, "docs", f ) )
+GEN, DOC, TSV = ( os.path.join( MUT, "docs", f ) for f in ( "limits_build.py", "LIMITS.md", "limits_classes.tsv" ) )
+
+def check( *extra ):
+    r = subprocess.run( [ sys.executable, GEN, "--root", MUT, "--out", DOC, "--check", *extra ], capture_output=True, text=True )
+    return r.returncode == 0, ( r.stderr.strip() or r.stdout.strip() ).split( "\n" )[ 0 ]
+
+green, why = check()
+if not green:
+    no( "(I) precondition: the UNMUTATED scratch copy is already red (%s) — every control below would read that" % why )
+    sys.exit( 1 )
+
+# The probe target, chosen by rule. This regex is the gate's own, deliberately not the generator's: an
+# arm that picked its target with the code under test would go blind exactly when that code breaks.
+doc     = read( DOC )
+sidecar = { l.split( "\t" )[ 0 ].strip() for l in read( TSV ).splitlines() if l.strip() and not l.lstrip().startswith( "#" ) }
+DECL    = re.compile( r'^[ \t]*(?:static[ \t]+)?(?:inline[ \t]+)?constexpr\b[^=;\n]*\b(k[A-Z][A-Za-z0-9_]*)[ \t]*=[ \t]*([0-9]+)[ \t]*;', re.M )
+files   = sorted( os.path.relpath( os.path.join( d, f ), MUT ) for d, _, fs in os.walk( os.path.join( MUT, "src" ) )
+                  for f in fs if f.endswith( ( ".h", ".cpp" ) ) )
+texts   = { p: read( os.path.join( MUT, p ) ) for p in files }
+decls   = collections.Counter( m.group( 1 ) for t in texts.values() for m in DECL.finditer( t ) )
+def decl_at( text, n ):
+    return next( ( m for m in DECL.finditer( text ) if m.group( 1 ) == n ), None )
+def line_of( text, n ):
+    m = decl_at( text, n )
+    return text[ : m.start() ].count( "\n" ) + 1 if m else None
+def value_of( text, n ):
+    m = decl_at( text, n )
+    return m.group( 2 ) if m else None
+
+target = None
+for p in files:
+    for m in DECL.finditer( texts[ p ] ):
+        n = m.group( 1 )
+        if decls[ n ] == 1 and n not in sidecar and len( re.findall( r'^\| `%s`' % n, doc, re.M ) ) == 1 and "\n\n" in texts[ p ][ : m.start() ]:
+            target = ( p, n, m.group( 2 ) )
+            break
+    if target:
+        break
+if target is None:
+    no( "(I) no probe target: no cap in src/ is declared once, unclassified, one row in docs/LIMITS.md and below a blank line" )
+    sys.exit( 1 )
+rel, name, val = target
+orig = texts[ rel ]
+here = os.path.join( MUT, rel )
+at   = decl_at( orig, name ).start()
+L    = line_of( orig, name )
+
+def mutate( label, edits, took, want_green, extra=() ):
+    """Write the mutation, prove it TOOK by reading the files back, and only then read --check. Always restore."""
+    for p, t in edits.items():
+        write( os.path.join( MUT, p ), t )
+    try:
+        if not took():
+            no( "(I) %s: the mutation did not take — this control would measure nothing" % label )
+            return
+        green, why = check( *extra )
+        if want_green and not green:
+            no( "(I) %s, yet --check went RED: %s" % ( label, why ) )
+        elif not want_green and green:
+            no( "(I) %s, yet --check stayed GREEN — that claim is no longer gated" % label )
+        elif not want_green and "is STALE" not in why:
+            no( "(I) %s: --check went red for a different reason: %s" % ( label, why ) )
+        else:
+            ok( "(I) %s: --check %s" % ( label, "stays green" if want_green else "goes RED (STALE)" ) )
+    finally:
+        for p in edits:
+            write( os.path.join( MUT, p ), texts[ p ] )
+
+# GREEN — the cap moves and nothing about it changes. The three shapes a real edit takes: lines added
+# directly above one cap, a line deleted above it (the #117 shape), and a shift under every cap at once.
+note  = "// limitstablecheck (I): a comment added above a cap is not a change to the cap\n"
+mutate( "3 lines inserted above %s (%s line %d -> %d)" % ( name, rel, L, L + 3 ),
+        { rel: orig[ : at ] + "\n\n" + note + orig[ at : ] },
+        lambda: line_of( read( here ), name ) == L + 3, True )
+cut   = orig.rfind( "\n\n", 0, at )
+mutate( "a blank line deleted above %s (%s line %d -> %d)" % ( name, rel, L, L - 1 ),
+        { rel: orig[ : cut + 1 ] + orig[ cut + 2 : ] },
+        lambda: line_of( read( here ), name ) == L - 1, True )
+shift = "// limitstablecheck (I): every line below moved down two\n\n"
+mutate( "all %d files under src/ shifted down 2 lines" % len( files ),
+        { p: shift + texts[ p ] for p in files },
+        lambda: line_of( read( here ), name ) == L + 2 and all( read( os.path.join( MUT, p ) ).startswith( shift ) for p in files ), True )
+
+# RED — every real claim the document makes about a cap.
+bumped = str( int( val ) + 1 )
+vm     = decl_at( orig, name )
+mutate( "%s's value changed %s -> %s" % ( name, val, bumped ),
+        { rel: orig[ : vm.start( 2 ) ] + bumped + orig[ vm.end( 2 ) : ] },
+        lambda: value_of( read( here ), name ) == bumped, False )
+eol = orig.find( "\n", at )
+eol = len( orig ) if eol < 0 else eol + 1
+mutate( "%s's declaration deleted from %s" % ( name, rel ),
+        { rel: orig[ : at ] + orig[ eol : ] },
+        lambda: decl_at( read( here ), name ) is None, False )
+CAPPED = re.compile( r'([a-z_]+)_capped' )
+disc   = next( ( p for p in files if CAPPED.search( texts[ p ] ) and "### `%s`" % p in doc ), None )
+if disc is None:
+    no( "(I) no probe target: no file with a rendered table discloses a `*_capped` attribute" )
+else:
+    attr = sorted( set( CAPPED.findall( texts[ disc ] ) ) )[ 0 ]
+    mutate( "`%s_capped` renamed away in %s" % ( attr, disc ),
+            { disc: texts[ disc ].replace( attr + "_capped", attr + "_cap_ped" ) },
+            lambda: attr not in set( CAPPED.findall( read( os.path.join( MUT, disc ) ) ) ), False )
+tsv = read( TSV )
+row = next( ( l for l in tsv.splitlines() if l.strip() and not l.lstrip().startswith( "#" ) ), None )
+if row is None:
+    no( "(I) no probe target: docs/limits_classes.tsv has no row to flip" )
+else:
+    cname, cls = [ s.strip() for s in row.split( "\t" ) ]
+    other      = "INDEXING" if cls == "OUTPUT" else "OUTPUT"
+    flipped    = os.path.join( TMP, "pinned-flip.tsv" )
+    write( flipped, tsv.replace( row, "%s\t%s" % ( cname, other ), 1 ) )
+    mutate( "%s's class flipped %s -> %s in a sidecar copy" % ( cname, cls, other ),
+            {}, lambda: read( flipped ) != tsv, False, ( "--classes", flipped ) )
+
+green, why = check()
+if green:
+    ok( "(I) the restored copy is green again — no mutation leaked into the next one's reading" )
+else:
+    no( "(I) a mutation leaked: the restored copy is still red (%s)" % why )
+sys.exit( 1 if bad else 0 )
+PINNED
+
+# ── (J) one name declared twice in one file: ONE row marked ×2, and the multiplicity is still gated ────
+# With no line column, two identical declarations — the same name, value and note in one file, legal in
+# two namespaces or two function bodies — would render as two indistinguishable rows, which reads as a
+# generator bug. They render as one row marked ×2. The tempting alternative, dropping the duplicate, is
+# the defect this arm exists for: deleting one of the two would then leave --check green, and a change to
+# the cap set would pass unseen. A different VALUE under the same name stays a row of its own.
+mkdir -p "$TMP/dup/src" "$TMP/dup/docs"
+cp "$GEN" "$TMP/dup/docs/limits_build.py"
+dupdecl(){ printf 'namespace %s\n{\ninline constexpr std::size_t kSynthRowCap = %s;\n}\n' "$1" "$2"; }
+{ dupdecl a 7; dupdecl b 7; dupdecl c 9; } > "$TMP/dup/src/dup.h"
+python3 "$TMP/dup/docs/limits_build.py" --root "$TMP/dup" --out "$TMP/dup/docs/LIMITS.md" >/dev/null 2>&1
+duprows="$( grep -c '^| `kSynthRowCap`' "$TMP/dup/docs/LIMITS.md" 2>/dev/null )"
+twice="$( grep -c '^| `kSynthRowCap` ×2 | `7` |' "$TMP/dup/docs/LIMITS.md" 2>/dev/null )"
+once="$( grep -c '^| `kSynthRowCap` | `9` |' "$TMP/dup/docs/LIMITS.md" 2>/dev/null )"
+if [ "$duprows" != 2 ] || [ "$twice" != 1 ] || [ "$once" != 1 ]; then
+    no "(J) kSynthRowCap declared 7, 7 and 9 in one file rendered ${duprows:-no} row(s), not one ×2 row for 7 plus one row for 9"
+else
+    { dupdecl a 7; dupdecl c 9; } > "$TMP/dup/src/dup.h"
+    if [ "$( grep -c 'kSynthRowCap = 7' "$TMP/dup/src/dup.h" )" != 1 ]; then
+        no "(J) mutation control: the second declaration of 7 was not removed — the control would measure nothing"
+    elif jout="$( python3 "$TMP/dup/docs/limits_build.py" --root "$TMP/dup" --out "$TMP/dup/docs/LIMITS.md" --check 2>&1 )"; then
+        no "(J) deleting one of two identical declarations left --check GREEN — the ×2 row hid a change to the cap set"
+    elif ! printf '%s' "$jout" | grep -q 'is STALE'; then
+        no "(J) deleting one of two identical declarations went red for a different reason: $jout"
+    else
+        ok "(J) a name declared twice renders as one ×2 row, and deleting one of the two still goes RED"
     fi
 fi
 
@@ -142,7 +336,7 @@ for line in open( os.path.join( ROOT, "docs", "limits_classes.tsv" ), encoding="
 # The class cell is read back out of the RENDERED markdown, not out of the generator's own data
 # structures. Reading the artifact is the whole point: a column that is correct in memory and wrong on
 # the page is exactly the drift this arm exists for.
-row = re.compile( r'^\| `(k[A-Za-z0-9_]*)` \| `[^`]*` \| \d+ \| (INDEXING|OUTPUT|—) \|' )
+row = re.compile( r'^\| `(k[A-Za-z0-9_]*)`(?: ×\d+)? \| `[^`]*` \| (INDEXING|OUTPUT|—) \|' )
 got = {}
 for line in open( os.path.join( ROOT, "docs", "LIMITS.md" ), encoding="utf-8" ):
     m = row.match( line )
@@ -168,7 +362,7 @@ subprocess.run( [ sys.executable, os.path.join( ROOT, "docs", "limits_build.py" 
                   "--classes", os.path.join( TMP, "flip.tsv" ), "--out", os.path.join( TMP, "g.md" ) ],
                 check=True, capture_output=True )
 after = open( os.path.join( TMP, "g.md" ), encoding="utf-8" ).read()
-if re.search( r'^\| `%s` \| `[^`]*` \| \d+ \| %s \|' % ( re.escape( name ), cls ), after, re.M ):
+if re.search( r'^\| `%s`(?: ×\d+)? \| `[^`]*` \| %s \|' % ( re.escape( name ), cls ), after, re.M ):
     no( "(G) mutation control: flipping %s in the sidecar did NOT change the rendered column" % name )
 ok( "(G) mutation control: flipping a sidecar row moves the rendered class, so (G) is not inert" )
 CLASSCOL
