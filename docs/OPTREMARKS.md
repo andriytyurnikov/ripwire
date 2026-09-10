@@ -347,15 +347,24 @@ English name prefixes), because a shorter compare puts short predicate bodies in
 detector's token window. Those are idiom collisions, not copies, and are acked with that reasoning
 rather than merged into a helper parameterised on an unrelated table.
 
-**One known red, handed off rather than fixed here.** `test/showcasecapturecheck.sh` arm (C-band)
-asserts the top-50 `--pack-signatures` reduction on **this repository as its own corpus** lands in
-72–90%. Shortening 569 dispatch comparisons cut top-50 *body* bytes 31,887 → 30,275 (−5.1%), which
-moves the ratio 72.4% → 71.7%. It is this lane's doing — one fixed binary over the twelve preceding
-checkouts reads 72.3–72.4%, so the quantity barely moves on its own and the floor had 0.4 points of
-margin — but the elider itself is byte-identical, so what the arm caught is **our own source getting
-shorter**, which it cannot distinguish from the elider eliding less. The band is published in several
-places and is being worked in another lane; the number is theirs to re-derive, not this one's to
-lower.
+**A near-miss worth recording, because the instrument was the interesting part.**
+`test/showcasecapturecheck.sh` arm (C-band) asserts the top-50 `--pack-signatures` reduction on **this
+repository as its own corpus**. Measured against the lane's original base, shortening 569 dispatch
+comparisons cut top-50 *body* bytes 31,887 → 30,275 (−5.1%) and moved the ratio 72.4% → 71.7%, one
+step below a 72.0 floor — and it really was this lane's doing: one fixed binary over the twelve
+preceding checkouts reads 72.3–72.4%, so the quantity barely moves on its own and the floor had 0.4
+points of margin. The floor was **not** lowered to accommodate it. Rebasing dissolved the collision
+instead: `main` had already re-centred the band twice for unrelated reasons — once for the
+printf-family → `std::print` conversion, once for `--expand`'s `sibs=` cap going 8 → 100, which grows
+the BODY side of this very ratio — so the arm now reads **81.9% inside 73.0–91.0** and this change sits
+nine points clear of the floor.
+
+The lesson survives the near-miss, and it is the one to keep: **the arm reads the LIVE tree, so it
+cannot distinguish "the elider elides less" from "our own source got shorter."** This lane's output is
+byte-identical on seven corpora — the elider provably did not change — yet the arm fired. Three
+re-centerings in two days, all for changes to the *corpus* rather than to the elision, are that
+blind spot showing. A corpus-frozen basis (`git archive`, the way `test/optremarkshotcheck.sh` freezes
+the hot set) would make the band mean what its own comment says it means. That is its own round.
 
 ## 6. The dismissals, and why
 
