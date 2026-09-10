@@ -9,16 +9,15 @@
 
 # Rip'n Fast. Fewer Tokens. Better Code.
 
-## Give your coding agent a map before it reads the repo.
+## The ripgrep of AI context. Give your coding agent a map before it reads the repo.
 
-**ripwire is the ripgrep of AI context.** Point it at any repository and your agent gets a ranked,
-deterministic call graph — what to touch, what it breaks, which tests to run — instead of grepping
-around and reading whole files.
+Point it at any repository and your agent gets a ranked, deterministic call graph — what to touch,
+what it breaks, which tests to run — instead of grepping around and reading whole files.
 
 <p align="center"><img src="docs/assets/paddle-out.svg" alt="Paddle out with a map." width="470"></p>
 
 <details>
-<summary><b>Fifty years of software-engineering results, and research from last month.</b> 46 repositories and 69 papers folded — McCabe (1976) through to <b>seven papers published in the last two months</b> — each row in <a href="docs/LINEAGE.md"><b>docs/LINEAGE.md</b></a> naming the lesson taken and the file it lives in, all of it put into a single blazing-fast compiled executable</summary>
+<summary><b>Fifty years of software-engineering results, and research from last month.</b> 46 repositories and 69 papers folded — McCabe (1976) through to <b>seven published in the last two months</b> — each row in <a href="docs/LINEAGE.md"><b>docs/LINEAGE.md</b></a> naming the lesson taken and the file it lives in</summary>
 
 Beside those sits a labelled survey of **237 tools** that contributed nothing and says so. The two
 sets are disjoint by construction, so they add rather than nest — a tool that gave a lesson is never
@@ -47,7 +46,8 @@ claim cannot quietly drift. The row-by-row ledger is
 JavaScript · Java · Ruby · PHP · Lua · Elixir · Bash · C# · JSON · TOML · YAML · Markdown — see
 [language support and limits](#languages).
 
-### No API key. No embeddings. No index server. No daemon.
+<p align="center"><img src="docs/assets/no-deps.svg"
+  alt="No API key. No embeddings. No index server. No daemon." width="470"></p>
 
 <details>
 <summary><b>One process, no server</b> — indexes this repository in <b>0.25 s</b> using <b>6.6 MB</b>, against <b>46.8 s</b> and <b>391 MB</b> for the graph-database MCP server it was measured against; warm queries answer in <b>197 ms</b> to its <b>1,082 ms</b></summary>
