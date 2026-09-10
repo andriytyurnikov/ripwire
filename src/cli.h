@@ -2592,6 +2592,28 @@ struct HelpFilter
     bool             hit     = false;             // Pick: anything served at all
 };
 
+// The Pick state machine, split out of the emit loop so each stays under the complexity bar and the
+// selection rule can be read on its own: a SECTION match serves until the next heading, an ENTRY match
+// serves that entry's continuations, and column-zero prose ends a served entry.
+inline bool helpPickKeeps( HelpFilter& f, HelpLine kind, std::string_view line ) noexcept
+{
+    if( kind == HelpLine::Section )
+    {
+        f.serving = helpSectionAnswersTo( line, f.want );
+        if( f.serving ) { f.wantIsSection = true; f.hit = true; }
+    }
+    else if( kind == HelpLine::Entry && !f.wantIsSection )
+    {
+        f.serving = helpEntryAnswersTo( line, f.want );
+        if( f.serving ) { f.hit = true; }
+    }
+    else if( kind == HelpLine::Loose && !f.wantIsSection )
+    {
+        f.serving = false;
+    }
+    return f.serving;
+}
+
 inline void emitHelpBlock( std::FILE* out, HelpFilter& f, std::string_view text ) noexcept
 {
     while( !text.empty() )
@@ -2603,37 +2625,9 @@ inline void emitHelpBlock( std::FILE* out, HelpFilter& f, std::string_view text 
         text.remove_prefix( take );
 
         const HelpLine kind = classifyHelpLine( line );
-        bool keep = false;
-
-        switch( f.tier )
-        {
-        case HelpTier::Full:
-            keep = true;
-            break;
-
-        case HelpTier::Concise:
-            keep = kind != HelpLine::Cont;
-            break;
-
-        case HelpTier::Pick:
-            if( kind == HelpLine::Section )
-            {
-                f.serving = helpSectionAnswersTo( line, f.want );
-                if( f.serving ) { f.wantIsSection = true; f.hit = true; }
-            }
-            else if( kind == HelpLine::Entry && !f.wantIsSection )
-            {
-                f.serving = helpEntryAnswersTo( line, f.want );
-                if( f.serving ) { f.hit = true; }
-            }
-            else if( kind == HelpLine::Loose && !f.wantIsSection )
-            {
-                f.serving = false;
-            }
-            keep = f.serving;
-            break;
-        }
-
+        const bool keep = f.tier == HelpTier::Full    ? true
+                        : f.tier == HelpTier::Concise ? kind != HelpLine::Cont
+                                                      : helpPickKeeps( f, kind, line );
         if( keep ) { std::fwrite( raw.data(), 1, raw.size(), out ); }
     }
 }
@@ -2651,6 +2645,23 @@ inline bool printUsageTier( std::FILE* out, HelpTier tier, std::string_view want
 
 /// Print the authoritative CLI usage and flag catalog to the caller-provided output stream.
 inline void printUsage( std::FILE* out ) noexcept { printUsageTier( out, HelpTier::Full, {} ); }
+
+// `--help=X` — tier 2. Its own function rather than an arm inside parseArgs, which is already the
+// most complex function in this file and does not need eleven more branches to serve a help selector.
+[[noreturn]] inline void serveHelpSelector( std::string_view want ) noexcept
+{
+    if( want == "all" ) { printUsage( stdout ); std::exit( 0 ); }
+    if( want.empty() )
+    {
+        std::fprintf( stderr, "ripwire: --help= needs a flag, a section name, or 'all' (e.g. --help=--for, --help=quality, --help=all)\n" );
+        std::exit( 2 );
+    }
+    if( printUsageTier( stdout, HelpTier::Pick, want ) ) { std::exit( 0 ); }
+    // An honest miss names the tier that WOULD have the answer rather than printing it unasked.
+    std::fprintf( stderr, "ripwire: --help=%.*s matched no flag or section — `ripwire --help` lists every row, `--help=all` is the whole catalog\n",
+                  int( want.size() ), want.data() );
+    std::exit( 2 );
+}
 
 // A parse error is not a request for the catalog. Forgetting the positional <dir> is the most likely
 // first-run mistake there is, and it used to answer with all 185 KB of tier 2 on stderr — ~46 000
@@ -4572,21 +4583,7 @@ inline Config parseArgs( int argc, char** argv ) noexcept
         // self-doc; first instinct must not error. Bare --help is TIER 1 (one line per row); --help=X
         // is tier 2 — the whole entry for one flag, one section, or `all` for the entire catalog.
         if( a == "--help" || a == "-h" ) { printUsageTier( stdout, HelpTier::Concise, {} ); std::exit( 0 ); }
-        if( a.starts_with( "--help=" ) )
-        {
-            const std::string_view want = a.substr( 7 );
-            if( want == "all" ) { printUsage( stdout ); std::exit( 0 ); }
-            if( want.empty() )
-            {
-                std::fprintf( stderr, "ripwire: --help= needs a flag, a section name, or 'all' (e.g. --help=--for, --help=quality, --help=all)\n" );
-                std::exit( 2 );
-            }
-            if( printUsageTier( stdout, HelpTier::Pick, want ) ) { std::exit( 0 ); }
-            // An honest miss names the tier that WOULD have the answer rather than printing it unasked.
-            std::fprintf( stderr, "ripwire: --help=%.*s matched no flag or section — `ripwire --help` lists every row, `--help=all` is the whole catalog\n",
-                          int( want.size() ), want.data() );
-            std::exit( 2 );
-        }
+        if( a.starts_with( "--help=" ) ) { serveHelpSelector( a.substr( 7 ) ); }   // never returns
 
         // --version — one line, exit 0. Version + compiler come from the SAME generated
         // version.h --help's "determinism" line points at (single source: project(ripwire VERSION ...)
