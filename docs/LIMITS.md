@@ -418,9 +418,9 @@ Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
 | `kForFileTailShownCap` | `24` | 814 | — |
 | `kForLensDefaultTopN` | `40` | 739 | — |
 | `kForPayloadBudgetBytes` | `7500` | 725 | — |
-| `kMaxExpandIncludes` | `24` | 4543 | inc= cap |
-| `kMaxExpandSibs` | `100` | 4534 | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
-| `kWithGraphNodeCap` | `8` | 5597 | — |
+| `kMaxExpandIncludes` | `24` | 4552 | inc= cap |
+| `kMaxExpandSibs` | `100` | 4543 | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
+| `kWithGraphNodeCap` | `8` | 5610 | — |
 
 ### `src/siblift.h`
 
