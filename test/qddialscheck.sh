@@ -324,5 +324,44 @@ rm -f "$DP/.ripwire_config"
     && ok "duplication: byte-identical run to run (deterministic)" || no "duplication: non-deterministic delta"
 
 
+# ── 6) error-masking: a block whose only content is a COMMENT is a swallow ───────────────────────────────
+# The kind fired ZERO times across 52 replayed documents and once in 1,177 committed acks, because all seven
+# of its rules require a LITERALLY empty block. Synthetic S2 (`catch(...){}`) was caught; S2b
+# (`catch( const std::exception& ) { /* ignore */ }`) was missed — and the comment is where a deliberate
+# swallow is most likely to be written down. The widening is measured at +0 rows over 40 replayed commits.
+EM="$WORK/mask"; mkdir -p "$EM/src"
+( cd "$EM" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false )
+cat > "$EM/src/m.cpp" <<'CPP'
+#include <stdexcept>
+#include <cstdio>
+int risky( int n );
+int guarded( int n ){
+    try { return risky( n ); }
+    catch( const std::runtime_error& e ) { return -1; }
+}
+int logged( int n ){
+    try { return risky( n ); }
+    catch( const std::runtime_error& e ) { std::fprintf( stderr, "bad" ); return -2; }
+}
+CPP
+( cd "$EM" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
+python3 - "$EM/src/m.cpp" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read()
+s=s.replace("catch( const std::runtime_error& e ) { return -1; }",
+            "catch( const std::runtime_error& e ) { /* deliberately ignored */ }")
+open(p,"w").write(s)
+PY
+OEM="$( cd "$EM" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+row "$OEM" error-masking guarded >/dev/null \
+    && ok "error-masking: a comment-only catch block is a swallow (synthetic S2b)" \
+    || { no "error-masking: the comment-only catch block was missed"; rows "$OEM"; }
+row "$OEM" error-masking logged >/dev/null \
+    && { no "error-masking: a catch that LOGS and returns was counted — a statement survives in it"; rows "$OEM"; } \
+    || ok "error-masking: a catch carrying a real statement is not a swallow"
+[ "$OEM" = "$( cd "$EM" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
+    && ok "error-masking: byte-identical run to run (deterministic)" || no "error-masking: non-deterministic delta"
+
+
 [ "$fail" = 0 ] && echo "qddialscheck: ALL PASS" || echo "qddialscheck: FAILURES"
 exit "$fail"
