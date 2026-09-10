@@ -411,6 +411,32 @@ struct AgentConfig
     std::function<bool()> isInstalled;
 };
 
+// A config root an ENV VAR relocates. TWO agents now have this shape, not one — opencode resolves
+// every path through xdg-basedir, and Claude Code reads CLAUDE_CONFIG_DIR — and hand-writing the
+// second lambda beside the first took agentDetector from 13 to 19 against a bar of 15, which is the
+// same refusal recorded below for the version before it. So the shape is a function: read the
+// variable, fall back to a home-relative default, append the fixed suffix, and accept one optional
+// second candidate. EMPTY IS UNSET, the rule envOr() and every ${VAR:-...} in the installers follow;
+// an alternate of "" means the agent has no second candidate, never a check against the empty path.
+inline std::function<bool()> relocatableRootDetector( const char* envVar, std::string fallbackRoot,
+                                                      std::string suffix, std::string alternate )
+{
+    return [ envVar, fallbackRoot = std::move( fallbackRoot ), suffix = std::move( suffix ),
+             alternate = std::move( alternate ) ]() -> bool
+    {
+        namespace fs = std::filesystem;
+        std::error_code   ec;
+        const char* const value = std::getenv( envVar );
+        const std::string root  = ( value && *value ) ? std::string( value ) : fallbackRoot;
+        if( fs::is_directory( root + suffix, ec ) && !ec )
+        {
+            return true;
+        }
+        ec.clear();
+        return !alternate.empty() && fs::is_directory( alternate, ec ) && !ec;
+    };
+}
+
 // Detection for ONE row. Split out of getAgentConfigs so that an agent's exception does not raise the
 // complexity of the loop that walks the table — --quality-delta refused the combined version (19 -> 24
 // against a bar of 15), and it was right: "how do we detect opencode" and "walk every row" are two
@@ -427,31 +453,14 @@ inline std::function<bool()> agentDetector( const AgentTarget& row, const std::s
     if( row.name == "claude" )
     {
         // CLAUDE_CONFIG_DIR relocates the entire config directory away from ~/.claude.
-        return [ home ]() -> bool
-        {
-            std::error_code ec;
-            const char*       ccd     = std::getenv( "CLAUDE_CONFIG_DIR" );
-            const std::string configDir = ( ccd && *ccd ) ? std::string( ccd ) : home + "/.claude";
-            return fs::is_directory( configDir, ec ) && !ec;
-        };
+        return relocatableRootDetector( "CLAUDE_CONFIG_DIR", home + "/.claude", "", "" );
     }
 
     if( row.name == "opencode" )
     {
         // opencode resolves every path through xdg-basedir, so ~/.config/opencode is the DEFAULT, not
         // the location — XDG_CONFIG_HOME relocates it. Accept ~/.opencode as the second candidate.
-        return [ home ]() -> bool
-        {
-            std::error_code   ec;
-            const char*       xdg  = std::getenv( "XDG_CONFIG_HOME" );
-            const std::string base = ( xdg && *xdg ) ? std::string( xdg ) : home + "/.config";
-            if( fs::is_directory( base + "/opencode", ec ) && !ec )
-            {
-                return true;
-            }
-            ec.clear();
-            return fs::is_directory( home + "/.opencode", ec ) && !ec;
-        };
+        return relocatableRootDetector( "XDG_CONFIG_HOME", home + "/.config", "/opencode", home + "/.opencode" );
     }
 
     const std::string expanded = ( row.homeDir.front() == '~' )

@@ -149,10 +149,12 @@ for path in targets():
     text = open( path, encoding="utf-8", errors="replace" ).read()
     if "CLAUDE_CONFIG_DIR" not in text:
         continue
-    reverted = text.replace( "${CLAUDE_CONFIG_DIR:-$HOME/.claude}", "$HOME/.claude" ) \
-                   .replace( "${CLAUDE_CONFIG_DIR:-~/.claude}",     "~/.claude" ) \
-                   .replace( 'std::getenv( "CLAUDE_CONFIG_DIR" )',  'nullptr /* reverted */' ) \
-                   .replace( 'envOr( "CLAUDE_CONFIG_DIR", ',        'std::string( ' )
+    # A SEMANTIC revert, not a list of spellings: collapse every ${CLAUDE_CONFIG_DIR:-X} to its
+    # default X, and rename the C++ string literal so no getenv/envOr/helper call reaches it. Keying
+    # on the variable NAME rather than on the four call shapes is what keeps this arm alive across a
+    # refactor — the shapes moved once already in this very branch.
+    reverted = re.sub( r"\$\{CLAUDE_CONFIG_DIR:-([^}]*)\}", r"\1", text )
+    reverted = reverted.replace( '"CLAUDE_CONFIG_DIR"', '"RIPWIRE_MUTATION_CONTROL_UNREAD"' )
     lines = reverted.splitlines()
     for i, line in enumerate( lines ):
         col = line.find( ".claude" )
