@@ -24,6 +24,7 @@ int targetSymbol() { return gammaNode(); }
 int classify() { return targetSymbol(); }
 int report() { return classify(); }
 int summary() { return report(); }
+int patch() { return summary(); }
 int computeBudget( int rawBytes )
 {
     int budget = rawBytes / 2;
@@ -31,7 +32,19 @@ int computeBudget( int rawBytes )
     return budget + reserve;
 }
 SRC
-git -C "$REPO" add router.cpp
+# A config file is part of the fixture on purpose: its keys index as t="sec" symbols with names that are
+# ordinary English words, which is the collision class the weak symbol tier draws its false positives from
+# (an English word meets a JSON key far more often than a function). Without a t="sec" row in the fixture
+# the kind-filter arms below cannot fail, and the class stayed invisible to this gate until 2026-09-10.
+cat >"$REPO/package.json" <<'JSON'
+{
+  "name": "router-fixture",
+  "version": "1.2.3",
+  "license": "MIT",
+  "notes": "fixture package for the router gate"
+}
+JSON
+git -C "$REPO" add router.cpp package.json
 git -C "$REPO" commit -qm base
 route(){ "$BIN" "$REPO" --no-cache --help-task="$1" 2>"$TMP/err"; }
 
@@ -59,7 +72,7 @@ case "$EC" in *'status="recommend"'*'intent="edit-contract"'*'--edit-check='*'ta
 # word"; sentence POSITION is the real discriminator, so these arms assert both directions of it. The two
 # recall arms are red against a pre-fix binary (both abstained, resolved_symbols="0"); the four precision
 # arms are the guard that the relaxation did not buy recall with prose false-positives.
-LW="$( route 'How does classify work?' )"
+LW="$( route 'Explain the implementation of classify' )"
 case "$LW" in *'status="recommend"'*'intent="understand-symbol"'*'--expand='*'classify'*) ok "lowercase name in an understand slot -> --expand";; *) no "lowercase understand route wrong: $LW";; esac
 LE="$( route 'I just edited classify; did I change its contract?' )"
 case "$LE" in *'status="recommend"'*'intent="edit-contract"'*'--edit-check='*'classify'*) ok "lowercase name in a post-edit slot -> --edit-check";; *) no "lowercase edit-contract route wrong: $LE";; esac
@@ -74,6 +87,36 @@ LS="$( route 'How does classify work? I just edited classify and report and summ
 case "$LS" in *'--connect='*) no "several lowercase words minted a --connect route: $LS";; *) ok "several lowercase words never mint --connect";; esac
 LC="$( route 'how do classify, report and summary connect?' )"
 case "$LC" in *'--connect='*) no "three lowercase words minted a --connect route: $LC";; *) ok "three lowercase words never satisfy the three-symbol --connect";; esac
+
+# ── the weak tier may not confirm itself, and may not read a config key as code (2026-09-10) ───────────
+# Two independent defects, two independent arms each; all four recommend-side arms are RED against a
+# pre-change binary (each recommended understand-symbol with an --expand).
+#
+# (1) SELF-CONFIRMATION. `does` was a symbol-slot cue AND `how does` is the understand-symbol gate, so
+#     "how does <indexed-word> …?" minted the very symbol the gate then required — the words are the same
+#     two words. Same for `understand` as cue and `understand` as gate. An intent word is evidence about
+#     what the user WANTS; it may never double as the positional evidence that they NAMED something.
+#     Cost, stated plainly: the bare "How does classify work?" spelling no longer routes. That recall is
+#     reachable through any cue the gate does not itself consume — the LW arm above ("the implementation
+#     of classify") is that same weak lowercase name, still resolving, still routing to --expand.
+# (2) KIND. A t="sec" row is a markdown heading or a JSON/TOML/YAML key. `version` is a config key here
+#     and in most repos; --expand='version' then answers with `"version": "1.2.3"` at exit 0. A weak
+#     reading must be backed by a CODE definition; a strong (camel/snake/scoped) mention is untouched.
+SC1="$( route 'how does patch Tuesday affect our support load?' )"
+case "$SC1" in *'--expand='*) no "the understand gate minted its own symbol out of 'how does': $SC1";; *) ok "'how does <word>' never mints the symbol its own gate requires";; esac
+SC2="$( route 'How does classify work?' )"
+case "$SC2" in *'--expand='*) no "self-confirming 'how does' route still fires on a real function: $SC2";; *) ok "'how does <fn>' abstains — the gate word may not be the cue (recall via the slot arm above)";; esac
+SC3="$( route 'I want to understand summary writing for the leadership review' )"
+case "$SC3" in *'--expand='*) no "the understand gate minted its own symbol out of 'understand': $SC3";; *) ok "'understand <word>' never mints the symbol its own gate requires";; esac
+KF1="$( route 'Explain the implementation of version' )"
+case "$KF1" in *'--expand='*) no "a t=sec config key resolved as a weak symbol: $KF1";; *) ok "a config-key-only name never resolves from the weak tier";; esac
+# The kind filter is scoped to the WEAK tier: an identifier-shaped mention still resolves whatever it names.
+KF2="$( route 'Explain the implementation of targetSymbol' )"
+case "$KF2" in *'status="recommend"'*'intent="understand-symbol"'*'--expand='*'targetSymbol'*) ok "an identifier-shaped mention still resolves (kind filter is weak-tier only)";; *) no "kind filter leaked into strong mentions: $KF2";; esac
+# And --expand on the config key is the answer the router would have handed over: still a real command,
+# just never one the router mints out of prose. (Run it: the honesty is that this is what it returns.)
+KF3="$( "$BIN" "$REPO" --no-cache --expand='version' )"
+case "$KF3" in *'"version": "1.2.3"'*) ok "the refused route's own command really does answer with a JSON key";; *) no "the kind-filter premise no longer holds: --expand=version returned something else";; esac
 
 # ── paraphrase tolerance: neither intent may recognise only the wording it was written against ─────────
 # exact-grep and edit-contract shipped as fixed OR-chains of four or five literal phrases. These six are

@@ -150,6 +150,40 @@ inline constexpr std::string_view kWeakSymbolCues[] = {
 
 inline constexpr std::size_t kMinWeakSymbolLen = 5;
 
+// A cue occurrence that is ALSO the word satisfying an intent gate is not evidence of a symbol slot.
+// Without this the understand-symbol route confirms itself out of thin air: its gate is
+// `understand | implementation | how does`, and `does`/`understand` were both symbol-slot cues, so every
+// English question of the form `how does <indexed-word> …?` minted the very symbol the gate then required
+// — the same two words playing both parts (a question about version bumping on a team recommended
+// --expand='version', 13 of 25 adversarial prose prompts, 2026-09-10 audit F-R1-01). An intent word is
+// evidence about what the user WANTS; it may never double as the positional evidence that they NAMED
+// something. Only occurrences are disqualified, never words: a LATER cue in the same task still resolves
+// the name (a how-does question that later asks for the body OF the same name routes on that `of`), which is what
+// keeps the rule about self-confirmation rather than about the weak tier as a whole. Kept next to the cue
+// table, and complete with respect to that gate's three phrases — `implementation` is not a cue at all.
+inline bool cueOccurrenceIsIntentGate( std::string_view lowerTask, std::size_t begin, std::string_view cue ) noexcept
+{
+    if( cue == "understand" || cue == "understanding" )
+    {
+        return true;   // the gate reads `has( lower, "understand" )`, which this occurrence already satisfies
+    }
+    if( cue != "does" )
+    {
+        return false;
+    }
+    std::size_t end = begin;
+    while( end > 0 && lowerTask[end - 1] == ' ' )
+    {
+        --end;
+    }
+    std::size_t from = end;
+    while( from > 0 && wordByte( lowerTask[from - 1] ) )
+    {
+        --from;
+    }
+    return lowerTask.substr( from, end - from ) == "how";   // "how does" IS the gate
+}
+
 // True when the word immediately before `pos` is a symbol-slot cue. `lowerTask` is the lowercased task,
 // so the comparison is a plain equality. Opening quotes and backticks between the cue and the name are
 // stepped over — they are themselves symbol evidence, never separators.
@@ -167,8 +201,26 @@ inline bool precededBySymbolCue( std::string_view lowerTask, std::size_t pos ) n
         --begin;
     }
     const std::string_view word = lowerTask.substr( begin, end - begin );
-    return std::any_of( std::begin( kWeakSymbolCues ), std::end( kWeakSymbolCues ),
-                        [word]( const std::string_view cue ) { return cue == word; } );
+    if( std::none_of( std::begin( kWeakSymbolCues ), std::end( kWeakSymbolCues ),
+                      [word]( const std::string_view cue ) { return cue == word; } ) )
+    {
+        return false;
+    }
+    return !cueOccurrenceIsIntentGate( lowerTask, begin, word );
+}
+
+// A WEAK reading needs the name to be backed by a CODE definition. A t="sec" row is a markdown heading or
+// a JSON/TOML/YAML config key — doc structure and data, isolated in the call graph — and an ordinary
+// English word collides with those far more often than with a function: six of the thirteen names the
+// weak tier falsely resolved on adversarial prose existed ONLY as t="sec" (`version`, `summary`,
+// `license`, `agent`, `author`, `notes` — 2026-09-10 audit F-R1-02), so --expand='version' answered with
+// `"version": "1.2.3"` out of a package.json at exit 0. The filter is scoped to the weak tier: an
+// identifier-shaped (camel/snake/scoped) mention still resolves whatever kind it names, because there the
+// SHAPE is the evidence. Rank is deliberately not part of this test — k is 0.0000 for nearly every row in
+// any large corpus, so gating on it would make resolution depend on corpus size.
+inline bool weakEvidenceKind( SymKind kind ) noexcept
+{
+    return kind != SymKind::Section;
 }
 
 // A name with no identifier punctuation and no capital is a WEAK match: it might be a symbol mention, or
@@ -237,6 +289,10 @@ inline std::vector<std::string> resolveTaskSymbols( std::string_view task, const
         if( !at.matched )
         {
             continue;
+        }
+        if( !at.strong && !weakEvidenceKind( sym.kind ) )
+        {
+            continue;   // this definition is a heading or a config key — no weak evidence (see weakEvidenceKind)
         }
         std::vector<At>& bucket = at.strong ? found : weak;
         const bool duplicate = std::any_of( bucket.begin(), bucket.end(), [&]( const At& s ) { return s.name == sym.name; } );

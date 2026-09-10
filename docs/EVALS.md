@@ -2205,6 +2205,65 @@ checks into their own `flowTaskChoice` function (mirroring the existing `instrum
 extraction) and by inlining the small filler-word loop directly rather than introducing a shared
 helper that collided token-for-token with `weakSymbolCandidate`'s existing shape.
 
+### `--help-task` weak-tier precision: the self-confirming gate and the config-key read (2026-09-10)
+
+**The defect, in one sentence each.** `does` was a symbol-slot cue AND `how does` is the
+`understand-symbol` gate, so *"how does &lt;indexed-word&gt; …?"* minted the very symbol the gate then
+required — **13 of 25** adversarial prose prompts recommended `--expand=&lt;English word&gt;`
+(audit F-R1-01/04; the Codex `UserPromptSubmit` hook injects that answer into a live session at
+`confidence="high"`). And `resolveTaskSymbols` had no kind filter, so **6 of those 13** names existed
+only as `t="sec"` rows — JSON keys and markdown headings — and `--expand='version'` answered with
+`"version": "1.2.3"` out of a `package.json`, exit 0, no disclosure (F-R1-02).
+
+**Why the corpus said `harmful=0.000` throughout.** `bench/taskroute_eval.py::make_repo` built a
+fixture repo whose every symbol was camelCase or Pascal. The weak tier only fires on all-lowercase
+names, so **no corpus row could reach it**: the class was invisible by construction, not by luck.
+This is the same shape as the 2026-08-28 round's own finding — a measured precision of 1.000 over a
+population that excludes the failure. The fixture repo now carries both halves of the collision
+class (nine lowercase code definitions, plus a `package.json` whose keys index as `t="sec"`), and
+the 158 pre-existing rows are **byte-identical on (status, intent, resolved_symbols)** across that
+fixture change — the new symbols are reachable only from the new rows.
+
+**The rule that shipped.** An intent word is evidence about what the user WANTS; it may never
+double as the positional evidence that they NAMED something. `cueOccurrenceIsIntentGate`
+disqualifies exactly the cue OCCURRENCE that satisfies the gate (`understand`/`understanding`
+anywhere, `does` when preceded by `how`) — never the word, so a later independent cue in the same
+task still resolves the name. Plus `weakEvidenceKind`: a weak reading must be backed by a
+non-`Section` definition; an identifier-shaped mention is untouched, because there the SHAPE is the
+evidence. Rank is deliberately NOT part of the kind test (`k` is 0.0000 for nearly every row of any
+large corpus, so gating on it would make resolution depend on corpus size).
+
+**Coverage cost, named rather than summarised.** Exactly one shape is given up: the bare
+*"How does &lt;lowercase-name&gt; work?"* spelling now abstains, and `test/taskroutecheck.sh`'s arm for it
+is inverted into an assertion of the new invariant. The same weak lowercase name still routes to
+`--expand` through any cue the gate does not consume (*"the implementation of classify"*), which is
+what makes this a rule about self-confirmation rather than a retreat from the weak tier. **No corpus
+row lost its route**: every confusion line on both splits is identical to the pre-round run.
+
+**Measured, pre-change binary → post-change binary, same corpus (189 rows), same day:**
+
+| Set | Rows | Metric | Before | After |
+| --- | ---: | --- | ---: | ---: |
+| audit set A (2026-08-28 shape) | 25 | false recommends | 0 | **0** |
+| audit set B (word after a cue) | 25 | false recommends | **13** | **0** |
+| `prompts.tsv` test | 89 | precision / harmful / neg-spec | 0.797 / 0.135 / 0.657 | **1.000 / 0.000 / 1.000** |
+| `prompts.tsv` test | 89 | accuracy / coverage | 0.787 / 0.870 | **0.921** / 0.870 |
+| `prompts.tsv` dev | 100 | precision / harmful / neg-spec | — | **1.000 / 0.000 / 1.000** |
+| `prompts.tsv` dev | 100 | accuracy / coverage | — | **0.940** / 0.920 |
+| `prompts.tsv` all | 189 | precision / harmful | 0.879 / 0.085 | **1.000 / 0.000** |
+| 158 pre-existing rows | 158 | (status, intent, resolved_symbols) diff | — | **0 differing rows** |
+
+The pre-change `split=test` run **exits 1** on the grown corpus (precision under the 0.90 floor,
+harm over 0.02, specificity under 0.90), and four `test/taskroutecheck.sh` arms are red against the
+pre-change binary — the red-first proof that the corpus and the gate can now see this class. The map
+itself is untouched: default map, `--for`, `--grep` and `--pack-task` are byte-identical between the
+two binaries on this repo, and `src/taskroute.h` is included by exactly one translation unit.
+
+**The 2026-08-28 set is not in the repo.** That round's 20 adversarial prompts were never committed
+(`git log -S`, whole-tree grep: absent). Set A above — 25 prompts of the same shape, containing that
+round's own repro string verbatim — is the stand-in, and it was 0/25 both before and after: the
+sentence-POSITION fix that round shipped did not regress; it was defeated by a phrasing it never saw.
+
 ### Skill-routing surface forms — S1b round, PRE-REGISTERED 2026-08-19 (before any skill edit)
 
 **Why this round exists, and why it is close to one already rejected.** The S1 round above ran a

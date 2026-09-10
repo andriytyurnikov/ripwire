@@ -157,3 +157,75 @@ resolves" shape and the "wording never scores" shape per intent.
 
 **Seal: sha256(prompts.tsv) = `b113a217a19237a1616f81fe412b06475df848e5974214f1efc496db2519dcc0`**
 (post-round; rows=158, dev=92, test=66).
+
+## Weak-tier precision round (2026-09-10, lane/helptask-precision)
+
+**Why the corpus grew.** The 2026-09-10 audit (F-R1-01/02) showed the weak symbol tier recommending
+`--expand=<English word>` on 13 of 25 adversarial prose prompts, and the committed corpus scoring
+`harmful=0.000` throughout — because **the evaluator's fixture repo had no lowercase English-word
+symbols at all**. Every name in `make_repo` was camelCase or Pascal, so no row could reach the weak
+tier, and the class was invisible by construction. Two things changed together, and neither is
+useful without the other:
+
+- `bench/taskroute_eval.py::make_repo` gained nine lowercase code definitions (`classify`, `report`,
+  `patch`, `header`, `prefix`, `audit`, `release`, `target`, `binary`) and a `package.json` whose keys
+  index as `t="sec"` symbols (`version`, `summary`, `license`, `agent`, `author`, `notes`) — the two
+  halves of the collision class: an English word that IS code, and an English word that is only a
+  config key. `test/taskroutecheck.sh`'s own fixture repo gained the same two halves (`patch`, plus a
+  `package.json` carrying `version`/`license`/`notes`).
+- **Measured control:** on the 158 pre-existing rows the extended fixture repo changed nothing —
+  `split=test/dev/all` accuracy, precision, harm, specificity, coverage and every confusion line are
+  byte-identical before and after the repo grew (same pre-change binary). The new symbols are reachable
+  only from the new rows.
+
+**Rows added: 31 (23 test, 8 dev).** Split by the same content-hash rule
+(`sha256(prompt)[0] < 0x4D → dev`), computed mechanically per row.
+
+- **25 negatives, `provenance=handwritten-auditR1`** — the audit's own adversarial set
+  (`$S/r1/s2b_adversarial.tsv`), quoted verbatim as evidence: non-code questions whose subject word is
+  also an indexed name, placed directly after a symbol-slot cue. 13 of them recommended before this
+  round. They are recorded under a `handwritten*` provenance deliberately, so the trigram screen and
+  the split rule both apply to them.
+- **3 negatives, `provenance=instrumented-cli`** — the `t="sec"` half stated in the understand card's
+  own closed vocabulary (`the implementation of version|license|author`). These are caught ONLY by the
+  kind filter: their intent word is disjoint from the cue that mints the name, so the
+  self-confirmation rule never sees them. Same `instrumented-cli` rationale as the 2026-09-02 section
+  above (a paraphrase that still triggers a closed-phrase intent necessarily reuses a card phrase).
+- **3 positives (`understand-symbol`), `provenance=instrumented-cli`** — the recall the fix must NOT
+  buy its precision with: a lowercase weak name still routing to `--expand` through a cue the gate does
+  not itself consume (`the implementation of prefix`, `the implementation of audit`), and the sharpest
+  statement of the invariant — a how-does question that later asks for the body OF the same name, which
+  routes on that second, independent cue occurrence.
+
+**Screen result: 2 flagged lines, one pre-existing and one new, both stated rather than reworded.**
+`python3 test/taskroutefix/contamination_screen.py --bin build/ripwire`:
+
+- `line 61, 'i change its'` — the pre-existing `handwritten-digD-10` flag documented in the 2026-09-02
+  section above. Unchanged, still out of scope.
+- `line 176, 'the value of'` — new, on the negative row *what is the value of module thinking in org
+  design?*. The trigram collides with the `kVariableSlotCues` literal `"the value of"`. It is not
+  reworded, for two reasons: the row is audit evidence quoted verbatim, and card vocabulary inside a
+  NEGATIVE row is adversarial pressure (a live cue phrase that must still not route), the opposite of
+  the self-quotation the screen exists to catch. The screen makes no positive/negative distinction and
+  was deliberately not taught one to pass this round.
+
+`FIXTURE_SYMBOLS` in the screen was deliberately NOT extended with the new lowercase names: they are
+ordinary English words, so exempting them would blank real prose out of every screened row and hide
+flags the screen is there to raise.
+
+**Scoring run, same binary, three splits** (`python3 bench/taskroute_eval.py --bin build/ripwire
+--corpus test/taskroutefix/prompts.tsv --split …`), pre-change binary → post-change binary:
+
+| split | rows | accuracy | precision | harmful | neg-specificity | coverage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| test | 89 | 0.787 → **0.921** | 0.797 → **1.000** | 0.135 → **0.000** | 0.657 → **1.000** | 0.870 → 0.870 |
+| dev | 100 | — → **0.940** | — → **1.000** | — → **0.000** | — → **1.000** | — → 0.920 |
+| all | 189 | 0.847 → **0.931** | 0.879 → **1.000** | 0.085 → **0.000** | 0.733 → **1.000** | 0.899 → 0.899 |
+
+The pre-change `split=test` run **exits 1** (precision below the 0.90 floor, harm above 0.02,
+specificity below 0.90): the corpus can now fail on this class, which is the whole point of the round.
+Coverage is unmoved and every confusion line is identical to the pre-round run — no actionable row lost
+its route.
+
+**Seal: sha256(prompts.tsv) = `25283f2eba85aad889fe3746308df76ed8b1244529f44986c936eb6ef60b0b53`**
+(post-round; rows=189, dev=100, test=89).

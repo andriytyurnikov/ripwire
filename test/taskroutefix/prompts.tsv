@@ -157,3 +157,34 @@ dev	clean	who-writes	handwritten-digE	who modifies StorageDriver once the pipeli
 dev	clean	who-writes	handwritten-digE	who sets renderXmlRow before the page ships
 dev	clean	abstain	handwritten-digE	the failure happened somewhere around line 12 but I do not have a filename yet
 test	clean	abstain	handwritten-digE	the dashboard numbers on the nightly run look stale and nobody can say why
+test	clean	abstain	handwritten-auditR1	how does version bumping work on this team?
+test	clean	abstain	handwritten-auditR1	how does release week usually go for you all?
+dev	clean	abstain	handwritten-auditR1	I want to understand budget season better before the offsite
+test	clean	abstain	handwritten-auditR1	how does summary writing help the leadership review?
+test	clean	abstain	handwritten-auditR1	what is the cost of legend placement on the marketing page?
+dev	clean	abstain	handwritten-auditR1	how does license renewal get approved?
+dev	clean	abstain	handwritten-auditR1	tell me about the process of owners meeting every month
+test	clean	abstain	handwritten-auditR1	how does patch Tuesday affect our support load?
+dev	clean	abstain	handwritten-auditR1	the price of release candidates in engineer time is too high
+dev	clean	abstain	handwritten-auditR1	how does audit season work at a company this size?
+test	clean	abstain	handwritten-auditR1	the concept of baseline expectations for a new hire
+dev	clean	abstain	handwritten-auditR1	how does agent onboarding differ from employee onboarding?
+test	clean	abstain	handwritten-auditR1	I need to understand author attribution rules for the paper
+test	clean	abstain	handwritten-auditR1	the idea of brief writing as a leadership skill
+dev	clean	abstain	handwritten-auditR1	how does header design affect the newsletter open rate?
+test	clean	abstain	handwritten-auditR1	the notion of active listening in one-on-ones
+test	clean	abstain	handwritten-auditR1	what is the value of module thinking in org design?
+test	clean	abstain	handwritten-auditR1	how does notes taking work best in a long meeting?
+dev	clean	abstain	handwritten-auditR1	the practice of build weeks every quarter
+test	clean	abstain	handwritten-auditR1	how does target setting work for the sales team?
+test	clean	abstain	handwritten-auditR1	what does result orientation mean for performance reviews?
+test	clean	abstain	handwritten-auditR1	the cost of update fatigue among our customers
+test	clean	abstain	handwritten-auditR1	how does prefix branding work for product families?
+test	clean	abstain	handwritten-auditR1	the role of parent companies in this acquisition
+test	clean	abstain	handwritten-auditR1	how does binary thinking hurt a design discussion?
+test	clean	abstain	instrumented-cli	explain the implementation of version to the new hire
+test	clean	abstain	instrumented-cli	i need to understand the implementation of license terms for this quarter
+test	clean	abstain	instrumented-cli	walk me through the implementation of author guidelines for the newsletter
+test	clean	understand-symbol	instrumented-cli	walk me through the implementation of prefix before i touch it
+test	clean	understand-symbol	instrumented-cli	i want to understand the implementation of audit end to end
+test	clean	understand-symbol	instrumented-cli	how does classify work? show me the body of classify
