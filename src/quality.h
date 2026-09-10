@@ -1642,6 +1642,150 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
     return shaKeyedCachePath( "qheadsnap", repoHex, exclHex, headSha );
 }
 
+// P1-1 (2026-09-10 full audit) — THE PIN KEY. Every cache blob's filename carries the SAME 16-hex root
+// field: `defaultCachePath` writes `ripwire-<rootHex>-{lean,rich}.bin` and `shaKeyedCachePath` writes
+// `ripwire-<family>-<rootHex>-<exclHex>-<shaHex>.bin`, and `headSnapRepoHex` above hashes exactly the
+// material `defaultCachePath` does (fnv1a64 of realpath(root)), so ONE root's every family — lean, rich,
+// qheadsnap, qsnap, qbody, qhist, qms, qchurn, stier — spells the same key in the same place. That makes
+// "which root does this blob belong to?" answerable from the NAME alone, with no plumbing: the byte-budget
+// sweep reads the key off the very blob it is about to write (`keepPath`) and pins its siblings.
+//
+// The rule is positional-free on purpose: return the FIRST '-'-delimited field that is exactly 16 hex
+// digits. No family tag is 16 characters of hex ("qheadsnap", "qsnap", "qbody", "qhist", "qms", "qchurn",
+// "stier"), so the first such field is the root key in BOTH filename shapes, and a foreign or legacy blob
+// that carries no such field yields "" — which pins nothing and evicts exactly as it did before.
+inline std::string cacheBlobRootKey( std::string_view blobName ) noexcept
+{
+    const auto isHex16 = []( std::string_view f ) noexcept
+    {
+        if( f.size() != 16 )
+        {
+            return false;
+        }
+        for( const char c : f )
+        {
+            if( !std::isxdigit( static_cast<unsigned char>( c ) ) )
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::size_t at = 0;
+    while( at < blobName.size() )
+    {
+        const std::size_t      dash  = blobName.find( '-', at );
+        const std::string_view field = blobName.substr( at, dash == std::string_view::npos ? std::string_view::npos : dash - at );
+        if( isHex16( field ) )
+        {
+            return std::string( field );
+        }
+        if( dash == std::string_view::npos )
+        {
+            break;
+        }
+        at = dash + 1;
+    }
+    return std::string{};
+}
+
+// One matching cache artifact as the sweep sees it: what it costs, how old it is, where it is. Hoisted out
+// of evictOldCacheFamily's body so the byte-budget pass below can be its own function rather than a third
+// in-line pass inside an already-long one.
+struct CacheBlobStat
+{
+    std::filesystem::file_time_type mtime;
+    std::uintmax_t                  byteSize;
+    std::string                     path;
+};
+
+// P1-1 (2026-09-10 full audit) — THE BYTE-BUDGET PASS: delete oldest-first until the family is under a
+// LOW-WATER mark of 7/8 budget, taking OTHER roots' blobs first and the MRU root's last. Returns the blobs
+// that survived. `mine` arrives unsorted; it is sorted oldest-first here.
+//
+// THE LOW-WATER MARK is F6's live-cache finding (B7.4, 2026-07-14): trimming to exactly the budget left the
+// dir hovering AT the ceiling, so every subsequent process re-crossed it on its first write and paid
+// deletion work on every save — sweeping to low water buys ~12% burst headroom and makes the common
+// next-process sweep a scan-only no-op.
+//
+// WHOSE BLOB GOES FIRST. Oldest-first alone is wrong at scale, and it was measured wrong: one llvm-project
+// root needs 1.76 GB for its OWN two families (rich 1.19 GB + lean 0.57 GB) against a 2 GB budget, so a
+// second corpus — or one --edit-check HEAD snapshot (0.52 GB) — made the sweep delete the SIBLING FAMILY OF
+// THE ROOT THE USER IS WORKING IN, the one thing they are certain to need next. Identical argv, same
+// session, same binary: `--grep` 20 s → 206 s, `--for` 19 s → 268 s, and SELF-SUSTAINING, because each cold
+// run's own save then evicts the other family again. `keepPath` alone never covered it: the blob being
+// written is precisely the family we are NOT about to need. src/main.cpp:181-189 already records the same
+// mechanism as a registered negative for a different key change ("the cache directory's 2 GiB cap evicts the
+// blob a running gate is about to reuse"). The BUDGET IS NOT LOWERED (owner rule
+// `quality-first-caps-are-blowup-guards`) — the ORDER is what changes, and the pin costs no state and no
+// stat: the root key is read off `keepPath`, i.e. whoever is writing IS the most-recently-used root.
+//
+// WHY ONLY THIS PASS IS PINNED. The age pass stays unpinned deliberately: a blob nobody has touched in 30
+// days is stale by that policy's own definition and losing it costs ONE cold parse, not a ping-pong —
+// whereas a blob evicted here is, by construction, one this very root just used.
+//
+// DISCLOSURE, and the reason P1-1 stayed invisible: all four measured 250 s runs wrote 0 bytes to stderr.
+// Conditional by construction — a sweep that frees nothing and is not over budget on its pinned set alone
+// says nothing at all, so no ordinary run, and no gate that compares stderr, grows a line. Plain emits,
+// NEVER DEGRADED_PATH_ALERT: NDEBUG compiles that out, and a Release binary is exactly where a 10x
+// slowdown needs to be visible.
+inline std::vector<CacheBlobStat> evictBySizeBudget( std::vector<CacheBlobStat>& mine, const std::string& dir,
+                                                     const std::string& keepPath, std::uintmax_t maxTotalBytes )
+{
+    namespace fs = std::filesystem;
+
+    std::uintmax_t totalBytes = 0;
+    for( const CacheBlobStat& b : mine )
+    {
+        totalBytes += b.byteSize;
+    }
+    if( totalBytes <= maxTotalBytes )
+    {
+        return std::move( mine );
+    }
+
+    const std::string    pinRootKey    = cacheBlobRootKey( fs::path( keepPath ).filename().string() );
+    const std::uintmax_t lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
+    std::sort( mine.begin(), mine.end(), []( const CacheBlobStat& a, const CacheBlobStat& b ){ return a.mtime < b.mtime; } );   // oldest first
+
+    std::vector<CacheBlobStat> kept;
+    kept.reserve( mine.size() );
+    std::size_t    evictedCount = 0;
+    std::uintmax_t pinnedBytes  = 0;
+    for( const CacheBlobStat& b : mine )
+    {
+        const bool pinned = b.path == keepPath
+                         || ( !pinRootKey.empty() && cacheBlobRootKey( fs::path( b.path ).filename().string() ) == pinRootKey );
+        if( pinned )
+        {
+            pinnedBytes += b.byteSize;
+        }
+        else if( totalBytes > lowWaterBytes )
+        {
+            std::error_code de;
+            fs::remove( fs::path( b.path ), de );
+            totalBytes -= b.byteSize;
+            ++evictedCount;
+            continue;
+        }
+        kept.push_back( b );
+    }
+
+    constexpr std::uintmax_t kMiB = 1024ull * 1024;
+    if( evictedCount > 0 )
+    {
+        rw::emitTo( stderr, "ripwire: cache {}: over its {} MiB budget — evicted {} blob(s) of other roots (this root's own families are kept)\n",
+                      dir.c_str(), maxTotalBytes / kMiB, evictedCount );
+    }
+    if( totalBytes > maxTotalBytes )
+    {
+        rw::emitTo( stderr, "ripwire: cache {}: this root's own families are {} MiB, past the {} MiB budget — kept anyway (evicting one costs a full re-parse)\n",
+                      dir.c_str(), pinnedBytes / kMiB, maxTotalBytes / kMiB );
+    }
+    return kept;
+}
+
 // Hygiene: within one (repo, excludes) FAMILY, keep at most `keep` HEAD-snapshot cache files (newest by mtime);
 // delete older ones so HEAD-sha churn (a new file per commit) cannot grow the cache dir without bound. Scoping
 // per family (repoHex-exclHex prefix) — not per bare repo — means alternating --exclude configs do not evict
@@ -1666,14 +1810,17 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
 // subdirectories, "00".."ff") — so a family's blobs are found and evicted correctly regardless of which
 // layout wrote them, and a mid-migration mix of both is swept as one set. The 256 shard names are an EXACT,
 // bounded set (never an open-ended recursive walk of a shared $TMPDIR that may hold unrelated large trees).
+//
+// P1-1: the byte-budget pass additionally PINS the root `keepPath` belongs to (see evictBySizeBudget). That
+// needs no new parameter and no plumbing — the pin key is a function of `keepPath`, which every call site
+// already passes — and it cannot reach the keep-N call sites below, which run with maxTotalBytes == 0.
 inline void evictOldCacheFamily( const std::string& dir, const std::string& prefix,
                                  const std::string& keepPath, std::size_t keep,
                                  double maxAgeDays = 0.0, std::uintmax_t maxTotalBytes = 0 )
 {
     namespace fs = std::filesystem;
 
-    struct Blob { fs::file_time_type mtime; std::uintmax_t byteSize; std::string path; };
-    std::vector<Blob> mine;
+    std::vector<CacheBlobStat> mine;
     const auto matches = [ & ]( const std::string& name )
     {
         if( name.size() < prefix.size() || name.compare( 0, prefix.size(), prefix ) != 0 )
@@ -1713,7 +1860,7 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
             }
             std::error_code se;
             const auto sz = sit->file_size( se );
-            mine.push_back( Blob{ mt, se ? std::uintmax_t( 0 ) : sz, sit->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
+            mine.push_back( CacheBlobStat{ mt, se ? std::uintmax_t( 0 ) : sz, sit->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
         }
     };
 
@@ -1754,7 +1901,7 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
         }
         std::error_code se;
         const auto sz = it->file_size( se );
-        mine.push_back( Blob{ mt, se ? std::uintmax_t( 0 ) : sz, it->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
+        mine.push_back( CacheBlobStat{ mt, se ? std::uintmax_t( 0 ) : sz, it->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
     }
     for( const fs::path& sd : shardDirs )
     {
@@ -1766,9 +1913,9 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
     {
         const auto ageBudget = std::chrono::duration_cast<fs::file_time_type::duration>( std::chrono::duration<double, std::ratio<86400>>( maxAgeDays ) );
         const auto cutoff = fs::file_time_type::clock::now() - ageBudget;
-        std::vector<Blob> kept;
+        std::vector<CacheBlobStat> kept;
         kept.reserve( mine.size() );
-        for( const Blob& b : mine )
+        for( const CacheBlobStat& b : mine )
         {
             if( b.mtime < cutoff && b.path != keepPath )
             {
@@ -1781,43 +1928,17 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
         mine.swap( kept );
     }
 
-    // size pass: if the family is still over budget, delete oldest-first until under a LOW-WATER mark of
-    // 7/8 budget (disabled when maxTotalBytes == 0). The hysteresis is F6's live-cache finding (B7.4,
-    // 2026-07-14): trimming to exactly the budget left the dir hovering AT the ceiling, so every subsequent
-    // process re-crossed it on its first write and paid deletion work on every save — sweep-to-low-water
-    // buys ~12% burst headroom and makes the common next-process sweep a scan-only no-op.
+    // size pass — the byte budget, its eviction order and its disclosure all live in evictBySizeBudget
+    // above (disabled when maxTotalBytes == 0, which is every keep-N call site below).
     if( maxTotalBytes > 0 )
     {
-        const std::uintmax_t lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
-        std::uintmax_t totalBytes = 0;
-        for( const Blob& b : mine )
-        {
-            totalBytes += b.byteSize;
-        }
-        if( totalBytes > maxTotalBytes )
-        {
-            std::sort( mine.begin(), mine.end(), []( const Blob& a, const Blob& b ){ return a.mtime < b.mtime; } );   // oldest first
-            std::vector<Blob> kept;
-            kept.reserve( mine.size() );
-            for( const Blob& b : mine )
-            {
-                if( totalBytes > lowWaterBytes && b.path != keepPath )
-                {
-                    std::error_code de;
-                    fs::remove( fs::path( b.path ), de );
-                    totalBytes -= b.byteSize;
-                    continue;
-                }
-                kept.push_back( b );
-            }
-            mine.swap( kept );
-        }
+        mine = evictBySizeBudget( mine, dir, keepPath, maxTotalBytes );
     }
 
     // count pass (the original behavior): keep only the `keep` newest, delete the rest (disabled via keep == max()).
     if( keep != std::numeric_limits<std::size_t>::max() && mine.size() > keep )
     {
-        std::sort( mine.begin(), mine.end(), []( const Blob& a, const Blob& b ){ return a.mtime > b.mtime; } );   // newest first
+        std::sort( mine.begin(), mine.end(), []( const CacheBlobStat& a, const CacheBlobStat& b ){ return a.mtime > b.mtime; } );   // newest first
         for( std::size_t i = keep; i < mine.size(); ++i )
         {
             if( mine[i].path == keepPath )
