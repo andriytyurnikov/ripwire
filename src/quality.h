@@ -475,8 +475,70 @@ inline std::vector<std::uint64_t> topLevelCalleeNameHashes( const IngestResult& 
     return hashes;
 }
 
+// Q-DIAL-2 (2026-09-10) — THE SYMBOLS A LANGUAGE INVOKES, for which "zero in-edges in a name-based call
+// graph" is evidence of nothing at all. This is what the dead kind's blanket header exclusion was a PROXY
+// for, stated directly, and it is measurable in both directions: all ten dead-code rows the verb produced
+// across 40 replayed commits were exactly these shapes (audit Q1 §2e W1), and the header rule that hid them
+// also hid 96.8% of this repo's own source from the kind (Q1 §3, synthetic S6 — the sole caller of a header
+// function deleted, silently missed).
+//
+// Each clause names a call site the parser cannot see as a named CALL:
+//   * a TYPE (class/struct/interface) is never invoked at all — its in-edge count is not a liveness signal;
+//   * `main` is invoked by the runtime;
+//   * `operator...` is invoked by the OPERATOR'S SYNTAX (`a + b`, `p[i]`, `new T`, `f( x )` on a functor);
+//   * a leading `~` is a C++ destructor — the language runs it at scope exit;
+//   * name == the innermost scope segment is a CONSTRUCTOR in every language that spells one that way
+//     (C++, Java, C#, PHP-in-part), built by object creation rather than by a call to that name;
+//   * a Python-style dunder (`__enter__`, `__repr__`, `__init__`) is invoked by a protocol, never by name;
+//   * a METHOD named init/deinit/constructor is Swift's / JavaScript's spelling of the same constructor
+//     protocol. Scoped to Method deliberately: a free function called `init` is an ordinary function, and
+//     excluding it would be the header rule's over-reach in a smaller costume.
+// FLOOR, stated: this is a NAME-level rule, exactly like the resolver's own bare-name matching, and it errs
+// toward false-LIVE (a symbol wrongly considered invoked is silently not reported) rather than false-dead,
+// which is the direction a deletion candidate must err in.
+inline bool languageInvokedSymbol( const Symbol& s ) noexcept
+{
+    if( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface )
+    {
+        return true; // a type is declared, never called
+    }
+    if( s.name == "main" )
+    {
+        return true; // the runtime's entry point
+    }
+    if( s.name.rfind( "operator", 0 ) == 0 )
+    {
+        return true; // invoked by the operator's own syntax
+    }
+    if( !s.name.empty() && s.name.front() == '~' )
+    {
+        return true; // C++ destructor
+    }
+    if( s.name.size() > 4 && s.name.rfind( "__", 0 ) == 0
+        && s.name.compare( s.name.size() - 2, 2, "__" ) == 0 )
+    {
+        return true; // Python dunder — invoked by a protocol
+    }
+    if( s.kind == SymKind::Method && ( s.name == "init" || s.name == "deinit" || s.name == "constructor" ) )
+    {
+        return true; // Swift init/deinit, JavaScript constructor
+    }
+    if( !s.scope.empty() )
+    {
+        const std::size_t     sep  = s.scope.rfind( "::" );
+        const std::string_view tail = sep == std::string::npos ? std::string_view( s.scope )
+                                                               : std::string_view( s.scope ).substr( sep + 2 );
+        if( !tail.empty() && tail == s.name )
+        {
+            return true; // constructor: the member that shares its type's name
+        }
+    }
+    return false;
+}
+
 // A "dead deletion-candidate": has a body, no caller in the indexed tree, not invoked from file scope, not
-// header-exported, not a test fixture, not produced by a registered self-registering macro. A SIMPLE,
+// invoked by the LANGUAGE itself (languageInvokedSymbol, above), not a test fixture, not produced by a
+// registered self-registering macro. A SIMPLE,
 // internally-consistent heuristic — the delta only needs baseline↔current consistency, not parity with the
 // fuller --dead-code verb. `topLevelCallees` is the sorted set topLevelCalleeNameHashes builds and
 // `registeredMacroIds` the sorted set registeredMacroSymbolIds builds (below, past forEachSymbolBody) —
@@ -511,13 +573,11 @@ inline bool isDeadCandidate( const IngestResult& ing, const Graph& g, NodeId i,
     {
         return false; // W1-S2: invoked from file scope (a top-level script statement) — a use the CSR drops
     }
-    const std::string& p = ing.files[ s.fileId ];
-    const auto ends = [ & ]( std::string_view e )
-    { return p.size() >= e.size() && p.compare( p.size() - e.size(), e.size(), e ) == 0; };
-    if( ends( ".h" ) || ends( ".hpp" ) || ends( ".hh" ) || ends( ".hxx" ) )
+    if( languageInvokedSymbol( s ) )
     {
-        return false; // header-exported by convention
+        return false; // Q-DIAL-2: the LANGUAGE calls it — see languageInvokedSymbol (this replaced a blanket header exclusion)
     }
+    const std::string& p = ing.files[ s.fileId ];
     if( isFixturePath( p ) )
     {
         return false; // fixtures are dead by design (noise rules)
@@ -2021,7 +2081,16 @@ inline void evictOldHeadSnapCaches( const std::string& dir, const std::string& r
 // Benchmark BENCHMARK bodies reported as newly-dead the moment an agent added a test). No extraction
 // change — the underlying symbols were always indexed; only the dead-SET predicate narrowed — so
 // kParserVer/the mirrors deliberately did NOT move. Bumped 7 -> 8 to retire every blob written before it.
-constexpr std::uint32_t kQSnapCacheScheme = 8;
+// v9 (Q-DIAL-2, 2026-09-10) — `isDeadCandidate`'s header exclusion was REPLACED by languageInvokedSymbol,
+// so the dead SET both grew (every header symbol with no caller is now eligible) and shrank (constructors,
+// destructors, operators, bare types and main are out). Same shape as v6/v8 in the opposite direction, and
+// the direction is what makes the bump load-bearing rather than hygienic: a v8 blob's dead set was computed
+// while 96.8% of this repo's source was invisible to the predicate, so served to this binary every
+// newly-eligible dead symbol would read as ABSENT from the baseline dead set and be reported as freshly
+// dead — a whole tree of phantom regressions on the first run after an upgrade. No extraction change (the
+// symbols were always indexed; only the dead-SET predicate moved), so kParserVer and its mirrors deliberately
+// did NOT move. Bumped 8 -> 9 to retire every blob written before it.
+constexpr std::uint32_t kQSnapCacheScheme = 9;
 constexpr char          kQSnapMagic[4]    = { 'Q', 'S', 'N', 'P' };
 
 // The qsnap EXCLUDES-config key folds the qsnap SCHEME (independent of the ingest cache's kHeadSnapCacheScheme)

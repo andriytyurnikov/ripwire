@@ -76,5 +76,61 @@ row "$OCH" short-horizon-churn once | grep -q 'sev="minor"' \
 [ "$OCH" = "$( cd "$CH" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
     && ok "churn: byte-identical run to run (deterministic)" || no "churn: non-deterministic delta"
 
+# ── 2) dead-code: the header exclusion is gone; what is exempt is what the LANGUAGE invokes ──────────────
+# The kind used to answer false for ANY symbol in a .h/.hpp/.hh/.hxx file ("header-exported by convention"),
+# which on this header-only codebase hid 96.8% of src from it — synthetic S6 (the sole caller of a header
+# function deleted) was silently missed. The proxy is replaced by the rule it stood for: a symbol the
+# language itself invokes has no named call site for the graph to record, so zero in-edges says nothing.
+#
+# Two arms, both red on the pre-change binary and for opposite reasons:
+#   the header function that LOSES its last caller must now be reported (recall);
+#   the constructor / destructor / operator / bare type the working tree ADDS must not be (precision) —
+#   before the dial those were only silent because they sat in a header, and in a .cpp they were reported.
+DC="$WORK/dead"; mkdir -p "$DC/src"
+( cd "$DC" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false )
+printf 'inline int usedHelper(){ return 41; }\n' > "$DC/src/lib.hpp"
+cat > "$DC/src/m.cpp" <<'CPP'
+#include "lib.hpp"
+struct Thing {
+    Thing() { value = 1; }
+    ~Thing() { value = 0; }
+    bool operator==( const Thing& o ) const { return value == o.value; }
+    int value;
+};
+int driver(){ return usedHelper(); }
+int main(){ Thing t; return driver() + t.value; }
+CPP
+( cd "$DC" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
+# the working edit: driver() stops calling usedHelper (S6 — the sole caller deleted), and a brand-new type
+# arrives whose ctor, dtor and operator have no named caller anywhere.
+python3 - "$DC/src/m.cpp" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read()
+s=s.replace("int driver(){ return usedHelper(); }","""struct Extra {
+    Extra() { n = 2; }
+    ~Extra() { n = 0; }
+    bool operator<( const Extra& o ) const { return n < o.n; }
+    int n;
+};
+int driver(){ return 41; }""")
+open(p,"w").write(s)
+PY
+ODC="$( cd "$DC" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+row "$ODC" dead-code usedHelper >/dev/null \
+    && ok "dead-code: a HEADER function that lost its sole caller is reported (synthetic S6)" \
+    || { no "dead-code: usedHelper not reported — the header exclusion still hides the kind"; rows "$ODC"; }
+DEADROWS="$( rows "$ODC" | grep -c 'kind="dead-code"' )"
+# One match on the whole family: the ctor and dtor BOTH index as Extra::Extra (the parser keeps no leading
+# tilde) and the operator arrives XML-escaped as operator&lt;, so naming them one by one greps for spellings
+# that never appear. Anything under the new type is a language-invoked symbol and must not be a row.
+rows "$ODC" | grep 'kind="dead-code"' | grep -q 'Extra' \
+    && { no "dead-code: a language-invoked member of Extra reported (ctor/dtor/operator/type)"; rows "$ODC" | grep 'kind="dead-code"'; } \
+    || ok "dead-code: no ctor/dtor/operator/type row for the new Extra type (the language invokes them)"
+[ "$DEADROWS" = 1 ] && ok "dead-code: exactly ONE dead-code row on this fixture (only usedHelper)" \
+    || { no "dead-code: expected 1 dead-code row, got $DEADROWS"; rows "$ODC" | grep 'kind="dead-code"'; }
+[ "$ODC" = "$( cd "$DC" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
+    && ok "dead-code: byte-identical run to run (deterministic)" || no "dead-code: non-deterministic delta"
+
+
 [ "$fail" = 0 ] && echo "qddialscheck: ALL PASS" || echo "qddialscheck: FAILURES"
 exit "$fail"
