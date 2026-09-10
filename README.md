@@ -245,7 +245,7 @@ and the three controls below it.
 - **Risk, annotated in place** — complexity, git churn (`ingest` shows 128 recent edits),
   change amplification (touch `ingest` and 266 graph nodes feel it), purity and test coverage. The
   fragile spots are visible *before* anything touches them.
-- **One-hop call context** — `spanTierMemoPath` calls `shaKeyedCachePath`, `headSnapRepoHex`,
+- **One-hop call context** — `spanTierMemoPath` calls `shaKeyedCachePath`, `cacheRootKeyHex`,
   `exclConfigHex`; no second query needed to see the neighbourhood.
 - **Its own confidence** — this answer says `confidence="high"` with the score margin attached; a
   flat ranking says `low`, so it reads as a starting point instead of masquerading as an answer.
@@ -727,7 +727,7 @@ call a CLI.
   </sigs>
   <hops shown="2" total="6" capped="1" noedge="2">
     <h l="1307" p="src/ingest_astquery.h" n="spanTierMemoPath">
-      <calls total="3"><c n="shaKeyedCachePath" l="1621"/><c n="headSnapRepoHex" l="1359"/><c n="exclConfigHex" l="1554"/></calls>
+      <calls total="3"><c n="shaKeyedCachePath" l="1621"/><c n="cacheRootKeyHex" l="1359"/><c n="exclConfigHex" l="1554"/></calls>
     </h>
     <h l="247" p="src/dmm.h" n="ingestCommitTree">
       <calls total="10" shown="7" capped="1">…</calls>

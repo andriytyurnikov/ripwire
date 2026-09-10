@@ -391,7 +391,7 @@ rc6=$?
 # blobs that SPELL the root the same way, and two spellings shipped. Both builders hash realpath(root) with
 # FNV-1a, but with DIFFERENT offset bases:
 #   main.cpp::defaultCachePath        seeded 1469598103934665603   (17 digits — a truncated basis)
-#   quality.h::headSnapRepoHex           seeded 14695981039346656037  (the real FNV-1a 64 basis)
+#   quality.h::cacheRootKeyHex        seeded 14695981039346656037  (the real FNV-1a 64 basis)
 # so ONE root produced TWO key families, always, on every corpus. Measured on llvm-project: lean/rich carried
 # 4280d3ca01d82374 while qchurn carried 6b73c58ba5897c7a. Reproduced on a four-file fixture in one command:
 # `ripwire-844a155665d606eb-{lean,rich}.bin` beside `ripwire-qchurn-526f2ad625b9f069--….bin`. Consequence:
@@ -413,10 +413,22 @@ if ! command -v git >/dev/null 2>&1; then
     no "(k)(l) git is required to prime the qchurn/qheadsnap/qsnap families — cannot run"
 else
 
+# TWO families carry a 16-hex field that is NOT a root key and must be read as unowned: `ripwire-docmd-`
+# is content-addressed (the document's bytes) and `ripwire-stier-` is file-addressed (one span-tier memo
+# per source file above 32 KiB — an llvm --for leaves ~30 of them). quality.h names them in
+# `kNonRootKeyedBlobPrefixes`; this list is the shell mirror, and the arm below FAILS if the two disagree,
+# so a family added later with a non-root 16-hex field cannot quietly join the pin.
+NONROOT_PREFIXES='ripwire-docmd- ripwire-stier-'
+
 # the root field, by cacheBlobRootKey's own rule: FIRST '-'-delimited field of the basename that is
-# exactly 16 hex digits. Prints nothing for a blob that carries no such field.
+# exactly 16 hex digits, EXCEPT for the non-root-keyed families above. Prints nothing when there is none.
 blobrootkey(){
-    basename "$1" | sed -E 's/\.(bin|cache)$//' | awk -F- '{ for( i = 1; i <= NF; ++i ) if( $i ~ /^[0-9a-f]{16}$/ ) { print $i; exit } }'
+    local b p
+    b="$( basename "$1" )"
+    for p in $NONROOT_PREFIXES; do
+        case "$b" in "$p"*) return 0;; esac
+    done
+    printf '%s' "$b" | sed -E 's/\.(bin|cache)$//' | awk -F- '{ for( i = 1; i <= NF; ++i ) if( $i ~ /^[0-9a-f]{16}$/ ) { print $i; exit } }'
 }
 # every distinct root key present under a cache dir, sorted+uniqued
 allrootkeys(){
@@ -434,6 +446,14 @@ primeallfamilies(){
     env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --quality-delta             >/dev/null 2>&1
     env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --cochange=f.cpp            >/dev/null 2>&1
 }
+
+# the two lists must name the SAME families, or this arm reads a key the binary does not.
+SRC_NONROOT="$( sed -n 's/^inline constexpr std::string_view kNonRootKeyedBlobPrefixes\[\] = {\(.*\)};$/\1/p' "$ROOT/src/quality.h" \
+                | tr ',' '\n' | sed -E 's/[^"]*"([^"]*)".*/\1/' | grep . | sort | tr '\n' ' ' )"
+WANT_NONROOT="$( printf '%s\n' $NONROOT_PREFIXES | sort | tr '\n' ' ' )"
+[ -n "$SRC_NONROOT" ] && [ "$SRC_NONROOT" = "$WANT_NONROOT" ] \
+    && ok "(k) the non-root-keyed family list matches quality.h::kNonRootKeyedBlobPrefixes ($WANT_NONROOT)" \
+    || no "(k) family-list drift: quality.h says '$SRC_NONROOT', this gate reads '$WANT_NONROOT'"
 
 TMP6="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4" "$TMP5" "$TMP6"' EXIT
 CB6="$TMP6/cachebase"; CD6="$CB6/ripwire"; mkdir -p "$CD6"

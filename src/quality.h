@@ -1356,19 +1356,83 @@ inline bool gitRepoHasHistory( const std::string& root )
 // header already self-validates). Folded into the filename key so an old-scheme file is simply never named.
 constexpr std::uint32_t kHeadSnapCacheScheme = 1;
 
-// The 16-hex repo key: fnv1a64 of realpath(root) (matching defaultCachePath) so two spellings of one repo
-// share one warm cache AND one eviction group. A null realpath (missing path) degrades to the verbatim
-// spelling — still correct, at worst one extra cold miss. Used by both the filename and the eviction glob.
-inline std::string headSnapRepoHex( const std::string& root )
+// ─── THE ROOT KEY — one canonical spelling, for every cache family ────────────────────────────────────
+//
+// The 16-hex field every cache blob's filename carries, identifying the ROOT the blob belongs to:
+// `ripwire-<rootKey>-{lean,rich}.bin` (main.cpp::defaultCachePath), `ripwire-mcp-<rootKey>.cache`
+// (mcpindex.h::mcpCachePath) and `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`
+// (shaKeyedCachePath below: qheadsnap, qsnap, qbody, qhist, qms, qchurn, stier). It is what makes
+// "which root does this blob belong to?" answerable from the NAME alone — see cacheBlobRootKey and the
+// byte-budget pin in evictBySizeBudget, which is only ever as wide as the set of blobs that spell the
+// key the SAME way.
+//
+// AND TWO SPELLINGS SHIPPED. Both builders hashed realpath(root) with FNV-1a, but with DIFFERENT offset
+// bases: `defaultCachePath` (and `mcpCachePath`) seeded 1469598103934665603 — seventeen digits, a
+// TRUNCATED FNV-1a-64 basis — while this function seeded arch.h's `fnv1a64`, i.e. the real
+// 14695981039346656037. Same material, two keys, on every root, always. Measured on llvm-project:
+// lean/rich carried 4280d3ca01d82374 while qchurn carried 6b73c58ba5897c7a; reproduced on a four-file
+// fixture as `ripwire-844a155665d606eb-{lean,rich}.bin` beside `ripwire-qchurn-526f2ad625b9f069--….bin`.
+// The consequence is exactly the gap P1-1 stated: the pin covered lean+rich and left every git-metadata
+// family evictable by the very root that had just written it.
+//
+// WHY THE SURVIVING BASIS IS THE TRUNCATED ONE, AND WHY IT MUST NOT BE "FIXED". A key change orphans
+// every blob spelled the old way. Adopting `fnv1a64`'s basis would have renamed the MAIN PARSE CACHE —
+// 1.76 GB of it on llvm-project alone (rich 1.19 GB + lean 0.57 GB), a full cold re-parse for every root
+// on the machine. Adopting defaultCachePath's renames only the git-metadata families, which are
+// kilobytes and rebuild from one `git log` walk. The constant is an IDENTITY, not a digest: FNV-1a's
+// avalanche comes from the prime multiply, and any odd seed gives the same distribution over these
+// inputs, so nothing is weaker — only the naming compatibility differs, and it differs by three orders
+// of magnitude. Changing `kCacheRootKeySeed` to the textbook basis would silently throw away every warm
+// parse cache in existence; test/evictioncheck.sh (k) is what makes such a change visible, but it will
+// go GREEN on a uniform wrong seed, so this paragraph is the guard.
+//
+// NORMALIZED, so the key follows the TREE and not its spelling: `realpath` collapses symlinks, `.`/`..`,
+// `//` and a trailing '/'. When realpath fails — the path does not exist, so there is nothing to cache
+// under it anyway — the same folding is done LEXICALLY (resolve.h's `lexicalNormalize`, the house's
+// segment-stack folder) so that at least the trailing-slash and `.`/`..` cases still agree; an unsound
+// `..` escape yields "" there and degrades to the verbatim spelling, still correct, at worst one extra
+// cold miss. Gate: test/evictioncheck.sh (k) one root ⇒ one key across every family, (l) a trailing
+// slash and a symlinked spelling add no new key.
+//
+// NO SCHEME BUMP, AND THE REASON IS THE HOUSE RULE ITSELF, NOT AN OMISSION. `kQChurnCacheScheme`,
+// `kQSnapCacheScheme` and `kHeadSnapCacheScheme` exist so that a blob whose CONTENT MEANING changed
+// becomes a clean miss rather than a wrong answer served from cache (see kQChurnCacheScheme's own comment:
+// scheme 2 was a merge-blind stream). Nothing about any blob's content changes here — only the root FIELD
+// of its NAME. Every pre-existing blob is therefore already never NAMED again, which is precisely the
+// effect a bump buys, reached by the key rather than by a version. Bumping on top would assert a content
+// change that did not happen, and would additionally invalidate the blobs that are about to be re-minted
+// under the unified key anyway. The old-spelling blobs are ordinary orphans: the "ripwire-" family sweep
+// still matches them by prefix, so the 30-day age pass deletes them on schedule — verified by seeding one
+// backdated `ripwire-qchurn-<old-key>-…bin` and watching a later run remove it. That pass is silent for
+// every blob it takes (it has no disclosure line at all — see evictBySizeBudget's note on why only the
+// byte-budget pass speaks), so an orphan is treated exactly as any other aged-out blob, with no special
+// case in either direction.
+inline constexpr std::uint64_t kCacheRootKeySeed = 1469598103934665603ull;
+
+inline std::string cacheRootKeyHex( const std::string& root )
 {
-    char* rp = ::realpath( root.c_str(), nullptr );
-    const std::string absRoot = rp ? std::string( rp ) : root;
-    if( rp )
+    char*       rp = ::realpath( root.c_str(), nullptr );
+    std::string absRoot;
+    if( rp != nullptr )
     {
+        absRoot = rp;
         std::free( rp );
     }
+    else
+    {
+        absRoot = lexicalNormalize( root );
+        if( absRoot.empty() )
+        {
+            absRoot = root;   // a `..` that escapes above its own base — unsound to fold, hash it verbatim
+        }
+    }
+    std::uint64_t h = kCacheRootKeySeed;
+    for( const char c : absRoot )
+    {
+        h = rw::hashutil::fnv1aAbsorb( h, c );
+    }
     char hex[ 20 ];
-    rw::formatTo( hex, sizeof( hex ), "{:016x}", static_cast<unsigned long long>( fnv1a64( absRoot ) ) );
+    rw::formatTo( hex, sizeof( hex ), "{:016x}", static_cast<unsigned long long>( h ) );
     return std::string( hex );
 }
 
@@ -1642,18 +1706,60 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
     return shaKeyedCachePath( "qheadsnap", repoHex, exclHex, headSha );
 }
 
+// The builder for the two families whose whole key IS the root — the main parse cache
+// (`ripwire-<rootKey>-lean.bin` / `-rich.bin`, main.cpp::defaultCachePath) and the MCP index
+// (`ripwire-mcp-<rootKey>.cache`, mcpindex.h::mcpCachePath). They sat in different translation units and
+// each open-coded the same three lines around its own copy of the hash, which is exactly how the two root
+// spellings drifted apart in the first place; one body means a future family joins by naming a prefix and
+// a suffix rather than by re-deriving a key. `prefix`/`suffix` bracket the 16-hex field because that is the
+// only thing the two shapes disagree about — everything the pin reads is in the middle.
+inline std::string rootKeyedCachePath( const std::string& root, const char* prefix, const char* suffix )
+{
+    char tail[ 64 ];
+    rw::formatTo( tail, sizeof( tail ), "{}{}{}", prefix, cacheRootKeyHex( root ).c_str(), suffix );
+    return resolveCacheBlobPath( cacheDirLadder(), tail );
+}
+
 // P1-1 (2026-09-10 full audit) — THE PIN KEY. Every cache blob's filename carries the SAME 16-hex root
-// field: `defaultCachePath` writes `ripwire-<rootHex>-{lean,rich}.bin` and `shaKeyedCachePath` writes
-// `ripwire-<family>-<rootHex>-<exclHex>-<shaHex>.bin`, and `headSnapRepoHex` above hashes exactly the
-// material `defaultCachePath` does (fnv1a64 of realpath(root)), so ONE root's every family — lean, rich,
-// qheadsnap, qsnap, qbody, qhist, qms, qchurn, stier — spells the same key in the same place. That makes
-// "which root does this blob belong to?" answerable from the NAME alone, with no plumbing: the byte-budget
-// sweep reads the key off the very blob it is about to write (`keepPath`) and pins its siblings.
+// field, and since the follow-up round it really is the same one: `defaultCachePath` writes
+// `ripwire-<rootKey>-{lean,rich}.bin`, `mcpCachePath` writes `ripwire-mcp-<rootKey>.cache` and
+// `shaKeyedCachePath` writes `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`, all three through the ONE
+// canonical `cacheRootKeyHex` above — so ONE root's every family (lean, rich, mcp, qheadsnap, qsnap, qbody,
+// qhist, qms, qchurn, stier) spells the same key in the same place. That makes "which root does this blob
+// belong to?" answerable from the NAME alone, with no plumbing: the byte-budget sweep reads the key off the
+// very blob it is about to write (`keepPath`) and pins its siblings.
 //
 // The rule is positional-free on purpose: return the FIRST '-'-delimited field that is exactly 16 hex
 // digits. No family tag is 16 characters of hex ("qheadsnap", "qsnap", "qbody", "qhist", "qms", "qchurn",
-// "stier"), so the first such field is the root key in BOTH filename shapes, and a foreign or legacy blob
-// that carries no such field yields "" — which pins nothing and evicts exactly as it did before.
+// "stier", "mcp"), so the first such field is the root key in every filename shape, and a foreign or legacy
+// blob that carries no such field yields "" — which pins nothing and evicts exactly as it did before.
+//
+// TWO FAMILIES ARE EXCEPTIONS, and they are NAMED rather than guessed at — their 16-hex field is a real
+// key, just not a key over a ROOT:
+//   * `ripwire-docmd-<hash>.bin`  (ingest_docpass.h) is CONTENT-addressed: fnv1a64 of the DOCUMENT'S
+//     BYTES, so one PDF extracted under two checkouts is cached once.
+//   * `ripwire-stier-<hash>-…`    (ingest_astquery.h::spanTierMemoPath) is FILE-addressed: it passes a
+//     per-file disk path to cacheRootKeyHex, one memo per source file above a 32 KiB floor. An llvm --for
+//     leaves ~30 of them beside the three root-keyed blobs, each with its own key.
+// Reading either as a root key would be a wrong answer about OWNERSHIP — it names a document or a file,
+// not the tree the blob belongs to — and at 1-in-2^64 could pin a blob to an unrelated root. Both are
+// excluded here rather than renamed: their names are correct for what they identify, and renaming would
+// orphan the most expensive thing in this directory to rebuild (a docmd blob costs a markitdown popen and
+// a Python start, seconds per file). They yield "" and are treated as unowned, which is what they are —
+// the byte-budget sweep may take them, and that is the right policy for a per-file memo whose recompute
+// cost is one file, not one tree.
+//
+// KEEP THE LIST HONEST: test/evictioncheck.sh arm (k) mirrors these prefixes in shell and FAILS if the two
+// lists disagree, so a family added later with a non-root 16-hex field is a gate failure rather than a
+// blob quietly pinned to a stranger.
+inline constexpr std::string_view kNonRootKeyedBlobPrefixes[] = { "ripwire-docmd-", "ripwire-stier-" };
+
+inline bool isNonRootKeyedBlob( std::string_view blobName ) noexcept
+{
+    return std::any_of( std::begin( kNonRootKeyedBlobPrefixes ), std::end( kNonRootKeyedBlobPrefixes ),
+                        [ blobName ]( const std::string_view prefix ) noexcept { return blobName.starts_with( prefix ); } );
+}
+
 inline std::string cacheBlobRootKey( std::string_view blobName ) noexcept
 {
     const auto isHex16 = []( std::string_view f ) noexcept
@@ -1671,6 +1777,11 @@ inline std::string cacheBlobRootKey( std::string_view blobName ) noexcept
         }
         return true;
     };
+
+    if( isNonRootKeyedBlob( blobName ) )
+    {
+        return std::string{};   // content- or file-addressed, root-independent by design — see above
+    }
 
     std::size_t at = 0;
     while( at < blobName.size() )
@@ -2642,7 +2753,7 @@ inline std::pair<Snapshot, bool> computeHeadSnapshot( const std::string& root, c
     // Cache keys, computed ONCE and shared by both the Snapshot cache (this step) and the ingest cache (step 3).
     const std::string headSha   = gitHeadSha( root );        // non-empty: gitRepoHasHistory passed above
     const bool        useCache  = !headSha.empty();
-    const std::string repoHex   = useCache ? headSnapRepoHex( root )     : std::string{};
+    const std::string repoHex   = useCache ? cacheRootKeyHex( root )     : std::string{};
     const std::string exclHex   = useCache ? headSnapExclHex( excludes, maxFileBytes ) : std::string{};   // ingest-cache family
     const std::string qExclHex  = useCache ? qsnapExclHex( excludes, maxFileBytes )    : std::string{};   // Snapshot-cache family
     const std::string qsnapPath = useCache ? qsnapCachePath( repoHex, qExclHex, headSha ) : std::string{};
@@ -2778,7 +2889,7 @@ inline bool loadRefTree( const std::string& repoRoot, const std::string& sha, co
     std::string cachePath;
     if( sha == gitHeadSha( repoRoot ) )
     {
-        cachePath = headSnapCachePath( headSnapRepoHex( repoRoot ), headSnapExclHex( excludes, maxFileBytes ), sha );
+        cachePath = headSnapCachePath( cacheRootKeyHex( repoRoot ), headSnapExclHex( excludes, maxFileBytes ), sha );
     }
 
     {
@@ -2820,7 +2931,7 @@ computeWindowRefBodyHashes( const std::string& root, std::uint32_t days,
         return { {}, false };
     }
 
-    const std::string repoHex   = headSnapRepoHex( root );
+    const std::string repoHex   = cacheRootKeyHex( root );
     const std::string exclHex   = headSnapExclHex( excludes, maxFileBytes );   // ingest-cache family (shared with qheadsnap)
     const std::string qbExclHex = qbodyExclHex( excludes, maxFileBytes );
     const std::string qbodyPath = qbodyCachePath( repoHex, qbExclHex, refSha );
@@ -3031,7 +3142,7 @@ inline std::vector<std::vector<std::uint32_t>> gitCoChangeAndChurnCached(
         return resolveCommitStream( gitLogNameOnlyRaw( root, coSince ), ing, maxFiles, churnCutoff, outChurn, onlyRoot );
     }
 
-    const std::string repoHex  = headSnapRepoHex( root );
+    const std::string repoHex  = cacheRootKeyHex( root );
     const std::string boundary = gitWindowBoundarySha( root, coSince );   // cheap — no --name-only
     std::string       keyMat   = headSha;
     keyMat.push_back( '\x1f' ); keyMat += coSince;

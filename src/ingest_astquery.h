@@ -1302,14 +1302,14 @@ constexpr long long     kSpanTierMemoMinBytes = 32ll << 10;
 
 // Composed exactly the way every OTHER blob family is (quality.h): one fixed-width identity hex per key
 // field, then shaKeyedCachePath to assemble and shard the name. Two properties come free and are the reason
-// to reuse rather than hand-roll a fourth name builder — headSnapRepoHex realpath-normalizes before hashing,
+// to reuse rather than hand-roll a fourth name builder — cacheRootKeyHex realpath-normalizes before hashing,
 // so two spellings of one file share a blob; and exclConfigHex folds extractionIdentityTag(), so a
 // kParserVer/kCacheVersion bump renames every memo blob at once, which is the same self-healing invalidation
 // the parse cache already has. (The hand-rolled fixed-buffer name builder this replaces was flagged as a
 // 60-token clone of those very builders by --quality-delta, and the detector was right.)
 inline std::string spanTierMemoPath( const std::string& diskPath )
 {
-    return quality::shaKeyedCachePath( "stier", quality::headSnapRepoHex( diskPath ),
+    return quality::shaKeyedCachePath( "stier", quality::cacheRootKeyHex( diskPath ),
                                        quality::exclConfigHex( {}, "stier" ),
                                        std::to_string( kSpanTierMemoVersion ) );
 }
