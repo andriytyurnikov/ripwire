@@ -15,6 +15,7 @@
 #include "redact.h"      // deterministic secret redaction of emitted body content (opt-out --no-redact)
 #include "infra/sortutil.h"    // numeric-key radix helpers for rank/file score order
 #include "infra/jsonesc.h"     // F9: jsonesc::utf8SeqLen — the canonical UTF-8-sequence-length core (was duplicated here)
+#include "infra/strkern_find.h" // S5: findBytesetRun — the run-copy skip that replaces escapeXml's per-byte switch
 #include "notes.h"       // L3: field-notes NoteIndex — the retrieval-time surfacing lookup (INERT when null)
 #include "pageview.h"    // §P8: pageWindow / pageDisclosure — the shared --limit/--offset contract (packDeps)
 #include "sarif.h"       // R-E (2026-08-17): rootRelativeUri/rootPrefixOf — the same root= single-root-only
@@ -124,6 +125,23 @@ using jsonesc::utf8SeqLen;
 // reference (xmlControlCharRef — see M2 above: G4 + attribute-value normalization); an invalid UTF-8 sequence
 // (A4-F20) is scrubbed to '?' so the emitted name/path/doc-comment/sig text is always well-formed XML AND
 // valid UTF-8 regardless of source bytes.
+// S5 — THE BYTE SET IS THE CONTRACT. Everything below that is NOT in this set is copied through
+// unchanged by the switch's `default:` arm, so the run loop may memcpy it in bulk without looking at it;
+// everything that IS in the set still goes through the SAME switch, one byte at a time, unchanged. The
+// set is therefore derivable from the switch and must be re-derived with it: the five entity bytes, the
+// whole C0 range (\t \n \r become character references, every other C0 is scrubbed to a space by
+// xmlSafeByte), and every byte >= 0x80 (utf8SeqLen decides whether the sequence is copied or scrubbed
+// to '?'). 0x7F is deliberately absent — xmlSafeByte passes DEL through, so it is a clean-run byte.
+// test/emitescapecheck.sh's MUT arm exists because a set one member short is otherwise silent.
+inline constexpr strkern::Byteset256 kXmlEscapeByteset = []
+{
+    strkern::Byteset256 set;
+    set.addRange( 0x00, 0x1F );
+    set.add( '&' );  set.add( '<' );  set.add( '>' );  set.add( '"' );  set.add( '\'' );
+    set.addRange( 0x80, 0xFF );
+    return set;
+}();
+
 inline std::string_view escapeXml( std::string_view s, std::vector<char>& out )
 {
     out.clear();
@@ -132,7 +150,11 @@ inline std::string_view escapeXml( std::string_view s, std::vector<char>& out )
     const auto put  = [ & ]( const char* lit ) { while( *lit ) { out.push_back( *lit++ ); } };
     const char*       d = s.data();
     const std::size_t n = s.size();
-    for( std::size_t i = 0; i < n; )
+    // Init and increment skip to the next byte the switch actually has an opinion about, copying
+    // everything before it in one insert. On ordinary source text — names, paths, signatures,
+    // doc-comments — that run is the whole string: one scan and one memcpy for the whole call.
+    for( std::size_t i = strkern::appendCleanRun( d, 0, n, kXmlEscapeByteset, out ); i < n;
+         i = strkern::appendCleanRun( d, i, n, kXmlEscapeByteset, out ) )
     {
         const char c = d[i];
         switch( c )
