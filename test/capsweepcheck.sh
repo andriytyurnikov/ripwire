@@ -24,14 +24,23 @@
 #   (B) THE CORPUS-FREEZE ASSERTION can go red: a synthetic corpus containing bench/capsweep must be
 #       REFUSED, and the same corpus without it must be accepted. Contrast, not a one-sided assertion.
 #   (C) THE DOCUMENT: `emit --check` reproduces docs/TUNING.md byte-for-byte from the committed
-#       bench/capsweep/*.json plus the live cap census in src/. The committed doc came out of the same
+#       bench/capsweep/*.tsv plus the live cap census in src/. The committed doc came out of the same
 #       generator, so on its own this is a round trip and proves nothing (see the self-referential-
-#       baseline trap). The control is what makes it real: mutate ONE number in a COPY of sweep.json,
+#       baseline trap). The control is what makes it real: mutate ONE number in a COPY of sweep.tsv,
 #       re-run against that copy, and require the comparison to fail. The doc is then demonstrably a
 #       function of the data rather than a file that happens to sit next to it.
 #   (D) the document says "Generated — do not edit" — a generated file that does not say so gets
 #       hand-edited exactly once, and the edit is lost on the next regeneration with no diff to read.
 #   (E) the harness refuses to patch the repository itself (the G3/G5 line: production keeps constexpr).
+#   (F) THE RECORDS ARE NOT JSON. Arm (B) keeps the harness out of the TREE it measures and says nothing
+#       about the FORMAT it writes in — and ripwire INDEXES `.json` as config keys (src/ingest_crawl.h)
+#       while `.tsv` is unindexed prose (src/docparse.h, kUnindexedProseExts, beside `.txt`). The first
+#       round of this harness committed screen/sweep/tunable as json and they entered the repo's own
+#       index: measured on this tree, `--for="incremental cache invalidation"` — the README's headline
+#       example — answered confidence="low" margin_pct="0" with them present and confidence="high"
+#       margin_pct="22" without, and `--for=kMaxExpandSibs` surfaced bench/capsweep/sweep.json in an
+#       answer about a cap. So a json file under bench/capsweep is a failure by its extension alone,
+#       held down by a control that finds one in a SYNTHETIC copy — never in the real tree.
 #
 # This gate binds no ripwire binary: its subjects are a python harness, a source tree and a markdown
 # file. It is pinned in test/binoverridecheck.sh's exemption list for that reason.
@@ -50,8 +59,11 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 command -v python3 >/dev/null 2>&1 || { echo "capsweepcheck: python3 is required"; exit 2; }
 [ -f "$GEN" ] || { echo "capsweepcheck: no bench/capsweep/capsweep.py"; exit 2; }
 [ -f "$DOC" ] || { echo "capsweepcheck: no docs/TUNING.md — run: python3 bench/capsweep/capsweep.py emit"; exit 2; }
-for j in tunable.json sweep.json screen.json corpus.txt; do
-    [ -f "$ROOT/bench/capsweep/$j" ] || { echo "capsweepcheck: bench/capsweep/$j is missing"; exit 2; }
+for j in tunable.tsv sweep.tsv screen.tsv corpus.txt; do
+    [ -f "$ROOT/bench/capsweep/$j" ] || {
+        echo "capsweepcheck: bench/capsweep/$j is missing — the records are TSV, not json (see arm (F)):"
+        echo "               ripwire indexes .json, so the harness must not publish itself in that format"
+        exit 2; }
 done
 
 # A content snapshot of src/, not `git diff`: a developer with legitimate uncommitted work in src/ must
@@ -105,7 +117,7 @@ fi
 
 # ── (C) the document is a function of the committed data ────────────────────────────────────────────
 if out="$( cd "$ROOT" && python3 "$GEN" emit --check 2>&1 )"; then
-    ok "(C) docs/TUNING.md matches bench/capsweep/*.json + src/ — ${out#*: }"
+    ok "(C) docs/TUNING.md matches bench/capsweep/*.tsv + src/ — ${out#*: }"
 else
     no "(C) docs/TUNING.md is STALE: $out — run: python3 bench/capsweep/capsweep.py emit"
 fi
@@ -113,19 +125,15 @@ fi
 # the control. Without it (C) is a round trip through the artifact it is checking, which is green
 # forever. Mutate one measured byte count in a COPY of the data and require the comparison to notice.
 mkdir -p "$TMP/data"
-cp "$ROOT/bench/capsweep/tunable.json" "$ROOT/bench/capsweep/sweep.json" "$TMP/data/"
-python3 - "$TMP/data/sweep.json" <<'PY'
-import json, sys
-p = sys.argv[1]
-d = json.load(open(p))
-cap = sorted(d)[0]
-inv = sorted(d[cap]['moved'])[0]
-d[cap]['moved'][inv][1] += 4242                      # a delta no real run produced
-json.dump(d, open(p, 'w'), indent=1)
-print('mutated %s / %s' % (cap, inv))
-PY
-if ( cd "$ROOT" && python3 "$GEN" emit --check --data "$TMP/data" >/dev/null 2>&1 ); then
-    no "(C) mutation control: a changed byte count in sweep.json did NOT change the document — (C) is inert"
+cp "$ROOT/bench/capsweep/tunable.tsv" "$TMP/data/"
+# probe_bytes is column 6 of sweep.tsv, and +4242 is a delta no real run produced. The `#` provenance
+# line passes through untouched, so the copy stays a well-formed record file.
+awk -F'\t' -v OFS='\t' '/^#/ { print; next } !d { $6 = $6 + 4242; d = 1 } { print }' \
+    "$ROOT/bench/capsweep/sweep.tsv" > "$TMP/data/sweep.tsv"
+if cmp -s "$ROOT/bench/capsweep/sweep.tsv" "$TMP/data/sweep.tsv"; then
+    no "(C) mutation control: the mutation was a no-op, so the control below proves nothing"
+elif ( cd "$ROOT" && python3 "$GEN" emit --check --data "$TMP/data" >/dev/null 2>&1 ); then
+    no "(C) mutation control: a changed byte count in sweep.tsv did NOT change the document — (C) is inert"
 else
     ok "(C) mutation control: a changed measurement makes --check fail, so the doc IS derived from the data"
 fi
@@ -148,6 +156,28 @@ if [ "$( srcsum )" = "$src_before" ]; then
 else
     no "(E) src/ CHANGED while this gate ran — the patcher escaped its scratch tree"
 fi
+
+# ── (F) the records are TSV, because a harness must not enter the index it measures ─────────────
+# Not a style preference. ripwire indexes `.json` as config keys (src/ingest_crawl.h's extension table);
+# `.tsv` is unindexed prose (src/docparse.h, kUnindexedProseExts), which is why corpus.txt beside these
+# records never polluted anything. Committed as json, the same numbers changed this repo's own answers
+# — the header carries the measurement.
+jsonrecords(){ find "$1" -type f -name '*.json' 2>/dev/null | sort; }
+stray="$( jsonrecords "$ROOT/bench/capsweep" )"
+if [ -n "$stray" ]; then
+    # repo-relative: a gate's own failure text lands in a public CI log, and an operator's absolute path
+    # is machine layout nobody asked to publish (the same rule capsweep.py's rel() follows).
+    no "(F) bench/capsweep holds json record(s), which ripwire INDEXES — the harness is inside the index it measures: $( echo "$stray" | sed "s|^$ROOT/||" | tr '\n' ' ' )"
+else
+    ok "(F) bench/capsweep holds no .json — the records are TSV, which src/docparse.h leaves unindexed"
+fi
+# The control, on a SYNTHETIC copy. A scan that can never see a json record is a green line meaning
+# nothing; running it against the real tree would drop a probe file into the population other gates read.
+mkdir -p "$TMP/synthjson"; : > "$TMP/synthjson/sweep.json"; : > "$TMP/synthjson/keep.tsv"
+case "$( jsonrecords "$TMP/synthjson" )" in
+    *sweep.json) ok "(F) control: the same scan reports a json record in a synthetic copy, so (F) can go red" ;;
+    *)           no "(F) control: the scan did not see a json record in a synthetic copy — (F) is inert" ;;
+esac
 
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail

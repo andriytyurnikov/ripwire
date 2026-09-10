@@ -2,6 +2,10 @@
 
 **Generated — do not edit.** `python3 bench/capsweep/capsweep.py prepare|screen|sweep|emit`.
 
+The measurements it is generated from live in `bench/capsweep/*.tsv` rather than json because
+ripwire indexes `.json` as config keys while `.tsv` is unindexed prose (`kUnindexedProseExts` in
+`src/docparse.h`) — a harness must not enter the index it measures.
+
 What each compile-time cap actually COSTS, per verb. `docs/LIMITS.md` says a cap exists;
 this says what it does. Measured by patching a SCRATCH copy of the tree so the caps read an
 env var — production keeps its `constexpr` and is never patched — then running real

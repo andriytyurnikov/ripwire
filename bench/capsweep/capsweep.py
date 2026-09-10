@@ -32,13 +32,23 @@ Usage: python3 bench/capsweep/capsweep.py prepare|screen|sweep|emit [--scratch D
        python3 bench/capsweep/capsweep.py patch --root TREE
        python3 bench/capsweep/capsweep.py check-corpus --corpus DIR
 
-WHERE THE MEASUREMENTS LIVE. `prepare`/`screen`/`sweep` write their json into --scratch, never into the
-repo and never into the frozen corpus. Publishing a round means copying tunable.json / screen.json /
-sweep.json into bench/capsweep/ and running `emit`; from then on docs/TUNING.md is a pure function of
-those three files plus the CAP CENSUS read live out of src/, which is what makes the gate's byte-for-byte
-arm a real check rather than a round trip through the artifact it is checking.
+WHERE THE MEASUREMENTS LIVE, AND WHY THEY ARE TSV. `prepare`/`screen`/`sweep` write their records into
+--scratch, never into the repo and never into the frozen corpus. Publishing a round means copying
+tunable.tsv / screen.tsv / sweep.tsv into bench/capsweep/ and running `emit`; from then on docs/TUNING.md
+is a pure function of those three files plus the CAP CENSUS read live out of src/, which is what makes the
+gate's byte-for-byte arm a real check rather than a round trip through the artifact it is checking. Drop
+tunable.tsv's `corpus` row on the way in — it names a --scratch directory, and an operator's filesystem
+layout is not a measurement.
+
+The records are TSV and never json because ripwire INDEXES `.json` as config keys (src/ingest_crawl.h's
+extension table) while `.tsv` is unindexed prose (src/docparse.h's kUnindexedProseExts, next to `.txt`) —
+a harness must not enter the index it measures. That is measured, not hypothetical: as json these three
+files dragged the README's own headline example, `--for="incremental cache invalidation"`, from
+confidence="high" margin_pct="22" down to confidence="low" margin_pct="0" on this very repo, and put
+bench/capsweep/sweep.json into the answer to a query about a cap. assert_corpus_clean below keeps the
+harness out of the frozen CORPUS; the file format keeps it out of the INDEX. Same rule, two surfaces.
 """
-import argparse, json, os, pathlib, re, shutil, subprocess, sys, collections
+import argparse, os, pathlib, re, shutil, subprocess, sys, collections
 
 HERE  = pathlib.Path(__file__).resolve().parent
 REPO  = HERE.parent.parent
@@ -144,13 +154,116 @@ def run_corpus(binary, root, corpus, env, timeout=120):
             out[line] = None          # recorded, never silently dropped
     return out
 
+# ── the records: TSV, because the harness must not enter the index it measures ───────────────────────
+# The corpus-freeze assertion below keeps this harness out of the TREE being measured. It says nothing
+# about the FORMAT the harness writes in, and that gap had teeth: ripwire indexes `.json` as config keys
+# (src/ingest_crawl.h's extension table), so three committed json records became indexed symbols in the
+# repo's own map. Measured on this branch, `--for="incremental cache invalidation"` — the README's
+# headline example — answered confidence="low" margin_pct="0" with them present and confidence="high"
+# margin_pct="22" without. `.tsv` sits in src/docparse.h's kUnindexedProseExts beside `.txt`, which is why
+# corpus.txt never polluted anything, and it is why these files are TSV.
+#
+# No quoting scheme, and none is needed: every field is an integer, a cap name, a src/ path or a corpus
+# invocation. write_records REFUSES a field carrying a tab or a newline rather than mangling it quietly.
+kRecordNote = ( 'TSV not json: ripwire indexes .json as config keys (src/ingest_crawl.h) while .tsv is '
+                'unindexed prose (src/docparse.h kUnindexedProseExts) — a harness must not enter the '
+                'index it measures' )
+kNullField  = '-'          # a timed-out invocation is RECORDED as this, never dropped and never zeroed
+
+def fmt_bytes(v):
+    return kNullField if v is None else str(int(v))
+
+def parse_bytes(s, where):
+    if s == kNullField:
+        return None
+    try:    return int(s)
+    except ValueError: sys.exit('capsweep: %s: %r is not a byte count' % (where, s))
+
+def write_records(path, what, columns, rows, measured_at):
+    """One `#` provenance line naming the columns and the measured commit, then tab-separated data."""
+    for r in rows:
+        for f in r:
+            if '\t' in str(f) or '\n' in str(f):
+                sys.exit('capsweep: field %r holds a tab or newline — it cannot be a TSV record' % (f,))
+    head = '# capsweep %s — columns: %s — measured_at=%s — %s' % (
+        what, ' / '.join(columns), measured_at or 'unrecorded', kRecordNote)
+    path.write_text('\n'.join([head] + ['\t'.join(str(f) for f in r) for r in rows]) + '\n')
+
+def read_records(path, ncol):
+    """(measured_at, rows). `#` lines are provenance, not data — the rule corpus.txt already follows.
+
+    A row of the wrong width is fatal rather than padded: these files are a measurement of record, and a
+    silently short row would publish a byte count against the wrong invocation.
+    """
+    path = pathlib.Path(path)
+    if not path.exists():
+        sys.exit('capsweep: %s is missing (%s)' % (rel(path), kRecordNote))
+    at, rows = '', []
+    for i, line in enumerate(path.read_text().splitlines(), 1):
+        if line.startswith('#'):
+            m = re.search(r'measured_at=(\S+)', line)
+            if m: at = m.group(1)
+        elif line.strip():
+            f = line.split('\t')
+            if len(f) != ncol:
+                sys.exit('capsweep: %s line %d has %d field(s), expected %d' % (rel(path), i, len(f), ncol))
+            rows.append(f)
+    return at, rows
+
+kTunableCols = ('kind', 'value')
+kScreenCols  = ('baseline_bytes', 'all_bumped_bytes', 'sensitive', 'invocation')
+kSweepCols   = ('cap', 'value', 'probe', 'site', 'default_bytes', 'probe_bytes', 'invocation')
+
+def write_tunable(path, made, exclude, measured_at, corpus=None):
+    rows  = [('tunable', n) for n in sorted(set(made))]
+    rows += [('constexpr_only', n) for n in sorted(set(exclude))]
+    if corpus is not None:
+        rows.append(('corpus', str(corpus)))
+    write_records(path, 'tunable', kTunableCols, rows, measured_at)
+
+def read_tunable(path):
+    at, rows = read_records(path, len(kTunableCols))
+    meta = {'tunable': [], 'constexpr_only': [], 'measured_at': at}
+    for kind, val in rows:
+        if kind in ('tunable', 'constexpr_only'):  meta[kind].append(val)
+        elif kind == 'corpus':                     meta['corpus'] = val
+        else: sys.exit('capsweep: %s: unknown kind %r' % (rel(path), kind))
+    return meta
+
+def write_screen(path, corpus, base, allb, sens, measured_at):
+    hot  = set(sens)
+    rows = [(fmt_bytes(base.get(c)), fmt_bytes(allb.get(c)), 1 if c in hot else 0, c) for c in corpus]
+    write_records(path, 'screen', kScreenCols, rows, measured_at)
+
+def read_screen(path):
+    at, rows = read_records(path, len(kScreenCols))
+    base, allb, sens = {}, {}, []
+    for b, g, s, cmd in rows:
+        base[cmd] = parse_bytes(b, rel(path))
+        allb[cmd] = parse_bytes(g, rel(path))
+        if s == '1': sens.append(cmd)
+    return {'baseline': base, 'all_bumped': allb, 'sensitive': sens}
+
+def write_sweep(path, sweep, measured_at):
+    rows = [(cap, sweep[cap]['value'], sweep[cap]['probe'], sweep[cap]['site'], b, g, cmd)
+            for cap in sorted(sweep) for cmd, (b, g) in sweep[cap]['moved'].items()]
+    write_records(path, 'sweep', kSweepCols, rows, measured_at)
+
+def read_sweep(path):
+    at, rows = read_records(path, len(kSweepCols))
+    out = {}
+    for cap, value, probe, site, b, g, cmd in rows:
+        e = out.setdefault(cap, {'value': int(value), 'probe': int(probe), 'site': site, 'moved': {}})
+        e['moved'][cmd] = [parse_bytes(b, rel(path)), parse_bytes(g, rel(path))]
+    return out
+
 # ── the assertion that makes every number in this file mean something ────────────────────────────────
 HARNESS_IN_CORPUS = ('bench/capsweep',)
 
 def assert_corpus_clean(corpus):
     """Refuse to measure a corpus that contains this harness. THE trap this instrument exists past.
 
-    The first sweep measured the live worktree — which holds this harness and the JSON it writes. The
+    The first sweep measured the live worktree — which holds this harness and the records it writes. The
     bench/capsweep/ dir grew between the baseline pass and the probe passes, so ~18-21 verbs "responded"
     to every cap, including caps that touch nothing those verbs read. Systematic, not random, and it
     read exactly like signal: a plausible number, in the right units, for every row.
@@ -220,14 +333,13 @@ def cmd_prepare(a):
     corpus = freeze_corpus(scratch)
     print('frozen corpus at %s (tracked files only, from git archive HEAD)' % corpus)
     ref = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], capture_output=True, text=True)
-    (pathlib.Path(a.scratch) / 'tunable.json').write_text(json.dumps(
-        {'tunable': sorted(set(made)), 'constexpr_only': sorted(exclude), 'corpus': str(corpus),
-         'measured_at': ref.stdout.strip()}, indent=1))
-    print('wrote %s' % (pathlib.Path(a.scratch) / 'tunable.json'))
+    out = pathlib.Path(a.scratch) / 'tunable.tsv'
+    write_tunable(out, made, exclude, ref.stdout.strip(), corpus)
+    print('wrote %s' % out)
 
 def cmd_screen(a):
     scratch = pathlib.Path(a.scratch); binary = scratch / 'build' / 'ripwire'
-    meta = json.loads((pathlib.Path(a.scratch) / 'tunable.json').read_text())
+    meta = read_tunable(scratch / 'tunable.tsv')
     corpus = read_corpus()
     croot = assert_corpus_clean(meta.get('corpus') or scratch / 'corpus-tree')   # re-checked per phase
     base = run_corpus(binary, croot, corpus, {})
@@ -241,8 +353,7 @@ def cmd_screen(a):
     bump = {('RWCAP_%s' % n): bumped(n) for n in meta['tunable']}
     allb = run_corpus(binary, croot, corpus, bump)
     sens = sorted(c for c in corpus if base.get(c) != allb.get(c))
-    (pathlib.Path(a.scratch) / 'screen.json').write_text(json.dumps(
-        {'baseline': base, 'all_bumped': allb, 'sensitive': sens}, indent=1))
+    write_screen(scratch / 'screen.tsv', corpus, base, allb, sens, meta.get('measured_at'))
     print('corpus %d — cap-sensitive: %d (%.0f%%); the other %d respond to NO cap'
           % (len(corpus), len(sens), 100.0*len(sens)/len(corpus), len(corpus)-len(sens)))
     for c in sens[:15]:
@@ -255,8 +366,8 @@ def cmd_sweep(a):
     bumped at once, so no single cap can move them — running them per-cap would be 16,000 wasted runs.
     """
     scratch = pathlib.Path(a.scratch); binary = scratch / 'build' / 'ripwire'
-    meta   = json.loads((pathlib.Path(a.scratch) / 'tunable.json').read_text())
-    screen = json.loads((pathlib.Path(a.scratch) / 'screen.json').read_text())
+    meta   = read_tunable(scratch / 'tunable.tsv')
+    screen = read_screen(scratch / 'screen.tsv')
     sens, base = screen['sensitive'], screen['baseline']
     croot = assert_corpus_clean(meta.get('corpus') or scratch / 'corpus-tree')   # re-checked per phase
     vals = {c[0]: c[1] for c in caps_in(REPO)}
@@ -275,7 +386,7 @@ def cmd_sweep(a):
             out[cap] = {'value': int(v), 'probe': int(hi), 'site': sites.get(cap, '?'), 'moved': moved}
         print('[%3d/%3d] %-34s %s' % (i, len(meta['tunable']), cap,
               ('%d invocation(s) move' % len(moved)) if moved else '-'), flush=True)
-    (pathlib.Path(a.scratch) / 'sweep.json').write_text(json.dumps(out, indent=1))
+    write_sweep(scratch / 'sweep.tsv', out, meta.get('measured_at'))
     print('caps that move at least one verb: %d of %d tunable' % (len(out), len(meta['tunable'])))
 
 kRowsPerCap = 12          # rows per cap table; a cap in a document ABOUT caps, so it discloses below
@@ -295,6 +406,9 @@ def render(sweep, meta, caps, disc):
     L = []
     L.append('# Cap sensitivity — measured\n')
     L.append('**Generated — do not edit.** `python3 bench/capsweep/capsweep.py prepare|screen|sweep|emit`.\n')
+    L.append('The measurements it is generated from live in `bench/capsweep/*.tsv` rather than json because')
+    L.append('ripwire indexes `.json` as config keys while `.tsv` is unindexed prose (`kUnindexedProseExts` in')
+    L.append('`src/docparse.h`) — a harness must not enter the index it measures.\n')
     L.append('What each compile-time cap actually COSTS, per verb. `docs/LIMITS.md` says a cap exists;')
     L.append('this says what it does. Measured by patching a SCRATCH copy of the tree so the caps read an')
     L.append('env var — production keeps its `constexpr` and is never patched — then running real')
@@ -331,7 +445,7 @@ def render(sweep, meta, caps, disc):
     L.append('records them under "Refuted by re-derivation" so neither is proposed again.\n')
     L.append('## Provenance\n')
     L.append('Sizes were measured against `%s`, on a corpus frozen with `git archive HEAD` at that commit.'
-             % meta.get('measured_at', 'an unrecorded commit')[:8])
+             % (meta.get('measured_at') or 'an unrecorded commit')[:8])
     L.append('The cap names, values and files below are re-read from `src/` on every run of `emit`, so a')
     L.append('retuned or renamed cap makes `test/capsweepcheck.sh` fail rather than leaving a stale number')
     L.append('standing. The **byte deltas are frozen** and do not re-measure themselves: they are only as')
@@ -363,8 +477,8 @@ def rel(p):
 
 def cmd_emit(a):
     data  = pathlib.Path(a.data)
-    sweep = json.loads((data / 'sweep.json').read_text())
-    meta  = json.loads((data / 'tunable.json').read_text())
+    sweep = read_sweep(data / 'sweep.tsv')
+    meta  = read_tunable(data / 'tunable.tsv')
     caps  = caps_in(REPO)
     if not caps:
         sys.exit('capsweep: parsed 0 caps out of src/ — the declaration shape changed')
@@ -386,7 +500,7 @@ def cmd_emit(a):
         cur = out.read_text() if out.exists() else ''
         if cur != body:
             sys.exit('capsweep: %s is STALE — run: python3 bench/capsweep/capsweep.py emit' % rel(a.out))
-        print('capsweep: %s matches bench/capsweep/*.json + src/ (%d caps with measured effect)'
+        print('capsweep: %s matches bench/capsweep/*.tsv + src/ (%d caps with measured effect)'
               % (rel(a.out), len(sweep)))
     else:
         out.write_text(body)
@@ -412,7 +526,7 @@ if __name__ == '__main__':
     ap.add_argument('phase', choices=['prepare', 'screen', 'sweep', 'emit', 'patch', 'check-corpus'])
     ap.add_argument('--scratch', default=str(pathlib.Path.home() / '.cache' / 'ripwire-capsweep'))
     ap.add_argument('--jobs', type=int, default=8)
-    ap.add_argument('--data', default=str(HERE), help='emit: dir holding the frozen tunable/sweep json')
+    ap.add_argument('--data', default=str(HERE), help='emit: dir holding the frozen tunable/sweep TSV')
     ap.add_argument('--out',  default=str(REPO / 'docs' / 'TUNING.md'), help='emit: the document to write')
     ap.add_argument('--check', action='store_true', help='emit: compare instead of writing; exit 1 on drift')
     ap.add_argument('--root', default=None, help='patch: the SCRATCH tree to rewrite (never the repo)')
