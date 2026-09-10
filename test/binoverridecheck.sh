@@ -76,6 +76,7 @@ EXEMPT = {
     "adaptivecutshapecheck.sh":  "compiles an isolated $CXX probe .cpp; never invokes build/ripwire",
     "aiderbytescheck.sh":        "pure-python test of bench/headtohead/r4-2026-08-06/r4_worker.py's aider byte-count wiring; no ripwire binary invocation",
     "argvdiffcheck.sh":          "sanctioned skip fires BEFORE the RIPWIRE_BIN guard, gated on a second env var (RIPWIRE_BASE) neither pargates.py nor regression.sh ever sets; independent of RIPWIRE_BIN/broken-binary state, and already asserted intentional by gateexitcheck.sh arm (D)",
+    "nodekindcheck.sh":         "compiles an isolated $CXX harness against src/infra/nodekind.h (plus two mutated copies of that header) and greps the git-tracked walk sections; the subject is a header-inline function and the source that calls it, so no ripwire binary is bound or executed at all",
     "nulbytecheck.sh":           "reads the SOURCE TREE (git ls-files), not the binary; BIN is bound for interface uniformity and explicitly documented as unused in the gate's own header",
     "agentloopfollowupcheck.sh": "pure-python test of bench/agentloop/followup_calls.py over a synthetic pilot json and the committed pilot-6run.json; BIN is bound for interface uniformity and never executed (verified by reading the gate)",
     "arisefollowupcheck.sh":     "pure-python test of bench/arise-h2h/followup_calls.py over synthetic SWE-agent .traj fixtures; BIN is bound for interface uniformity and never executed (verified by reading the gate)",
