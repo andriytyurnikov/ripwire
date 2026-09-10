@@ -207,7 +207,7 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kLintMaxPerRule` | `5000` | 819 | — |
+| `kLintMaxPerRule` | `5000` | 821 | — |
 
 ### `src/main.cpp`
 
@@ -271,7 +271,7 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kMaxWorkspaceRoots` | `16` | 937 | — |
+| `kMaxWorkspaceRoots` | `16` | 938 | — |
 
 ### `src/namingconsistency.h`
 

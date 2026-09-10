@@ -113,6 +113,31 @@ TSNode defBodyNodeOf( TSNode roleNode, SymKind kind ) noexcept
     return body;
 }
 
+// DART's body is a SIBLING, not a field and not a child. tree-sitter-dart emits `function_body` next to
+// `function_signature` / `method_signature`, so defBodyNodeOf finds nothing, the shared ancestor climb in
+// captureTagsFacts finds nothing either, and the definition's span stops at the signature's closing paren —
+// after which every call in the body attributes to the nearest ENCLOSING symbol. Measured on test/dartfix
+// before this existed: `square` landed on the class `Calculator` rather than the method `accumulate`, and
+// the three top-level edges were lost outright, 5 edges where 8 are expected. Scanning FORWARD to the next
+// NAMED sibling is what keeps an abstract member honest: `void f();` has no function_body, the scan stops at
+// the next declaration, the body stays null and the symbol stays a declaration. Same reason as
+// defBodyNodeOf's: one call at the dispatch point instead of a loop inside it. Gate: test/dartcheck.sh.
+TSNode dartFollowingBody( TSNode defNode ) noexcept
+{
+    for( TSNode sib = ts_node_next_sibling( defNode ); !ts_node_is_null( sib ); sib = ts_node_next_sibling( sib ) )
+    {
+        if( std::strcmp( ts_node_type( sib ), "function_body" ) == 0 )
+        {
+            return sib;
+        }
+        if( ts_node_is_named( sib ) )
+        {
+            break;   // the signature/body pair ended
+        }
+    }
+    return {};
+}
+
 bool preprocFunctionDefHasBody( TSNode defineNode, std::string_view src ) noexcept
 {
     const TSNode value = preprocValueNode( defineNode );
