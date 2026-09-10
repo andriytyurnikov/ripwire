@@ -791,6 +791,8 @@ Full retrieval tables — including the MRR figures behind the router numbers ab
 
 Around the core sit 179 long flags advertised in `--help`, across seven families — plus an MCP
 server, so a coding agent can call any of them mid-task instead of grepping and reading whole files.
+`--help` prints one line per flag (~4.5K tokens); `--help=--FLAG` prints that flag's full entry with
+every caveat, `--help=SECTION` one family, and `--help=all` the whole catalog.
 Not sure which of them fits the task in front of you? `ripwire . --help-task="<task in words>"`
 recommends ONE executable command with the evidence behind the pick — advice only, it never runs
 the recommendation — and abstains honestly when the evidence is too thin to name a winner.

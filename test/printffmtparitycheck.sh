@@ -98,15 +98,18 @@ hashfile(){
 # it), --doctor (documented VOLATILE fields), --quality-delta (state-writing), --version (+dirty stamp).
 # --pack-task is INCLUDED but routes through --for's ranker; it was probed across a commit before being
 # admitted, and if it ever flakes it is the first label to suspect and drop.
-LABELS="flagless lint lint_sarif lint_select lint_naming lint_catalog match pattern callers impact clones help \
-expand callees around uses path connect grep pack_signatures pack_task arch seams skipped recall exemplar lego notes bad_flag \
-callers_json callees_json impact_json uses_json grep_json expand_missing callers_missing \
-safe_delete verify_layer graph_query callers_limit"
+# Both --help TIERS are pinned, and so is one addressed entry. `help` is the budgeted first screen;
+# `help_all` is the complete catalog every gate and docs/docs_commands_build.py reads; `help_one` proves
+# the per-flag address still serves a whole entry. Pinning only one of them would let a change move the
+# other silently, which is exactly the split this fence is guarding.
+# label -> (needsCorpus 0|1, argv...). needsCorpus=1 verbs get "$CORPUS --no-cache" prepended; 0 verbs
+# (--version/--help) are global and take no positional path at all.
+LABELS="flagless lint lint_sarif lint_select lint_naming lint_catalog match pattern callers impact clones help expand callees around uses path connect grep pack_signatures pack_task arch seams skipped recall exemplar lego notes bad_flag callers_json callees_json impact_json uses_json grep_json expand_missing callers_missing safe_delete verify_layer graph_query callers_limit help_all help_one"
 
 # needsCorpus: 1 = prepend "test/fixture --no-cache"; 0 = a global verb that takes no positional path.
 needsCorpusFor(){
     case "$1" in
-        help|bad_flag) return 1;;
+        help|help_all|help_one|bad_flag) return 1;;
         *)             return 0;;
     esac
 }
@@ -125,6 +128,8 @@ argvFor(){
         impact)          ARGV=( --impact=perimeter );;
         clones)          ARGV=( --clones );;
         help)            ARGV=( --help );;
+        help_all)        ARGV=( --help=all );;
+        help_one)        ARGV=( --help=--uses );;
         expand)          ARGV=( --expand=distance );;
         callees)         ARGV=( --callees=distance );;
         around)          ARGV=( --around=distance );;

@@ -315,7 +315,7 @@ print('OK' if not bad else 'DRIFT ' + '; '.join('top-%d caption %.1f%% vs recoun
         # two numbers --help states for --pack-signatures and asserts they equal the C-band bounds above (not
         # a second hand-copied 72/90 — same $bandLow/$bandHigh variables), so a future recalibration of the
         # band and a forgotten --help edit cannot silently drift apart again.
-        helpText="$( "$BIN" --help 2>&1 )"
+        helpText="$( "$BIN" --help=all 2>&1 )"
         helpRange="$( printf '%s' "$helpText" | python3 -c "
 import re, sys
 m = re.search( r'~([0-9]+(?:\.[0-9])?)-([0-9]+(?:\.[0-9])?)% fewer element bytes', sys.stdin.read() )
