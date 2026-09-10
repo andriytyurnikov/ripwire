@@ -46,7 +46,7 @@ namespace rw
 // order, and update kMcpVerbCount. test/wrapverbscheck.sh enforces this at test time by diffing
 // a live tools/list call against `ripwire wrap claude`'s output — it fails loudly on drift even
 // if this comment is ignored.
-enum class McpVerbGroup { Read, FlagshipReflex, Edit };
+enum class McpVerbGroup : std::uint8_t { Read, FlagshipReflex, Edit };
 
 struct McpVerbInfo
 {
@@ -342,7 +342,7 @@ inline std::string mcpResolveAssumedRoot()
     {
         return {};
     }
-    const std::string launchCwd = mcpCanonRoot( cwdBuf );
+    std::string       launchCwd = mcpCanonRoot( cwdBuf );   // not const: returned, and a const local cannot be moved out
     const char* const homeEnv   = std::getenv( "HOME" );
     const std::string homeCanon = homeEnv ? mcpCanonRoot( homeEnv ) : std::string{};
     if( launchCwd == "/" || ( !homeCanon.empty() && launchCwd == homeCanon ) )

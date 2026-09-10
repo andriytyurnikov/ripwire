@@ -423,7 +423,7 @@ inline std::string analyzeToString( const std::string& root, int topK, bool stab
                                     /*lcom4=*/nullptr, /*amp=*/nullptr, &ix.g.unresolvedOut,
                                     ix.g.bindLabel.empty() ? nullptr : &ix.g.bindLabel,
                                     /*autoOrder=*/false, /*outEstTokens=*/nullptr,
-                                    /*extraBodyTokens=*/0,
+                                    /*extraPayloadTokens=*/0,
                                     // W2-F: the map's convergence disclosure. The CLI map carries pr_iters= and
                                     // this one must too — "the clause landed at 3 of its 5 echo sites" is the
                                     // §B4 family, and mcpclidiffcheck is the gate that keeps the two surfaces one.
@@ -1052,8 +1052,8 @@ inline std::string cochangePartnersJson( const std::string& root, const std::str
     }
     std::uint32_t                commits    = 0;
     std::uint32_t                subWindows = 0;
-    const std::vector<CoPartner> ps         = cochangePartners( root, ing, file, commits, /*since=*/nullptr,
-                                                                /*fileRoot=*/UINT32_MAX, &subWindows );
+    const std::vector<CoPartner> ps         = cochangePartners( root, ing, file, commits, /*scope=*/nullptr,
+                                                                /*onlyRoot=*/UINT32_MAX, &subWindows );
     // §P8 vocabulary: the JSON sibling of the XML at= anchor the CLI --cochange now carries — same spelling
     // and same null-on-a-non-git-root convention main.cpp's --quality-delta --json already established.
     const std::string atVal  = gitstamp::stampAt( root );
@@ -1538,7 +1538,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // fullDistribution (a pruned tail would make total= mode-dependent and its order incomplete).
     std::vector<float> lensRank  = ( rc.which == LexMode::NameExact )
                                        ? lexicalScoresNameExactRanked( ing, task, &tierMul )
-                                       : lexicalScoresTiered( ing, ix.g.outOff, ix.g.outTargets, task, /*topKBound=*/0, &ifaceExact, &tierMul );
+                                       : lexicalScoresTiered( ing, ix.g.outOff, ix.g.outTargets, task, /*pruneTopK=*/0, &ifaceExact, &tierMul );
 
     // B8 (query-mention anchoring): same default-on contract as the CLI --for — files / dotted modules /
     // Scope.symbols literally NAMED in the task text are lifted to just below the top hit (the measured #1
@@ -1623,7 +1623,6 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     std::vector<std::uint32_t> fanIn( S, 0 );
     {
         const auto* ro = ix.g.inEdges.rowOffsets();
-        const auto* ci = ix.g.inEdges.colIndices();
         for( std::size_t i = 0; i < S; ++i )
         {
             fanIn[i] = ro[i + 1] - ro[i];   // in-degree = callers of symbol i

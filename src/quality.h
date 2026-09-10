@@ -1189,7 +1189,7 @@ inline std::string gitHeadSha( const std::string& root )
 // dashes at 4 and 7) — the caller degrades to a fixed epoch date. Read-only: `git log` never mutates the repo.
 inline std::string gitCommitterDateIso( const std::string& root )
 {
-    const std::string out = gitOneLine( root, "log -1 --format=%cs HEAD 2>/dev/null" );
+    std::string out = gitOneLine( root, "log -1 --format=%cs HEAD 2>/dev/null" );   // not const: a const local cannot be moved out on return
     if( out.size() != 10 || out[4] != '-' || out[7] != '-' )
     {
         return {};
@@ -1298,7 +1298,7 @@ inline std::string gitWindowRefSha( const std::string& root, std::uint32_t days 
     // newest commit at-or-before the window floor (rev-list --min-age filters on committer time ≤ the bound;
     // cutoff−1 keeps a commit landing exactly ON the floor inside the window, matching gitmine's inclusive floor).
     const std::int64_t cutoff = headEpoch - std::int64_t( days ) * 86400;
-    const std::string  preWindow = gitOneLine( root, "rev-list --max-count=1 --min-age=" + std::to_string( cutoff - 1 ) + " HEAD 2>/dev/null" );
+    std::string        preWindow = gitOneLine( root, "rev-list --max-count=1 --min-age=" + std::to_string( cutoff - 1 ) + " HEAD 2>/dev/null" );   // not const: moved out on return
     if( !preWindow.empty() )
     {
         return preWindow;
@@ -1606,7 +1606,7 @@ inline std::string blobShardHex( std::string_view filename )
 inline std::string resolveCacheBlobPath( const std::string& dir, const std::string& filename )
 {
     namespace fs = std::filesystem;
-    const std::string flatPath = dir + "/" + filename;
+    std::string       flatPath = dir + "/" + filename;   // not const: moved out on either early return
     std::error_code   existsEc;
     if( fs::exists( fs::path( flatPath ), existsEc ) && !existsEc )
     {
@@ -2371,7 +2371,7 @@ inline std::string materializeCommitTree( const std::string& root, const std::st
     { DEGRADED_PATH_ALERT( "quality: commit-tree revision does not resolve to a commit — refusing to archive" ); return {}; }
 
     std::error_code ec;
-    const std::string tmpRoot = cacheDirLadder() + "/ripwire-" + tag + "-" + std::to_string( ::getpid() );
+    std::string tmpRoot = cacheDirLadder() + "/ripwire-" + tag + "-" + std::to_string( ::getpid() );   // not const: moved out on return
     fs::remove_all( fs::path( tmpRoot ), ec );                 // stale leftover from a crashed prior run
     if( !fs::create_directories( fs::path( tmpRoot ), ec ) && ec )
     { DEGRADED_PATH_ALERT( "quality: cannot create commit-tree temp dir" ); return {}; }

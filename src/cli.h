@@ -20,8 +20,8 @@
 namespace rw
 {
 
-enum class RankBy { PageRank, Authority, Hub, Rrf, Churn, ChurnDecay };   // --rank-by=pagerank|authority|hub|rrf|churn|churn-decay
-enum class ColorBy { Lang, Community, Cx, Churn, Tested };    // --color-by=lang|community|cx|churn|tested (with --html)
+enum class RankBy : std::uint8_t { PageRank, Authority, Hub, Rrf, Churn, ChurnDecay };   // --rank-by=pagerank|authority|hub|rrf|churn|churn-decay
+enum class ColorBy : std::uint8_t { Lang, Community, Cx, Churn, Tested };    // --color-by=lang|community|cx|churn|tested (with --html)
 
 struct Config
 {

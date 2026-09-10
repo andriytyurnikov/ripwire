@@ -1503,7 +1503,7 @@ inline std::vector<float> lexicalScoresNameExactRanked( const IngestResult& ing,
 //      (A single generic word that happens to equal a symbol name — "map" — still routes to name-exact, which
 //      is correct: a one-word query whose only word IS a symbol name is an identifier lookup, and name-exact
 //      is the measured winner on that shape; the crater was multi-word phrases, not single-word lookups.)
-enum class LexMode { SubtokenBody, NameExact };
+enum class LexMode : std::uint8_t { SubtokenBody, NameExact };
 
 // ONE anchoring word's resolved DEFINITION — the same (name, defining file) pair the `anchors:` clause
 // below prints, in the form a consumer can compare a symbol against. Only words that actually name a
@@ -2085,7 +2085,6 @@ inline AdaptiveCut adaptiveCut( const std::vector<float>& scores, std::size_t fl
     // cut, only the honesty flag (A4-F4: previously the single global-max drop was used for BOTH roles, so a
     // routine 90%+ tail drop beyond hardCeil silently starved the in-cap material cliff of ever being chosen —
     // the mode was inert on exactly the sharp queries it exists for).
-    std::size_t bestCutKept    = 0;
     double      bestDrop       = 0.0;
     std::size_t bestCapCutKept = 0;
     double      bestCapDrop    = 0.0;
@@ -2094,7 +2093,7 @@ inline AdaptiveCut adaptiveCut( const std::vector<float>& scores, std::size_t fl
         const double prev = double( pos[ i - 1 ] );
         const double here = double( pos[ i ] );
         const double drop = prev > 0.0 ? ( prev - here ) / prev : 0.0;
-        if( drop > bestDrop ) { bestDrop = drop; bestCutKept = i; }               // cut BEFORE rank i+1 ⇒ keep i
+        if( drop > bestDrop ) { bestDrop = drop; }                                // the GLOBAL cliff: only its magnitude is read
         if( i < hardCeil && drop > bestCapDrop ) { bestCapDrop = drop; bestCapCutKept = i; }
     }
 
