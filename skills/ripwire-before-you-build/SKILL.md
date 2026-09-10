@@ -3,8 +3,8 @@ name: ripwire-before-you-build
 description: >
   Starting a FEATURE (multi-symbol work): the plan, the API boundary, the scope — how big does
   this change get — from the codebase's real structure. Implementing an EXISTING interface?
-  --lego=Iface lists its contract and implementors. ONE symbol → reuse-first. A small feature with
-  an obvious home needs none of this.
+  --lego=Iface lists its contract and current implementors. ONE standalone symbol → reuse-first.
+  A small feature with an obvious home needs none of this.
 allowed-tools: Bash, Read
 ---
 

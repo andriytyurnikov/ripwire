@@ -2594,6 +2594,13 @@ numbers for this exact text: C2 = 85 / 84 / 84 (Opus / Sonnet / Fable), 0 negati
 claims is "no routing loss under three LLM readers and one artifact boundary removed", not the decisive win
 the band asked for — the record above stands as written.
 
+**Amendment 2026-09-10 — the per-description 320 is retired (owner).** It was a design ceiling, not a client
+limit: Codex has no per-description cut — it trims every description round-robin only when the whole catalog
+overflows its total budget — and it rejects a description over 1,024 characters; Claude Code caps an entry at
+1,536. Holding 320 pushed routing boundaries and the `agentloopcodexcheck` stop-rule markers out of the text
+(PR #112). `test/skilldescbudgetcheck.sh` now fails only a description over 1,024 and keeps the 5,400 set
+total, which is what guards the round-robin tail cut. The rules above stay as registered.
+
 ### Subtoken acronym shredding — PRE-REGISTERED 2026-08-19 (before the fix is measured)
 
 **The defect.** The shared subtoken tokenizer shreds an all-caps run into single characters, which
