@@ -206,6 +206,15 @@ static void armAllBytes()
 // Kept byte-for-byte as they stood at 05f4b892 (src/lexindex.h:130 and :201) so this arm compares the new
 // mask-driven walkers against the OLD code, not against a paraphrase of it. Do not "clean these up".
 
+// lexUpperOpensToken went with them: it was the state machines' one-byte lookahead, and the mask algebra
+// that replaced them states the same rule as `U & (A<<1) & ( ~(U<<1) | (L>>1) )`. Kept HERE, verbatim,
+// because a reference walker that borrowed the shipped rule would move with it and prove nothing.
+static bool refLexUpperOpensToken( std::string_view text, std::size_t k, bool prevUpper ) noexcept
+{
+    const unsigned char next = ( k + 1 < text.size() ) ? static_cast< unsigned char >( text[ k + 1 ] ) : 0u;
+    return !prevUpper || ( next >= 'a' && next <= 'z' );
+}
+
 template< class EmitFn >
 static void refForEachLexSubtoken( std::string_view text, EmitFn&& emit )
 {
@@ -224,7 +233,7 @@ static void refForEachLexSubtoken( std::string_view text, EmitFn&& emit )
             prevUpper = false;
             continue;
         }
-        if( upper && tokStartByte != kNoTokenByte && rw::lexUpperOpensToken( text, k, prevUpper ) )
+        if( upper && tokStartByte != kNoTokenByte && refLexUpperOpensToken( text, k, prevUpper ) )
         {
             emit( tokStartByte, k );
             tokStartByte = k;
@@ -268,7 +277,7 @@ static void refForEachLexSubtokenHashed( std::string_view text, EmitFn&& emit )
             prevUpper = false;
             continue;
         }
-        if( upper && tokStartByte != kNoTokenByte && rw::lexUpperOpensToken( text, k, prevUpper ) )
+        if( upper && tokStartByte != kNoTokenByte && refLexUpperOpensToken( text, k, prevUpper ) )
         {
             emit( tokStartByte, k, h );
             beginToken( c, k );
@@ -292,45 +301,32 @@ struct Tok
     std::uint64_t hash  = 0;
 };
 
-static void collectRef( std::string_view text, std::vector< Tok >& out )
+// ONE collector, driving whichever walker it is handed — deliberately not four (or two) near-identical
+// wrappers, which is a clone group the repo's own --quality-delta would (and did) flag. The default
+// argument on the sink lets the SAME lambda serve the two-argument span walker and the three-argument
+// hashed one.
+template< class Walk >
+static void collect( std::string_view text, std::vector< Tok >& out, Walk&& walk )
 {
     out.clear();
-    refForEachLexSubtokenHashed( text, [ & ]( std::size_t s, std::size_t e, std::uint64_t h )
-    {
-        out.push_back( { s, e, h } );
-    } );
+    walk( text, [ &out ]( std::size_t s, std::size_t e, std::uint64_t h = 0 ) { out.push_back( { s, e, h } ); } );
 }
 
-static void collectNew( std::string_view text, std::vector< Tok >& out )
-{
-    out.clear();
-    rw::forEachLexSubtokenHashed( text, [ & ]( std::size_t s, std::size_t e, std::uint64_t h )
-    {
-        out.push_back( { s, e, h } );
-    } );
-}
-
-// spans only (the hash-free walker) — a separate list, because the two shipped walkers are separate code
-static void collectRefSpans( std::string_view text, std::vector< Tok >& out )
-{
-    out.clear();
-    refForEachLexSubtoken( text, [ & ]( std::size_t s, std::size_t e ) { out.push_back( { s, e, 0 } ); } );
-}
-
-static void collectNewSpans( std::string_view text, std::vector< Tok >& out )
-{
-    out.clear();
-    rw::forEachLexSubtoken( text, [ & ]( std::size_t s, std::size_t e ) { out.push_back( { s, e, 0 } ); } );
-}
+// the four drivers, as the thinnest possible adapters over the function templates (which cannot be
+// passed as values)
+inline constexpr auto kRefHashed = []( std::string_view t, auto&& f ) { refForEachLexSubtokenHashed( t, f ); };
+inline constexpr auto kNewHashed = []( std::string_view t, auto&& f ) { rw::forEachLexSubtokenHashed( t, f ); };
+inline constexpr auto kRefSpans  = []( std::string_view t, auto&& f ) { refForEachLexSubtoken( t, f ); };
+inline constexpr auto kNewSpans  = []( std::string_view t, auto&& f ) { rw::forEachLexSubtoken( t, f ); };
 
 // Compare all four lists for one text. Returns "" when identical, else the first divergence.
 static std::string tokenizerDiff( std::string_view text )
 {
     static std::vector< Tok > refH, newH, refS, newS;
-    collectRef( text, refH );
-    collectNew( text, newH );
-    collectRefSpans( text, refS );
-    collectNewSpans( text, newS );
+    collect( text, refH, kRefHashed );
+    collect( text, newH, kNewHashed );
+    collect( text, refS, kRefSpans );
+    collect( text, newS, kNewSpans );
 
     char msg[ 384 ];
     if( refS.size() != newS.size() )
