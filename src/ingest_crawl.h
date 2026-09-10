@@ -492,6 +492,7 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
     }
 
     std::vector<TSNode> stack;
+    ChildCursor         cursor( root );   // reused across nodes — this walk never recurses
     stack.push_back( root );
     while( !stack.empty() )
     {
@@ -510,15 +511,19 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             ++h.errNodes;
             continue;
         }
-        const std::uint32_t kids = ts_node_child_count( n );
-        for( std::uint32_t i = 0; i < kids; ++i )
+        // O(children), not O(children²). The root of a RECOVERED file is exactly where the width is
+        // largest and least controlled — one comment flood plus one unparseable token measured 56× the
+        // identical flood with no error in it before this became a cursor (test/childwalkscalecheck.sh,
+        // arm B4; the rule is on src/infra/tschildren.h). Filtered in place: `stack` is the work list,
+        // and only the children that carry an error belong on it.
+        forEachChild( n, cursor.cur, [ &stack ]( TSNode c )
         {
-            const TSNode c = ts_node_child( n, i );
             if( ts_node_has_error( c ) || ts_node_is_missing( c ) )
             {
                 stack.push_back( c );
             }
-        }
+            return true;
+        } );
     }
     return h;
 }

@@ -1319,11 +1319,14 @@ inline void ln_collectLocalDecls( TSNode node, TSNode funcRoot, int depth, std::
         }
         return;   // do not descend INTO a countable declaration's own subtree again (nothing further to find)
     }
-    const std::uint32_t n = ts_node_child_count( node );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        ln_collectLocalDecls( ts_node_child( node, i ), funcRoot, depth - 1, out, defStartLine, defBytes );
-    }
+    // O(children), not O(children²): the re-parsed subtree is a whole DEFINITION, whose body node holds
+    // one child per statement AND one per comment between them (extras are spliced into the child array —
+    // src/infra/tschildren.h). A 16 000-comment body measured 15× --lint without --naming-locals before
+    // this became a cursor (test/childwalkscalecheck.sh, arm B6). The cursor is this frame's own: the
+    // loop body recurses.
+    ChildCursor cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child )
+    { ln_collectLocalDecls( child, funcRoot, depth - 1, out, defStartLine, defBytes ); return true; } );
 }
 
 // collectGatedLocalNames itself (the ingest.h-declared, EXTERNAL-linkage entry point) is defined further

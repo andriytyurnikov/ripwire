@@ -1762,18 +1762,21 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         target = importSpecifierText( mn, src );
     }
     const TSNode        moduleNode = isFrom ? ts_node_child_by_field_name( stmt, "module_name", 11 ) : TSNode{};
-    const std::uint32_t n          = ts_node_child_count( stmt );
-    for( std::uint32_t i = 0; i < n; ++i )
+    // One import statement's clause list: the count comes from the input (`from m import ( a, b, … )`),
+    // and a comment between two clauses is a further child, so the indexed form was O(children²) here too.
+    // No scaling arm exists for it (an import flood is not a shape any corpus produces) — this is the
+    // pure-iteration conversion, covered by the byte-identical arms (test/childwalkscalecheck.sh).
+    ChildCursor cursor( stmt );
+    forEachChild( stmt, cursor.cur, [ & ]( TSNode kid )
     {
-        const TSNode kid = ts_node_child( stmt, i );
         if( ts_node_is_null( kid ) )
         {
-            continue;
+            return true;
         }
         const char* kt = ts_node_type( kid );
         if( isFrom && ts_node_eq( kid, moduleNode ) )
         {
-            continue;   // the module_name child of a from-import is not a bound name; only the `name:` clauses are
+            return true;   // the module_name child of a from-import is not a bound name; only the `name:` clauses are
         }
         std::string_view bound;
         std::string      clauseTarget;
@@ -1783,7 +1786,7 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
             const TSNode nm    = ts_node_child_by_field_name( kid, "name", 4 );
             if( ts_node_is_null( alias ) || ts_node_is_null( nm ) )
             {
-                continue;
+                return true;
             }
             bound        = pattern::nodeText( alias, src );
             clauseTarget = isFrom ? target : importSpecifierText( nm, src );
@@ -1805,11 +1808,11 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         }
         else
         {
-            continue;   // keywords, punctuation, wildcard_import
+            return true;   // keywords, punctuation, wildcard_import
         }
         if( bound.empty() || clauseTarget.empty() )
         {
-            continue;
+            return true;
         }
         RawBind b;
         b.fileId    = fileId;
@@ -1819,7 +1822,8 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         b.var.assign( bound );
         b.typeName  = std::move( clauseTarget );
         binds.push_back( std::move( b ) );
-    }
+        return true;
+    } );
 }
 
 void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_view src, std::vector<Include>& incs, std::vector<RawRef>& refs,
