@@ -160,10 +160,14 @@ jobs:
       # far lower than Linux and 4 macOS shards would queue behind each other instead of running.
       matrix:
         include:
-          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 1, shards: 2 }
-          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 2, shards: 2 }
-          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 1, shards: 2, skiplist: .github/pargates-macos-plain-skip.txt }
-          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 2, shards: 2, skiplist: .github/pargates-macos-plain-skip.txt }
+          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 1, shards: 4 }
+          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 2, shards: 4 }
+          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 3, shards: 4 }
+          - { os: macos-14,     flavor: Release, cc: appleclang, shard: 4, shards: 4 }
+          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 1, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
+          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 2, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
+          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 3, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
+          - { os: macos-14,     flavor: plain,   cc: appleclang, shard: 4, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
           - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 1, shards: 4 }
           - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 2, shards: 4 }
           - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 3, shards: 4 }
