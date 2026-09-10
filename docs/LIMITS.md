@@ -10,7 +10,7 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 120 | 51 | 66 | **54** |
+| 120 | 51 | 73 | **47** |
 
 ### `src/accessshape.h`
 
@@ -151,7 +151,7 @@ Discloses: `importers_capped`
 
 ### `src/handoff.h`
 
-Discloses: **none**
+Discloses: `syms_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
@@ -472,14 +472,14 @@ Discloses: **none**
 
 ### `src/tracelocus.h`
 
-Discloses: **none**
+Discloses: `name_ladder_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kMeasuredDigitsPricedWidth` | `6` | 777 | — |
-| `kNameCandidateCap` | `8` | 130 | — |
-| `kTestHopBasenameRowCap` | `3` | 331 | — |
-| `kTestHopCalleeRowCap` | `5` | 330 | — |
+| `kMeasuredDigitsPricedWidth` | `6` | 873 | — |
+| `kNameCandidateCap` | `8` | 141 | — |
+| `kTestHopBasenameRowCap` | `3` | 424 | — |
+| `kTestHopCalleeRowCap` | `5` | 423 | — |
 
 ### `src/verbs_change.h`
 
