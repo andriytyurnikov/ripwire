@@ -2205,6 +2205,62 @@ checks into their own `flowTaskChoice` function (mirroring the existing `instrum
 extraction) and by inlining the small filler-word loop directly rather than introducing a shared
 helper that collided token-for-token with `weakSymbolCandidate`'s existing shape.
 
+### `--help-task` catalog tier: the verbs and the skills with no route (2026-09-10)
+
+**Two measurements, one cause.** `--help-task` recommended on **3 of 39** phrasings of the 13 surfaces
+added since the 2026-08-28 audit (F-R1-08), and could name **8 of the 16** shipped skills (F-R1-09) —
+nine skill directories existed that no `--help-task` answer could ever point at. `--help-task` and the
+skill catalog were two routers with two vocabularies. Three of the unrouted surfaces are VERBS rather
+than shaping flags: `--handoff` (which has its own shipped skill), `--plan-lint`, and the PROSE form of
+`--from-trace` — `looksLikeTrace` matches a PASTED artifact (`AddressSanitizer:`, `#0 … in`), and "I
+have a sanitizer report" contains none of those literals, so the #108 name-ladder work was unreachable
+from prose.
+
+**Ten intents, in a `catalogTaskChoice` tier placed LAST in `directTaskChoice`** so every older, more
+specific route keeps its rows: `handoff-brief` → `--handoff`, `plan-lint` → `--plan-lint=FILE`,
+`trace-prose` → `--from-trace=-`, `scan-skills`/`scan-skill` → `--scan-skills` / `--scan-skill=FILE`,
+`opt-remark` → `--for=TASK`, `architecture-health` → `--deps`, `quality-check` → `--quality-delta`,
+`perf-symbol` → `--around=SYM`, `graph-query` → `--graph-query=EXPR`, `maintenance-risk` →
+`--hotspots`. Each takes conjunctive evidence in the shape `instrumentedTaskChoice` established, and the
+value-carrying ones fire only when the task supplies the value.
+
+Two of them are worth stating plainly rather than listing. **`opt-remark` is the one skill with no verb
+of its own** — it is a contributor workflow around clang remarks and a profiling build — so it routes to
+the ranked lens and its reason string says exactly that, instead of implying a dedicated surface exists.
+**`graph-query` composes an expression** out of what the task supplied (the symbol it named, the
+direction it asked for) with a stated default depth, the same way `--grep-context=2` and
+`--slice-flow=back` are defaults; the gate unquotes what the router emitted and runs it through the real
+verb, so a composed expression the verb would refuse fails the gate rather than the user.
+
+| measurement | before | after |
+| --- | ---: | ---: |
+| skills the router can name (of 16, `ripwire-router` excluded) | **8** | **16** |
+| audit's 39 surface phrasings, recommends | **3** | **9** |
+| corpus `split=test` (n=114) accuracy / coverage | 0.754 / 0.627 | **0.939 / 0.907** |
+| corpus `split=dev` (n=111) accuracy / coverage | — | 0.946 / 0.929 |
+| corpus `split=all` (n=225) accuracy / coverage | 0.809 / 0.730 | **0.942 / 0.918** |
+| precision / harmful / neg-specificity, every split | 1.000 / 0.000 / 1.000 | 1.000 / 0.000 / 1.000 |
+| the 189 rows that predate this tier, (status, intent, resolved_symbols) | — | **0 differing** |
+
+The remaining 30 of 39 are declined by design and are gated as such: six SHAPING flags (`--scope`,
+`--slice-depth`, `--slice-flow`, `--allow-dirty`, `--no-ignore`, `--no-post-check`) are modifiers on
+other verbs and not commands a one-command router can recommend alone; `--pin-census` is eval-only; and
+the value-carrying abstentions (`--edit-plan=FILE`, `--grep=LIT --handles`, `--plan-lint` with no file
+named) keep the 2026-08-28 rule that the router may not emit a command the verb would refuse.
+
+**Red-first is the GATE here, not the eval.** Coverage has no floor by the round-1 rule, so the eval
+exits 0 either way; eleven `taskroutecheck` arms fail against the pre-change binary (every one abstained
+with `score="0"`), plus the two execution arms, and the skill-vocabulary arm — which reads BOTH sides
+from disk, the skill directories and the names `src/taskroute.h` can emit — fails against the pre-change
+source, naming all eight unreachable skills. That arm is the durable half: a new skill that ships
+without a route now fails as loudly as a route naming a skill that does not exist.
+
+**Two corrections the pre-insertion verification caught**, recorded because "every row verified before
+insertion" is only worth something if the failures are shown too. A plan file that names ITSELF
+(`PLAN_*.md`, `DESIGN_*.md`) is now surface evidence the prose need not repeat. And `"before i commit"`
+was re-weighted below the quality-check floor: it is a TIMING word, not a quality word, and at its first
+weight it stole *"lint the plan file layout before I commit it"* from the plan-lint abstention.
+
 ### The four restored stop rules become measurable (2026-09-10)
 
 **The defect (audit F-R1-03).** #112 restored four frontmatter STOP RULES to the skill descriptions —

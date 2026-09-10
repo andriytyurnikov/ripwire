@@ -229,3 +229,66 @@ its route.
 
 **Seal: sha256(prompts.tsv) = `25283f2eba85aad889fe3746308df76ed8b1244529f44986c936eb6ef60b0b53`**
 (post-round; rows=189, dev=100, test=89).
+
+## Catalog-tier round (2026-09-10, lane/helptask-precision) — the verbs and skills with no route
+
+**The gap.** The audit measured `--help-task` at **3 recommends over 39 phrasings** of the 13 surfaces
+added since 2026-08-28 (F-R1-08), and found the router able to name **8 of the 16** shipped skills
+(F-R1-09) — `--help-task` and the skill catalog were two routers with two vocabularies. Three of the
+unrouted surfaces are VERBS, not shaping flags: `--handoff` (which has its own shipped skill),
+`--plan-lint`, and the PROSE form of `--from-trace` (`looksLikeTrace` matches a PASTED artifact, and a
+sanitizer report described in words contains none of its literals).
+
+**Ten new intents** in a `catalogTaskChoice` tier that sits LAST in `directTaskChoice`, so every older
+and more specific route keeps its rows: `handoff-brief` (`--handoff`), `plan-lint` (`--plan-lint=FILE`),
+`trace-prose` (`--from-trace=-`), `scan-skills`/`scan-skill` (`--scan-skills`, `--scan-skill=FILE`),
+`opt-remark` (`--for=TASK`), `architecture-health` (`--deps`), `quality-check` (`--quality-delta`),
+`perf-symbol` (`--around=SYM`), `graph-query` (`--graph-query=EXPR`), `maintenance-risk`
+(`--hotspots`). Skills nameable: **8 → 16**, and `test/taskroutecheck.sh` now reads BOTH sides from disk
+so a new skill shipping without a route fails as loudly as a route naming a skill that does not exist.
+
+**Rows added: 36 (30 positives, 3 per intent, + 6 negatives), `provenance=instrumented-cli`**, split by
+the same content-hash rule. `instrumented-cli` for the same reason the 2026-09-02 section gives: each new
+intent's trigger is a small closed phrase list, so a sentence that routes necessarily reuses one of its
+phrases. Every row's routing outcome was verified against a live binary before insertion (30/30 after one
+correction — see below); the 6 negatives are the near misses that must NOT route (an account handed off
+to support, a landing-page design that needs a check, vetting a candidate's onboarding plan, a team that
+inherited a support queue, a profiler vendor selling licences, a quarterly summary handed to leadership).
+
+**Two corrections the pre-insertion verification caught, recorded rather than smoothed over:**
+
+- *"lint the shape of DESIGN_NOTES.md before I circulate it"* abstained: the surface test wanted the
+  words "plan"/"design doc" in the PROSE. A file that names ITSELF a plan (`PLAN_*.md`, `DESIGN_*.md`) is
+  surface evidence the prose need not repeat, so the check now reads the named file's own name too.
+- *"lint the plan file layout before I commit it"* routed to `quality-check`. `"before i commit"` is a
+  TIMING word, not a quality word — it fits linting a plan or running a gate equally well. Re-weighted
+  below the floor so it can only ever CONFIRM a quality word, never carry the route alone. The prompt
+  now abstains, which is correct: it names no file, and `--plan-lint` refuses a file that is not there.
+
+**Held-out floors, before → after** (`bench/taskroute_eval.py`, same corpus, only the binary changed —
+the pre-change binary is this lane's own commit 2, built and kept for the comparison):
+
+| split | rows | accuracy | precision | harmful | neg-specificity | coverage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| test | 114 | 0.754 → **0.939** | 1.000 → 1.000 | 0.000 → 0.000 | 1.000 → 1.000 | 0.627 → **0.907** |
+| dev | 111 | — → **0.946** | — → 1.000 | — → 0.000 | — → 1.000 | — → **0.929** |
+| all | 225 | 0.809 → **0.942** | 1.000 → 1.000 | 0.000 → 0.000 | 1.000 → 1.000 | 0.730 → **0.918** |
+
+This round's red-first proof is the GATE, not the eval: coverage has no floor by the round-1 rule, so
+the eval exits 0 either way. Eleven `taskroutecheck` arms fail against the pre-change binary (every one
+abstained with `score="0"`), plus the two execution arms; the skill-vocabulary arm fails against the
+pre-change SOURCE, naming all eight skills no `--help-task` answer could reach.
+
+**Regression discipline.** All 189 rows that predate this tier are BYTE-IDENTICAL on
+(status, intent, resolved_symbols) between this lane's commit 2 and commit 3. Surface coverage on the
+audit's own 39 phrasings: **3/39 → 9/39** — the remaining 30 are the shaping flags (`--scope`,
+`--slice-depth`, `--slice-flow`, `--allow-dirty`, `--no-ignore`, `--no-post-check`), the eval-only
+`--pin-census`, `--edit-check` paging, and value-carrying abstentions, all of which a one-command router
+declines by design.
+
+**Screen: unchanged at 2 flagged lines** (line 61 pre-existing, line 176 from the previous section) even
+though this round added a large amount of new card vocabulary to `src/taskroute.h` — no `handwritten*`
+row collides with any of it.
+
+**Seal: sha256(prompts.tsv) = `1719aea95449e222718ec38151d2bd6998a95e1dd070038baa0b6e28fd0c9cf5`**
+(post-round; rows=225, dev=111, test=114).

@@ -223,6 +223,78 @@ ALRUN="$( "$BIN" "$REPO" --no-cache --slice='@router.cpp:10' )"; rc=$?
     && ok "the emitted at-line @FILE:LINE command runs and seeds at the named line" \
     || no "the emitted at-line @FILE:LINE command failed to run (rc=$rc)"
 
+# ── the catalog tier: verbs and skills the router could not name at all (2026-09-10) ──────────────────
+# F-R1-08: --help-task recommended on 3 of 39 phrasings of the 13 surfaces added since 2026-08-28, and
+# three of the unrouted ones were VERBS — --handoff (which has its own shipped skill), --plan-lint, and
+# the PROSE form of --from-trace (looksLikeTrace matches a PASTED artifact; "I have a sanitizer report"
+# contains none of its literals). F-R1-09: the router could name 8 of the 16 shipped skills.
+# Every recommend arm below is red against a pre-change binary: all of them abstained with score="0".
+HO="$( route 'I am going on leave next week - put together a brief on the scheduler for whoever takes it over' )"
+case "$HO" in *'status="recommend"'*'intent="handoff-brief"'*'skill="ripwire-handoff"'*'--handoff'*) ok "briefing a second party -> --handoff";; *) no "handoff route wrong: $HO";; esac
+HO0="$( route 'we handed the account off to support last week, any update on the customer?' )"
+case "$HO0" in *'--handoff'*) no "an account handover minted a --handoff route: $HO0";; *) ok "prose about handing over anything else mints no --handoff";; esac
+PL="$( route 'check that docs/PLAN_NEXT.md is well-formed as a plan document' )"
+case "$PL" in *'status="recommend"'*'intent="plan-lint"'*'--plan-lint='*'docs/PLAN_NEXT.md'*) ok "plan-structure wording + a named markdown file -> --plan-lint=FILE";; *) no "plan-lint route wrong: $PL";; esac
+# Value-carrying, like --edit-plan: the verb refuses a file that is not there, so no file, no command.
+PL0="$( route 'can you lint the structure of our planning docs in general?' )"
+case "$PL0" in *'--plan-lint='*) no "plan-lint invented a file the task never named: $PL0";; *) ok "plan-lint abstains rather than invent a plan document";; esac
+TP="$( route 'I have a sanitizer report from last night - map it onto the indexed symbols' )"
+case "$TP" in *'status="recommend"'*'intent="trace-prose"'*'--from-trace=-'*) ok "a trace DESCRIBED rather than pasted -> --from-trace=-";; *) no "trace-prose route wrong: $TP";; esac
+SS="$( route 'someone sent me a skills bundle - is it safe to install, any prompt injection in there?' )"
+case "$SS" in *'status="recommend"'*'intent="scan-skills"'*'skill="ripwire-security-scan"'*'--scan-skills'*) ok "pre-install vetting -> --scan-skills";; *) no "scan-skills route wrong: $SS";; esac
+SS1="$( route 'check tools/helper.md for exfiltration before installing it as a skill' )"
+case "$SS1" in *'intent="scan-skill"'*'--scan-skill='*'tools/helper.md'*) ok "a named file upgrades the scan to --scan-skill=FILE";; *) no "scan-skill route wrong: $SS1";; esac
+AH="$( route 'do we have a dependency mess in here - any circular dependencies or god file?' )"
+case "$AH" in *'status="recommend"'*'intent="architecture-health"'*'skill="ripwire-layers"'*'--deps'*) ok "architecture-health wording -> --deps";; *) no "architecture-health route wrong: $AH";; esac
+QC="$( route 'before I call it done - did my change make anything worse?' )"
+case "$QC" in *'status="recommend"'*'intent="quality-check"'*'skill="ripwire-quality-bar"'*'--quality-delta'*) ok "own-code quality wording -> --quality-delta";; *) no "quality-check route wrong: $QC";; esac
+# The narrow quality vocabulary must not steal the dirty-worktree review route, whose words are about a
+# DIFF and a push. (This repo is CLEAN here, so review-diff cannot fire either way — assert the intent.)
+QC0="$( route 'Reviewing my own diff now - am I ready to push and is this safe to merge?' )"
+case "$QC0" in *'intent="quality-check"'*) no "diff-review wording was stolen by quality-check: $QC0";; *) ok "diff-review wording is not a quality-delta request";; esac
+PS="$( route 'the profiler puts targetSymbol at the top - what is around it' )"
+case "$PS" in *'status="recommend"'*'intent="perf-symbol"'*'skill="ripwire-perf-target"'*'--around='*'targetSymbol'*) ok "a measured profile + the symbol it names -> --around=SYM";; *) no "perf-symbol route wrong: $PS";; esac
+PS0="$( route 'the profiler vendor is offering licenses, should we buy a few seats?' )"
+case "$PS0" in *'--around='*) no "profile wording with no resolved symbol invented an --around: $PS0";; *) ok "profile wording alone (no symbol) abstains rather than invent one";; esac
+GQ="$( route 'which functions can reach targetSymbol - one-hop callers cannot phrase that' )"
+case "$GQ" in *'status="recommend"'*'intent="graph-query"'*'skill="ripwire-graph-query"'*'--graph-query='*'targetSymbol'*) ok "a bounded-closure question + one symbol -> --graph-query=EXPR";; *) no "graph-query route wrong: $GQ";; esac
+MR="$( route 'where is the rot in code I did not write' )"
+case "$MR" in *'status="recommend"'*'intent="maintenance-risk"'*'skill="ripwire-fresh-eyes"'*'--hotspots'*) ok "maintenance-risk wording -> --hotspots";; *) no "maintenance-risk route wrong: $MR";; esac
+OR="$( route 'clang says the inner loop was not vectorized - is that worth a diff here?' )"
+case "$OR" in *'status="recommend"'*'intent="opt-remark"'*'skill="ripwire-opt-remarks"'*'--for='*) ok "a clang optimization remark -> the ranked lens, under the opt-remarks skill";; *) no "opt-remark route wrong: $OR";; esac
+# Execution check: the two catalog commands that carry a COMPOSED value are not placeholders. Unquote
+# what the router emitted and run it through the real verb, the same way the SYM:VAR arm above does.
+GQEXPR="$( printf '%s' "$GQ" | sed -n 's|.*--graph-query=&apos;\(.*\)&apos;</run>.*|\1|p' | sed 's/&quot;/"/g' )"
+GQRUN="$( "$BIN" "$REPO" --no-cache --graph-query="$GQEXPR" )"; rc=$?
+{ [ $rc -eq 0 ] && printf '%s' "$GQRUN" | grep -q '<query expr='; } \
+    && ok "the emitted --graph-query expression runs and returns a <query> root" \
+    || no "the emitted --graph-query expression failed to run (rc=$rc, expr=[$GQEXPR])"
+printf '# A plan\n\n## Goal\n\nship it\n' >"$REPO/PLAN_GATE.md"
+PLRUN="$( "$BIN" "$REPO" --no-cache --plan-lint=PLAN_GATE.md )"; rc=$?
+[ $rc -le 2 ] && ok "the emitted --plan-lint=FILE command runs against a real plan file (rc=$rc)" \
+              || no "the emitted --plan-lint=FILE command failed to run (rc=$rc)"
+rm -f "$REPO/PLAN_GATE.md"
+# ── two routers, ONE vocabulary: every shipped skill must be nameable by --help-task ──────────────────
+# F-R1-09 measured 8 of 16. This arm reads BOTH sides from disk — the skill directories that exist, and
+# the skill= names src/taskroute.h can emit — so it fails when a NEW skill ships with no route as much as
+# when a route names a skill that does not exist. ripwire-router is excluded: it is the fallback map, not
+# a destination (test/skillevalcheck.sh refuses it as a label for the same reason).
+routerNames="$( grep -o 'ripwire-[a-z-]*' "$ROOT/src/taskroute.h" | sort -u )"
+unnameable=""; phantom=""
+for _d in "$ROOT"/skills/*/; do
+    _s="$( basename "$_d" )"
+    [ -f "$_d/SKILL.md" ] || continue
+    [ "$_s" = "ripwire-router" ] && continue
+    printf '%s\n' "$routerNames" | grep -qx "$_s" || unnameable="$unnameable $_s"
+done
+for _n in $routerNames; do
+    [ -f "$ROOT/skills/$_n/SKILL.md" ] || phantom="$phantom $_n"
+done
+[ -z "$unnameable" ] && ok "every shipped skill (except ripwire-router) is nameable by --help-task" \
+                     || no "shipped skill(s) no --help-task answer can ever name:$unnameable"
+[ -z "$phantom" ] && ok "every skill the router can name exists on disk" \
+                  || no "router names skill(s) with no directory:$phantom"
+
 N="$( route 'Write a cheerful release announcement' )"
 case "$N" in *'status="abstain"'*) ok "off-topic prompt abstains";; *) no "off-topic prompt did not abstain: $N";; esac
 [ "$( printf '%s' "$N" | grep -o '<run>' | wc -l | tr -d ' ' )" = 0 ] && ok "abstention emits zero commands" || no "abstention emitted a command"
