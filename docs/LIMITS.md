@@ -403,7 +403,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kPrDefaultBudgetTokens` | `8000` | 452 | — | — |
+| `kPrDefaultBudgetTokens` | `8000` | 431 | — | — |
 
 ### `src/qualitypanel.h`
 
