@@ -2205,6 +2205,42 @@ checks into their own `flowTaskChoice` function (mirroring the existing `instrum
 extraction) and by inlining the small filler-word loop directly rather than introducing a shared
 helper that collided token-for-token with `weakSymbolCandidate`'s existing shape.
 
+### MCP `no_route`: the CLI's recovery from a route mis-fire, reachable from an agent (2026-09-10)
+
+**The gap (audit F-R1-07).** `for`'s header carries `route=` — WHICH ranker answered and why — and the
+tool's own description tells the agent to read it. An agent that read it and disagreed had nowhere to go:
+`tools/call {"name":"for","arguments":{...,"no_route":true}}` was refused by name, and `explore` /
+`pack_task` had no such parameter either. The CLI's own answer to a route mis-fire (`--no-route`) was
+unreachable from the MCP surface. The mis-fire is measured, not hypothetical: `--for="parse tree"` on this
+repo routes name-exact, returns three rows from `bench/` and `test/`, and misses `parseTree` entirely,
+which `--no-route` finds at rank 1 (F-R1-06; the `ImplausibleAnchor` guard scales with corpus size, so
+SMALL repos are the exposed ones).
+
+**What shipped.** One declared optional boolean, `no_route`, on `for` and `explore` (and its `pack_task`
+alias). It is the CLI flag's twin, not a near-twin: under it the router is not asked, and — exactly as
+`verbs_for.h` does under `--no-route` — the query-shape demotion, the mention anchor and the co-change
+prior are all skipped, because each is part of the routed reading. There is then no route to disclose, so
+`ctxRootOpen` emits no `route=`, byte-for-byte what the CLI does.
+
+**Gated as a parity claim, not as a feature.** `test/mcpforparitycheck.sh` gains seven arms, and each one
+is asserted against the CLI's OWN behavior rather than against a remembered rule: the CLI emits no
+`route=` under `--no-route`, so neither may the MCP twin; every CLI `--no-route` row must be present in
+the MCP `no_route` set (subset, for the same payload reason the existing arms give); a quoted `"true"` is
+a STRING and refuses by name; `pack_task` honors it; and a verb that does NOT route (`grep`) must still
+refuse it, because the declaration is per-verb. The first arm asserts the call ANSWERED — measured while
+writing the gate, two of the arms went GREEN against the pre-change binary purely on emptiness, since a
+refused call returns no content and an empty document trivially has no `route=`.
+
+**Manifest cost, attributed.** 41,220 → 41,474 B; ceiling re-anchored 41,300 → 41,650. Schemas
+17,161 → 17,415 (+254: two property stanzas at +127 each — the schema envelope plus the description every
+declared property is obliged to carry). **Descriptions are byte-identical at 19,632 B**: a first draft
+added a pointer clause to both tool descriptions and it was REMOVED rather than re-anchored around,
+because that file's own rule is that the ceiling moves for a declared argument's obliged bytes and never
+for prose. The `--quality-delta` verbosity row this change first raised on `dispatchMcpLine`
+(1,376 → 1,387 lines) was likewise fixed rather than acked: the second hand-rolled five-line boolean
+accumulate became ONE guarded `boolArg` reader that `post_check` now shares — the rule `intArg` already
+states for the numeric fields — leaving the dispatcher smaller than before the change.
+
 ### `--help-task` catalog tier: the verbs and the skills with no route (2026-09-10)
 
 **Two measurements, one cause.** `--help-task` recommended on **3 of 39** phrasings of the 13 surfaces

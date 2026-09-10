@@ -860,12 +860,19 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
             // P9: the edit verbs' post-check opt-out. Default TRUE — the receipt carries its own
             // verification unless the caller says otherwise; a wrong-shaped value refuses like every other
             // typed argument rather than reading as absent (mcpBoolArg).
-            const McpBoolArg postCheckArg = mcpBoolArg( args, "post_check" );
-            if( shapeRefusal.empty() && !postCheckArg.refusal.empty() )
+            // ONE guarded reader per TYPE, the rule `intArg` above states for the numeric fields: a second
+            // boolean argument (no_route, 2026-09-10) would otherwise be a second five-line hand-rolled
+            // accumulate, which is how two spellings of one gate come to disagree.
+            const auto boolArg = [ & ]( const char* field ) -> McpBoolArg
             {
-                shapeRefusal = postCheckArg.refusal;
-            }
+                const McpBoolArg a = mcpBoolArg( args, field );
+                if( shapeRefusal.empty() && !a.refusal.empty() ) { shapeRefusal = a.refusal; }
+                return a;
+            };
+            const McpBoolArg postCheckArg = boolArg( "post_check" );
             const bool postCheck = !postCheckArg.isPresent || postCheckArg.value;
+            // F-R1-07: the CLI --no-route over MCP, on the verbs that ROUTE (for / explore / pack_task).
+            const bool noRoute = boolArg( "no_route" ).value;
             const std::string text    = strArg( "text" );     // insert_before/after
             const std::string handle  = strArg( "handle" );   // T4 fetch_body
             const std::string kind    = strArg( "kind" );     // exemplar kind token; whereis/stray_content/flags/doc_drift name filter
@@ -1471,7 +1478,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                 {
                     // M13: `budget_tokens` — the same knob the CLI --for takes, absent here until now.
                     const std::string t = forTaskText( path, task, redactPtr,
-                                                       budgetArg.isPresent ? std::size_t( budgetArg.value ) : 0 );
+                                                       budgetArg.isPresent ? std::size_t( budgetArg.value ) : 0, noRoute );
                     resp = t.empty() ? errResult( -32602, "no symbols found" ) : textResult( t );
                 }
                 else if( name == "lego" && !path.empty() && !type.empty() )
@@ -1677,7 +1684,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     static_assert( kMcpRecallTopKMax == 1000,
                                    "the top_k refusal names the band 1..1000 in mcprefusal.h's kMcpValueFields and in the "
                                    "tools/list memory_recall stanza — move all three together" );
-                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr, partitionCount ) );
+                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr, partitionCount, noRoute ) );
                 }
                 // L4: `from_trace` — maps a pasted stack-trace/sanitizer/compiler-error TEXT onto indexed symbols
                 // (fromTraceBundleText, tracelocus.h) — the SAME assembler --from-trace's CLI path calls.

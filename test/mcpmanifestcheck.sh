@@ -111,6 +111,20 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # undefined. Same rule as the two re-anchors above (a DECLARED argument, its bytes attributed here, in the
 # commit that lands it, never prose) and the same posture: 171 B of headroom, less than one more argument.
 #
+# RE-ANCHORED 2026-09-10 (MCP no_route, audit F-R1-07): 41,300 → 41,650, measured 41,474 (from 41,220).
+# ONE declared optional argument, `no_route`, on the TWO verbs that ROUTE — `for` and `explore` (and its
+# `pack_task` alias, which shares explore's stanza) — the MCP twin of the CLI --no-route. Attributed against
+# a build of the parent commit: schemas 17,161 → 17,415 B (+254, two property stanzas at +127 each: the
+# schema envelope plus the description every declared property is obliged to carry) and DESCRIPTIONS
+# BYTE-IDENTICAL at 19,632 B. A first draft added a pointer clause to both tool descriptions (+43 B after
+# trimming to one); it was removed rather than re-anchored around, because this file's rule is that the
+# ceiling moves for a declared argument's obliged bytes and never for prose, and the schema property is
+# where a client renders an argument anyway. Same posture as the three re-anchors above: 176 B of headroom.
+# What it buys: `for`'s header names WHICH ranker answered and why, and until now an agent that read route=
+# and disagreed had no way to ask for the other one — the CLI's own recovery from a route mis-fire was
+# unreachable from MCP (measured: --for="parse tree" on this repo routes name-exact and returns three rows
+# from bench/ and test/, missing parseTree, which --no-route finds at rank 1).
+#
 # ── THE CEILING, DECIDED 2026-09-05 (terminality round A, lane M / M2): IT STAYS 41,000. ─────────────
 # Registered as an OWNER DECISION with the arithmetic, so it can be overruled with numbers rather than
 # re-litigated. Measured on this tree at the M1 commit: manifest 40,841 B (~10,210 tokens), descriptions
@@ -160,7 +174,7 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 #   TOTAL        40,986 -> 40,902 B; nothing else moved. Raw wire bytes (this gate measures json.dumps
 #                      with ensure_ascii, which spends 6 for each em dash instead of 3): 40,901 -> 40,811.
 # Headroom goes back UP, 14 B -> 98 B. That is item 5 below working, not a new allowance.
-CEILING = 41300
+CEILING = 41650
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )
