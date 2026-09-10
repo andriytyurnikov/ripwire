@@ -219,7 +219,7 @@ inline TSNode innermostQualifiedName( TSNode n ) noexcept
     constexpr int kMaxQualifierHops = 32;   // `a::b::c::…` past 32 segments is not written C++
     for( int hop = 0; hop < kMaxQualifierHops; ++hop )
     {
-        if( ts_node_is_null( n ) || std::strcmp( ts_node_type( n ), "qualified_identifier" ) != 0 )
+        if( ts_node_is_null( n ) || !kindIs( ts_node_type( n ), "qualified_identifier" ) )
         {
             break;
         }
@@ -288,7 +288,7 @@ inline DefNameFacts cppDefNameReseat( bool applies, TSNode nameNode, std::string
 inline std::string qualifierOf( TSNode nameNode, std::string_view src )
 {
     const TSNode parent = ts_node_parent( nameNode );
-    if( ts_node_is_null( parent ) || std::strcmp( ts_node_type( parent ), "qualified_identifier" ) != 0 )
+    if( ts_node_is_null( parent ) || !kindIs( ts_node_type( parent ), "qualified_identifier" ) )
     {
         return {};
     }
@@ -369,9 +369,9 @@ inline std::string rustEnclosingScopeOf( TSNode node, std::string_view src, bool
     for( TSNode p = ts_node_parent( node ); !ts_node_is_null( p ); p = ts_node_parent( p ) )
     {
         const char* t = ts_node_type( p );
-        const bool  isImpl  = std::strcmp( t, "impl_item" )  == 0;
-        const bool  isTrait = std::strcmp( t, "trait_item" ) == 0;
-        const bool  isMod   = includeModules && std::strcmp( t, "mod_item" ) == 0;
+        const bool  isImpl  = kindIs( t, "impl_item" );
+        const bool  isTrait = kindIs( t, "trait_item" );
+        const bool  isMod   = includeModules && kindIs( t, "mod_item" );
         if( !isImpl && !isTrait && !isMod )
         {
             continue;
@@ -403,7 +403,7 @@ inline std::string rustEnclosingScopeOf( TSNode node, std::string_view src, bool
 inline std::string rustQualifierOf( TSNode nameNode, std::string_view src )
 {
     const TSNode parent = ts_node_parent( nameNode );
-    if( ts_node_is_null( parent ) || std::strcmp( ts_node_type( parent ), "scoped_identifier" ) != 0 )
+    if( ts_node_is_null( parent ) || !kindIs( ts_node_type( parent ), "scoped_identifier" ) )
     {
         return {};
     }
@@ -428,8 +428,8 @@ inline std::string enclosingScopeOf( TSNode node, std::string_view src )
         //   C++: class_specifier/struct_specifier/namespace_definition · Python: class_definition.
         // Each exposes a `name` field; the nearest one is the enclosing scope used for canonical resolution
         // and P2-D Rule-1 narrowing (a `self.m()`/`this->m()`/bare member call resolves to scope::m).
-        const bool scopeOwner =    std::strcmp( t, "class_specifier" )     == 0 || std::strcmp( t, "struct_specifier" )    == 0
-                                || std::strcmp( t, "namespace_definition" ) == 0 || std::strcmp( t, "class_definition" )    == 0;
+        const bool scopeOwner =    kindIs( t, "class_specifier" ) || kindIs( t, "struct_specifier" )
+                                || kindIs( t, "namespace_definition" ) || kindIs( t, "class_definition" );
         if( scopeOwner )
         {
             const TSNode nm = ts_node_child_by_field_name( p, "name", 4 );
@@ -462,7 +462,7 @@ inline std::string rubyEnclosingScopeOf( TSNode nameNode, std::string_view src )
     for( TSNode p = ts_node_parent( nameNode ); !ts_node_is_null( p ); p = ts_node_parent( p ) )
     {
         const char* t = ts_node_type( p );
-        if( std::strcmp( t, "class" ) != 0 && std::strcmp( t, "module" ) != 0 )
+        if( !kindIs( t, "class" ) && !kindIs( t, "module" ) )
         {
             continue;
         }
@@ -475,7 +475,7 @@ inline std::string rubyEnclosingScopeOf( TSNode nameNode, std::string_view src )
         {
             continue;    // this IS the definition being scoped — its scope is what encloses it
         }
-        if( std::strcmp( ts_node_type( nm ), "scope_resolution" ) == 0 )
+        if( kindIs( ts_node_type( nm ), "scope_resolution" ) )
         {
             const TSNode last = ts_node_child_by_field_name( nm, "name", 4 );
             if( !ts_node_is_null( last ) )
@@ -502,12 +502,12 @@ inline std::string rubyEnclosingScopeOf( TSNode nameNode, std::string_view src )
 inline bool rubyCallIsAssignmentTarget( TSNode nameNode ) noexcept
 {
     const TSNode call = ts_node_parent( nameNode );
-    if( ts_node_is_null( call ) || std::strcmp( ts_node_type( call ), "call" ) != 0 )
+    if( ts_node_is_null( call ) || !kindIs( ts_node_type( call ), "call" ) )
     {
         return false;
     }
     const TSNode assign = ts_node_parent( call );
-    if( ts_node_is_null( assign ) || std::strcmp( ts_node_type( assign ), "assignment" ) != 0 )
+    if( ts_node_is_null( assign ) || !kindIs( ts_node_type( assign ), "assignment" ) )
     {
         return false;
     }
@@ -529,12 +529,12 @@ inline bool isSwiftLocalBinding( TSNode declNode ) noexcept
     for( TSNode p = ts_node_parent( declNode ); !ts_node_is_null( p ); p = ts_node_parent( p ) )
     {
         const char* t = ts_node_type( p );
-        if( std::strcmp( t, "statements" ) == 0 )
+        if( kindIs( t, "statements" ) )
         {
             return true;                                             // inside an executable block → local binding
         }
         // a member property's wrappers — reaching one first means it is NOT a local.
-        if( std::strcmp( t, "class_body" ) == 0 || std::strcmp( t, "enum_class_body" ) == 0 || std::strcmp( t, "protocol_body" ) == 0 || std::strcmp( t, "source_file" ) == 0 )
+        if( kindIs( t, "class_body" ) || kindIs( t, "enum_class_body" ) || kindIs( t, "protocol_body" ) || kindIs( t, "source_file" ) )
         {
             return false;
         }
@@ -615,20 +615,20 @@ inline bool rustItemCarriesTestAttr( TSNode item, std::string_view src ) noexcep
     for( TSNode prev = ts_node_prev_sibling( item ); !ts_node_is_null( prev ); prev = ts_node_prev_sibling( prev ) )
     {
         const char* t = ts_node_type( prev );
-        if( std::strcmp( t, "attribute_item" ) == 0 )
+        if( kindIs( t, "attribute_item" ) )
         {
             const std::uint32_t childCount = ts_node_child_count( prev );
             for( std::uint32_t ci = 0; ci < childCount; ++ci )
             {
                 const TSNode ch = ts_node_child( prev, ci );
-                if( std::strcmp( ts_node_type( ch ), "attribute" ) == 0 && rustAttrIsTestMarker( nodeTextOf( ch, src ) ) )
+                if( kindIs( ts_node_type( ch ), "attribute" ) && rustAttrIsTestMarker( nodeTextOf( ch, src ) ) )
                 {
                     return true;
                 }
             }
             continue;
         }
-        if( std::strcmp( t, "line_comment" ) == 0 || std::strcmp( t, "block_comment" ) == 0 )
+        if( kindIs( t, "line_comment" ) || kindIs( t, "block_comment" ) )
         {
             continue;   // a doc comment may sit between an attribute and its item
         }
@@ -671,7 +671,7 @@ inline bool csharpNodeCarriesTestAttr( TSNode n, std::string_view src ) noexcept
     for( std::uint32_t ci = 0; ci < childCount; ++ci )
     {
         const TSNode list = ts_node_child( n, ci );
-        if( std::strcmp( ts_node_type( list ), "attribute_list" ) != 0 )
+        if( !kindIs( ts_node_type( list ), "attribute_list" ) )
         {
             continue;
         }
@@ -679,7 +679,7 @@ inline bool csharpNodeCarriesTestAttr( TSNode n, std::string_view src ) noexcept
         for( std::uint32_t ai = 0; ai < attrCount; ++ai )
         {
             const TSNode attr = ts_node_child( list, ai );
-            if(    std::strcmp( ts_node_type( attr ), "attribute" ) == 0
+            if(    kindIs( ts_node_type( attr ), "attribute" )
                 && csharpAttrIsTestMarker( nodeTextOf( ts_node_child_by_field_name( attr, "name", 4 ), src ) ) )
             {
                 return true;
@@ -698,7 +698,7 @@ inline bool pythonInFileTestScope( TSNode defNode, std::string_view src ) noexce
     bool enclosedByClass = false;
     for( TSNode n = defNode; !ts_node_is_null( n ); n = ts_node_parent( n ) )
     {
-        if( std::strcmp( ts_node_type( n ), "class_definition" ) != 0 )
+        if( !kindIs( ts_node_type( n ), "class_definition" ) )
         {
             continue;
         }
@@ -708,7 +708,7 @@ inline bool pythonInFileTestScope( TSNode defNode, std::string_view src ) noexce
         }
         enclosedByClass = true;
     }
-    if( enclosedByClass || std::strcmp( ts_node_type( defNode ), "function_definition" ) != 0 )
+    if( enclosedByClass || !kindIs( ts_node_type( defNode ), "function_definition" ) )
     {
         return false;
     }
@@ -739,7 +739,7 @@ inline bool rustInFileTestScope( TSNode defNode, std::string_view src ) noexcept
     return anySelfOrAncestor( defNode, [ & ]( TSNode n ) noexcept
                                        {
                                            const char* t = ts_node_type( n );
-                                           return    ( std::strcmp( t, "mod_item" ) == 0 || std::strcmp( t, "function_item" ) == 0 )
+                                           return    ( kindIs( t, "mod_item" ) || kindIs( t, "function_item" ) )
                                                   && rustItemCarriesTestAttr( n, src );
                                        } );
 }
@@ -752,7 +752,7 @@ inline bool jsInFileTestScope( TSNode defNode, std::string_view src ) noexcept
 {
     return anySelfOrAncestor( defNode, [ & ]( TSNode n ) noexcept
                                        {
-                                           if( std::strcmp( ts_node_type( n ), "call_expression" ) != 0 )
+                                           if( !kindIs( ts_node_type( n ), "call_expression" ) )
                                            {
                                                return false;
                                            }
@@ -824,7 +824,7 @@ struct TestMacroBlockParts
 
 inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::string_view src ) noexcept
 {
-    if( ts_node_is_null( exprStmtNode ) || std::strcmp( ts_node_type( exprStmtNode ), "expression_statement" ) != 0 )
+    if( ts_node_is_null( exprStmtNode ) || !kindIs( ts_node_type( exprStmtNode ), "expression_statement" ) )
     {
         return {};
     }
@@ -846,14 +846,14 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
     }
 
     const TSNode body = ts_node_next_named_sibling( exprStmtNode );
-    if( ts_node_is_null( body ) || std::strcmp( ts_node_type( body ), "compound_statement" ) != 0 )
+    if( ts_node_is_null( body ) || !kindIs( ts_node_type( body ), "compound_statement" ) )
     {
         return {};
     }
 
     // the callee must be a KNOWN test macro
     const TSNode call = ts_node_named_child( exprStmtNode, 0 );
-    if( ts_node_is_null( call ) || std::strcmp( ts_node_type( call ), "call_expression" ) != 0 )
+    if( ts_node_is_null( call ) || !kindIs( ts_node_type( call ), "call_expression" ) )
     {
         return {};
     }
@@ -878,7 +878,7 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
     for( std::uint32_t argIx = 0; argIx < argCount; ++argIx )
     {
         const TSNode arg = ts_node_named_child( args, argIx );
-        if( std::strcmp( ts_node_type( arg ), "string_literal" ) == 0 && ts_node_end_byte( arg ) > ts_node_start_byte( arg ) + 2 )   // "" is not a name
+        if( kindIs( ts_node_type( arg ), "string_literal" ) && ts_node_end_byte( arg ) > ts_node_start_byte( arg ) + 2 )   // "" is not a name
         {
             return { true, body, arg };
         }
@@ -959,7 +959,7 @@ inline bool nameBoundByInitDeclarator( TSNode nameNode, TSNode declNode ) noexce
 {
     for( TSNode walk = ts_node_parent( nameNode ); !ts_node_is_null( walk ) && !ts_node_eq( walk, declNode ); walk = ts_node_parent( walk ) )
     {
-        if( std::strcmp( ts_node_type( walk ), "init_declarator" ) == 0 )
+        if( kindIs( ts_node_type( walk ), "init_declarator" ) )
         {
             return true;
         }
@@ -1087,12 +1087,12 @@ inline bool fieldCaptureKept( Lang lang, TSNode nameNode, TSNode roleNode, std::
     {
         return false;
     }
-    if( std::strcmp( ts_node_type( parent ), "attribute" ) != 0 )
+    if( !kindIs( ts_node_type( parent ), "attribute" ) )
     {
         return false;
     }
     const TSNode object = ts_node_child_by_field_name( parent, "object", 6 );
-    if( ts_node_is_null( object ) || std::strcmp( ts_node_type( object ), "identifier" ) != 0 || nodeTextOf( object, src ) != "self" )
+    if( ts_node_is_null( object ) || !kindIs( ts_node_type( object ), "identifier" ) || nodeTextOf( object, src ) != "self" )
     {
         return false;   // `obj.x = …` / `cls.x = …` — not an instance attribute of the enclosing class
     }
@@ -1100,11 +1100,11 @@ inline bool fieldCaptureKept( Lang lang, TSNode nameNode, TSNode roleNode, std::
     for( TSNode up = ts_node_parent( roleNode ); !ts_node_is_null( up ); up = ts_node_parent( up ) )
     {
         const char* ut = ts_node_type( up );
-        if( std::strcmp( ut, "function_definition" ) == 0 )
+        if( kindIs( ut, "function_definition" ) )
         {
             sawFunction = true;
         }
-        else if( std::strcmp( ut, "class_definition" ) == 0 )
+        else if( kindIs( ut, "class_definition" ) )
         {
             return sawFunction;   // a method of this class (or a closure inside one) → keep; a class-body `self.x` → drop
         }
@@ -1157,7 +1157,7 @@ inline bool dropConstantCapture( Lang lang, std::string_view name, TSNode nameNo
     }
     // Class-static constants bind through a field_declaration (the loose default_value pattern), never
     // through init_declarator — their whole keep contract lives in fieldConstantCaptureKept.
-    if( std::strcmp( ts_node_type( roleNode ), "field_declaration" ) == 0 )
+    if( kindIs( ts_node_type( roleNode ), "field_declaration" ) )
     {
         return !fieldConstantCaptureKept( roleNode, src );
     }
@@ -1203,7 +1203,7 @@ inline bool yamlKeyCaptureDropped( std::string_view name, TSNode roleNode ) noex
     for( TSNode p = roleNode; !ts_node_is_null( p ); p = ts_node_parent( p ) )
     {
         const char* pt = ts_node_type( p );
-        if( std::strcmp( pt, "block_mapping" ) == 0 || std::strcmp( pt, "flow_mapping" ) == 0 )
+        if( kindIs( pt, "block_mapping" ) || kindIs( pt, "flow_mapping" ) )
         {
             if( ++mappingDepth > 2u )
             {
@@ -1262,7 +1262,7 @@ inline bool dropGatedCapture( std::string_view defCapSv, Lang lang, std::string_
         // preproc_def and Rust macro_definition fail the node-type test and are never gated.
         const TSNode defineNode = ts_node_parent( nameNode );
         return !ts_node_is_null( defineNode )
-            && std::strcmp( ts_node_type( defineNode ), "preproc_function_def" ) == 0
+            && kindIs( ts_node_type( defineNode ), "preproc_function_def" )
             && !preprocFunctionDefHasBody( defineNode, src );
     }
     return false;
@@ -1288,14 +1288,14 @@ inline bool isCjsExportTarget( TSNode nameNode, std::string_view src ) noexcept
         return false;
     }
     const char* objType = ts_node_type( obj );
-    if( std::strcmp( objType, "identifier" ) == 0 )
+    if( kindIs( objType, "identifier" ) )
     {
         return nodeTextOf( obj, src ) == "exports";
     }
-    if( std::strcmp( objType, "member_expression" ) == 0 )
+    if( kindIs( objType, "member_expression" ) )
     {
         const TSNode oo = ts_node_child_by_field_name( obj, "object", 6 );
-        return std::strcmp( ts_node_type( oo ), "identifier" ) == 0
+        return kindIs( ts_node_type( oo ), "identifier" )
             && nodeTextOf( oo, src ) == "module"
             && nodeTextOf( ts_node_child_by_field_name( obj, "property", 8 ), src ) == "exports";
     }
@@ -1313,7 +1313,7 @@ inline bool isPrototypeMemberTarget( TSNode nameNode, std::string_view src ) noe
         return false;
     }
     const TSNode obj = ts_node_child_by_field_name( member, "object", 6 );
-    if( ts_node_is_null( obj ) || std::strcmp( ts_node_type( obj ), "member_expression" ) != 0 )
+    if( ts_node_is_null( obj ) || !kindIs( ts_node_type( obj ), "member_expression" ) )
     {
         return false;
     }
@@ -1333,7 +1333,7 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
     const TSNode stmt   = ts_node_is_null( assign ) ? assign : ts_node_parent( assign );  // expression_statement
     const TSNode body   = ts_node_is_null( stmt )   ? stmt   : ts_node_parent( stmt );    // block
     const TSNode cls    = ts_node_is_null( body )   ? body   : ts_node_parent( body );    // class_definition
-    if( ts_node_is_null( cls ) || std::strcmp( ts_node_type( cls ), "class_definition" ) != 0 )
+    if( ts_node_is_null( cls ) || !kindIs( ts_node_type( cls ), "class_definition" ) )
     {
         return false;
     }
@@ -1346,7 +1346,7 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
     for( std::uint32_t baseIndex = 0; baseIndex < baseCount; ++baseIndex )
     {
         TSNode base = ts_node_named_child( bases, baseIndex );
-        if( std::strcmp( ts_node_type( base ), "attribute" ) == 0 )                      // models.TextChoices → TextChoices
+        if( kindIs( ts_node_type( base ), "attribute" ) )                      // models.TextChoices → TextChoices
         {
             base = ts_node_child_by_field_name( base, "attribute", 9 );
             if( ts_node_is_null( base ) )
@@ -1354,7 +1354,7 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
                 continue;
             }
         }
-        if( std::strcmp( ts_node_type( base ), "identifier" ) != 0 )
+        if( !kindIs( ts_node_type( base ), "identifier" ) )
         {
             continue;
         }

@@ -126,7 +126,7 @@ TSNode dartFollowingBody( TSNode defNode ) noexcept
 {
     for( TSNode sib = ts_node_next_sibling( defNode ); !ts_node_is_null( sib ); sib = ts_node_next_sibling( sib ) )
     {
-        if( std::strcmp( ts_node_type( sib ), "function_body" ) == 0 )
+        if( kindIs( ts_node_type( sib ), "function_body" ) )
         {
             return sib;
         }
@@ -167,7 +167,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
     // function-like `#define` only: object-like preproc_def is not a call-edge participant, and the
     // non-C-family @definition.macro capture (Rust macro_definition) has no preproc replacement to scan.
     // Checked HERE so the captureTagsFacts call site stays a single kind test.
-    if( std::strcmp( ts_node_type( defineNode ), "preproc_function_def" ) != 0 )
+    if( !kindIs( ts_node_type( defineNode ), "preproc_function_def" ) )
     {
         return;
     }
@@ -202,7 +202,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
         for( uint32_t i = 0; i < pc; ++i )
         {
             const TSNode ch = ts_node_child( paramsNode, i );
-            if( std::strcmp( ts_node_type( ch ), "identifier" ) == 0 )
+            if( kindIs( ts_node_type( ch ), "identifier" ) )
             {
                 const uint32_t pa = ts_node_start_byte( ch );
                 const uint32_t pb = ts_node_end_byte( ch );
@@ -322,16 +322,16 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
     {
         const TSNode clause = ts_node_child( classNode, i );
         const char*  ct     = ts_node_type( clause );
-        const bool   isClause =    std::strcmp( ct, "base_class_clause" ) == 0     // C++    : public Base
-                                || std::strcmp( ct, "class_heritage" ) == 0        // TS/JS  extends / implements (wraps clauses)
-                                || std::strcmp( ct, "superclasses" ) == 0          // Python class X(Base):   (field)
-                                || std::strcmp( ct, "argument_list" ) == 0         // Python bases
-                                || std::strcmp( ct, "superclass" ) == 0            // Java   extends Base
-                                || std::strcmp( ct, "super_interfaces" ) == 0      // Java   implements I, J   (wraps type_list)
-                                || std::strcmp( ct, "inheritance_specifier" ) == 0 // Swift  : Protocol
-                                || std::strcmp( ct, "base_list" ) == 0             // C#     : Base, IBar
-                                || std::strcmp( ct, "base_clause" ) == 0           // PHP    extends Base
-                                || std::strcmp( ct, "class_interface_clause" ) == 0; // PHP  implements I, J
+        const bool   isClause =    kindIs( ct, "base_class_clause" )     // C++    : public Base
+                                || kindIs( ct, "class_heritage" )        // TS/JS  extends / implements (wraps clauses)
+                                || kindIs( ct, "superclasses" )          // Python class X(Base):   (field)
+                                || kindIs( ct, "argument_list" )         // Python bases
+                                || kindIs( ct, "superclass" )            // Java   extends Base
+                                || kindIs( ct, "super_interfaces" )      // Java   implements I, J   (wraps type_list)
+                                || kindIs( ct, "inheritance_specifier" ) // Swift  : Protocol
+                                || kindIs( ct, "base_list" )             // C#     : Base, IBar
+                                || kindIs( ct, "base_clause" )           // PHP    extends Base
+                                || kindIs( ct, "class_interface_clause" ); // PHP  implements I, J
         if( !isClause )
         {
             continue;
@@ -383,7 +383,7 @@ struct RustImplCtx
 void rustImplVisitNode( RustImplCtx& cx, TSNode node, const char* t )
 {
     FUSEPROBE_BUMP( kRustImpls );
-    if( std::strcmp( t, "impl_item" ) != 0 )
+    if( !kindIs( t, "impl_item" ) )
     {
         return;
     }
@@ -434,7 +434,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
         const char* ct = ts_node_type( child );
 
         // C++ class body is under field_declaration_list
-        if( std::strcmp( ct, "field_declaration_list" ) != 0 )
+        if( !kindIs( ct, "field_declaration_list" ) )
         {
             continue;
         }
@@ -442,7 +442,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
         collectChildren( child, cursor.cur, fieldKids );
         for( const TSNode fdecl : fieldKids )
         {
-            if( std::strcmp( ts_node_type( fdecl ), "field_declaration" ) != 0 )
+            if( !kindIs( ts_node_type( fdecl ), "field_declaration" ) )
             {
                 continue;
             }
@@ -463,7 +463,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             std::string typeName;
             bool isRefOrPtr = false;   // reference (&) or pointer (*) → "uses"; else "creates"
 
-            if( std::strcmp( tnType, "type_identifier" ) == 0 )
+            if( kindIs( tnType, "type_identifier" ) )
             {
                 // `SpherePool m_pool;` — plain value member
                 const uint32_t ta = ts_node_start_byte( typeNode ), tb = ts_node_end_byte( typeNode );
@@ -474,8 +474,8 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
                 typeName = std::string( src.substr( ta, tb - ta ) );
                 isRefOrPtr = false;
             }
-            else if(    std::strcmp( tnType, "reference_declarator" ) == 0
-                     || std::strcmp( tnType, "pointer_declarator" ) == 0 )
+            else if(    kindIs( tnType, "reference_declarator" )
+                     || kindIs( tnType, "pointer_declarator" ) )
             {
                 // The grammar sometimes puts a reference/pointer declarator AT the type level when there
                 // is no explicit separate type node. Look for an identifier child.
@@ -492,7 +492,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
                 for( uint32_t k = 0; k < tc2 && !found; ++k )
                 {
                     const TSNode tc3 = ts_node_child( typeNode, k );
-                    if( std::strcmp( ts_node_type( tc3 ), "type_identifier" ) == 0 )
+                    if( kindIs( ts_node_type( tc3 ), "type_identifier" ) )
                     {
                         const uint32_t ta = ts_node_start_byte( tc3 ), tb = ts_node_end_byte( tc3 );
                         if( ta < tb && tb <= src.size() ) { typeName = std::string( src.substr( ta, tb - ta ) ); found = true; }
@@ -527,7 +527,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             std::string fieldName;
             bool        declIsRefOrPtr = false;
 
-            if( std::strcmp( dt, "field_identifier" ) == 0 )
+            if( kindIs( dt, "field_identifier" ) )
             {
                 // plain value member
                 const uint32_t da = ts_node_start_byte( decl ), db = ts_node_end_byte( decl );
@@ -538,7 +538,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
                 fieldName = std::string( src.substr( da, db - da ) );
                 declIsRefOrPtr = false;
             }
-            else if( std::strcmp( dt, "reference_declarator" ) == 0 || std::strcmp( dt, "pointer_declarator" ) == 0 )
+            else if( kindIs( dt, "reference_declarator" ) || kindIs( dt, "pointer_declarator" ) )
             {
                 declIsRefOrPtr = true;
                 // Walk the declarator's children to find the field_identifier
@@ -546,7 +546,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
                 for( uint32_t k = 0; k < dc; ++k )
                 {
                     const TSNode dchild = ts_node_child( decl, k );
-                    if( std::strcmp( ts_node_type( dchild ), "field_identifier" ) == 0 )
+                    if( kindIs( ts_node_type( dchild ), "field_identifier" ) )
                     {
                         const uint32_t da = ts_node_start_byte( dchild ), db = ts_node_end_byte( dchild );
                         if( da < db && db <= src.size() ) { fieldName = std::string( src.substr( da, db - da ) ); break; }
@@ -616,7 +616,7 @@ inline std::string importSpecifierText( TSNode node, std::string_view src )
     std::string_view s = src.substr( a, b - a );
 
     // TS/JS specifier is a `string` node whose text includes the quote delimiters; strip exactly one pair.
-    if( std::strcmp( ts_node_type( node ), "string" ) == 0 && s.size() >= 2 && ( s.front() == '\'' || s.front() == '"' ) && s.back() == s.front() )
+    if( kindIs( ts_node_type( node ), "string" ) && s.size() >= 2 && ( s.front() == '\'' || s.front() == '"' ) && s.back() == s.front() )
     {
         s = s.substr( 1, s.size() - 2 );
     }
@@ -655,7 +655,7 @@ inline std::string csharpUsingTarget( TSNode usingNode, std::string_view src )
             continue;
         }
         const char* ct = ts_node_type( c );
-        if( std::strcmp( ct, "qualified_name" ) == 0 || std::strcmp( ct, "identifier" ) == 0 || std::strcmp( ct, "generic_name" ) == 0 || std::strcmp( ct, "alias_qualified_name" ) == 0 )
+        if( kindIs( ct, "qualified_name" ) || kindIs( ct, "identifier" ) || kindIs( ct, "generic_name" ) || kindIs( ct, "alias_qualified_name" ) )
         {
             return importSpecifierText( c, src );
         }
@@ -692,11 +692,11 @@ inline std::string phpUseTarget( TSNode useNode, std::string_view src )
             continue;
         }
         const char* ct = ts_node_type( c );
-        if( std::strcmp( ct, "namespace_name" ) == 0 )      // the `use Foo\{A, B}` group prefix
+        if( kindIs( ct, "namespace_name" ) )      // the `use Foo\{A, B}` group prefix
         {
             return importSpecifierText( c, src );
         }
-        if( std::strcmp( ct, "namespace_use_clause" ) != 0 )
+        if( !kindIs( ct, "namespace_use_clause" ) )
         {
             continue;
         }
@@ -709,7 +709,7 @@ inline std::string phpUseTarget( TSNode useNode, std::string_view src )
                 continue;
             }
             const char* gt = ts_node_type( g );
-            if( std::strcmp( gt, "qualified_name" ) == 0 || std::strcmp( gt, "name" ) == 0 )
+            if( kindIs( gt, "qualified_name" ) || kindIs( gt, "name" ) )
             {
                 return importSpecifierText( g, src );
             }
@@ -755,7 +755,7 @@ inline std::string jsModuleLoadTarget( TSNode n, std::string_view src )
             ++named;
         }
     }
-    if( named != 1 || std::strcmp( ts_node_type( only ), "string" ) != 0 )
+    if( named != 1 || !kindIs( ts_node_type( only ), "string" ) )
     {
         return {};
     }
@@ -852,11 +852,11 @@ inline std::string bashWordText( TSNode arg, std::string_view src )
         return {};
     }
     const char* t = ts_node_type( arg );
-    if( std::strcmp( t, "word" ) == 0 || std::strcmp( t, "concatenation" ) == 0 )
+    if( kindIs( t, "word" ) || kindIs( t, "concatenation" ) )
     {
         return std::string( nodeTextOf( arg, src ) );
     }
-    if( std::strcmp( t, "string" ) == 0 || std::strcmp( t, "raw_string" ) == 0 )
+    if( kindIs( t, "string" ) || kindIs( t, "raw_string" ) )
     {
         std::string_view s = nodeTextOf( arg, src );
         if( s.size() >= 2 && ( s.front() == '"' || s.front() == '\'' ) && s.back() == s.front() )
@@ -891,14 +891,14 @@ inline std::string bashSourceTarget( TSNode n, std::string_view src )
 // Lua and Ruby, whose argument nodes differ only in name.
 inline std::string stringLiteralText( TSNode str, std::string_view src )
 {
-    if( ts_node_is_null( str ) || std::strcmp( ts_node_type( str ), "string" ) != 0 )
+    if( ts_node_is_null( str ) || !kindIs( ts_node_type( str ), "string" ) )
     {
         return {};   // `require(mod)`, `require("a" .. b)`, `require "#{x}"` — no single literal to read
     }
     for( std::uint32_t i = 0; i < ts_node_named_child_count( str ); ++i )
     {
         const TSNode kid = ts_node_named_child( str, i );
-        if( std::strcmp( ts_node_type( kid ), "string_content" ) == 0 )
+        if( kindIs( ts_node_type( kid ), "string_content" ) )
         {
             return std::string( nodeTextOf( kid, src ) );
         }
@@ -921,7 +921,7 @@ inline std::string firstStringArgText( TSNode args, std::string_view src )
 inline std::string luaRequireTarget( TSNode n, std::string_view src )
 {
     const TSNode name = ts_node_child_by_field_name( n, "name", 4 );
-    if( ts_node_is_null( name ) || std::strcmp( ts_node_type( name ), "identifier" ) != 0 || nodeTextOf( name, src ) != "require" )
+    if( ts_node_is_null( name ) || !kindIs( ts_node_type( name ), "identifier" ) || nodeTextOf( name, src ) != "require" )
     {
         return {};
     }
@@ -949,7 +949,7 @@ inline std::string rubyRequireTarget( TSNode n, std::string_view src )
         return {};
     }
     const TSNode method = ts_node_child_by_field_name( n, "method", 6 );
-    if( ts_node_is_null( method ) || std::strcmp( ts_node_type( method ), "identifier" ) != 0 )
+    if( ts_node_is_null( method ) || !kindIs( ts_node_type( method ), "identifier" ) )
     {
         return {};
     }
@@ -999,11 +999,11 @@ inline bool rubyNamespaceOnly( TSNode defNode ) noexcept
     for( std::uint32_t i = 0; i < n; ++i )
     {
         const char* ct = ts_node_type( ts_node_named_child( body, i ) );
-        if( std::strcmp( ct, "class" ) == 0 || std::strcmp( ct, "module" ) == 0 )
+        if( kindIs( ct, "class" ) || kindIs( ct, "module" ) )
         {
             nestedOpen = true;
         }
-        else if( std::strcmp( ct, "comment" ) != 0 )
+        else if( !kindIs( ct, "comment" ) )
         {
             return false;   // a method, a call, a constant, `class << self` — a body of its own
         }
@@ -1020,7 +1020,7 @@ inline std::string rubyConstantText( TSNode n, std::string_view src )
         return {};
     }
     const char* t = ts_node_type( n );
-    if( std::strcmp( t, "constant" ) != 0 && std::strcmp( t, "scope_resolution" ) != 0 )
+    if( !kindIs( t, "constant" ) && !kindIs( t, "scope_resolution" ) )
     {
         return {};
     }
@@ -1053,7 +1053,7 @@ inline std::string rubyAutoloadTarget( TSNode n, std::string_view src, bool& sym
         return {};
     }
     const TSNode sym = ts_node_named_child( args, 0 );
-    if( std::strcmp( ts_node_type( sym ), "simple_symbol" ) != 0 )
+    if( !kindIs( ts_node_type( sym ), "simple_symbol" ) )
     {
         return {};
     }
@@ -1083,7 +1083,7 @@ inline std::string_view rubyConstantDirective( TSNode n, std::string_view src )
         return {};
     }
     const TSNode method = ts_node_child_by_field_name( n, "method", 6 );
-    if( ts_node_is_null( method ) || std::strcmp( ts_node_type( method ), "identifier" ) != 0 )
+    if( ts_node_is_null( method ) || !kindIs( ts_node_type( method ), "identifier" ) )
     {
         return {};
     }
@@ -1142,17 +1142,17 @@ inline bool rubyIsConstantChain( TSNode n ) noexcept
             return false;
         }
         const char* t = ts_node_type( n );
-        if( std::strcmp( t, "constant" ) == 0 )
+        if( kindIs( t, "constant" ) )
         {
             return true;
         }
-        if( std::strcmp( t, "scope_resolution" ) != 0 )
+        if( !kindIs( t, "scope_resolution" ) )
         {
             return false;
         }
         const TSNode name  = ts_node_child_by_field_name( n, "name", 4 );
         const TSNode scope = ts_node_child_by_field_name( n, "scope", 5 );
-        if( ts_node_is_null( name ) || std::strcmp( ts_node_type( name ), "constant" ) != 0 )
+        if( ts_node_is_null( name ) || !kindIs( ts_node_type( name ), "constant" ) )
         {
             return false;
         }
@@ -1197,7 +1197,7 @@ inline std::string rubyReceiverTarget( TSNode n, std::string_view src )
 inline std::string elixirDirectiveTarget( TSNode n, std::string_view src )
 {
     const TSNode target = ts_node_child_by_field_name( n, "target", 6 );
-    if( ts_node_is_null( target ) || std::strcmp( ts_node_type( target ), "identifier" ) != 0 )
+    if( ts_node_is_null( target ) || !kindIs( ts_node_type( target ), "identifier" ) )
     {
         return {};
     }
@@ -1212,7 +1212,7 @@ inline std::string elixirDirectiveTarget( TSNode n, std::string_view src )
         return {};
     }
     const TSNode first = ts_node_named_child( args, 0 );
-    if( ts_node_is_null( first ) || std::strcmp( ts_node_type( first ), "alias" ) != 0 )
+    if( ts_node_is_null( first ) || !kindIs( ts_node_type( first ), "alias" ) )
     {
         return {};   // a `dot` brace group is emitted by elixirAliasGroup; anything else is not a module name
     }
@@ -1226,7 +1226,7 @@ inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src
 {
     std::vector<std::string> out;
     const TSNode target = ts_node_child_by_field_name( n, "target", 6 );
-    if( ts_node_is_null( target ) || std::strcmp( ts_node_type( target ), "identifier" ) != 0 )
+    if( ts_node_is_null( target ) || !kindIs( ts_node_type( target ), "identifier" ) )
     {
         return out;
     }
@@ -1241,14 +1241,14 @@ inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src
         return out;
     }
     const TSNode first = ts_node_named_child( args, 0 );
-    if( ts_node_is_null( first ) || std::strcmp( ts_node_type( first ), "dot" ) != 0 )
+    if( ts_node_is_null( first ) || !kindIs( ts_node_type( first ), "dot" ) )
     {
         return out;
     }
     const TSNode left  = ts_node_child_by_field_name( first, "left", 4 );
     const TSNode right = ts_node_child_by_field_name( first, "right", 5 );
     if( ts_node_is_null( left ) || ts_node_is_null( right )
-        || std::strcmp( ts_node_type( left ), "alias" ) != 0 || std::strcmp( ts_node_type( right ), "tuple" ) != 0 )
+        || !kindIs( ts_node_type( left ), "alias" ) || !kindIs( ts_node_type( right ), "tuple" ) )
     {
         return out;
     }
@@ -1256,7 +1256,7 @@ inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src
     for( std::uint32_t i = 0; i < ts_node_named_child_count( right ); ++i )
     {
         const TSNode member = ts_node_named_child( right, i );
-        if( std::strcmp( ts_node_type( member ), "alias" ) != 0 )
+        if( !kindIs( ts_node_type( member ), "alias" ) )
         {
             continue;
         }
@@ -1581,15 +1581,15 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
     bool        isSymbolic = false;
     bool        isReceiver = false;
 
-    if( std::strcmp( t, "preproc_include" ) == 0 )                       // C++/C/ObjC: exact file path
+    if( kindIs( t, "preproc_include" ) )                       // C++/C/ObjC: exact file path
     {
         target = preprocIncludeTarget( n, src, isAngle );
     }
-    else if( std::strcmp( t, "preproc_call" ) == 0 )                     // C++-grammar `#import "x.h"` (ObjC/Metal spelling)
+    else if( kindIs( t, "preproc_call" ) )                     // C++-grammar `#import "x.h"` (ObjC/Metal spelling)
     {
         target = preprocImportTarget( n, src, isAngle );
     }
-    else if( std::strcmp( t, "import_statement" ) == 0 )                 // Python `import a` / TS `import … from 'x'`
+    else if( kindIs( t, "import_statement" ) )                 // Python `import a` / TS `import … from 'x'`
     {
         // Prefer the grammar's specifier field over slicing the whole statement (LEVER-B B0: the resolver
         // needs the REAL written specifier, not the clause). Empirically confirmed node shapes:
@@ -1606,7 +1606,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
             target = importSpecifierText( nm, src );                      // Python: the dotted module head
         }
     }
-    else if( std::strcmp( t, "import_from_statement" ) == 0 )            // Python `from pkg.mod import Z`
+    else if( kindIs( t, "import_from_statement" ) )            // Python `from pkg.mod import Z`
     {
         // module_name:(dotted_name)  → `pkg.mod`;  module_name:(relative_import)  → `.rel` / `..up` (leading
         // dots preserved so the resolver can resolve relative-to-file). The imported-names clause is dropped.
@@ -1615,21 +1615,21 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
             target = importSpecifierText( mn, src );
         }
     }
-    else if( std::strcmp( t, "call_expression" ) == 0
+    else if( kindIs( t, "call_expression" )
              && ( lang == Lang::TypeScript || lang == Lang::JavaScript ) )   // TS/JS `require("./x")` / `import("./x")`
     {
         target = jsModuleLoadTarget( n, src );
         isLazy = insideFn && !target.empty();   // kParserVer 72: a hit found inside a function body is LAZY
     }
-    else if( std::strcmp( t, "command" ) == 0 && lang == Lang::Bash )              // Bash `source x.sh` / `. x.sh`
+    else if( kindIs( t, "command" ) && lang == Lang::Bash )              // Bash `source x.sh` / `. x.sh`
     {
         target = bashSourceTarget( n, src );
     }
-    else if( std::strcmp( t, "function_call" ) == 0 && lang == Lang::Lua )         // Lua `require "a.b"`
+    else if( kindIs( t, "function_call" ) && lang == Lang::Lua )         // Lua `require "a.b"`
     {
         target = luaRequireTarget( n, src );
     }
-    else if( std::strcmp( t, "call" ) == 0 && lang == Lang::Ruby )                 // Ruby `require_relative "x"` / `require "x"` / `load "x"`
+    else if( kindIs( t, "call" ) && lang == Lang::Ruby )                 // Ruby `require_relative "x"` / `require "x"` / `load "x"`
     {
         target = rubyRequireTarget( n, src );
         if( target.empty() && rubyConstantDirective( n, src ) == "autoload" )    // parser version 82: `autoload :Name[, "path"]`
@@ -1646,12 +1646,12 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         }
         // include/extend/prepend name N constants and are emitted by captureIncludes through rubyMixinTargets.
     }
-    else if( std::strcmp( t, "superclass" ) == 0 && lang == Lang::Ruby )           // Ruby `class X < Base` (parser version 82)
+    else if( kindIs( t, "superclass" ) && lang == Lang::Ruby )           // Ruby `class X < Base` (parser version 82)
     {
         target     = rubySuperclassTarget( n, src );
         isSymbolic = !target.empty();
     }
-    else if( std::strcmp( t, "call" ) == 0 && lang == Lang::Elixir )               // Elixir `alias`/`import`/`require`/`use`
+    else if( kindIs( t, "call" ) && lang == Lang::Elixir )               // Elixir `alias`/`import`/`require`/`use`
     {
         // `call` is the node type of EVERY Elixir expression including `defmodule`, so the four-keyword
         // gate inside elixirDirectiveTarget is the whole guard — the same posture as the TS/JS
@@ -1659,7 +1659,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         // by captureIncludes through elixirAliasGroup, one Include per member.
         target = elixirDirectiveTarget( n, src );
     }
-    else if( std::strcmp( t, "use_declaration" ) == 0 )                  // Rust `use crate::a::b;`
+    else if( kindIs( t, "use_declaration" ) )                  // Rust `use crate::a::b;`
     {
         // argument:(scoped_identifier|scoped_use_list|identifier|…)  → `crate::a::b`. A brace group
         // `crate::{a, b}` is kept verbatim; the resolver degrades on it (no unique single-file hit).
@@ -1668,7 +1668,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
             target = importSpecifierText( arg, src );
         }
     }
-    else if( std::strcmp( t, "mod_item" ) == 0 )                        // Rust `mod x;` (module-file declaration)
+    else if( kindIs( t, "mod_item" ) )                        // Rust `mod x;` (module-file declaration)
     {
         // A body-LESS `mod x;` declares module `x` in a sibling file (`x.rs` or `x/mod.rs`); a `mod x { … }`
         // with a body is INLINE (no file) → skip it. Prefix `mod:` so the Rust resolver applies the
@@ -1684,7 +1684,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
             }
         }
     }
-    else if(    std::strcmp( t, "import_declaration" ) == 0 )            // Go / Swift — captured but NOT precise-resolved
+    else if(    kindIs( t, "import_declaration" ) )            // Go / Swift — captured but NOT precise-resolved
     {
         // Go (needs go.mod module-root) and Swift (whole-module, no path) are DEFERRED — the precise
         // resolver leaves them unresolved. Keep the best-effort target for --uses / --deps back-compat.
@@ -1704,11 +1704,11 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
             }
         }
     }
-    else if( std::strcmp( t, "using_directive" ) == 0 )
+    else if( kindIs( t, "using_directive" ) )
     { // C# `using Foo.Bar;` / `using static Foo;` / `using X = Foo.Bar;`
         target = csharpUsingTarget( n, src );                            // see csharpUsingTarget for the shape rationale
     }
-    else if( std::strcmp( t, "namespace_use_declaration" ) == 0 )
+    else if( kindIs( t, "namespace_use_declaration" ) )
     { // PHP `use Foo\Bar;` / `use Foo\Bar as Baz;` / `use function Foo\bar;` / `use Foo\{A, B};`
         // Captured for --uses / --deps visibility, NEVER precise-resolved: PHP has no entry in
         // resolve.h's includeLangOf table, so it falls through to IncludeLang::Other exactly as Java and
@@ -1746,8 +1746,8 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
 // emitBindings attributes kNoNode); spans {0,0}. Pure-syntactic, deterministic, source order.
 inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
 {
-    const bool isFrom = ( std::strcmp( t, "import_from_statement" ) == 0 );
-    if( !isFrom && std::strcmp( t, "import_statement" ) != 0 )
+    const bool isFrom = ( kindIs( t, "import_from_statement" ) );
+    if( !isFrom && !kindIs( t, "import_statement" ) )
     {
         return;
     }
@@ -1777,7 +1777,7 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         }
         std::string_view bound;
         std::string      clauseTarget;
-        if( std::strcmp( kt, "aliased_import" ) == 0 )
+        if( kindIs( kt, "aliased_import" ) )
         {
             const TSNode alias = ts_node_child_by_field_name( kid, "alias", 5 );
             const TSNode nm    = ts_node_child_by_field_name( kid, "name", 4 );
@@ -1788,7 +1788,7 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
             bound        = pattern::nodeText( alias, src );
             clauseTarget = isFrom ? target : importSpecifierText( nm, src );
         }
-        else if( std::strcmp( kt, "dotted_name" ) == 0 )
+        else if( kindIs( kt, "dotted_name" ) )
         {
             const std::string_view whole = pattern::nodeText( kid, src );
             if( isFrom )
@@ -1878,7 +1878,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
         // are containers, so the walk already stands on every open it needs to record; a `class << self` is a
         // singleton_class, not an open of a constant, and is not here.
         std::uint32_t childOpenIdx = frame.openIdx;
-        if( lang == Lang::Ruby && ( std::strcmp( t, "class" ) == 0 || std::strcmp( t, "module" ) == 0 ) )
+        if( lang == Lang::Ruby && ( kindIs( t, "class" ) || kindIs( t, "module" ) ) )
         {
             if( const TSNode nm = ts_node_child_by_field_name( n, "name", 4 ); !ts_node_is_null( nm ) )
             {
@@ -1945,7 +1945,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
             // The site byte. A Ruby `superclass` carries its CLASS's own start byte: the superclass expression is
             // evaluated in the ENCLOSING scope (Ruby has not opened the class yet), and resolve.h's containment
             // is strict at the start, so that byte reads as outside the class — the nesting Ruby actually uses.
-            const bool          superclassSite = ( lang == Lang::Ruby && std::strcmp( t, "superclass" ) == 0 );
+            const bool          superclassSite = ( lang == Lang::Ruby && kindIs( t, "superclass" ) );
             const std::uint32_t siteByte       = superclassSite ? ts_node_start_byte( ts_node_parent( n ) ) : ts_node_start_byte( n );
             incs.push_back( { fileId, isAngle, isLazy, symbolic, siteByte, std::move( tgt ) } );
         };
@@ -1976,7 +1976,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
         {
             emitDirective( std::move( target ), isSymbolic );
         }
-        else if( lang == Lang::Ruby && std::strcmp( t, "call" ) == 0 )
+        else if( lang == Lang::Ruby && kindIs( t, "call" ) )
         {
             // `include A, B` / `extend M` / `prepend P` (parser version 82): N constants off one directive node, in
             // SOURCE order, each a symbolic Include — the Ruby twin of the Elixir alias group below.
@@ -1985,7 +1985,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
                 emitDirective( std::move( member ), true );
             }
         }
-        else if( lang == Lang::Elixir && std::strcmp( t, "call" ) == 0 )
+        else if( lang == Lang::Elixir && kindIs( t, "call" ) )
         {
             // The multi-alias group. Members come out in SOURCE order (elixirAliasGroup walks the tuple's
             // named children left to right), so `incs` stays source-ordered and the determinism contract
