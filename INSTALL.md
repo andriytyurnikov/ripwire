@@ -17,8 +17,8 @@ The installer:
   and verifies its SHA-256;
 - installs the binary to `~/.local/bin/ripwire`, with no sudo;
 - stages the agent skills and hooks under `~/.local/share/ripwire/`;
-- activates the skills for each agent it finds on the machine (Claude Code, Codex, Hermes) and prints one
-  line per agent;
+- activates the skills for each agent it finds on the machine (Claude Code, Codex, and Hermes with
+  [initial support](#skills)) and prints one line per agent;
 - never registers hooks and never edits your shell profile.
 
 Linux builds run on RHEL 8 and later; every release is smoke-tested on RHEL 9 before it publishes.
@@ -68,9 +68,14 @@ you changed it):
 | --- | --- | --- |
 | Claude Code | `bash ~/.local/share/ripwire/skills/install.sh` | `${CLAUDE_CONFIG_DIR:-~/.claude}/skills` |
 | Codex | `bash ~/.local/share/ripwire/skills/install.sh --codex` | `${AGENTS_HOME:-~/.agents}/skills` |
-| Hermes | `bash ~/.local/share/ripwire/skills/install.sh --hermes` | `${HERMES_HOME:-~/.hermes}/skills` |
-| openclaw | `bash ~/.local/share/ripwire/skills/install.sh --openclaw` | `~/.agents/skills` |
+| Hermes (initial support) | `bash ~/.local/share/ripwire/skills/install.sh --hermes` | `${HERMES_HOME:-~/.hermes}/skills` |
+| openclaw (initial support) | `bash ~/.local/share/ripwire/skills/install.sh --openclaw` | `~/.agents/skills` |
 | Anything else | `bash ~/.local/share/ripwire/skills/install.sh <dir>` | `<dir>` |
+
+Hermes and openclaw support is initial. CI checks what the installers write on disk, but neither has been
+verified against a real Hermes or openclaw install yet. If you use one, the help-wanted issues
+[#69 (Hermes)](https://github.com/redhat-et/ripwire/issues/69) and
+[#68 (openclaw)](https://github.com/redhat-et/ripwire/issues/68) ask for exactly that check.
 
 The skills are symlinks named `ripwire-*`. Re-running the installer is safe: it refreshes the links and
 removes any that a newer release no longer ships. openclaw reads `~/.agents/skills` only while its state
