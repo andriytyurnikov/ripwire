@@ -5127,13 +5127,29 @@ subtraction and agreed exactly after it.
 | **top-50** | **71.0%** | 81.4% |
 | top-100 | 73.7% | 81.6% |
 
-The 2026-09-09 move is a **corpus** effect, not a regression in the verb, and the control that
-establishes it is the one this document asks for elsewhere: run the PRE-conversion binary on the NEW
-tree and the NEW binary on the OLD tree. The figure tracks the tree, not the binary. That round
-converted this repository's own ~1,500 printf-family call sites to `rw::emitTo`/`emitRaw`/`formatTo`
-across 93 files, which changes the `<b>` bodies on the denominator side of the ratio — the same shape
-as the 2026-08-15 move below, and for the same reason. `--pack-signatures` elides exactly what it
-always did; what changed is the source it was measured against.
+**`--pack-signatures` did not regress. The denominator did.** The move from 81.4% to 71.0% was
+attributed by bisection, not asserted, and it is mostly ONE commit — `08e757b0` (2026-09-05, lane L7's
+P16), which cut `kMaxExpandSibs` from **40 to 8**. That shrank `--expand`'s `<b>` elements ~23% at
+top-50 (41,827 B → 32,283 B on a FIXED tree), and since this ratio is `1 - sig/body`, a leaner
+baseline reads as a smaller saving.
+
+The attribution is a 2×2, binary × tree, on the 2026-08-30 corpus:
+
+| | 2026-08-30 binary | today's binary |
+| --- | --- | --- |
+| **2026-08-30 tree** | 85.6 / **80.2** / 80.7 | 80.6 / **74.7** / 73.6 |
+
+Same tree, same top-50 membership (44 of 45 symbols shared), signature side flat (8,269 B → 8,163 B).
+The published 80.2% was correctly measured and correctly dated; it stopped being reproducible the day
+the cap landed. The remainder — 74.7 → 72.3 → 71.0 — is ordinary corpus drift as this repository
+changed, of which the 2026-09-09 printf-to-`std::print` conversion is **1.3 points**.
+
+**Read this as a caution about the metric, not only about the number.** The denominator is `--expand`'s
+rendered output, so it includes `sibs=`/`inc=` file-context attributes that are not the symbol's body.
+That makes the headline move when `--expand`'s rendering is tuned, in both directions: adding
+`sibs=`/`inc=` on 2026-08-15 moved it UP from 70.0/61.0/63.8, and capping `sibs` moved it back down.
+A measure that rises when the baseline is padded and falls when the baseline is made cheaper is
+measuring the comparison, not the verb.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the
