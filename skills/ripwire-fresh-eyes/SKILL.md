@@ -1,10 +1,10 @@
 ---
 name: ripwire-fresh-eyes
 description: >
-  Maintenance risk in code you did NOT write — planning a refactor, a suspected god object,
-  'what's gnarly / where's the rot / safe to touch?': hotspots, dead code, clones, a function's
-  shape, bus factor, co-change. Also inactive code and switches/defaults (--flags). Judging YOUR
-  new code → quality-bar.
+  Maintenance risk in code you did NOT write — planning a refactor, a god object, 'what's gnarly /
+  where's the rot / safe to touch?': hotspots, dead or inactive code, switches/defaults (--flags),
+  clones, a function's shape, bus factor, co-change. YOUR new code → quality-bar. A single-lens
+  question is a single call.
 allowed-tools: Bash, Read
 ---
 

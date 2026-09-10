@@ -2,9 +2,9 @@
 name: ripwire-orient
 description: >
   Landing COLD in an unfamiliar repo/subsystem or about to open several files: map main subsystems
-  and entry points, 'how does X work / where is Y'. Also recover context, retrieve saved docs
-  (--recall), divide code for subagents (--partition), save code gotchas (--note-add). NAMED
-  symbol → navigate.
+  and entry points, 'how does X work / where is Y'. Also recover context, saved docs (--recall),
+  subagent splits (--partition), code gotchas (--note-add). NAMED symbol → navigate. Stop at the
+  first rung that answers.
 allowed-tools: Bash, Read
 ---
 
