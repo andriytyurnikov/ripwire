@@ -4244,7 +4244,7 @@ $ ./build/ripwire --scan-skill=skills/ripwire-orient/SKILL.md
 
 ### `--scan-skills[=DIR]`
 
-**Answers:** scan a skills directory before installing — every text file, .md and .sh alike scan DIR (or .agents/skills/ + ~/.claude/skills/ + ${CODEX_HOME:-~/.codex}/skills/).
+**Answers:** scan a skills directory before installing — every text file, .md and .sh alike scan DIR (or .agents/skills/ + ${CLAUDE_CONFIG_DIR:-~/.claude}/skills/ + ${CODEX_HOME:-~/.codex}/skills/).
 
 EVERY text file, .md and .sh alike — a skill dir's executables are the files most worth scanning. skipped= counts what it could not scan (binary content, or unreadable); denylisted subtrees (.git, node_modules, build, ...) are not descended and the stderr tally says how many for vulnerabilities
 
