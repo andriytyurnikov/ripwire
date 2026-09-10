@@ -150,9 +150,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
         }
         // Collected whether or not the anchor MOVED anything: a task whose named file fell outside the
         // extraction window lifts nothing, and is the run that most needs telling.
-        out.capNote  += capDisclosureNote( mentionInfo.caps );
-        out.capAttrs += mentionInfo.caps.xml;
-        out.capJson  += mentionInfo.caps.json;
+        absorbCapDisclosure( mentionInfo.caps, out.capNote, out.capAttrs, out.capJson );
     }
 
     // r4 sibling lift (EXPERIMENTAL, pre-registered — bench/locbench/results/r4_siblift/PREREG.md): lift the
@@ -227,9 +225,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             out.boostNote = nb;
         }
-        out.capNote  += capDisclosureNote( boostInfo.caps );
-        out.capAttrs += boostInfo.caps.xml;
-        out.capJson  += boostInfo.caps.json;
+        absorbCapDisclosure( boostInfo.caps, out.capNote, out.capAttrs, out.capJson );
     }
 
     // R5 — doc-mention surfacing (default-on, route-agnostic; see mention.h applyDocMentionBoost):
@@ -248,9 +244,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
             out.docMentionNote  = nb;
             out.docMentionCount = docMentionInfo.docCount;   // §L10b: machine form for the doc_mentions= root attribute
         }
-        out.capNote  += capDisclosureNote( docMentionInfo.caps );
-        out.capAttrs += docMentionInfo.caps.xml;
-        out.capJson  += docMentionInfo.caps.json;
+        absorbCapDisclosure( docMentionInfo.caps, out.capNote, out.capAttrs, out.capJson );
     }
     return out;
 }
@@ -436,19 +430,32 @@ struct ForLensHeaderParts
                                             // must carry the SAME root as the pre-built rootOpenStr did.
 };
 
+// Splice a pre-formatted fragment in front of a structural boundary, or leave the document exactly as it
+// was. Every late splice in this file is this operation: three root attributes go in front of the FIRST
+// "><!--" (escapeXml entity-escapes '<' inside attribute values, so that occurrence is unambiguously the
+// root element's own close), three note clauses go in front of the LAST " -->", and rootOpenWithExtraAttrs
+// below goes in front of a root open tag's '>'. All of them share the same fallback — an unexpected shape
+// leaves the document untouched rather than inserting at a guessed offset — and that fallback is the whole
+// of the error handling, which is why it belongs in one place instead of seven.
+// EMPTY IS A NO-OP, so a caller whose fragment did not fire needs no `if` of its own.
+inline void spliceBefore( std::string& doc, std::string_view boundary, bool fromEnd, std::string_view part )
+{
+    if( part.empty() )
+    {
+        return;
+    }
+    const std::size_t at = fromEnd ? doc.rfind( boundary ) : doc.find( boundary );
+    if( at != std::string::npos )
+    {
+        doc.insert( at, part );
+    }
+}
+
 // insert pre-formatted attributes (leading space, already attribute-safe — every caller's values come
 // from a fixed enum + an int or a versioned schema id, never corpus text) before the root open tag's '>'.
 inline std::string rootOpenWithExtraAttrs( std::string rootOpen, std::string_view attrs )
 {
-    if( attrs.empty() )
-    {
-        return rootOpen;
-    }
-    const std::size_t end = rootOpen.find( '>' );
-    if( end != std::string::npos )
-    {
-        rootOpen.insert( end, attrs );
-    }
+    spliceBefore( rootOpen, ">", /*fromEnd=*/false, attrs );
     return rootOpen;
 }
 
@@ -2349,40 +2356,16 @@ std::optional<int> runForLens( const MainDispatch& d )
             forOverCeiling = headerStr.find( kNotes.overCeiling ) != std::string::npos;
         }
 
-        // T3: the bundle=auto disclosure attributes, spliced onto the <ctx> root AFTER the ladder (a rung
-        // rebuild would lose an earlier splice — the same reason weak=/est_tokens= splice late). The literal
-        // "><!--" boundary is unambiguous: escapeXml entity-escapes '<' inside attribute values, so the first
-        // occurrence is the root element's own close. Spliced BEFORE est_tokens is computed, so the number
-        // measures a header that already carries these bytes exactly.
-        if( !autoAttr.empty() )
-        {
-            const std::size_t rootCloseAt = headerStr.find( "><!--" );
-            if( rootCloseAt != std::string::npos )
-            {
-                headerStr.insert( rootCloseAt, autoAttr ); // else: unexpected shape, header left as-is (attr dropped, section still disclosed by its own element)
-            }
-        }
-        // budget_bytes= joins the root the same way and at the same point, and for the same reason: its
-        // presence is decided by the sigs render, and est_tokens below must price a header that already
-        // carries it.
-        if( !sigsCeilingAttr.empty() )
-        {
-            const std::size_t rootCloseAt = headerStr.find( "><!--" );
-            if( rootCloseAt != std::string::npos )
-            {
-                headerStr.insert( rootCloseAt, sigsCeilingAttr ); // else: unexpected shape, header left as-is
-            }
-        }
-        // …and the cap attributes: root facts of the RANKING, so on the root est_tokens prices, not in the
-        // ladder's input above.
-        if( !capAttrsStr.empty() )
-        {
-            const std::size_t rootCloseAt = headerStr.find( "><!--" );
-            if( rootCloseAt != std::string::npos )
-            {
-                headerStr.insert( rootCloseAt, capAttrsStr ); // else: unexpected shape, header left as-is
-            }
-        }
+        // T3: the bundle=auto disclosure attributes, spliced onto the <ctx> root AFTER the ladder, then
+        // budget_bytes= (its presence is decided by the sigs render), then the INDEXING-cap attributes
+        // (root facts of the RANKING, so on the root est_tokens prices rather than in the ladder's input
+        // above). All three go in BEFORE est_tokens is computed, so the number measures a header that
+        // already carries these bytes exactly. An attribute dropped by an unexpected shape costs nothing a
+        // reader can be misled by: the auto section is still disclosed by its own element. See
+        // spliceBefore for the boundary and the fallback.
+        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, autoAttr );
+        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, sigsCeilingAttr );
+        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, capAttrsStr );
 
         // R4 + §L2: weak="1" — same insert-before-"-->" mechanism as est_tokens below, but unconditional on
         // sigsPreRendered (forWeak is known from lr.maxLexicalScore regardless of the sigs render path).
@@ -2391,14 +2374,7 @@ std::optional<int> runForLens( const MainDispatch& d )
         // est_tokens now: it used to go in afterwards, i.e. 9 bytes of the document that the number describing
         // that document had not measured (CA4 verifier L2). Doing it first makes those 9 bytes part of
         // headerStr.size() below — an exact count, not a reserve.
-        if( forWeak )
-        {
-            const std::size_t closeAt = headerStr.rfind( " -->" );
-            if( closeAt != std::string::npos )
-            {
-                headerStr.insert( closeAt, " weak=\"1\"" ); // else: unexpected shape, header left as-is
-            }
-        }
+        spliceBefore( headerStr, " -->", /*fromEnd=*/true, forWeak ? std::string_view( " weak=\"1\"" ) : std::string_view() );
 
         // A2 (survey card, 2026-09-03) — dropped_positive="N": how many symbols scored above the relevance
         // floor (LB-A's own admission rule) and were then removed by the payload ceiling, either the H1
@@ -2409,34 +2385,13 @@ std::optional<int> runForLens( const MainDispatch& d )
         // pr_converged="0" precedent (src/prconverge.h), never a fabricated "dropped_positive=\"0\"". The
         // bracket note is self-defining (legendcoveragecheck's "mentioned"/"defined" predicates both read the
         // name it carries), the same reason weak=/est_tokens= need no separate legend clause of their own.
-        if( !droppedPositiveNote.empty() )
-        {
-            const std::size_t closeAt = headerStr.rfind( " -->" );
-            if( closeAt != std::string::npos )
-            {
-                headerStr.insert( closeAt, droppedPositiveNote ); // else: unexpected shape, header left as-is
-            }
-        }
-        // ... and the budget_bytes= clause, at the same splice point and for the same reason: its presence
-        // is decided by the render above, and the attribute it defines rides only a trimmed <sigs>.
-        if( !sigsCeilingNote.empty() )
-        {
-            const std::size_t closeAt = headerStr.rfind( " -->" );
-            if( closeAt != std::string::npos )
-            {
-                headerStr.insert( closeAt, sigsCeilingNote ); // else: unexpected shape, header left as-is
-            }
-        }
-        // ... and the cap clause, which DEFINES those attributes by carrying them verbatim — the
-        // legendcoveragecheck contract, the self-defining shape dropped_positive= uses.
-        if( !capNoteStr.empty() )
-        {
-            const std::size_t closeAt = headerStr.rfind( " -->" );
-            if( closeAt != std::string::npos )
-            {
-                headerStr.insert( closeAt, capNoteStr ); // else: unexpected shape, header left as-is
-            }
-        }
+        // ... then the budget_bytes= clause, at the same splice point and for the same reason: its presence
+        // is decided by the render above, and the attribute it defines rides only a trimmed <sigs>. Then the
+        // cap clause, which DEFINES its attributes by carrying them verbatim — the legendcoveragecheck
+        // contract, the self-defining shape dropped_positive= uses.
+        spliceBefore( headerStr, " -->", /*fromEnd=*/true, droppedPositiveNote );
+        spliceBefore( headerStr, " -->", /*fromEnd=*/true, sigsCeilingNote );
+        spliceBefore( headerStr, " -->", /*fromEnd=*/true, capNoteStr );
 
         if( sigsPreRendered )
         {

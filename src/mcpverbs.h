@@ -1562,8 +1562,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
             mentionNote     = nb;
             mentionAnchored = mentionInfo.fileCount + mentionInfo.symbolCount;   // §A4f: the same count the CLI candidates root emits
         }
-        mentionNote += capDisclosureNote( mentionInfo.caps );
-        capAttrs    += mentionInfo.caps.xml;
+        absorbCapDisclosure( mentionInfo.caps, mentionNote, capAttrs );
     }
 
     // B3 (co-change prior boost) — OPT-IN, EXPERIMENTAL, same contract as CLI --cochange-boost: files that
@@ -1587,8 +1586,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             boostNote = nb;
         }
-        boostNote += capDisclosureNote( boostInfo.caps );
-        capAttrs  += boostInfo.caps.xml;
+        absorbCapDisclosure( boostInfo.caps, boostNote, capAttrs );
     }
 
     // R5 (doc-mention surfacing) — same default-on, route-agnostic contract as the CLI --for: a doc
@@ -1609,8 +1607,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
             docMentionNote = nb;
             docMentions    = docMentionInfo.docCount;
         }
-        docMentionNote += capDisclosureNote( docMentionInfo.caps );
-        capAttrs       += docMentionInfo.caps.xml;
+        absorbCapDisclosure( docMentionInfo.caps, docMentionNote, capAttrs );
     }
 
     // LB-A (r10 §5) — THE RELEVANCE FLOOR, the CLI --for's own call (serialize.h relevanceFloorCut): one
@@ -1698,10 +1695,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
         {
             rootOpenStr.insert( rootOpenStr.size() - 1, " doc_mentions=\"" + std::to_string( docMentions ) + "\"" );
         }
-        if( !capAttrs.empty() )
-        {
-            rootOpenStr.insert( rootOpenStr.size() - 1, capAttrs );
-        }
+        rootOpenStr.insert( rootOpenStr.size() - 1, capAttrs );   // "" unless a cap bit — an empty insert is a no-op
         rootOpenStr.insert( rootOpenStr.size() - 1, " bundle=\"sigs\"" );
         if( budgetTokens > 0 )   // M13/H9: the ceiling this bundle was shaped against, named where the CLI names it
         {
@@ -3405,9 +3399,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                            mentionInfo.fileCount, mentionInfo.fileCount == 1 ? "" : "s", mentionInfo.symbolCount );
             lr.mentionNote = nb;
         }
-        lr.mentionNote += capDisclosureNote( mentionInfo.caps );
-        lr.capAttrs    += mentionInfo.caps.xml;
-        lr.capJson     += mentionInfo.caps.json;
+        absorbCapDisclosure( mentionInfo.caps, lr.mentionNote, lr.capAttrs, lr.capJson );
     }
     if( std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
@@ -3421,9 +3413,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             lr.boostNote = nb;
         }
-        lr.boostNote += capDisclosureNote( boostInfo.caps );
-        lr.capAttrs  += boostInfo.caps.xml;
-        lr.capJson   += boostInfo.caps.json;
+        absorbCapDisclosure( boostInfo.caps, lr.boostNote, lr.capAttrs, lr.capJson );
     }
     if( !std::getenv( "RIPWIRE_NO_DOC_MENTION" ) )
     {
@@ -3436,9 +3426,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                            docMentionInfo.anchorCount, docMentionInfo.anchorCount == 1 ? "" : "s" );
             lr.docMentionNote = nb;
         }
-        lr.docMentionNote += capDisclosureNote( docMentionInfo.caps );
-        lr.capAttrs       += docMentionInfo.caps.xml;
-        lr.capJson        += docMentionInfo.caps.json;
+        absorbCapDisclosure( docMentionInfo.caps, lr.docMentionNote, lr.capAttrs, lr.capJson );
     }
 
     const std::vector<char>    impure = computeImpure( ing, g );

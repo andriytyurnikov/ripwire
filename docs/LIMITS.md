@@ -247,7 +247,7 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4214 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4202 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — |
 
@@ -257,13 +257,13 @@ Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`,
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 607 | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 608 | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 609 | global cap — bounds token cost regardless of fan-out |
-| `kMentionMaxDirectSymbols` | `8` | 126 | directly-named (Scope.name / `name`) symbols, id asc |
-| `kMentionMaxFiles` | `4` | 124 | strongest evidence only: files named first in the text |
-| `kMentionMaxRawTokens` | `16` | 123 | extraction cap: first N candidate mention tokens, text order |
-| `kMentionMaxSymbolsPerFile` | `3` | 125 | per mentioned file: its top symbols by (lens score desc, id asc) |
+| `kDocMentionMaxAnchors` | `8` | 627 | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 628 | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 629 | global cap — bounds token cost regardless of fan-out |
+| `kMentionMaxDirectSymbols` | `8` | 158 | directly-named (Scope.name / `name`) symbols, id asc |
+| `kMentionMaxFiles` | `4` | 156 | strongest evidence only: files named first in the text |
+| `kMentionMaxRawTokens` | `16` | 155 | extraction cap: first N candidate mention tokens, text order |
+| `kMentionMaxSymbolsPerFile` | `3` | 157 | per mentioned file: its top symbols by (lens score desc, id asc) |
 
 ### `src/model.h`
 

@@ -105,6 +105,38 @@ inline std::string capDisclosureNote( const CapDisclosure& disc )
     return disc.fired() ? ( " [cut:" + disc.xml + " — an indexing cap dropped content not shown here]" ) : std::string();
 }
 
+// A bundle carries a disclosure in THREE accumulators — prose clause, XML attributes, JSON keys — and each
+// of the three lift passes contributes to all three. Appending them in lockstep here is the point: nine
+// hand-written call sites (three passes × --for, --pack-task and the MCP twin) is nine chances for one
+// surface to learn a fact the other two do not, and mcpattrparitycheck exists because that has happened.
+// Every one of the three is "" unless a cap actually bit, so a bundle that lost nothing still pays nothing.
+inline void absorbCapDisclosure( const CapDisclosure& disc, std::string& note, std::string& xmlAttrs, std::string& jsonKeys )
+{
+    note     += capDisclosureNote( disc );
+    xmlAttrs += disc.xml;
+    jsonKeys += disc.json;
+}
+
+// The two-dialect form, for the MCP `for` verb: it serves XML text only, so there is no JSON accumulator to
+// keep in step and an empty scratch string would be the fiction that there is.
+inline void absorbCapDisclosure( const CapDisclosure& disc, std::string& note, std::string& xmlAttrs )
+{
+    note     += capDisclosureNote( disc );
+    xmlAttrs += disc.xml;
+}
+
+// Record one cap into a census the caller may not have asked for. Null-tolerant on purpose: `outInfo` is
+// optional on every boost entry point in this file, and without this the three census statements would each
+// be wrapped in a guard of its own, which buries the facts they record inside control flow that says nothing.
+template<class InfoT>
+inline void noteCap( InfoT* outInfo, const char* cappedAttr, const char* totalAttr, bool fired, std::uint64_t total )
+{
+    if( outInfo )
+    {
+        outInfo->caps.note( cappedAttr, totalAttr, fired, total );
+    }
+}
+
 // Fixed knobs — deliberately NOT flags (one documented behavior, one ablation switch to kill it whole).
 // The three that CUT INVISIBLE CONTENT disclose (see CapDisclosure above); kMentionMaxSymbolsPerFile does
 // not, and that is a measurement, not an oversight: it only ever trims symbols out of a file every one of
@@ -262,15 +294,9 @@ inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m,
                                    bool& outFilesCapped )   // set when kMentionMaxFiles, not the corpus, ended the scan
 {
     const std::size_t fileCount = ing.files.size();
-    for( std::uint32_t f = 0; f < fileCount; ++f )
+    std::uint32_t     f         = 0;   // survives the loop so the STOP REASON can be read off it below
+    for( ; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
     {
-        // The guard moved out of the loop condition so the cap can be told apart from a corpus that simply
-        // ran out — the break point, and therefore the kept set, is identical either way.
-        if( mentionedFiles.size() >= kMentionMaxFiles )
-        {
-            outFilesCapped = true;
-            break;
-        }
         if( !isIndexBaseName( baseNameOf( ing.files[f] ) ) || !dirSuffixMatches( ing.files[f], m.segments ) )
         {
             continue;
@@ -280,6 +306,9 @@ inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m,
             mentionedFiles.push_back( f );
         }
     }
+    // The loop is UNCHANGED — same condition, same break point, same kept set. All that is new is reading
+    // WHY it stopped: files left unexamined means kMentionMaxFiles ended the scan, not the corpus.
+    outFilesCapped |= f < fileCount;
 }
 
 // extract candidate mentions from the task text: '/'-joined path tokens, dot-joined identifier chains,
@@ -409,10 +438,7 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
     // only named file fell outside the window lifts nothing, returns false, and still owes the caller this.
     std::uint32_t qualifiedTokens = 0;
     const std::vector<RawMention> raw = extractMentions( task, &qualifiedTokens );
-    if( outInfo )
-    {
-        outInfo->caps.note( "mention_tokens_capped", "mention_tokens_total", qualifiedTokens > kMentionMaxRawTokens, qualifiedTokens );
-    }
+    noteCap( outInfo, "mention_tokens_capped", "mention_tokens_total", qualifiedTokens > kMentionMaxRawTokens, qualifiedTokens );
     if( raw.empty() )
     {
         return false;
@@ -448,17 +474,9 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
         for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1 && !matchedFile; --suffixLen )
         {
             const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
-            for( std::uint32_t f = 0; f < fileCount; ++f )
+            std::uint32_t                  f = 0;   // survives the loop so the STOP REASON can be read off it
+            for( ; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
             {
-                // Hoisted out of the loop condition ONLY to tell the cap apart from a corpus that ran out:
-                // same break point, so the kept set, `matchedFile` and every score stay byte-identical.
-                // FACT, no total: counting what this scan never reached means running it unbounded, and that
-                // WOULD move `matchedFile` (a full list leaves it false and routes the mention to symbols).
-                if( mentionedFiles.size() >= kMentionMaxFiles )
-                {
-                    filesCapped = true;
-                    break;
-                }
                 if( !pathSuffixMatches( ing.files[f], suffix ) )
                 {
                     continue;
@@ -469,6 +487,11 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
                 }
                 matchedFile = true;
             }
+            // The loop is UNCHANGED — same condition, same break point, so the kept set, `matchedFile` and
+            // every score stay byte-identical; the only new thing is reading WHY it stopped. FACT, no total:
+            // counting what this scan never reached means running it unbounded, and that WOULD move
+            // `matchedFile` (a full list leaves it false and routes the mention to symbols instead).
+            filesCapped |= f < fileCount;
         }
 
         // (b) scoped-symbol match for 2-segment dotted mentions (Scope.name — `DTypeSchema.validate`):
@@ -502,11 +525,8 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
             liftPackageDirMention( ing, m, mentionedFiles, filesCapped );
         }
     }
-    if( outInfo )
-    {
-        outInfo->caps.note( "mention_files_capped", nullptr, filesCapped, 0 );
-        outInfo->caps.note( "mention_syms_capped", "mention_syms_total", directSymbolTotal > kMentionMaxDirectSymbols, directSymbolTotal );
-    }
+    noteCap( outInfo, "mention_files_capped", nullptr, filesCapped, 0 );
+    noteCap( outInfo, "mention_syms_capped", "mention_syms_total", directSymbolTotal > kMentionMaxDirectSymbols, directSymbolTotal );
     if( mentionedFiles.empty() && directSymbols.empty() )
     {
         return false;
@@ -720,10 +740,7 @@ inline bool applyDocMentionBoost( const Graph& g, std::vector<float>& lensRank, 
     // The other half of the total cap: it can also end the OUTER loop, leaving consulted-window anchors
     // whose docs were never looked at (see docLiftWasRefused).
     docsCapped = docsCapped || docLiftWasRefused( g, lensRank, order, stoppedAt, topN );
-    if( outInfo )
-    {
-        outInfo->caps.note( "doc_mentions_capped", nullptr, docsCapped, 0 );
-    }
+    noteCap( outInfo, "doc_mentions_capped", nullptr, docsCapped, 0 );
 
     if( liftedDocs == 0 )
     {
