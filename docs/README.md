@@ -17,6 +17,7 @@ Fourteen entries, each written for one reader. Start with the row that matches w
 | **[`CODEX_ORCHESTRATION.md`](CODEX_ORCHESTRATION.md)** | Anyone orchestrating parallel Codex lanes | The deterministic model/effort policy emitted by `--plan-lanes`, the structural signals and caveats behind it, the task-matched agent roles used to implement it, and the verification record. |
 | **[`LINEAGE.md`](LINEAGE.md)** | Anyone asking what is actually new here | Every idea folded into the tool, row by row: the paper, specification or repository it came from, the one-line lesson taken, and the flag or source file where that lesson lives — plus the labelled survey of the wider field, kept explicitly separate from what was borrowed. |
 | **[`docs_commands_build.py`](docs_commands_build.py)** | Maintainers | The generator behind `COMMANDS.md`. Reads the binary's `--help` and a recorded showcase capture; `--check` is the drift comparison that `test/docscommandscheck.sh` runs. |
+| **[`gatecount_build.py`](gatecount_build.py)** | Maintainers, and anyone adding a gate | The generator behind the **published gate count**. Derives it from the single `for _g in …; do` loop in `test/regression.sh` and rewrites all eight marked sites across `README.md`, `EVALS.md` and the deck; `--check` is the drift comparison that `test/gatecountcheck.sh` runs. Never edit that number by hand — two lanes hand-writing the same N+1 auto-merge clean against a loop of N+2. |
 | **[`lineage-paper-dates.tsv`](lineage-paper-dates.tsv)** | Maintainers | arXiv id -> publication date for every 2026 paper in `LINEAGE.md`. The ID stem does not track the date (`2607.09691` was published 2026-06-19), so the README's recency claim is re-derived from this file by `readmedriftcheck.sh` arm (H2) rather than from the ids. Adding a 2026 paper without a date row fails that arm. |
 | **[`assets/`](assets/)** | The front page | The README banner and tagline artwork (SVG, self-contained). |
 | **[`captures/`](captures/)** | Maintainers, and the curious | One recorded run of every verb against a real repository — the source of `COMMANDS.md`'s sample output, and the harvest source for the differential argv harness. |
@@ -37,6 +38,8 @@ Outside this directory:
 
 ```bash
 python3 docs/docs_commands_build.py --bin build/ripwire
+python3 docs/limits_build.py                       # docs/LIMITS.md, from the caps in src/
+python3 docs/gatecount_build.py                    # the gate count, from test/regression.sh's loop
 ```
 
 It derives the tool's name from the binary you point it at, so a renamed build produces a correctly
