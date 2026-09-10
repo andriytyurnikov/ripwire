@@ -87,9 +87,9 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kUnitComplexityLowRiskMax` | `5` | 80 | cyclomatic complexity |
-| `kUnitInterfacingLowRiskMax` | `2` | 81 | parameters |
-| `kUnitSizeLowRiskMax` | `15` | 79 | lines |
+| `kUnitComplexityLowRiskMax` | `5` | 91 | cyclomatic complexity |
+| `kUnitInterfacingLowRiskMax` | `2` | 92 | parameters |
+| `kUnitSizeLowRiskMax` | `15` | 90 | lines |
 
 ### `src/editpreview.h`
 
@@ -115,8 +115,8 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kExpandMaxPer` | `8` | 36 | — |
-| `kExpandMaxSeeds` | `8` | 35 | out-of-range env means OFF, never a clamp-and-guess |
+| `kExpandMaxPer` | `8` | 37 | — |
+| `kExpandMaxSeeds` | `8` | 36 | out-of-range env means OFF, never a clamp-and-guess |
 
 ### `src/filepool.h`
 
@@ -257,9 +257,9 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 475 | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 476 | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 477 | global cap — bounds token cost regardless of fan-out |
+| `kDocMentionMaxAnchors` | `8` | 546 | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 547 | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 548 | global cap — bounds token cost regardless of fan-out |
 | `kMentionMaxDirectSymbols` | `8` | 47 | directly-named (Scope.name / `name`) symbols, id asc |
 | `kMentionMaxFiles` | `4` | 45 | strongest evidence only: files named first in the text |
 | `kMentionMaxRawTokens` | `16` | 44 | extraction cap: first N candidate mention tokens, text order |
@@ -314,7 +314,7 @@ Discloses: `ranking_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kPackTaskRankTopN` | `12` | 75 | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
+| `kPackTaskRankTopN` | `12` | 79 | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
 
 ### `src/pageview.h`
 
@@ -337,8 +337,8 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kCoreBudgetShare` | `0.34` | 84 | — |
-| `kMaxPartitions` | `16` | 81 | — |
+| `kCoreBudgetShare` | `0.34` | 98 | — |
+| `kMaxPartitions` | `16` | 94 | — |
 
 ### `src/pattern.h`
 
@@ -428,8 +428,8 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kSibliftMaxSeed` | `4` | 24 | env values outside [1, kSibliftMax*] mean OFF, never a clamp-and-guess |
-| `kSibliftMaxSib` | `4` | 25 | — |
+| `kSibliftMaxSeed` | `4` | 25 | env values outside [1, kSibliftMax*] mean OFF, never a clamp-and-guess |
+| `kSibliftMaxSib` | `4` | 26 | — |
 
 ### `src/situ.h`
 

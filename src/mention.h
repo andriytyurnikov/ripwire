@@ -53,6 +53,77 @@ struct MentionBoostInfo
     std::uint32_t symbolCount = 0;   // total symbols lifted (file-derived + direct)
 };
 
+// The slot-ladder's placement step, factored out because every env-gated lift that uses this vocabulary
+// (siblift.h, filepool.h, expand.h) repeats it identically: rank `fileId`'s positive symbols best-first,
+// then raise the top kMentionMaxSymbolsPerFile of them to `slot` via max() placement (never LOWERS a
+// symbol already scored higher, so #1 is never displaced by construction). Returns how many symbols this
+// call actually raised — 0 means the file had nothing to promote (every candidate was already >= slot, or
+// had no positive score at all), which is what lets a caller tell "the lift ran" apart from "the lift
+// moved something" for its own disclosure.
+inline std::uint32_t promoteFileSymbolsToSlot( const IngestResult& ing, std::vector<float>& lensRank, std::uint32_t fileId, float slot )
+{
+    std::vector<std::pair<float, NodeId>> symbols;
+    for( std::size_t k = 0; k < ing.symbols.size(); ++k )
+    {
+        if( ing.symbols[k].fileId == fileId && lensRank[k] > 0.f )
+        {
+            symbols.emplace_back( lensRank[k], NodeId( k ) );
+        }
+    }
+    std::sort( symbols.begin(), symbols.end(), []( const auto& a, const auto& b )
+               { return a.first != b.first ? a.first > b.first : a.second < b.second; } );
+    std::uint32_t promoted = 0;
+    for( std::size_t k = 0; k < symbols.size() && k < kMentionMaxSymbolsPerFile; ++k )
+    {
+        if( slot > lensRank[ symbols[k].second ] )
+        {
+            lensRank[ symbols[k].second ] = slot;
+            ++promoted;
+        }
+    }
+    return promoted;
+}
+
+// The "<a>,<b>" env-value grammar every one of these lifts is configured with (RIPWIRE_SIBLIFT,
+// RIPWIRE_POOL, RIPWIRE_EXPAND): two decimal integers separated by one comma, each capped. Extracted
+// 2026-09-10 (lift-disclosure round) after the three per-file copies — once each was split into its own
+// parse function so a malformed value could be told apart from an unset one — were flagged as a
+// duplication clone of each other; before that split they were similar enough in spirit but different
+// enough in shape (one env-fetch inlined here, an extra overflow guard there) that the clone detector
+// had not matched them, but that was never a reason to keep three copies of one grammar.
+//
+// BEHAVIOR-PRESERVING vs. every pre-extraction copy: for any input string, the accept/reject verdict and
+// the (a,b) pair returned are unchanged. The three originals differed only in WHEN the over-cap case was
+// caught (immediately per-digit here, once at the end there), never in WHETHER it was caught — digit
+// accumulation is monotonically non-decreasing, so an intermediate value that will end up over cap is
+// already over cap the moment it first exceeds it, and a return at that instant or at the end reaches the
+// identical verdict.
+//
+// Returns {0,0} for anything malformed OR either field over its cap — no partial credit, no
+// clamp-and-guess; each caller decides what {0,0} means for it (every one of them: feature off).
+inline std::pair<std::size_t, std::size_t> parseCappedCsvPair( std::string_view s, std::size_t capA, std::size_t capB )
+{
+    const std::size_t comma = s.find( ',' );
+    if( comma == std::string_view::npos || comma == 0 || comma + 1 >= s.size() )
+    {
+        return { 0, 0 };
+    }
+    std::size_t a = 0, b = 0;
+    for( const char c : s.substr( 0, comma ) )
+    {
+        if( c < '0' || c > '9' ) { return { 0, 0 }; }
+        a = a * 10 + std::size_t( c - '0' );
+        if( a > capA ) { return { 0, 0 }; }
+    }
+    for( const char c : s.substr( comma + 1 ) )
+    {
+        if( c < '0' || c > '9' ) { return { 0, 0 }; }
+        b = b * 10 + std::size_t( c - '0' );
+        if( b > capB ) { return { 0, 0 }; }
+    }
+    return { a, b };
+}
+
 // One extracted candidate mention, classified by shape. `segments` are the '/'- or '.'-separated parts
 // (lowercased never — corpus paths are case-sensitive).
 namespace mention_detail
