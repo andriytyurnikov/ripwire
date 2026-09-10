@@ -36,6 +36,8 @@
 
 #include <tree_sitter/api.h>
 
+#include "infra/fieldid.h"   // rw::fieldChild / NodeField — the field id resolved once per grammar, not per node
+
 namespace rw
 {
 
@@ -71,7 +73,7 @@ inline PreprocLiteral preprocLiteralBranch( TSNode n, std::string_view src ) noe
     {
         return PreprocLiteral::Undecided;
     }
-    const TSNode cond = ts_node_child_by_field_name( n, "condition", 9 );
+    const TSNode cond = fieldChild( n, NodeField::Condition );
     if( ts_node_is_null( cond ) || !preprocNodeKindIs( cond, "number_literal" ) )
     {
         return PreprocLiteral::Undecided;
@@ -117,8 +119,8 @@ inline std::vector<PreprocDeadRange> collectPreprocDeadRanges( TSNode root, std:
         const PreprocLiteral lit = preprocLiteralBranch( n, src );
         if( lit != PreprocLiteral::Undecided )
         {
-            const TSNode      cond = ts_node_child_by_field_name( n, "condition", 9 );
-            const TSNode      alt  = ts_node_child_by_field_name( n, "alternative", 11 );
+            const TSNode      cond = fieldChild( n, NodeField::Condition );
+            const TSNode      alt  = fieldChild( n, NodeField::Alternative );
             const std::uint32_t nEnd = ts_node_end_byte( n );
             if( lit == PreprocLiteral::BodyDead )
             {

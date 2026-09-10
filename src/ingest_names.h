@@ -223,7 +223,7 @@ inline TSNode innermostQualifiedName( TSNode n ) noexcept
         {
             break;
         }
-        const TSNode inner = ts_node_child_by_field_name( n, "name", 4 );
+        const TSNode inner = fieldChild( n, NodeField::Name );
         if( ts_node_is_null( inner ) )
         {
             break;
@@ -296,7 +296,7 @@ inline std::string qualifierOf( TSNode nameNode, std::string_view src )
     {
         return {}; // error-recovery artefact, not a written qualification
     }
-    const TSNode scope = ts_node_child_by_field_name( parent, "scope", 5 );
+    const TSNode scope = fieldChild( parent, NodeField::Scope );
     if( ts_node_is_null( scope ) )
     {
         return {};
@@ -379,7 +379,7 @@ inline std::string rustEnclosingScopeOf( TSNode node, std::string_view src, bool
 
         // impl carries the implementor under `type:`; trait/mod carry their own `name:`. Anonymous/ill-formed
         // (empty text) yields "" — no usable scope — which is the same degrade as "no owner above".
-        const TSNode owner = isImpl ? ts_node_child_by_field_name( p, "type", 4 ) : ts_node_child_by_field_name( p, "name", 4 );
+        const TSNode owner = isImpl ? fieldChild( p, NodeField::Type ) : fieldChild( p, NodeField::Name );
         // V3 L-1: a container is not its OWN scope. `mod util { … }`'s definition node IS that `name:` child, so
         // the first ancestor found is the module itself and `util` would be published as `util::util` (likewise
         // `Shape::Shape`) — a self-scope in the canonical-id space, which is what ids are keyed on. Keep walking
@@ -408,7 +408,7 @@ inline std::string rustQualifierOf( TSNode nameNode, std::string_view src )
         return {};
     }
 
-    std::string qualifier = rustPathSegment( nodeTextOf( ts_node_child_by_field_name( parent, "path", 4 ), src ) );
+    std::string qualifier = rustPathSegment( nodeTextOf( fieldChild( parent, NodeField::Path ), src ) );
     // `Self::helper()` — resolve `Self` to the ENCLOSING impl/trait type at EXTRACTION time, so the ref keys
     // the same canonical entry the def side wrote (`Widget::helper`). Precedent: captureRustImpls already
     // reads an impl header's `type:` for inherit refs. Falls back to bare-name when there is no impl above.
@@ -432,7 +432,7 @@ inline std::string enclosingScopeOf( TSNode node, std::string_view src )
                                 || kindIs( t, "namespace_definition" ) || kindIs( t, "class_definition" );
         if( scopeOwner )
         {
-            const TSNode nm = ts_node_child_by_field_name( p, "name", 4 );
+            const TSNode nm = fieldChild( p, NodeField::Name );
             if( ts_node_is_null( nm ) )
             {
                 return {}; // anonymous → no usable scope
@@ -466,7 +466,7 @@ inline std::string rubyEnclosingScopeOf( TSNode nameNode, std::string_view src )
         {
             continue;
         }
-        TSNode nm = ts_node_child_by_field_name( p, "name", 4 );
+        TSNode nm = fieldChild( p, NodeField::Name );
         if( ts_node_is_null( nm ) )
         {
             return {};   // anonymous → no usable scope (the grammar always names these; guard, don't assert)
@@ -477,7 +477,7 @@ inline std::string rubyEnclosingScopeOf( TSNode nameNode, std::string_view src )
         }
         if( kindIs( ts_node_type( nm ), "scope_resolution" ) )
         {
-            const TSNode last = ts_node_child_by_field_name( nm, "name", 4 );
+            const TSNode last = fieldChild( nm, NodeField::Name );
             if( !ts_node_is_null( last ) )
             {
                 nm = last;
@@ -511,7 +511,7 @@ inline bool rubyCallIsAssignmentTarget( TSNode nameNode ) noexcept
     {
         return false;
     }
-    const TSNode left = ts_node_child_by_field_name( assign, "left", 4 );
+    const TSNode left = fieldChild( assign, NodeField::Left );
     return !ts_node_is_null( left ) && ts_node_eq( left, call );
 }
 
@@ -680,7 +680,7 @@ inline bool csharpNodeCarriesTestAttr( TSNode n, std::string_view src ) noexcept
         {
             const TSNode attr = ts_node_child( list, ai );
             if(    kindIs( ts_node_type( attr ), "attribute" )
-                && csharpAttrIsTestMarker( nodeTextOf( ts_node_child_by_field_name( attr, "name", 4 ), src ) ) )
+                && csharpAttrIsTestMarker( nodeTextOf( fieldChild( attr, NodeField::Name ), src ) ) )
             {
                 return true;
             }
@@ -702,7 +702,7 @@ inline bool pythonInFileTestScope( TSNode defNode, std::string_view src ) noexce
         {
             continue;
         }
-        if( pyTestClassName( nodeTextOf( ts_node_child_by_field_name( n, "name", 4 ), src ) ) )
+        if( pyTestClassName( nodeTextOf( fieldChild( n, NodeField::Name ), src ) ) )
         {
             return true;    // a member of a Test* class, at any nesting depth
         }
@@ -712,7 +712,7 @@ inline bool pythonInFileTestScope( TSNode defNode, std::string_view src ) noexce
     {
         return false;
     }
-    return nodeTextOf( ts_node_child_by_field_name( defNode, "name", 4 ), src ).rfind( "test_", 0 ) == 0;
+    return nodeTextOf( fieldChild( defNode, NodeField::Name ), src ).rfind( "test_", 0 ) == 0;
 }
 
 // Is `pred` true of `node` itself or of any of its ancestors? Three of the four in-file test rules ask
@@ -756,7 +756,7 @@ inline bool jsInFileTestScope( TSNode defNode, std::string_view src ) noexcept
                                            {
                                                return false;
                                            }
-                                           const std::string_view callee = nodeTextOf( ts_node_child_by_field_name( n, "function", 8 ), src );
+                                           const std::string_view callee = nodeTextOf( fieldChild( n, NodeField::Function ), src );
                                            return callee == "describe" || callee == "it" || callee == "test";
                                        } );
 }
@@ -857,7 +857,7 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
     {
         return {};
     }
-    const std::string_view callee = nodeTextOf( ts_node_child_by_field_name( call, "function", 8 ), src );
+    const std::string_view callee = nodeTextOf( fieldChild( call, NodeField::Function ), src );
     bool isKnownMacro = false;
     for( const std::string_view macroName : kTestBlockMacroNames )
     {
@@ -873,7 +873,7 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
     }
 
     // the FIRST string literal among the arguments is the title
-    const TSNode args = ts_node_child_by_field_name( call, "arguments", 9 );
+    const TSNode args = fieldChild( call, NodeField::Arguments );
     const std::uint32_t argCount = ts_node_is_null( args ) ? 0u : ts_node_named_child_count( args );
     for( std::uint32_t argIx = 0; argIx < argCount; ++argIx )
     {
@@ -1091,7 +1091,7 @@ inline bool fieldCaptureKept( Lang lang, TSNode nameNode, TSNode roleNode, std::
     {
         return false;
     }
-    const TSNode object = ts_node_child_by_field_name( parent, "object", 6 );
+    const TSNode object = fieldChild( parent, NodeField::Object );
     if( ts_node_is_null( object ) || !kindIs( ts_node_type( object ), "identifier" ) || nodeTextOf( object, src ) != "self" )
     {
         return false;   // `obj.x = …` / `cls.x = …` — not an instance attribute of the enclosing class
@@ -1282,7 +1282,7 @@ inline bool isCjsExportTarget( TSNode nameNode, std::string_view src ) noexcept
     {
         return false;
     }
-    const TSNode obj = ts_node_child_by_field_name( member, "object", 6 );
+    const TSNode obj = fieldChild( member, NodeField::Object );
     if( ts_node_is_null( obj ) )
     {
         return false;
@@ -1294,10 +1294,10 @@ inline bool isCjsExportTarget( TSNode nameNode, std::string_view src ) noexcept
     }
     if( kindIs( objType, "member_expression" ) )
     {
-        const TSNode oo = ts_node_child_by_field_name( obj, "object", 6 );
+        const TSNode oo = fieldChild( obj, NodeField::Object );
         return kindIs( ts_node_type( oo ), "identifier" )
             && nodeTextOf( oo, src ) == "module"
-            && nodeTextOf( ts_node_child_by_field_name( obj, "property", 8 ), src ) == "exports";
+            && nodeTextOf( fieldChild( obj, NodeField::Property ), src ) == "exports";
     }
     return false;
 }
@@ -1312,12 +1312,12 @@ inline bool isPrototypeMemberTarget( TSNode nameNode, std::string_view src ) noe
     {
         return false;
     }
-    const TSNode obj = ts_node_child_by_field_name( member, "object", 6 );
+    const TSNode obj = fieldChild( member, NodeField::Object );
     if( ts_node_is_null( obj ) || !kindIs( ts_node_type( obj ), "member_expression" ) )
     {
         return false;
     }
-    return nodeTextOf( ts_node_child_by_field_name( obj, "property", 8 ), src ) == "prototype";
+    return nodeTextOf( fieldChild( obj, NodeField::Property ), src ) == "prototype";
 }
 
 // Python shape round (test/pyshapecheck.sh): `NAME = value` in a class body is a definition only when
@@ -1337,7 +1337,7 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
     {
         return false;
     }
-    const TSNode bases = ts_node_child_by_field_name( cls, "superclasses", 12 );
+    const TSNode bases = fieldChild( cls, NodeField::Superclasses );
     if( ts_node_is_null( bases ) )
     {
         return false;
@@ -1348,7 +1348,7 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
         TSNode base = ts_node_named_child( bases, baseIndex );
         if( kindIs( ts_node_type( base ), "attribute" ) )                      // models.TextChoices → TextChoices
         {
-            base = ts_node_child_by_field_name( base, "attribute", 9 );
+            base = fieldChild( base, NodeField::Attribute );
             if( ts_node_is_null( base ) )
             {
                 continue;

@@ -10,10 +10,10 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 114 | 50 | 79 | **35** |
+| 115 | 51 | 79 | **36** |
 
 Plus 6 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 114 + 6 is the 120 constants this generator parses out of `src/`.
+are not counted as caps, and 115 + 6 is the 121 constants this generator parses out of `src/`.
 
 ## INDEXING or OUTPUT — which half of the answer a cap bounds
 
@@ -23,8 +23,8 @@ flag, no budget, no second call gets the answer back, and the output reads as "n
 `--detail`, a page or a follow-up call can recover the answer. The two are not the same severity
 and a single table that does not distinguish them invites fixing the cheap one first.
 
-The `class` column below carries that answer where it is known. **26 of 114 caps are classified
-(10 INDEXING, 16 OUTPUT); the remaining 88 render `—`, which means NOT YET CLASSIFIED — never
+The `class` column below carries that answer where it is known. **26 of 115 caps are classified
+(10 INDEXING, 16 OUTPUT); the remaining 89 render `—`, which means NOT YET CLASSIFIED — never
 "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
 produced the taxonomy could not touch `src/`. `test/limitstablecheck.sh` fails if a row there
@@ -214,6 +214,14 @@ Discloses: **none**
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kBlankSpellingMaxCodePoints` | `8` | 215 | — | — |
+
+### `src/infra/fieldid.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kFieldIdCapacity` | `64` | 118 | — | — |
 
 ### `src/infra/profilePmc.h`
 
@@ -493,10 +501,10 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kSliceFlowDefaultDepth` | `8` | 2094 | — | the disclosed default bound (depth= always states it) |
-| `kSliceFlowDepthMax` | `32` | 2098 | — | — |
-| `kSliceFlowDepthMin` | `1` | 2097 | — | — |
-| `kSliceRdMaxIter` | `64` | 1205 | OUTPUT | — |
+| `kSliceFlowDefaultDepth` | `8` | 2095 | — | the disclosed default bound (depth= always states it) |
+| `kSliceFlowDepthMax` | `32` | 2099 | — | — |
+| `kSliceFlowDepthMin` | `1` | 2098 | — | — |
+| `kSliceRdMaxIter` | `64` | 1206 | OUTPUT | — |
 
 ### `src/slicediff.h`
 

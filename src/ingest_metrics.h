@@ -123,8 +123,8 @@ inline bool cc_isNestingOnly( const char* t ) noexcept   // raises nesting, scor
 // preprocessor include readers did), so it lives once, here — hoisted above the first consumer rather
 // than sitting halfway down the file where three helpers ahead of it could not reach it.
 //
-// A FIELD read is the common case: nodeFieldText( n, "operator", 8, src ) is the whole of what most
-// callers want, and ts_node_child_by_field_name's length argument is the one thing easy to get wrong.
+// A FIELD read is the common case: nodeFieldText( n, NodeField::Operator, src ) is the whole of what most
+// callers want, and infra/fieldid.h is what keeps the field's id out of the per-node path (see it for why).
 inline std::string_view nodeTextOf( TSNode node, std::string_view src ) noexcept
 {
     if( ts_node_is_null( node ) )
@@ -135,9 +135,9 @@ inline std::string_view nodeTextOf( TSNode node, std::string_view src ) noexcept
     return ( a <= b && b <= src.size() ) ? src.substr( a, b - a ) : std::string_view{};
 }
 
-inline std::string_view nodeFieldText( TSNode node, const char* field, std::uint32_t fieldLen, std::string_view src ) noexcept
+inline std::string_view nodeFieldText( TSNode node, NodeField field, std::string_view src ) noexcept
 {
-    return nodeTextOf( ts_node_child_by_field_name( node, field, fieldLen ), src );
+    return nodeTextOf( fieldChild( node, field ), src );
 }
 
 // The written spelling of a node's `operator:` field, or "" when it has none / the span is out of range.
@@ -147,7 +147,7 @@ inline std::string_view nodeFieldText( TSNode node, const char* field, std::uint
 // hand-copied spans — a duplication --quality-delta scored the moment the second one grew a case.
 inline std::string_view cc_operatorText( TSNode n, std::string_view src ) noexcept
 {
-    return nodeFieldText( n, "operator", 8, src );
+    return nodeFieldText( n, NodeField::Operator, src );
 }
 
 // the boolean-operator spelling of a node, or "" if it isn't one (&&/|| for C-family, and/or for Python)
@@ -1049,7 +1049,7 @@ inline void cc_walk( TSNode start, std::uint32_t startNesting, std::string_view 
 
         // cyclomatic (flat decision count) accumulated in the SAME DFS as cognitive — one walk, both metrics.
         // Elixir controls are ordinary calls whose target text supplies the keyword.
-        const auto elixirKeyword = lang == Lang::Elixir ? nodeFieldText( n, "target", 6, src ) : std::string_view{};
+        const auto elixirKeyword = lang == Lang::Elixir ? nodeFieldText( n, NodeField::Target, src ) : std::string_view{};
         if( elixirKeyword == "quote" )
         {
             continue; // quoted AST is not executed control flow
@@ -1554,7 +1554,7 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
     }
 
     // find the argument container: the `arguments` field, else the first child of a known list type.
-    TSNode args = ts_node_child_by_field_name( call, "arguments", 9 );
+    TSNode args = fieldChild( call, NodeField::Arguments );
     if( ts_node_is_null( args ) )
     {
         const std::uint32_t cc = ts_node_child_count( call );
