@@ -227,7 +227,8 @@ cat > "$TMP/rc/corpus.txt" <<'CORPEOF'
 . --stub-refuse
 . --stub-unbalanced="oops
 . --stub-tmp=$RIPWIRE_CAPSWEEP_TMP
-. --stub-undefined=$CAPSWEEP_NO_SUCH_VAR
+. --stub-undefined=$RIPWIRE_CAPSWEEP_NO_SUCH_VAR
+. --stub-ok --stub-metavar='fn($A, $B, $C)'
 CORPEOF
 rc_out="$TMP/rc.out"
 # env -u, not `VAR=`: an empty binding is not the operator's normal case, and it used to resolve to the
@@ -245,7 +246,7 @@ else
     # (G) the unbalanced-quote row is UNPARSEABLE, and the rows AFTER it still ran. The second half is
     # the F1b control: `except ValueError as e` shadows run_corpus's env dict `e`, and Python deletes an
     # except-name at block end, so the obvious repair kills the NEXT row with UnboundLocalError.
-    if grep -q 'unparseable' "$rc_out" && grep -Eq '^EXECUTABILITY.*: 3/6 answered' "$rc_out"; then
+    if grep -q 'unparseable' "$rc_out" && grep -Eq '^EXECUTABILITY.*: 4/7 answered' "$rc_out"; then
         ok "(G) an unbalanced quote is recorded UNPARSEABLE and the rows after it still run"
     else
         no "(G) unparseable row not classified, or the rows after it did not run: $( grep -m1 EXECUTABILITY "$rc_out" )"
@@ -258,8 +259,8 @@ else
         no "(H) the refusing row was not recorded as a distinct state: $( grep -- '--stub-refuse' "$TMP/rc-screen.tsv" )"
     fi
     # (I) the denominator is the ANSWERING rows: 1 of 3, never 1 of 6.
-    if grep -q 'cap-sensitive: 1 of 3 answering rows' "$rc_out"; then
-        ok "(I) the split is reported over the 3 answering rows, not over all 6"
+    if grep -q 'cap-sensitive: 1 of 4 answering rows' "$rc_out"; then
+        ok "(I) the split is reported over the 4 answering rows, not over all 7"
     else
         no "(I) the split was not reported over the answering rows: $( grep -m1 'cap-sensitive' "$rc_out" )"
     fi
@@ -270,8 +271,8 @@ else
     fi
     # (J) $VARS expand from the environment the harness hands the child, and an UNDEFINED one is refused
     # rather than passed through as a literal path (that literal is what wrote 10.4 MB into the corpus).
-    if grep -q 'unexpanded: \$CAPSWEEP_NO_SUCH_VAR' "$rc_out"; then
-        ok "(J) a row naming an undefined variable is REFUSED, not run with the literal \$NAME"
+    if grep -q 'unexpanded: \$RIPWIRE_CAPSWEEP_NO_SUCH_VAR' "$rc_out"; then
+        ok "(J) an undefined variable in the HARNESS's namespace is REFUSED, not run with the literal \$NAME"
     else
         no "(J) an undefined variable was passed through as a literal — the F17 shape"
     fi
@@ -281,6 +282,19 @@ else
         no "(J) the corpus-tmp destination was not written outside the corpus: $( grep -m1 stub-tmp "$rc_out" )"
     fi
 fi
+
+    # (J) A $NAME OUTSIDE THE HARNESS'S NAMESPACE IS NOT AN ENVIRONMENT REFERENCE. The first cut of the
+    # rule above refused `--pattern='rankGraphTeleport($A, $B, $C)'` — a tree-sitter pattern whose $A/$B/$C
+    # are METAVARIABLES — as "unexpanded", turning a legitimate corpus row into a non-answer. shlex.split
+    # has already dropped the quoting by then, so single-quoted and double-quoted cannot be told apart:
+    # naming the namespace is what makes the rule decidable.
+    if grep -q 'unexpanded: \$A' "$rc_out"; then
+        no "(J) a tree-sitter metavariable was refused as an unexpanded environment variable"
+    elif awk -F'\t' '/stub-metavar/ { exit !($4 == "ok") }' "$TMP/rc-screen.tsv"; then
+        ok "(J) a \$A metavariable outside the RIPWIRE_ namespace is passed through and the row ANSWERS"
+    else
+        no "(J) the metavariable row did not answer: $( grep -- 'stub-metavar' "$TMP/rc-screen.tsv" )"
+    fi
 
 # (J) control — a destination that resolves INSIDE the corpus is refused. `--cache=`, `--export=` and
 # `--html=` all take one, and run_corpus runs with cwd=corpus, so this is the surface that put a 10.4 MB

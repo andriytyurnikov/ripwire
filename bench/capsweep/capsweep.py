@@ -70,7 +70,13 @@ import argparse, os, pathlib, re, shlex, shutil, subprocess, sys, collections
 HERE  = pathlib.Path(__file__).resolve().parent
 REPO  = HERE.parent.parent
 DECL  = re.compile(r'^(\s*inline\s+)constexpr(\s+)([\w:<>, ]*?)(\s+)(k[A-Z][A-Za-z0-9_]*)(\s*=\s*)([0-9][0-9_.eE+-]*)(\s*;)(.*)$')
-KEY   = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width')
+# Same NAME vocabulary as docs/limits_build.py, and widened on the same day for the same reason: a cap
+# whose name carries no keyword is invisible to the WHOLE instrument — not patched, not bumped, never in
+# docs/TUNING.md. kHandoffSymbolsPerFile truncated output and disclosed syms_capped="1" while appearing
+# in neither this file's census nor the register's, which is how it was raised on 2026-09-10 without
+# ever having been listed anywhere. `Per\w*File`, not `PerFile`: a filter that turns on an exact compound
+# spelling is the defect, not a smaller instance of it.
+KEY   = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width|Shown|Hits|Per\w*File')
 SHIM  = """
 // ── capsweep shim (SCRATCH BUILD ONLY — never in src/) ───────────────────────────────────────────
 // Guarded, not `#pragma once`-protected: the shim is injected into SEVERAL headers, so a translation
@@ -163,8 +169,17 @@ def answered( sizes, states, line ):
 
 VAR = re.compile(r'\$(\w+)|\$\{(\w+)\}')
 
+# The variables this harness BINDS. Everything outside this namespace is not an environment reference at
+# all and passes through untouched — `. --pattern=\'rankGraphTeleport($A, $B, $C)\'` is a tree-sitter pattern
+# whose $A/$B/$C are METAVARIABLES, and the first cut of the rule below refused that row as "unexpanded",
+# turning a legitimate measurement into a non-answer. shlex.split has already discarded the quoting by the
+# time we see the word, so single-quoted (no expansion) and double-quoted cannot be told apart here; naming
+# the namespace is what makes the rule decidable. Caught by the executability census on the re-run — the
+# census earns its keep the first time it runs.
+HARNESS_VAR = re.compile(r'^RIPWIRE_')
+
 def expandvars_from(word, env):
-    """Expand $VARS from the environment the CHILD will get — not from os.environ.
+    """Expand THIS HARNESS's $VARS from the environment the CHILD will get — not from os.environ.
 
     os.path.expandvars reads os.environ, and the harness binds RIPWIRE_CAPSWEEP_TMP in a dict it hands
     subprocess.run. With the variable unset in the operator's shell — the normal case, and the one the
@@ -173,16 +188,19 @@ def expandvars_from(word, env):
     the frozen corpus (a 10.4 MB cache blob). `--batch=$RIPWIRE_CAPSWEEP_TMP` read that blob back and
     "responded" to 103 of 108 caps: its input was the accumulated output of the run measuring it.
 
-    An unresolved variable RAISES rather than passing through as a literal. os.path.expandvars leaves it
-    alone, which is the shell's rule and exactly the behaviour that turned a variable into a path.
+    An unresolved variable in the HARNESS's own namespace RAISES rather than passing through as a literal:
+    os.path.expandvars leaves it alone, which is the shell's rule and exactly the behaviour that turned
+    $RIPWIRE_CAPSWEEP_TMP into a relative path inside the frozen corpus. A name outside that namespace is
+    not this harness's business and is left exactly as written.
     """
     missing = []
     def one(m):
         name = m.group(1) or m.group(2)
-        if name not in env:
-            missing.append(name)
-            return m.group(0)
-        return env[name]
+        if name in env:
+            return env[name]
+        if HARNESS_VAR.match(name):
+            missing.append(name)        # ours to bind, and we did not — that is the F17 shape
+        return m.group(0)               # not ours: a metavariable, a regex, someone else's literal
     out = VAR.sub(one, word)
     if missing:
         raise KeyError(', '.join(sorted(set(missing))))
