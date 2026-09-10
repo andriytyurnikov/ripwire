@@ -444,6 +444,43 @@ int main( int argc, char** argv )
     const sk::Byteset256* kSets[]     = { &setEmpty, &setFull, &setOne, &setHighOnly, &setXml };
     const char*           kSetNames[] = { "empty", "full", "one", "high", "xml" };
 
+    // E0 — Byteset256 now stores TWO derivations of the same set (bits for the SIMD table lookups, words
+    // for the scalar tail's O(1) test), both written by add(). Nothing else in the header would notice one
+    // of them going stale, so this arm reads both back for every set and every byte value.
+    std::string repFail;
+    for( std::size_t si = 0; si < 5 && repFail.empty(); ++si )
+    {
+        std::uint64_t rederived[ 4 ] = { 0, 0, 0, 0 };
+        for( unsigned b = 0; b < 256u; ++b )
+        {
+            const unsigned char c = static_cast< unsigned char >( b );
+            if( kSets[ si ]->contains( c ) )
+            {
+                rederived[ b >> 6 ] |= std::uint64_t( 1 ) << ( b & 63u );
+            }
+            if( kSets[ si ]->contains( c ) != kSets[ si ]->containsWord( c ) )
+            {
+                char msg[ 128 ];
+                std::snprintf( msg, sizeof( msg ), "set=%s byte=%02x bits=%d words=%d", kSetNames[ si ], b,
+                               int( kSets[ si ]->contains( c ) ), int( kSets[ si ]->containsWord( c ) ) );
+                repFail = msg;
+            }
+        }
+        for( int w = 0; w < 4 && repFail.empty(); ++w )
+        {
+            if( rederived[ w ] != kSets[ si ]->words[ w ] )
+            {
+                char msg[ 160 ];
+                std::snprintf( msg, sizeof( msg ), "set=%s word[%d] stored=%016llx rederived=%016llx",
+                               kSetNames[ si ], w, ( unsigned long long )kSets[ si ]->words[ w ],
+                               ( unsigned long long )rederived[ w ] );
+                repFail = msg;
+            }
+        }
+    }
+    checkf( repFail.empty(), "E0 Byteset256 carries two agreeing representations (bits vs words, 5 sets x 256 bytes)%s%s",
+            repFail.empty() ? "" : " — ", repFail.c_str() );
+
     for( int iter = 0; iter < 100000; ++iter )
     {
         const Alphabet    alpha = Alphabet( iter & 3 );
@@ -564,16 +601,19 @@ int main( int argc, char** argv )
             const std::size_t si   = std::size_t( gen.next() % 5u );
             const std::size_t gotS = sk::findByteset( buf.data(), n, *kSets[ si ] );
             const std::size_t refS = sk::findByteset_scalar( buf.data(), n, *kSets[ si ] );
+            // the ORACLE re-derives the four words from `bits` through contains(), so this third value is
+            // what stops the set's two stored representations from drifting apart unseen (2026-09-10).
+            const std::size_t oraS = sk::findByteset_oracle( buf.data(), n, *kSets[ si ] );
             std::size_t       naiS = n;
             for( std::size_t k = 0; k < n; ++k )
             {
                 if( kSets[ si ]->contains( static_cast< unsigned char >( buf[ k ] ) ) ) { naiS = k; break; }
             }
-            if( findFail.empty() && ( gotS != refS || gotS != naiS ) )
+            if( findFail.empty() && ( gotS != refS || gotS != oraS || gotS != naiS ) )
             {
-                char msg[ 192 ];
-                std::snprintf( msg, sizeof( msg ), "findByteset[%s] iter=%d got=%zu ref=%zu naive=%zu n=%zu",
-                               kSetNames[ si ], iter, gotS, refS, naiS, n );
+                char msg[ 224 ];
+                std::snprintf( msg, sizeof( msg ), "findByteset[%s] iter=%d got=%zu ref=%zu oracle=%zu naive=%zu n=%zu",
+                               kSetNames[ si ], iter, gotS, refS, oraS, naiS, n );
                 findFail = msg;
             }
         }
@@ -597,7 +637,7 @@ int main( int argc, char** argv )
             bufferCount, foldFail.empty() ? "" : " — ", foldFail.c_str() );
     checkf( eqFail.empty(), "C1 lowerFoldedEquals vector == scalar, equal and perturbed, %zu buffers%s%s",
             bufferCount, eqFail.empty() ? "" : " — ", eqFail.c_str() );
-    checkf( findFail.empty(), "D1/E1 findByte / find3 / findByteset vector == scalar == naive oracle, %zu buffers%s%s",
+    checkf( findFail.empty(), "D1/E1 findByte / find3 / findByteset vector == scalar == oracle == naive, %zu buffers%s%s",
             bufferCount, findFail.empty() ? "" : " — ", findFail.c_str() );
     checkf( tokFail.empty(), "F2 tokenizer == pre-change walker (spans + fused hashes) on %zu random buffers%s%s",
             bufferCount, tokFail.empty() ? "" : " — ", tokFail.c_str() );
@@ -661,7 +701,8 @@ int main( int argc, char** argv )
             }
             const std::size_t gotS = sk::findByteset( text.data(), text.size(), setXml );
             const std::size_t refS = sk::findByteset_scalar( text.data(), text.size(), setXml );
-            if( got3 != ref3 || got3 != nai3 || gotS != refS )
+            const std::size_t oraS = sk::findByteset_oracle( text.data(), text.size(), setXml );
+            if( got3 != ref3 || got3 != nai3 || gotS != refS || gotS != oraS )
             {
                 realFindFail = names[ fi ];
             }

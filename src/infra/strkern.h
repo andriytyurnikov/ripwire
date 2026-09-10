@@ -574,14 +574,49 @@ inline std::size_t find3( const char* p, std::size_t n, const char* needle ) noe
     return tail == n - k ? n : k + tail;
 }
 
-// A 256-bit byte set, laid out the way `sz_find_byteset` wants it: bit ( b & 7 ) of byte ( b >> 3 ). That
-// decomposition is what makes the SIMD test two table lookups — the (b >> 3) lookup fetches the set's row
-// byte, the (b & 7) lookup fetches the bit to test it with.
+// A 256-bit byte set that carries BOTH of the representations its users need, DERIVED ONCE at
+// construction — usually at compile time, since every set this repo ships is `constexpr`:
+//
+//   bits[ 32 ]   bit ( b & 7 ) of byte ( b >> 3 ). What the SIMD paths want (`sz_find_byteset`'s layout):
+//                that decomposition makes the membership test two table lookups — the (b >> 3) lookup
+//                fetches the set's row byte, the (b & 7) lookup fetches the bit to test it with.
+//   words[ 4 ]   bit ( b & 63 ) of word ( b >> 6 ). What a SCALAR loop wants: one indexed load, one
+//                variable shift, one AND per byte — and, decisively, NO per-call preamble.
+//
+// WHY THE SET CARRIES ITS OWN WORDS RATHER THAN A SCAN DERIVING THEM. The tail of a block scan is short
+// by construction (< kBlockBytes), and the hot callers of a byte-set scan are ALL tail: an escaper over a
+// 6..40-byte symbol name or path never enters a 16- or 32-byte block loop at all. A tail that re-derives
+// its set representation on entry therefore does O( 256 ) work before it looks at one byte of input.
+//
+// That is measured, not feared. Until 2026-09-10 `findByteset` ended every call in an oracle that
+// re-derived these four words from `bits` on entry; routing rw::escapeXml through it took escapeXml from
+// 4.62% to 22.46% of a warm `--top-k=100000` map, made the whole map 6-18% slower, and left the scan
+// 3.5x-7x SLOWER than the per-byte switch it replaced on 6..40-byte inputs (lane M's report, the row that
+// refused it). Deriving in `add` instead costs one extra OR per inserted byte, at construction.
+//
+// The oracle is still here, still a different derivation — it just is not the shipped tail any more. See
+// findByteset_oracle below.
 struct Byteset256
 {
-    std::uint8_t bits[ 32 ] = {};
+    std::uint8_t  bits[ 32 ] = {};    // ( b >> 3, b & 7 )  — the SIMD tables' layout
+    std::uint64_t words[ 4 ] = {};    // ( b >> 6, b & 63 ) — the scalar tail's O( 1 ) test
 
-    constexpr void add( unsigned char b ) noexcept { bits[ b >> 3 ] |= std::uint8_t( 1u << ( b & 7u ) ); }
+    constexpr void add( unsigned char b ) noexcept
+    {
+        bits[ b >> 3 ] |= std::uint8_t( 1u << ( b & 7u ) );
+#if defined( STRKERN_MUTATE )
+        // MUTATION (gate's can-go-red arm): the high half of the set never reaches `words`, so the scalar
+        // tail and the oracle disagree above 0x7F. This is the ONE mutation that is not SIMD-only, and it
+        // exists because the defect it models is not SIMD-only either: a second stored derivation of the
+        // same set can go stale silently, and E0/D1-E1 are the arms that must see it. Never define this.
+        if( b < 0x80u )
+        {
+            words[ b >> 6 ] |= std::uint64_t( 1 ) << ( b & 63u );
+        }
+#else
+        words[ b >> 6 ] |= std::uint64_t( 1 ) << ( b & 63u );
+#endif
+    }
     constexpr void addRange( unsigned char lo, unsigned char hi ) noexcept
     {
         for( unsigned b = lo; b <= unsigned( hi ); ++b )
@@ -590,11 +625,35 @@ struct Byteset256
         }
     }
     constexpr bool contains( unsigned char b ) const noexcept { return ( bits[ b >> 3 ] >> ( b & 7u ) ) & 1u; }
+    // The same question asked of the OTHER member. A caller never needs this — `contains` is the answer —
+    // but the gate does: the two representations are built by the same `add`, so an arm that reads both
+    // back is what proves they cannot drift (test/verify_strkern.cpp, "Byteset256 carries two agreeing
+    // representations").
+    constexpr bool containsWord( unsigned char b ) const noexcept { return ( words[ b >> 6 ] >> ( b & 63u ) ) & 1u; }
 };
 
-// The scalar oracle deliberately uses a DIFFERENT representation of the same set — four u64 words, tested
-// with a shift — so a bug in the (b >> 3, b & 7) packing cannot hide behind an oracle that shares it.
+// THE SHIPPED SCALAR TWIN, and the tail every vector path below falls into. One O( 1 ) bit test per byte
+// against the set's own precomputed words; no preamble, nothing derived per call. This is the function a
+// target with neither NEON nor AVX2 runs, and it is also the function a 6-byte input runs on every target.
 inline std::size_t findByteset_scalar( const char* p, std::size_t n, const Byteset256& set ) noexcept
+{
+    for( std::size_t k = 0; k < n; ++k )
+    {
+        const unsigned char c = static_cast<unsigned char>( p[ k ] );
+        if( ( set.words[ c >> 6 ] >> ( c & 63u ) ) & 1u )
+        {
+            return k;
+        }
+    }
+    return n;
+}
+
+// THE ORACLE — for the gate, and for nothing else. It answers the same question by re-deriving the four
+// words from `bits` through `contains`, i.e. through the (b >> 3, b & 7) packing, so a bug in EITHER
+// representation cannot hide behind a reference that shares it. That derivation is a 256-iteration loop
+// per call: it is why this must never be reachable from a shipped path, and the header comment above is
+// the record of what happened when it was. Not called from anywhere in src/.
+inline std::size_t findByteset_oracle( const char* p, std::size_t n, const Byteset256& set ) noexcept
 {
     std::uint64_t words[ 4 ] = { 0, 0, 0, 0 };
     for( unsigned b = 0; b < 256u; ++b )
@@ -670,6 +729,8 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
         }
     }
 #endif
+    // The tail is the scalar twin above — one bit test per byte against the set's OWN words. It is NOT
+    // the oracle: see the Byteset256 note for the 4.62% -> 22.46% that rule is written from.
     const std::size_t tail = findByteset_scalar( p + k, n - k, set );
     return tail == n - k ? n : k + tail;
 }
