@@ -150,6 +150,118 @@ else
     no "B3 silence: uncrossed fixture lifted '$( anchorFiles "$bNarrow" )' files / attribute present"
 fi
 
+# ---------------------------------------------------------------------------------------------------
+# (B') a STOP is not a CUT. The file scan stops the instant the list holds kMentionMaxFiles, so files
+# left unexamined prove nothing about whether a file the task NAMED was left out. The first cut of this
+# disclosure read the stop as the cut and said mention_files_capped="1" on answers that lifted every file
+# the task named: at exactly four matches with any later file in crawl order (B4), and whenever a later
+# mention met a list an earlier one had filled — a mention naming nothing (B6), re-naming a kept file by a
+# longer spelling (B9), or naming a symbol (B10). A false _capped is a wrong answer, not a cosmetic one: it
+# tells the caller named files are missing and sends it looking for files that do not exist.
+# B7/B8 are the other side — a full list that really does keep a named file out must still say so, on the
+# path-suffix route and on the package-dir route — so the fix cannot pass by going quiet.
+# Crossing halves read the prose note's counts and the fixture itself, never the attribute.
+# ---------------------------------------------------------------------------------------------------
+echo "-- (B') a stop is not a cut (kMentionMaxFiles)"
+mkfilefix "$TMP/b4" 4                                   # d1..d4/shared_util.py, and main.py sorts AFTER them
+bExact="$( run "$TMP/b4" --for="$B_Q" )"
+B4_HAVE="$( find "$TMP/b4" -name shared_util.py | wc -l | tr -d ' ' )"
+if [ "$( anchorFiles "$bExact" )" = "$B4_HAVE" ] && ! has 'mention_files_capped' "$bExact"; then
+    ok "B4 silence at the boundary: all $B4_HAVE matching files lifted, main.py left unexamined — no attribute"
+else
+    no "B4 silence at the boundary: $B4_HAVE matching, lifted '$( anchorFiles "$bExact" )', got '$( attr mention_files_capped "$bExact" )' — a stop was reported as a cut"
+fi
+
+mkfullfix(){ # $1 = dir: four same-basename files sort LAST, so one mention fills the list at the corpus end
+    rm -rf "$1"; local i=1
+    while [ "$i" -le 4 ]; do
+        mkdir -p "$1/z$i"
+        printf 'def helper_%s(items):\n    """Helper %s."""\n    return items\n' "$i" "$i" > "$1/z$i/shared_util.py"
+        i=$(( i + 1 ))
+    done
+    mkdir -p "$1/plugins/requests"
+    printf 'def get(url):\n    """Fetch a url."""\n    return url\n' > "$1/plugins/requests/__init__.py"
+    printf 'def write_report(rows):\n    """Write the rows out."""\n    return rows\n' > "$1/report_writer.py"
+    cat > "$1/main.py" <<'PY'
+def dispatch_records_pipeline(records):
+    """Dispatch the records through the pipeline stage."""
+    return records
+PY
+}
+FF="$TMP/bfull"; mkfullfix "$FF"
+b5="$( run "$FF" --for="$B_Q" )"
+if [ "$( anchorFiles "$b5" )" = "4" ] && ! has 'mention_files_capped' "$b5"; then
+    ok "B5 control: one mention fills the list at the last file — 4 lifted, no attribute, so B6..B8 isolate the SECOND mention"
+else
+    no "B5 control: fixture broken (lifted '$( anchorFiles "$b5" )', attribute '$( attr mention_files_capped "$b5" )')"
+fi
+b6="$( run "$FF" --for='fix the pipeline dispatch in `shared_util` and `ghost_module`' )"
+if [ "$( anchorFiles "$b6" )" = "4" ] && [ -z "$( find "$FF" -name 'ghost_module*' )" ] && ! has 'mention_files_capped' "$b6"; then
+    ok "B6 silence: a second mention naming no file meets a full list — nothing was cut, no attribute"
+else
+    no "B6 silence: a mention naming nothing was reported as a cut (lifted '$( anchorFiles "$b6" )', got '$( attr mention_files_capped "$b6" )')"
+fi
+# report_writer.py, not main.py: main.py's symbol is already the lexical #1 for this task's words, so lifting it
+# moves nothing and the anchor note (the crossing half's only reading) never prints.
+b7room="$( run "$FF" --for='fix the pipeline dispatch in `report_writer`' )"
+b7="$( run "$FF" --for='fix the pipeline dispatch in `shared_util` and `report_writer`' )"
+if [ "$( anchorFiles "$b7room" )" = "1" ] && [ "$( anchorFiles "$b7" )" = "4" ] && has 'mention_files_capped="1"' "$b7"; then
+    ok "B7 disclosure: \`report_writer\` alone lifts report_writer.py; behind a full list it is kept out — and the answer says so"
+else
+    no "B7 disclosure: a named file kept out by a full list went unsaid (alone='$( anchorFiles "$b7room" )' full='$( anchorFiles "$b7" )')"
+fi
+b8room="$( run "$FF" --for='fix the pipeline dispatch in `requests`' )"
+b8="$( run "$FF" --for='fix the pipeline dispatch in `shared_util` and `requests`' )"
+if [ "$( anchorFiles "$b8room" )" = "1" ] && [ "$( anchorFiles "$b8" )" = "4" ] && has 'mention_files_capped="1"' "$b8"; then
+    ok "B8 disclosure: \`requests\` alone lifts plugins/requests/__init__.py (package-dir route); behind a full list it is kept out — and said"
+else
+    no "B8 disclosure: a named package index kept out by a full list went unsaid (alone='$( anchorFiles "$b8room" )' full='$( anchorFiles "$b8" )')"
+fi
+
+mkdescentfix(){ # $1 = dir: the longest suffix's file sorts LAST; tools/widget_io.py answers only to the bare basename
+    rm -rf "$1"; local n
+    for n in alpha_mod beta_mod gamma_mod tools/widget_io zz/core/widget_io; do
+        mkdir -p "$( dirname "$1/$n" )"
+        printf 'def %s_fn(items):\n    """Helper."""\n    return items\n' "$( printf '%s' "$n" | tr '/' '_' )" > "$1/$n.py"
+    done
+}
+FD="$TMP/bdesc"; mkdescentfix "$FD"
+B9_FILL='fix `alpha_mod`, `beta_mod`, `gamma_mod`, zz/core/widget_io.py'
+b9alone="$( run "$FD" --for='fix src/zz/core/widget_io.py' )"
+b9bare="$( run "$FD" --for='fix `widget_io`' )"
+b9fill="$( run "$FD" --for="$B9_FILL" )"
+b9="$( run "$FD" --for="$B9_FILL and src/zz/core/widget_io.py" )"
+if [ "$( anchorFiles "$b9alone" )" = "1" ] && [ "$( anchorFiles "$b9bare" )" = "2" ] && [ "$( anchorFiles "$b9fill" )" = "4" ] \
+    && ! has 'mention_files_capped' "$b9fill"; then
+    ok "B9 crossing: the longest suffix alone names 1 file, the bare basename 2, and the fill run lifts 4 without a stop"
+else
+    no "B9 crossing: fixture broken (alone='$( anchorFiles "$b9alone" )' bare='$( anchorFiles "$b9bare" )' fill='$( anchorFiles "$b9fill" )')"
+fi
+if [ "$( anchorFiles "$b9" )" = "4" ] && ! has 'mention_files_capped' "$b9"; then
+    ok "B9 silence: re-naming a kept file by a longer spelling cuts nothing — the shorter suffix reaching tools/widget_io.py is never consulted"
+else
+    no "B9 silence: got '$( attr mention_files_capped "$b9" )' — a suffix an uncapped scan never consults was read as a cut"
+fi
+
+FS="$TMP/bsym"; mkfullfix "$FS"
+mkdir -p "$FS/Gadget/emit_row"
+printf 'def emit_pkg(items):\n    """Package."""\n    return items\n' > "$FS/Gadget/emit_row/__init__.py"
+b10dir="$( run "$FS" --for='rework `Gadget.emit_row`' )"          # no class yet: the package-dir route lifts the index
+mkdir -p "$FS/lib"
+printf 'class Gadget:\n    def emit_row(self):\n        return 1\n' > "$FS/lib/gadget.py"
+b10room="$( run "$FS" --for='rework `Gadget.emit_row`' )"         # the class exists: the mention names a SYMBOL
+b10="$( run "$FS" --for='fix the pipeline dispatch in `shared_util` and `Gadget.emit_row`' )"
+if [ "$( anchorFiles "$b10dir" )" = "1" ] && [ "$( anchorFiles "$b10room" )" = "0" ] && [ -n "$( anchorSyms "$b10room" )" ]; then
+    ok "B10 crossing: with no class the dotted mention lifts Gadget/emit_row/__init__.py; once Gadget.emit_row exists it names the symbol instead"
+else
+    no "B10 crossing: fixture broken (dir-route='$( anchorFiles "$b10dir" )' sym-route files='$( anchorFiles "$b10room" )' syms='$( anchorSyms "$b10room" )')"
+fi
+if [ "$( anchorFiles "$b10" )" = "4" ] && ! has 'mention_files_capped' "$b10"; then
+    ok "B10 silence: a mention that names a symbol meets a full list — no file was named, so none was cut"
+else
+    no "B10 silence: got '$( attr mention_files_capped "$b10" )' — a symbol mention was read as a cut file"
+fi
+
 # ===================================================================================================
 # (C) kMentionMaxDirectSymbols=8 — how many Scope.name matches the anchor may lift
 # ===================================================================================================

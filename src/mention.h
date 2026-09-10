@@ -147,7 +147,9 @@ inline void noteCap( InfoT* outInfo, const char* cappedAttr, const char* totalAt
 // HOW OFTEN THE THREE ACTUALLY FIRE, measured over 39 realistic --for tasks against this tool's own tree
 // (2026-09-10, the cap-disclosure round): kMentionMaxRawTokens 1/39, kMentionMaxFiles 3/39, and
 // kMentionMaxDirectSymbols 0/39. All three firings came from the same shape — a task that pastes SEVERAL
-// paths, which is exactly the multi-file localization case B8 exists for. The zero is a property of this
+// paths, which is exactly the multi-file localization case B8 exists for. The kMentionMaxFiles 3/39 is an
+// UPPER BOUND: it was read off the first cut of the flag, which reported a scan's STOP as a cut on exactly
+// that multi-path shape (see namesFileNotKept), and the 39-task list was not kept, so it cannot be re-derived. The zero is a property of this
 // corpus, not of the cap: it takes more than eight definitions of one Scope.name for the cap to bite, and
 // a C++ tree with unique method names has none. The class is real and gated on a fixture that does
 // (test/mentioncapcheck.sh arm C), and the attribute costs nothing on the runs where it stays silent, so
@@ -361,12 +363,10 @@ inline bool dirSuffixMatches( std::string_view path, const std::vector<std::stri
 // basename shares no token with the mention, so the path-suffix match can never reach it. No index
 // file → no lift; precision over recall by design.
 // (r2 head-to-head bucket R1: micropython-lib-947, gold requests/__init__.py at rank 35.)
-inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m, std::vector<std::uint32_t>& mentionedFiles,
-                                   bool& outFilesCapped )   // set when kMentionMaxFiles, not the corpus, ended the scan
+inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m, std::vector<std::uint32_t>& mentionedFiles )
 {
     const std::size_t fileCount = ing.files.size();
-    std::uint32_t     f         = 0;   // survives the loop so the STOP REASON can be read off it below
-    for( ; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
+    for( std::uint32_t f = 0; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
     {
         if( !isIndexBaseName( baseNameOf( ing.files[f] ) ) || !dirSuffixMatches( ing.files[f], m.segments ) )
         {
@@ -377,9 +377,77 @@ inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m,
             mentionedFiles.push_back( f );
         }
     }
-    // The loop is UNCHANGED — same condition, same break point, same kept set. All that is new is reading
-    // WHY it stopped: files left unexamined means kMentionMaxFiles ended the scan, not the corpus.
-    outFilesCapped |= f < fileCount;
+}
+
+// Did kMentionMaxFiles CUT a file this mention names, or only STOP a scan? The anchor's scans stop the instant the
+// list is full, so files left unexamined prove nothing: at exactly kMentionMaxFiles matches, or when an earlier
+// mention already filled the list, the corpus tail may hold no file the mention names at all. Reading the stop as
+// the cut said mention_files_capped="1" on answers that lifted everything the task named (mentioncapcheck arm B').
+// So the verdict comes from what the mention NAMES, resolved the way an uncapped scan resolves it: (a) the longest
+// path suffix that matches ANY file wins and ends resolution; (b) a Scope.name the corpus defines names a symbol,
+// not a file; (c) otherwise the package-dir index files. True when that set holds a file `kept` does not.
+// Read-only — the kept set, every route and every score are exactly what the capped pass decided. (b) ends
+// resolution on the symbol's EXISTENCE, not on whether the symbol cap had room: a file verdict must not move
+// with a different cap.
+inline bool definesScopeName( const IngestResult& ing, const std::string& scope, const std::string& name ) noexcept
+{
+    return std::any_of( ing.symbols.begin(), ing.symbols.end(), [ & ]( const Symbol& s ) { return s.name == name && s.scope == scope; } );
+}
+
+inline bool namesUnkeptPackageIndex( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
+{
+    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
+    {
+        if( isIndexBaseName( baseNameOf( ing.files[f] ) ) && dirSuffixMatches( ing.files[f], m.segments )
+            && std::find( kept.begin(), kept.end(), f ) == kept.end() )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool namesFileNotKept( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
+{
+    const std::size_t fileCount = ing.files.size();
+    for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1; --suffixLen )
+    {
+        const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
+        bool                           named = false;
+        for( std::uint32_t f = 0; f < fileCount; ++f )
+        {
+            if( !pathSuffixMatches( ing.files[f], suffix ) )
+            {
+                continue;
+            }
+            if( std::find( kept.begin(), kept.end(), f ) == kept.end() )
+            {
+                return true;
+            }
+            named = true;
+        }
+        if( named )
+        {
+            return false;
+        }
+    }
+    if( !m.isPath && m.segments.size() == 2 && definesScopeName( ing, m.segments[0], m.segments[1] ) )
+    {
+        return false;
+    }
+    return namesUnkeptPackageIndex( ing, m, kept );
+}
+
+// The file-cap verdict for the whole task: did kMentionMaxFiles keep out a file ANY mention names? A cut needs a full
+// list, so the common anchored query pays one size test. A mention resolved while the list still had room kept
+// everything it named and answers false, so asking every mention is exact — no bookkeeping of which one filled it.
+inline bool mentionFilesCut( const IngestResult& ing, const std::vector<RawMention>& raw, const std::vector<std::uint32_t>& kept )
+{
+    if( kept.size() < kMentionMaxFiles )
+    {
+        return false;
+    }
+    return std::any_of( raw.begin(), raw.end(), [ & ]( const RawMention& m ) { return namesFileNotKept( ing, m, kept ); } );
 }
 
 // extract candidate mentions from the task text: '/'-joined path tokens, dot-joined identifier chains,
@@ -530,7 +598,6 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
     std::vector<std::uint32_t> mentionedFiles;                       // <= kMentionMaxFiles, text order
     std::vector<NodeId>        directSymbols;                        // deduped, id asc at the end
     const std::size_t          fileCount = ing.files.size();
-    bool                       filesCapped       = false;            // kMentionMaxFiles ended a scan the corpus had not
     std::uint32_t              directSymbolTotal = 0;                // Scope.name matches found, cap or no cap
     for( const RawMention& m : raw )
     {
@@ -545,8 +612,7 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
         for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1 && !matchedFile; --suffixLen )
         {
             const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
-            std::uint32_t                  f = 0;   // survives the loop so the STOP REASON can be read off it
-            for( ; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
+            for( std::uint32_t f = 0; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
             {
                 if( !pathSuffixMatches( ing.files[f], suffix ) )
                 {
@@ -558,11 +624,6 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
                 }
                 matchedFile = true;
             }
-            // The loop is UNCHANGED — same condition, same break point, so the kept set, `matchedFile` and
-            // every score stay byte-identical; the only new thing is reading WHY it stopped. FACT, no total:
-            // counting what this scan never reached means running it unbounded, and that WOULD move
-            // `matchedFile` (a full list leaves it false and routes the mention to symbols instead).
-            filesCapped |= f < fileCount;
         }
 
         // (b) scoped-symbol match for 2-segment dotted mentions (Scope.name — `DTypeSchema.validate`):
@@ -593,10 +654,10 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
         // (c) package-directory match — see liftPackageDirMention.
         if( !matchedFile && !matchedSymbol )
         {
-            liftPackageDirMention( ing, m, mentionedFiles, filesCapped );
+            liftPackageDirMention( ing, m, mentionedFiles );
         }
     }
-    noteCap( outInfo, "mention_files_capped", nullptr, filesCapped, 0 );
+    noteCap( outInfo, "mention_files_capped", nullptr, mentionFilesCut( ing, raw, mentionedFiles ), 0 );   // a STOP is not a CUT
     noteCap( outInfo, "mention_syms_capped", "mention_syms_total", directSymbolTotal > kMentionMaxDirectSymbols, directSymbolTotal );
     if( mentionedFiles.empty() && directSymbols.empty() )
     {

@@ -305,13 +305,13 @@ Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`,
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 698 | INDEXING | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 699 | INDEXING | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 700 | INDEXING | global cap — bounds token cost regardless of fan-out |
-| `kMentionMaxDirectSymbols` | `8` | 158 | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
-| `kMentionMaxFiles` | `4` | 156 | INDEXING | strongest evidence only: files named first in the text |
-| `kMentionMaxRawTokens` | `16` | 155 | INDEXING | extraction cap: first N candidate mention tokens, text order |
-| `kMentionMaxSymbolsPerFile` | `3` | 157 | INDEXING | per mentioned file: its top symbols by (lens score desc, id asc) |
+| `kDocMentionMaxAnchors` | `8` | 759 | INDEXING | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 760 | INDEXING | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 761 | INDEXING | global cap — bounds token cost regardless of fan-out |
+| `kMentionMaxDirectSymbols` | `8` | 160 | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
+| `kMentionMaxFiles` | `4` | 158 | INDEXING | strongest evidence only: files named first in the text |
+| `kMentionMaxRawTokens` | `16` | 157 | INDEXING | extraction cap: first N candidate mention tokens, text order |
+| `kMentionMaxSymbolsPerFile` | `3` | 159 | INDEXING | per mentioned file: its top symbols by (lens score desc, id asc) |
 
 ### `src/model.h`
 
