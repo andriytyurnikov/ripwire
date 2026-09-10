@@ -59,8 +59,8 @@ Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `ro
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kConnectRadiusMax` | `12` | 2764 | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
-| `kIntFlagMax` | `1000000000` | 2763 | parsePosInt/parseNonNegInt's own overflow ceiling |
+| `kConnectRadiusMax` | `12` | 3085 | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
+| `kIntFlagMax` | `1000000000` | 3084 | parsePosInt/parseNonNegInt's own overflow ceiling |
 | `kPageValueMax` | `1000000000` | 591 | — |
 
 ### `src/commentcoherence.h`
