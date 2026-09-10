@@ -1504,7 +1504,12 @@ std::optional<int> runVerify( const MainDispatch& d )
         const std::vector<GrepHit> hits = grepEnrich( ing, std::span<const GrepRawHit>( inFile ).subspan( w.begin, w.end - w.begin ) );
         for( const GrepHit& h : hits )
         {
-            rw::emitTo( stdout, "<hit p=\"{}:{}\" in=\"{}\"><m><![CDATA[", ex( verPathRel( h.fileId ) ).c_str(), h.line, ex( h.enclosing ).c_str() );
+            rw::emitTo( stdout, "<hit p=\"{}:{}\" in=\"{}\"", ex( verPathRel( h.fileId ) ).c_str(), h.line, ex( h.enclosing ).c_str() );
+            if( h.lineBytes != 0 )   // the 512 B matched-line cut, disclosed here as on the grep row
+            {
+                rw::emitTo( stdout, " line_bytes=\"{}\"", h.lineBytes );
+            }
+            rw::emitRaw( stdout, "><m><![CDATA[" );
             std::string safe;
             appendCdataSafe( h.text, safe );
             std::fwrite( safe.data(), 1, safe.size(), stdout );
@@ -1567,7 +1572,12 @@ std::optional<int> runVerify( const MainDispatch& d )
             const std::vector<GrepHit> hits = grepEnrich( ing, std::span<const GrepRawHit>( inFile ).subspan( w.begin, w.end - w.begin ) );
             for( const GrepHit& h : hits )
             {
-                rw::emitTo( stdout, "<hit p=\"{}:{}\" in=\"{}\"><m><![CDATA[", ex( verPathRel( h.fileId ) ).c_str(), h.line, ex( h.enclosing ).c_str() );
+                rw::emitTo( stdout, "<hit p=\"{}:{}\" in=\"{}\"", ex( verPathRel( h.fileId ) ).c_str(), h.line, ex( h.enclosing ).c_str() );
+            if( h.lineBytes != 0 )   // the 512 B matched-line cut, disclosed here as on the grep row
+            {
+                rw::emitTo( stdout, " line_bytes=\"{}\"", h.lineBytes );
+            }
+            rw::emitRaw( stdout, "><m><![CDATA[" );
                 std::string safe;
                 appendCdataSafe( h.text, safe );
                 std::fwrite( safe.data(), 1, safe.size(), stdout );

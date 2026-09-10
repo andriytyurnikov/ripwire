@@ -239,7 +239,16 @@ void emitGrepUnindexed( const std::vector<rw::GrepAuxHit>& hits, const rw::PageW
             const GrepAuxHit& h = hits[j];
             std::string        safe;
             appendCdataSafe( h.text, safe );
-            rw::emitTo( stdout, "<hit l=\"{}\"><![CDATA[", h.line );   // P12 (L7): no <m> wrapper here either
+            // P12 (L7): no <m> wrapper here either. line_bytes= is the indexed row's own matched-line
+            // disclosure, restated on this list because it is served by the SAME 512 B cut.
+            if( h.lineBytes != 0 )
+            {
+                rw::emitTo( stdout, "<hit l=\"{}\" line_bytes=\"{}\"><![CDATA[", h.line, h.lineBytes );
+            }
+            else
+            {
+                rw::emitTo( stdout, "<hit l=\"{}\"><![CDATA[", h.line );
+            }
             std::fwrite( safe.data(), 1, safe.size(), stdout );
             rw::emitTo( stdout, "]]></hit>" );
         }
@@ -670,19 +679,7 @@ int emitGrepReport( const rw::Config& cfg, const rw::IngestResult& ing, const rw
     }
     else
     {
-    rw::emitTo( stdout, "<!-- ripwire grep: parallel literal/regex scan; hits GROUP by file under <f p=\"…\">, each <hit> carrying its LINE "
-                 "(l=), its matched text as the hit's own CDATA and enclosing symbol (in=, a NAME here; the same spelling is a fan-in COUNT in for/pack-task/exemplar; "
-                 "ABSENT (never an empty in= value) when no symbol encloses the hit, which is NOT the same claim as file scope — and "
-                 "on a file row carrying parse_degraded=\"1\" it is NO CLAIM AT ALL: that file's parse holds ERROR/MISSING nodes "
-                 "(the skipped verb itemizes err=/err_ratio=), symbols there may be unextracted, so read in= absence inside it as "
-                 "UNKNOWN, not as file scope; absence of parse_degraded= on a row means the parse was clean, except that a file the "
-                 "ingest never parsed at all — doc-format, binary-sniffed, unreadable — is also unmarked, the skipped verb's "
-                 "unmeasured class). "
-                 "root= on the root element is the crawl root every <f p=…> is now RELATIVE to (single-root runs only; absent ⇒ p= is the "
-                 "path ingest itself used, unchanged). ORDER: SOURCE files before test/bench files before docs, then path and line. "
-                 "shown=/capped= = rows printed vs found (a count of underlying HITS, the same unit hits= uses, not of printed <hit> "
-                 "elements); hits_capped=\"1\" ⇒ hits= is a FLOOR (collection budget reached) and the root then also carries "
-                 "counts_floor=\"1\" and capped=\"1\" — rows exist that no page holds. " );
+    rw::emitRaw( stdout, "<!-- ripwire grep: parallel literal/regex scan; hits GROUP by file under <f p=\"…\">, each <hit> carrying its LINE (l=), its matched text as the hit's own CDATA (line_bytes= rides a row whose line was too long to print whole and gives that WHOLE line's byte length — absent means the CDATA IS the whole line) and enclosing symbol (in=, a NAME here; the same spelling is a fan-in COUNT in for/pack-task/exemplar; ABSENT (never an empty in= value) when no symbol encloses the hit, which is NOT the same claim as file scope — and on a file row carrying parse_degraded=\"1\" it is NO CLAIM AT ALL: that file's parse holds ERROR/MISSING nodes (the skipped verb itemizes err=/err_ratio=), symbols there may be unextracted, so read in= absence inside it as UNKNOWN, not as file scope; absence of parse_degraded= on a row means the parse was clean, except that a file the ingest never parsed at all — doc-format, binary-sniffed, unreadable — is also unmarked, the skipped verb's unmeasured class). root= on the root element is the crawl root every <f p=…> is now RELATIVE to (single-root runs only; absent ⇒ p= is the path ingest itself used, unchanged). ORDER: SOURCE files before test/bench files before docs, then path and line. shown=/capped= = rows printed vs found (a count of underlying HITS, the same unit hits= uses, not of printed <hit> elements); hits_capped=\"1\" ⇒ hits= is a FLOOR (collection budget reached) and the root then also carries counts_floor=\"1\" and capped=\"1\" — rows exist that no page holds. " );
     // G3 (2026-08-15 harvest): terms=/scope=/terms_suppressed= appear ONLY when the run passed and/not —
     // deliberately no literal "--and"/"--not" substring (illegal "--" digraph inside an XML comment; spelled
     // without the leading dashes, matching this legend's own convention) — and so does the PROSE defining
@@ -841,6 +838,10 @@ int emitGrepReport( const rw::Config& cfg, const rw::IngestResult& ing, const rw
             if( !h.enclosing.empty() )                // in= honesty: ABSENT means no enclosing symbol, never in=""
             {
                 rw::emitTo( stdout, " in=\"{}\"", ex( h.enclosing ).c_str() );
+            }
+            if( h.lineBytes != 0 )                    // the matched-line cut, disclosed: absent = the whole line is here
+            {
+                rw::emitTo( stdout, " line_bytes=\"{}\"", h.lineBytes );
             }
             if( !c.more.empty() )
             {
