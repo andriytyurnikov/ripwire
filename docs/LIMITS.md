@@ -448,10 +448,10 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kSliceFlowDefaultDepth` | `8` | 2093 | the disclosed default bound (depth= always states it) |
-| `kSliceFlowDepthMax` | `32` | 2097 | — |
-| `kSliceFlowDepthMin` | `1` | 2096 | — |
-| `kSliceRdMaxIter` | `64` | 1204 | — |
+| `kSliceFlowDefaultDepth` | `8` | 2094 | the disclosed default bound (depth= always states it) |
+| `kSliceFlowDepthMax` | `32` | 2098 | — |
+| `kSliceFlowDepthMin` | `1` | 2097 | — |
+| `kSliceRdMaxIter` | `64` | 1205 | — |
 
 ### `src/slicediff.h`
 
