@@ -8,6 +8,7 @@
 //        → rank:  personalized PageRank over the CSR
 //        → serialize: top-K symbols (by rank) → minified XML, grouped by file.
 
+#include "infra/profileScope.h"
 #include "smallvec.h"   // rw::SmallVec — THE ONE ALIAS; the per-key span lists and per-file id buckets below
 
 #include <algorithm>   // std::sort — symbolsByFile below
@@ -1160,15 +1161,21 @@ inline bool shadowSuppressedSite( const Reference& r, const ShadowEvidence& ev, 
     {
         return false;   // a receiver- or scope-qualified name can never resolve to a plain local
     }
-    if( ev.defNames.find( r.calleeName ) == ev.defNames.end() )
-    {
-        return false;   // no indexed symbol carries the name — nothing to falsely attribute to
-    }
+    // ORDER IS A COST DECISION, not a semantic one: all four guards are pure predicates ANDed together, so
+    // any order gives the same verdict — but they are not equally selective. `varSpans` is keyed on
+    // "<callingSymbol>#<name>" and hits only when THIS caller declares a local of exactly this name (rare);
+    // `defNames` hits whenever ANY indexed symbol anywhere carries the name (common). Testing the common one
+    // first spent a second string hash on nearly every reference in the corpus to learn nothing. The
+    // selective test now runs first, and the name-collision gate is asked only of the sites that got past it.
     buildShadowKey( key, r.fromSymbol, r.calleeName );
     const auto it = ev.varSpans.find( key );
     if( it == ev.varSpans.end() || ev.fnBindKeys.find( key ) != ev.fnBindKeys.end() )
     {
         return false;   // no declared local — or a fn-binding var, whose references must survive
+    }
+    if( ev.defNames.find( r.calleeName ) == ev.defNames.end() )
+    {
+        return false;   // no indexed symbol carries the name — nothing to falsely attribute to
     }
     for( const auto& [ spanStart, spanEnd ] : it->second )   // VarSpan is an aggregate — the binding reads as before
     {
@@ -1182,6 +1189,7 @@ inline bool shadowSuppressedSite( const Reference& r, const ShadowEvidence& ev, 
 
 inline void suppressShadowedReferences( IngestResult& ing )
 {
+    PROFILE_SCOPE_DESCRIBE( "model/shadow: total" );
     ShadowEvidence ev;
     std::string    key;
     for( const Binding& b : ing.bindings )
@@ -1212,11 +1220,17 @@ inline void suppressShadowedReferences( IngestResult& ing )
     {
         return;   // VarDecl-free corpus (no captured C++/ObjC local declarations): byte-identical output
     }
-    for( const Symbol& s : ing.symbols )   // the collision gate: some indexed symbol must carry the name
     {
-        ev.defNames.try_emplace( s.name, 1 );
+        PROFILE_SCOPE_DESCRIBE( "model/shadow: defNames set (one hash insert per symbol)" );
+        for( const Symbol& s : ing.symbols )   // the collision gate: some indexed symbol must carry the name
+        {
+            ev.defNames.try_emplace( s.name, 1 );
+        }
     }
-    std::erase_if( ing.references, [ & ]( const Reference& r ) { return shadowSuppressedSite( r, ev, key ); } );
+    {
+        PROFILE_SCOPE_DESCRIBE( "model/shadow: erase_if over references" );
+        std::erase_if( ing.references, [ & ]( const Reference& r ) { return shadowSuppressedSite( r, ev, key ); } );
+    }
 }
 
 // ONE file's symbol-id bucket, and the whole index. Named so the ten independent reimplementations of this
