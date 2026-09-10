@@ -1,10 +1,10 @@
 ---
 name: ripwire-quality-bar
 description: >
-  Code QUALITY of what YOU just wrote, before you commit or say 'done': --quality-delta reports only
-  what got WORSE across 10 kinds and exits non-zero on new debt; then which restructuring a measured
-  shape (humps/deep, a tangle) calls for. Merge safety → change-check. Even a single-line leaf fix
-  runs the one-shot delta.
+  Code QUALITY of what YOU just wrote, or verifying a cleanup: --quality-delta reports only what
+  got WORSE across 10 kinds and exits non-zero on new debt; which restructuring a measured shape
+  (humps/deep, a tangle) calls for. Merge safety → change-check. Even a single-line leaf fix runs
+  the one-shot delta.
 allowed-tools: Bash, Read
 ---
 

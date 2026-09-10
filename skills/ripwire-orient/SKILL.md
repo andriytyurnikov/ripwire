@@ -1,10 +1,10 @@
 ---
 name: ripwire-orient
 description: >
-  Landing COLD in an unfamiliar repo or subsystem, or about to open several files for one question:
-  map first, read only the files it ranks highest. Main subsystems and entry points, 'how does X work
-  / where is Y'; compacted mid-task, rebuild what you knew. A NAMED symbol → navigate. Stop at the
-  first rung that answers.
+  Landing COLD in an unfamiliar repo/subsystem or about to open several files: map main subsystems
+  and entry points, 'how does X work / where is Y'. Also recover context, retrieve saved docs
+  (--recall), divide code for subagents (--partition), save code gotchas (--note-add). NAMED
+  symbol → navigate.
 allowed-tools: Bash, Read
 ---
 
