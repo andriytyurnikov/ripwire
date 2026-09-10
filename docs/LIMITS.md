@@ -10,10 +10,10 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 205 | 81 | 99 | **106** |
+| 206 | 81 | 100 | **106** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 205 + 7 is the 212 constants this generator parses out of `src/`.
+are not counted as caps, and 206 + 7 is the 213 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -31,8 +31,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **108 of 205 caps are classified
-(37 INDEXING, 36 OUTPUT, 35 BOUNDARY); the remaining 97 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **109 of 206 caps are classified
+(37 INDEXING, 37 OUTPUT, 35 BOUNDARY); the remaining 97 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -340,10 +340,11 @@ Discloses: `syms_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kHandoffCochangeRows` | `8` | 43 | OUTPUT | heuristic co-change rows shown |
-| `kHandoffDocRows` | `4` | 41 | OUTPUT | heuristic doc pointers shown |
-| `kHandoffNoteRows` | `8` | 42 | OUTPUT | heuristic note rows shown |
-| `kHandoffSymbolsPerFile` | `6` | 50 | OUTPUT | — |
+| `kHandoffCochangeRows` | `8` | 44 | OUTPUT | heuristic co-change rows shown |
+| `kHandoffDocRows` | `4` | 42 | OUTPUT | heuristic doc pointers shown |
+| `kHandoffNoteRows` | `8` | 43 | OUTPUT | heuristic note rows shown |
+| `kHandoffSymbolsPerCodeFile` | `50` | 79 | OUTPUT | — |
+| `kHandoffSymbolsPerDocFile` | `12` | 80 | OUTPUT | — |
 
 ### `src/infra/blanktext.h`
 

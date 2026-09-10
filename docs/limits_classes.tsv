@@ -38,7 +38,8 @@ kFieldWalkCap	INDEXING
 kHandoffCochangeRows	OUTPUT
 kHandoffDocRows	OUTPUT
 kHandoffNoteRows	OUTPUT
-kHandoffSymbolsPerFile	OUTPUT
+kHandoffSymbolsPerCodeFile	OUTPUT
+kHandoffSymbolsPerDocFile	OUTPUT
 kIdiomMaxCondTokens	BOUNDARY
 kIdiomMaxLabelTokens	BOUNDARY
 kIdiomMaxReturnTokens	BOUNDARY

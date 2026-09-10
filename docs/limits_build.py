@@ -36,7 +36,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DECL = re.compile(r'^[ \t]*(?:static[ \t]+)?(?:inline[ \t]+)?constexpr[ \t]+[\w:<>, ]*?'
                   r'\b(k[A-Z][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:\r?\n[ \t]*)?([0-9][0-9_.eE+-]*)[ \t]*;(.*)$',
                   re.M)
-KEY  = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width|Shown|PerFile|Hits')
+KEY  = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width|Shown|Hits'
+                  r'|Per\w*File')       # Per\w*File, not PerFile: kHandoffCodeSymbolsPerFile and
+                                        # kHandoffSymbolsPerCodeFile are the same kind of cap, and a
+                                        # NAME filter that turns on a compound spelling is the defect
+                                        # this widening exists to remove, not a smaller instance of it.
 
 # A CAP answers "how many of X survive". A HYPERPARAMETER answers "how is X weighted or apportioned".
 # They are not the same instrument and must not share a table: a cap is judged by what it truncates and
