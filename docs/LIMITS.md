@@ -10,7 +10,7 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 114 | 50 | 69 | **45** |
+| 114 | 50 | 79 | **35** |
 
 Plus 6 ranking and apportionment parameters, in their own table below: they are not caps, they
 are not counted as caps, and 114 + 6 is the 120 constants this generator parses out of `src/`.
@@ -63,8 +63,8 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 
 | constant | value | site | anchor | note |
 | --- | --- | --- | --- | --- |
-| `kBudgetHeadroom` | `0.90` | `src/serialize.h:604` | **unsourced** | — |
-| `kCeilingFirstEntryTolerance` | `1.15` | `src/serialize.h:615` | **unsourced** | — |
+| `kBudgetHeadroom` | `0.90` | `src/serialize.h:605` | **unsourced** | — |
+| `kCeilingFirstEntryTolerance` | `1.15` | `src/serialize.h:616` | **unsourced** | — |
 | `kCommonNameDefThreshold` | `5` | `src/graph.h:244` | **unsourced** | >5 defs of the same name ⇒ common (aider's) |
 | `kCoreBudgetShare` | `0.34` | `src/partition.h:98` | **unsourced** | — |
 | `kSpecificMinLen` | `8` | `src/graph.h:250` | **unsourced** | ≥8 chars …  (aider's) |
@@ -109,8 +109,8 @@ Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `ro
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kConnectRadiusMax` | `12` | 3085 | — | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
-| `kIntFlagMax` | `1000000000` | 3084 | — | parsePosInt/parseNonNegInt's own overflow ceiling |
+| `kConnectRadiusMax` | `12` | 3093 | — | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
+| `kIntFlagMax` | `1000000000` | 3092 | — | parsePosInt/parseNonNegInt's own overflow ceiling |
 | `kPageValueMax` | `1000000000` | 591 | — | — |
 
 ### `src/commentcoherence.h`
@@ -182,9 +182,9 @@ Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kCoBoostMaxFilesPerCommit` | `30` | 2802 | INDEXING | same bulk-commit cap as the other co-change miners here |
-| `kCoBoostMaxPartnerFiles` | `8` | 2805 | INDEXING | strongest partners only, by (deg desc, path asc) |
-| `kCoBoostMaxSymbolsPerFile` | `3` | 2806 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
+| `kCoBoostMaxFilesPerCommit` | `30` | 2836 | INDEXING | same bulk-commit cap as the other co-change miners here |
+| `kCoBoostMaxPartnerFiles` | `8` | 2839 | INDEXING | strongest partners only, by (deg desc, path asc) |
+| `kCoBoostMaxSymbolsPerFile` | `3` | 2840 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
 
 ### `src/graph.h`
 
@@ -255,7 +255,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kLintMaxPerRule` | `5000` | 819 | — | — |
+| `kLintMaxPerRule` | `5000` | 821 | — | — |
 
 ### `src/main.cpp`
 
@@ -295,7 +295,7 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4187 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4208 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
 
@@ -305,13 +305,13 @@ Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`,
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 546 | INDEXING | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 547 | INDEXING | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 548 | INDEXING | global cap — bounds token cost regardless of fan-out |
-| `kMentionMaxDirectSymbols` | `8` | 47 | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
-| `kMentionMaxFiles` | `4` | 45 | INDEXING | strongest evidence only: files named first in the text |
-| `kMentionMaxRawTokens` | `16` | 44 | INDEXING | extraction cap: first N candidate mention tokens, text order |
-| `kMentionMaxSymbolsPerFile` | `3` | 46 | INDEXING | per mentioned file: its top symbols by (lens score desc, id asc) |
+| `kDocMentionMaxAnchors` | `8` | 698 | INDEXING | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 699 | INDEXING | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 700 | INDEXING | global cap — bounds token cost regardless of fan-out |
+| `kMentionMaxDirectSymbols` | `8` | 158 | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
+| `kMentionMaxFiles` | `4` | 156 | INDEXING | strongest evidence only: files named first in the text |
+| `kMentionMaxRawTokens` | `16` | 155 | INDEXING | extraction cap: first N candidate mention tokens, text order |
+| `kMentionMaxSymbolsPerFile` | `3` | 157 | INDEXING | per mentioned file: its top symbols by (lens score desc, id asc) |
 
 ### `src/model.h`
 
@@ -319,7 +319,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxWorkspaceRoots` | `16` | 937 | — | — |
+| `kMaxWorkspaceRoots` | `16` | 938 | — | — |
 
 ### `src/namingconsistency.h`
 
@@ -362,7 +362,7 @@ Discloses: `mention_syms_capped`, `ranking_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kPackTaskRankTopN` | `12` | 79 | — | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
+| `kPackTaskRankTopN` | `12` | 89 | — | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
 
 ### `src/pageview.h`
 
@@ -456,16 +456,16 @@ Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kForAnchorBodyBudgetBytes` | `22800` | 793 | — | — |
-| `kForAutoBodyBudgetBytes` | `6000` | 759 | — | — |
-| `kForCapTailSigBytes` | `96` | 726 | — | — |
-| `kForCompactSurfaceBudgetBytes` | `1000` | 969 | — | — |
-| `kForFileTailShownCap` | `24` | 814 | — | — |
-| `kForLensDefaultTopN` | `40` | 739 | — | — |
-| `kForPayloadBudgetBytes` | `7500` | 725 | — | — |
-| `kMaxExpandIncludes` | `24` | 4583 | — | inc= cap |
-| `kMaxExpandSibs` | `100` | 4574 | — | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
-| `kWithGraphNodeCap` | `8` | 5641 | — | — |
+| `kForAnchorBodyBudgetBytes` | `22800` | 794 | — | — |
+| `kForAutoBodyBudgetBytes` | `6000` | 760 | — | — |
+| `kForCapTailSigBytes` | `96` | 727 | — | — |
+| `kForCompactSurfaceBudgetBytes` | `1000` | 970 | — | — |
+| `kForFileTailShownCap` | `24` | 815 | — | — |
+| `kForLensDefaultTopN` | `40` | 740 | — | — |
+| `kForPayloadBudgetBytes` | `7500` | 726 | — | — |
+| `kMaxExpandIncludes` | `24` | 4584 | — | inc= cap |
+| `kMaxExpandSibs` | `100` | 4575 | — | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
+| `kWithGraphNodeCap` | `8` | 5642 | — | — |
 
 ### `src/siblift.h`
 

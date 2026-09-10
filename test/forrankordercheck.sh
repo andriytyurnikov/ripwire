@@ -110,7 +110,12 @@ for fx in fixture ffifix hostilefix; do cp -R "$ROOT/test/$fx" "$TMP/$fx"; done
 REPO_Q=( "rank graph teleport" "compact legend rewrite" "edit receipt post-check" "substitution meter hook"
          "pagerank power iteration" "tree-sitter ingest cache" "merge scout conflict" "quality delta acks"
          "MCP manifest tools list" "test gate affected tests" )
-REPO_BASE=( 9981 9961 9784 9968 9362 9949 9909 9745 9613 9806 )
+# RE-PINNED 2026-09-10 at the cap follow-up integration tip. The previous pin (@8eb669ff) had eroded to +3.6% on
+# q3/q9 from ordinary corpus growth alone, and q5 crossed 4% by +106 B of Lane B1 disclosure on a query where the
+# doc-mention cap fires (attributed: the 633a1d23 binary on this same tree gives 9,649 B; this binary 9,755 B).
+# Arm (3) measures the LIVE repository, so its band is a corpus measurement first and a tool measurement second;
+# the durable fix (a frozen fixture) is filed, this re-pin only resets the clock.
+REPO_BASE=( 10131 10149 10139 10103 9755 10073 10062 10066 9956 9954 )
 
 # ── (1)+(2) rank order + p= on every row, four dialects ───────────────────────────────────────────────────
 order_fail=0
@@ -140,7 +145,7 @@ FX_Q=( "geometry area of a shape" "call a native function from python" "parse th
 
 # ── (3) byte growth ≤ 4% against the registered sizes ─────────────────────────────────────────────────────
 growth_fail=0
-echo "  ledger: the ten reference queries (this repo, full legend) — base bytes @8eb669ff → now, shown=/total="
+echo "  ledger: the ten reference queries (this repo, full legend) — base bytes @cap-followup-integration-2026-09-10 → now, shown=/total="
 i=0
 for q in "${REPO_Q[@]}"; do
     base="${REPO_BASE[$i]}"; i=$(( i + 1 ))
