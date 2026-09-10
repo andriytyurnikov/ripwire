@@ -80,7 +80,7 @@ inline bool isValidSeverity( std::string_view s ) noexcept
 inline bool langFromToken( std::string_view tok, Lang& out ) noexcept
 {
     struct Row { std::string_view name; Lang lang; };
-    static constexpr std::array<Row, 16> kMap = { {
+    static constexpr std::array<Row, 17> kMap = { {
         { "cpp",        Lang::Cpp        },
         { "python",     Lang::Python     },
         { "typescript", Lang::TypeScript },
@@ -97,6 +97,7 @@ inline bool langFromToken( std::string_view tok, Lang& out ) noexcept
         { "php",        Lang::Php        },
         { "lua",        Lang::Lua        },
         { "elixir",     Lang::Elixir     },
+        { "dart",       Lang::Dart       },
     } };
     for( const Row& r : kMap )
     {
@@ -129,7 +130,7 @@ inline Lang langOfPath( std::string_view path ) noexcept
     }
 
     struct Row { std::string_view ext; Lang lang; };
-    static const std::array<Row, 32> kExt = { {
+    static const std::array<Row, 33> kExt = { {
         { ".cpp", Lang::Cpp }, { ".cc", Lang::Cpp }, { ".cxx", Lang::Cpp },
         { ".h", Lang::Cpp }, { ".hpp", Lang::Cpp }, { ".hh", Lang::Cpp }, { ".hxx", Lang::Cpp }, { ".c", Lang::C },
         { ".py", Lang::Python },
@@ -146,6 +147,7 @@ inline Lang langOfPath( std::string_view path ) noexcept
         { ".php", Lang::Php },
         { ".lua", Lang::Lua },
         { ".ex", Lang::Elixir }, { ".exs", Lang::Elixir },
+        { ".dart", Lang::Dart },
     } };
     for( const Row& r : kExt )
     {
@@ -277,7 +279,7 @@ inline bool dependencyPairCapable( Lang a, Lang b ) noexcept
 inline std::string dependencyCapableLangTags()
 {
     std::string out;
-    for( std::size_t i = 0; i <= std::size_t( Lang::Elixir ); ++i )
+    for( std::size_t i = 0; i < kLangCount; ++i )
     {
         const Lang l = Lang( i );
         if( l == Lang::Unknown || !dependencyCapable( l ) )

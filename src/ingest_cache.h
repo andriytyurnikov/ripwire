@@ -206,7 +206,23 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 87;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 88;           // bump on any grammar/.scm/extraction change
+                                                      // 88 = 2026-09-10 (Dart, test/dartcheck.sh): a 23rd grammar joins
+                                                      //    kLangTable, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED —
+                                                      //    a v87 blob has no record for the `.dart` it never saw, so the
+                                                      //    file is ABSENT rather than stale and only the header version
+                                                      //    can reject it. The definition SPAN is also extended for Dart
+                                                      //    only (dartFollowingBody, adopted in ingest_sidecap.h) and
+                                                      //    formal_parameter_list joins cc_isParamList; both are
+                                                      //    extraction identity, which is what parserVer covers, and every
+                                                      //    other language is byte-identical (verified against the
+                                                      //    pre-change binary on src/ and a 1 406-file multi-language
+                                                      //    corpus). Record shapes unchanged, so kCacheVersion stays 18.
+                                                      //    RE-BUMPED from 87 on landing: main spent 82..87 while PR #75
+                                                      //    was open, and 87 collided EXACTLY — the declaration line
+                                                      //    auto-merged clean at the same wrong number while only the
+                                                      //    comment conflicted. quality.h's kIngestParserVerMirror bumped
+                                                      //    in the SAME commit.
                                                       // 87 = 2026-09-10 (test/vendorpatchcheck.sh arm I,
                                                       //    third_party/patches/markdown/002-counter-saturate):
                                                       //    the vendored markdown scanner accumulated consumed

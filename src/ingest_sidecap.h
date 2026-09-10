@@ -1664,14 +1664,27 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
                 }
             }
 
+            // Dart's body is a SIBLING of the signature, so neither defBodyNodeOf nor the climb above can
+            // find it and the span would stop at the signature — see dartFollowingBody (ingest_relations.h)
+            // for the measurement and for why an abstract member still comes back null.
+            bool dartSiblingBody = false;
+            if( ts_node_is_null( body ) && le.lang == Lang::Dart )
+            {
+                body            = dartFollowingBody( defNode );
+                dartSiblingBody = !ts_node_is_null( body );
+            }
+            // Both flags mean the same thing to the three span consumers below: the code this symbol
+            // owns lives in a SIBLING node, so byte/row extents and complexity must run through it.
+            const bool spanThroughBody = isTestMacroBlock || dartSiblingBody;
+
             d.startByte = ts_node_start_byte( defNode );
-            d.endByte   = isTestMacroBlock ? ts_node_end_byte( body ) : ts_node_end_byte( defNode );   // LB-E: the span runs THROUGH the sibling block
+            d.endByte   = spanThroughBody ? ts_node_end_byte( body ) : ts_node_end_byte( defNode );   // LB-E: the span runs THROUGH the sibling block
             d.nameByte  = nameByte;
             d.bodyByte  = ts_node_is_null( body ) ? 0u : ts_node_start_byte( body );
             const bool  fnOrMethod = ( kind == SymKind::Function || kind == SymKind::Method );
             // LB-E: for a testmacroblock the body SIBLING is where the code lives — complexityOf walks
             // INSIDE its root node, so handing it defNode (the bare macro statement) would count nothing.
-            const auto [ cxVal, ccxVal, nestVal, localsVal, ppAltVal, humpsVal, deepVal, evVal, evWhyVal ] = fnOrMethod ? complexityOf( isTestMacroBlock ? body : defNode, src, le.lang ) : Complexity{ 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, {} };
+            const auto [ cxVal, ccxVal, nestVal, localsVal, ppAltVal, humpsVal, deepVal, evVal, evWhyVal ] = fnOrMethod ? complexityOf( spanThroughBody ? body : defNode, src, le.lang ) : Complexity{ 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, {} };
             d.cx        = cxVal;
             d.ccx       = ccxVal;
             d.locals    = localsVal;   // Phase 1: floor count, C/C++ only (model.h localsCountedLang) — 0 elsewhere, never emitted there
@@ -1683,7 +1696,7 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             // param count + max nesting for functions/methods only (0 otherwise, absent in emit). All descriptive.
             {
                 const std::uint32_t startRow = ts_node_start_point( defNode ).row;
-                const std::uint32_t endRow   = ts_node_end_point( isTestMacroBlock ? body : defNode ).row;   // LB-E: rows through the sibling block
+                const std::uint32_t endRow   = ts_node_end_point( spanThroughBody ? body : defNode ).row;   // LB-E: rows through the sibling block
                 d.loc = ( endRow >= startRow ) ? ( endRow - startRow + 1u ) : 1u;
             }
             d.params    = fnOrMethod ? ( le.lang == Lang::Elixir ? elixirParams( defNode ) : countParams( defNode ) ) : std::uint16_t( 0 );
