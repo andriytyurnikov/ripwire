@@ -60,6 +60,11 @@ ripwire_head_binary()
     # 240 s here against pargates' 900 s for the six head-binary gates (its `slow` set) leaves 660 s of
     # headroom. If either number moves, move it with the other one: pargates.py's `slow` comment names this
     # file, and this comment names pargates.py, so neither can drift alone unnoticed.
+    #
+    # Since 2026-09-10 pargates spends max(declared, DEFAULT x --budget-scale) on a declared gate, so the
+    # headroom can only GROW from 660 s under CI's scale -- it never shrinks. The invariant to preserve is
+    # still the strict inequality, not the arithmetic difference: this wait must expire with the gate's own
+    # assertions still able to run, so raise this number only alongside the 900 s it is measured against.
     _t=0
     while [ "$_t" -lt 240 ]; do
         [ -x "$_bin" ] && { printf '%s\n' "$_bin"; return 0; }

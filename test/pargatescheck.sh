@@ -277,4 +277,144 @@ printf '%s\n' "$outN" | grep -q 'tree tripwire: DISARMED' \
     && ok "functional(tree): UNWATCHED -- the run says the tripwire is disarmed rather than implying a clean tree" \
     || no "functional(tree): UNWATCHED -- no DISARMED disclosure on a corpus git cannot see"
 
+# ── THE DECLARED BUDGET IS A FLOOR, NOT A CEILING (2026-09-10, CI run 34479806177) ───────────────────────
+# GATE_BUDGET_SEC entries were originally exempt from --budget-scale, on the reasoning that each was derived
+# from a CI measurement and should stand as declared. Under CI's --budget-scale 4 that inverted the table's
+# meaning: the gates it names as HEAVY became the only gates in the job running on LESS time than an unnamed
+# one. crossdirincludecheck -- which builds a whole second ripwire from git HEAD -- was killed at 900.1 s in
+# a macos-14 shard where xmlwellformed (one map piped through xmllint) was allowed 1200 s and took 585.8 s.
+#
+# Every arm above checks a declared NUMBER. None compared a declared number against what saying nothing
+# would have bought, so nothing in the suite could see the inversion. This section gates the POPULATION
+# instead: at the scale ci.yml actually passes, no declared budget may sit below the effective default. Both
+# inputs come from their real sources -- the table AND run()'s own prologue lifted out of pargates.py by ast
+# (never reimplemented, the same rule the FUNCTIONAL section follows), the scale out of the workflow -- so
+# moving --budget-scale re-evaluates the invariant instead of quietly re-opening the hole.
+CI_YML="$ROOT/.github/workflows/ci.yml"
+FLOORSCAN="$TMP/floorscan.py"
+rm -f "$TMP/floorfail"
+cat > "$FLOORSCAN" <<'PYEOF'
+# floorscan.py PARGATES SCALE -- re-runs pargates.py's OWN budget selection for every declared gate at a
+# given --budget-scale. The selection is lifted out of run() by ast, never reimplemented here: a copy of
+# the logic would keep passing after the original changed, which is the failure mode this gate exists for.
+import ast, io, os, sys
+
+pargates, scale = sys.argv[1], float(sys.argv[2])
+tree = ast.parse(io.open(pargates, encoding="utf-8").read())
+
+consts = {}
+for n in tree.body:
+    if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) \
+       and n.targets[0].id in ("DEFAULT_TIMEOUT_SEC", "GATE_BUDGET_SEC"):
+        consts[n.targets[0].id] = ast.literal_eval(n.value)
+if set(consts) != {"DEFAULT_TIMEOUT_SEC", "GATE_BUDGET_SEC"}:
+    print("ERROR could not read DEFAULT_TIMEOUT_SEC / GATE_BUDGET_SEC as literals"); sys.exit(2)
+
+runfn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run"), None)
+if runfn is None:
+    print("ERROR no def run(g) in pargates.py"); sys.exit(2)
+cut = next((i for i, st in enumerate(runfn.body)
+            if isinstance(st, ast.Assign) and getattr(st.targets[0], "id", "") == "t0"), None)
+if cut is None:
+    print("ERROR could not find the t0 = time.time() boundary in run()"); sys.exit(2)
+block = ast.unparse(ast.Module(body=runfn.body[:cut], type_ignores=[]))
+if "limit" not in block:
+    print("ERROR the pre-t0 prologue of run() no longer computes 'limit'"); sys.exit(2)
+
+def limit_for(g):
+    ns = dict(consts, budget_scale=scale, g=g, os=os, binp="")
+    exec(block, {"max": max, "int": int, "round": round, "dict": dict}, ns)
+    return ns["limit"]
+
+undeclared = limit_for("a-gate-that-is-not-in-the-table.sh")
+print("SCALED_DEFAULT %d" % undeclared)
+print("DECLARED_COUNT %d" % len(consts["GATE_BUDGET_SEC"]))
+eff = {}
+for g, declared in sorted(consts["GATE_BUDGET_SEC"].items()):
+    e = limit_for(g); eff[g] = e
+    if e < undeclared:
+        print("VIOLATION %s declared=%d effective=%d undeclared_gets=%d" % (g, declared, e, undeclared))
+    if e < declared:
+        print("LOWERED %s declared=%d effective=%d" % (g, declared, e))
+print("MIN_EFFECTIVE %d" % min(eff.values()))
+PYEOF
+
+# the scale is whatever the workflow really passes -- not a number retyped into this gate. Kept as a
+# newline-separated string, not an array: macOS ships bash 3.2, which has no mapfile, and an empty array
+# expanded under `set -u` there is an error rather than nothing.
+CI_SCALES="$( grep -oE -- '--budget-scale[[:space:]]+[0-9]+(\.[0-9]+)?' "$CI_YML" \
+              | awk '{print $2}' | LC_ALL=C sort -u )"
+FIRST_SCALE="$( printf '%s\n' "$CI_SCALES" | head -1 )"
+if [ -z "$CI_SCALES" ]; then
+    no "floor: .github/workflows/ci.yml passes no --budget-scale -- this gate cannot know what CI gives an undeclared gate"
+    FIRST_SCALE=1.0
+else
+    ok "floor: ci.yml passes --budget-scale $( printf '%s' "$CI_SCALES" | tr '\n' ',' ) (read from the workflow, not retyped here)"
+fi
+
+# every scale CI actually uses, plus 1.0 -- the bare regression.sh regime, where a declared entry must
+# still come out exactly as declared.
+printf '%s\n1.0\n' "$CI_SCALES" | grep -v '^$' | LC_ALL=C sort -u | while IFS= read -r S; do
+    scanOut="$( python3 "$FLOORSCAN" "$PARGATES" "$S" 2>&1 )" || {
+        printf '  FAIL  floor: could not evaluate run() budget prologue at --budget-scale %s: %s\n' "$S" "$scanOut"
+        printf 'x' >> "$TMP/floorfail"; continue; }
+    nDeclared="$( printf '%s\n' "$scanOut" | awk '/^DECLARED_COUNT /{print $2}' )"
+    scaledDef="$( printf '%s\n' "$scanOut" | awk '/^SCALED_DEFAULT /{print $2}' )"
+    violations="$( printf '%s\n' "$scanOut" | grep -c '^VIOLATION ' || true )"
+    lowered="$(   printf '%s\n' "$scanOut" | grep -c '^LOWERED '   || true )"
+
+    if [ "$violations" -eq 0 ]; then
+        printf '  PASS  floor: at --budget-scale %s all %s declared budgets are >= the %ss an UNDECLARED gate gets\n' "$S" "$nDeclared" "$scaledDef"
+    else
+        printf '  FAIL  floor: at --budget-scale %s, %s of %s declared gates get LESS than the %ss an undeclared gate gets -- the table is buying them less time than saying nothing would\n' "$S" "$violations" "$nDeclared" "$scaledDef"
+        printf '%s\n' "$scanOut" | grep '^VIOLATION ' | sed 's/^/    /'
+        printf 'x' >> "$TMP/floorfail"
+    fi
+
+    if [ "$lowered" -eq 0 ]; then
+        printf '  PASS  floor: at --budget-scale %s no declared budget is reduced below its declared value (a floor never lowers)\n' "$S"
+    else
+        printf '  FAIL  floor: at --budget-scale %s, %s declared budgets came out BELOW their declared value\n' "$S" "$lowered"
+        printf '%s\n' "$scanOut" | grep '^LOWERED ' | sed 's/^/    /'
+        printf 'x' >> "$TMP/floorfail"
+    fi
+done
+# that loop is a pipeline, so it ran in a subshell: its verdict travels through the filesystem, not $fail.
+if [ -s "$TMP/floorfail" ]; then fail=1; fi
+
+# headbinlib's waiter must still expire with the gate's own assertions able to run. That coupling is stated
+# in both files; measuring it against the MINIMUM effective declared budget means raising --budget-scale can
+# only widen it, and lowering a declared entry cannot silently close it.
+HEADBINLIB="$ROOT/test/lib/headbinlib.sh"
+waitBudget="$( grep -oE 'while \[ "\$_t" -lt [0-9]+ \]' "$HEADBINLIB" | grep -oE '[0-9]+' | head -1 )"
+minEff="$( python3 "$FLOORSCAN" "$PARGATES" "$FIRST_SCALE" 2>/dev/null | awk '/^MIN_EFFECTIVE /{print $2}' )"
+if [ -n "$waitBudget" ] && [ -n "$minEff" ]; then
+    [ "$waitBudget" -lt "$minEff" ] \
+        && ok "floor: headbinlib.sh waits ${waitBudget}s, strictly under the ${minEff}s smallest effective declared budget (a waiter cannot burn a whole gate budget and be killed as its wait expires)" \
+        || no "floor: headbinlib.sh waits ${waitBudget}s against a smallest effective declared budget of ${minEff}s -- the two budgets must not be equal or inverted"
+else
+    no "floor: could not read headbinlib.sh's wait budget (${waitBudget:-unset}) or the minimum effective budget (${minEff:-unset})"
+fi
+
+# MUTATION: the section must be able to go red. The mutation is to the CODE, not the table -- reverting
+# run() to the pre-floor form is exactly the regression this section exists to catch, and lowering a TABLE
+# entry would no longer prove anything, because the floor repairs one automatically. That is the point.
+MUTANT="$TMP/pargates_prefloor.py"
+python3 - "$PARGATES" "$MUTANT" <<'PYEOF'
+import io, sys
+src, dst = sys.argv[1], sys.argv[2]
+t = io.open(src, encoding="utf-8").read()
+old = "limit = max( declared, scaled_default )"
+assert old in t, "the floor expression is not in run() verbatim -- the arms above should already have failed"
+io.open(dst, "w", encoding="utf-8").write(t.replace(old, "limit = declared", 1))
+PYEOF
+mutOut="$( python3 "$FLOORSCAN" "$MUTANT" "$FIRST_SCALE" 2>&1 )"
+mutHits="$( printf '%s\n' "$mutOut" | grep -c '^VIOLATION ' || true )"
+if [ "$mutHits" -gt 0 ]; then
+    ok "floor(mutation): reverting run() to the pre-floor 'limit = declared' is caught ($mutHits violations at --budget-scale $FIRST_SCALE) -- this section is not vacuous"
+else
+    no "floor(mutation): a pre-floor run() produced NO violation at --budget-scale $FIRST_SCALE -- this whole section is vacuous"
+    printf '%s\n' "$mutOut" | sed 's/^/    /' | head -8
+fi
+
 [ "$fail" -eq 0 ] && echo "pargatescheck: ALL PASS" || { echo "pargatescheck: SOME CHECKS FAILED"; exit 1; }
