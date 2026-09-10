@@ -72,7 +72,7 @@ def loopCount( root ):
     return len( names )
 
 
-def rewrite( root, count ):
+def rewrite_marked_sites( root, count ):
     """Return [ ( relPath, newText, [ (line, oldValue) … ] ) … ], refusing on any unmarked claim."""
     plans, unmarked, orphanMarkers, empty = [], [], [], []
     for rel in SITES:
@@ -122,7 +122,7 @@ if a.root:
     ROOT = pathlib.Path( a.root ).resolve()
 
 count = loopCount( ROOT )
-plans = rewrite( ROOT, count )
+plans = rewrite_marked_sites( ROOT, count )
 sites = sum( len( s ) for _, _, s in plans )
 
 if a.check:
