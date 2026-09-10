@@ -816,8 +816,7 @@ inline TestGateResult computeTestGateFor( const IngestResult& ing, const Graph& 
                                           const std::vector<NodeId>& changedSyms, const std::vector<char>& isChangedSym,
                                           std::uint32_t changedFileCount, const std::vector<char>* testReachIn )
 {
-    const std::uint32_t F = std::uint32_t( ing.files.size() );
-    TestGateResult      r;
+    TestGateResult r;
     r.changedFiles = changedFileCount;
     if( changedSyms.empty() )
     {
@@ -1018,7 +1017,7 @@ inline constexpr const char* kTestGateRowLegend =
 
 // M21(b): the run=/run_unknown= rule, from testmap.h's ONE constant — a rule about <t> rows, so it rides
 // the row-gated legend and the zero-row report (test/donelegendcheck.sh's tg_empty ratchet) pays nothing.
-inline const std::string kTestGateRunLegend{ rw::kRunHintLegendClause };
+inline constexpr std::string_view kTestGateRunLegend = rw::kRunHintLegendClause;
 
 // Emit the --test-gate report as minified XML (house shape) for an ALREADY-COMPUTED gate result. Deterministic
 // + xmllint-clean; the header counts are always full. §A3a: the <u> untested-row list joins pageview.h's
@@ -1086,7 +1085,7 @@ inline void writeTestGateReport( std::FILE* out, const IngestResult& ing, const 
     // H2H-Graft F1: the evidence clause (testmap.h's ONE wording) rides the rows-gated half, like the run= rule.
     rw::emitTo( out, "<!-- {}{}{}{}{}-->{}", kTestGateLegend,
                   tgHasRows ? kTestGateRowLegend : "", std::string_view( kTestRowEvidenceLegend.data(), tgHasRows ? int( kTestRowEvidenceLegend.size() ) : 0 ),
-                  tgHasRows ? kTestGateRunLegend.c_str() : "",
+                  tgHasRows ? kTestGateRunLegend : std::string_view{},
                   rw::graphUnindexedLegend( g.unindexedFiles > 0 ),   // #66: exactly when the root carries the attribute
                   rw::rootRelPathsLegend( !tgRootAttr.empty() ) );
     // §P11.4: this gate EXITS 4 on the obligation, so its rows carry the command that discharges it — where
