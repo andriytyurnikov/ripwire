@@ -1078,20 +1078,11 @@ inline constexpr std::array<ErrorMaskRule, 7> kErrorMaskRules = { {
 // keeps the block out. Both directions of the imprecision lose recall rather than manufacturing a finding.
 // The @p capture filter in findErrorMasking depends on a bare identifier ("catch"/"then") answering false
 // here, and it still does: no braces, no match.
-inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+// The comment-only half, factored out so neither this test nor its caller crosses a complexity bar: is
+// `collapsed` a brace pair whose entire interior is one comment? Called only after the exact-`{}` test has
+// already failed.
+inline bool errorMaskBlockIsCommentOnly( std::string_view collapsed ) noexcept
 {
-    std::string stripped;
-    for( char c : collapsed )
-    {
-        if( c != ' ' && c != '\t' && c != '\n' && c != '\r' )
-        {
-            stripped.push_back( c );
-        }
-    }
-    if( stripped == "{}" )
-    {
-        return true;
-    }
     std::string_view t = collapsed;
     while( !t.empty() && ( t.front() == ' ' || t.front() == '\t' ) ) { t.remove_prefix( 1 ); }
     while( !t.empty() && ( t.back()  == ' ' || t.back()  == '\t' ) ) { t.remove_suffix( 1 ); }
@@ -1104,26 +1095,30 @@ inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
     {
         return false;   // a statement survives inside it — not a swallow
     }
-    const std::size_t slash = mid.find( "//" );
-    const std::size_t block = mid.find( "/*" );
-    const std::size_t hash  = mid.find( '#' );
-    std::size_t       first = std::string_view::npos;
-    for( std::size_t c : { slash, block, hash } )
+    std::size_t first = std::string_view::npos;
+    for( std::string_view opener : { std::string_view( "//" ), std::string_view( "/*" ), std::string_view( "#" ) } )
     {
-        if( c != std::string_view::npos && ( first == std::string_view::npos || c < first ) ) { first = c; }
+        const std::size_t at = mid.find( opener );
+        if( at != std::string_view::npos && ( first == std::string_view::npos || at < first ) ) { first = at; }
     }
     if( first == std::string_view::npos )
     {
         return false;   // content that is not a comment at all
     }
-    for( std::size_t i = 0; i < first; ++i )
+    return mid.substr( 0, first ).find_first_not_of( " \t" ) == std::string_view::npos;
+}
+
+inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+{
+    std::string stripped;
+    for( char c : collapsed )
     {
-        if( mid[i] != ' ' && mid[i] != '\t' )
+        if( c != ' ' && c != '\t' && c != '\n' && c != '\r' )
         {
-            return false;   // something precedes the comment
+            stripped.push_back( c );
         }
     }
-    return true;
+    return stripped == "{}" || errorMaskBlockIsCommentOnly( collapsed );
 }
 
 // One error-masking hit: the suppressing block's file + start byte (so a caller can attribute it to the

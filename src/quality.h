@@ -57,6 +57,7 @@
 #include <string>
 #include <type_traits>  // std::is_trivially_copyable_v — the qsnap POD put/get static_assert
 #include <utility>
+#include <span>          // mergeBuiltinsWithConfig — a non-owning view over either built-in list
 #include <vector>
 
 namespace rw
@@ -355,6 +356,39 @@ struct RegisterMacrosConfig
 // accepted. Absent/unreadable/empty file yields two empty lists — INERTNESS CONTRACT: no config file
 // changes nothing about this run's set of exempted names (kBuiltinRegisterMacros still applies), and an
 // unrecognized key is disclosed, never a refusal — a typo in an otherwise-inert config must not fail a run.
+// One directive's VALUE list: comma-separated tokens, each trimmed, each admitted by its key's own rule.
+// Hoisted out of the line loop so that loop stays readable (and under its bars) now that the file carries two
+// keys. A PATH is root-relative with no '..' segment and no leading '/'; anything else is a value this file's
+// grammar defines nothing for and is dropped rather than guessed at, the same posture the macro-token check
+// takes. Never throws, never warns: a malformed VALUE is inert, and only a malformed KEY is disclosed.
+inline void appendConfigValueTokens( std::string_view rest, bool isVendor, RegisterMacrosConfig& out )
+{
+    std::size_t start = 0;
+    while( start <= rest.size() )
+    {
+        const std::size_t comma = rest.find( ',', start );
+        std::string_view  tok( rest.data() + start, ( comma == std::string_view::npos ? rest.size() : comma ) - start );
+        while( !tok.empty() && ( tok.back()  == ' ' || tok.back()  == '\t' ) ) { tok.remove_suffix( 1 ); }
+        while( !tok.empty() && ( tok.front() == ' ' || tok.front() == '\t' ) ) { tok.remove_prefix( 1 ); }
+        if( isVendor )
+        {
+            if( !tok.empty() && tok.front() != '/' && tok.find( ".." ) == std::string_view::npos )
+            {
+                out.vendoredPaths.emplace_back( tok );
+            }
+        }
+        else if( isValidMacroToken( tok ) )
+        {
+            out.names.emplace_back( tok );
+        }
+        if( comma == std::string_view::npos )
+        {
+            break;
+        }
+        start = comma + 1;
+    }
+}
+
 inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
 {
     RegisterMacrosConfig out;
@@ -390,34 +424,7 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
             out.unrecognizedKeys.emplace_back( key );   // F-13: disclosed, not skipped
             continue;
         }
-        std::string_view rest = line.substr( eq + 1 );
-        std::size_t      start = 0;
-        while( start <= rest.size() )
-        {
-            const std::size_t comma = rest.find( ',', start );
-            std::string_view  tok( rest.data() + start, ( comma == std::string_view::npos ? rest.size() : comma ) - start );
-            while( !tok.empty() && ( tok.back() == ' ' || tok.back() == '\t' ) ) { tok.remove_suffix( 1 ); }
-            while( !tok.empty() && ( tok.front() == ' ' || tok.front() == '\t' ) ) { tok.remove_prefix( 1 ); }
-            if( isVendor )
-            {
-                // A PATH, not an identifier: root-relative, no '..' segment, no leading '/' — anything else is
-                // a value this file's grammar defines nothing for and is dropped rather than guessed at, the
-                // same posture the macro-token check takes.
-                if( !tok.empty() && tok.front() != '/' && tok.find( ".." ) == std::string_view::npos )
-                {
-                    out.vendoredPaths.emplace_back( tok );
-                }
-            }
-            else if( isValidMacroToken( tok ) )
-            {
-                out.names.emplace_back( tok );
-            }
-            if( comma == std::string_view::npos )
-            {
-                break;
-            }
-            start = comma + 1;
-        }
+        appendConfigValueTokens( line.substr( eq + 1 ), isVendor, out );
     }
     std::sort( out.names.begin(), out.names.end() );
     out.names.erase( std::unique( out.names.begin(), out.names.end() ), out.names.end() );
@@ -430,16 +437,31 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
 
 // The combined, sorted, deduped registered-macro name list for ONE run: the built-ins above plus whatever
 // .ripwire_config's register_macros= adds. Sorted so nothing downstream needs its own re-sort.
+// The ONE shape both .ripwire_config consumers need: this tool's built-in list, plus whatever the repo's own
+// config adds, sorted and deduped so nothing downstream re-sorts. Factored the moment the second consumer
+// existed — `--quality-delta` reported vendoredPathPrefixes as a 114-token clone of this function the first
+// time it was written out longhand, which is the kind's whole job.
+inline std::vector<std::string> mergeBuiltinsWithConfig( std::span<const std::string_view> builtins,
+                                                         std::vector<std::string> fromConfig )
+{
+    std::vector<std::string> out;
+    out.reserve( builtins.size() + fromConfig.size() );
+    for( std::string_view b : builtins )
+    {
+        out.emplace_back( b );
+    }
+    for( std::string& extra : fromConfig )
+    {
+        out.push_back( std::move( extra ) );
+    }
+    std::sort( out.begin(), out.end() );
+    out.erase( std::unique( out.begin(), out.end() ), out.end() );
+    return out;
+}
+
 inline std::vector<std::string> registeredMacroNames( std::string_view root )
 {
-    std::vector<std::string> names( kBuiltinRegisterMacros.begin(), kBuiltinRegisterMacros.end() );
-    for( std::string& extra : readRegisterMacrosConfig( root ).names )
-    {
-        names.push_back( std::move( extra ) );
-    }
-    std::sort( names.begin(), names.end() );
-    names.erase( std::unique( names.begin(), names.end() ), names.end() );
-    return names;
+    return mergeBuiltinsWithConfig( kBuiltinRegisterMacros, readRegisterMacrosConfig( root ).names );
 }
 
 // Q-DIAL-5 (2026-09-10) — VENDORED PATHS: code this repo CARRIES but did not WRITE. No such notion existed
@@ -457,18 +479,7 @@ inline constexpr std::array<std::string_view, 4> kBuiltinVendoredPrefixes = { "t
 
 inline std::vector<std::string> vendoredPathPrefixes( std::string_view root )
 {
-    std::vector<std::string> out;
-    for( std::string_view p : kBuiltinVendoredPrefixes )
-    {
-        out.emplace_back( p );
-    }
-    for( std::string& extra : readRegisterMacrosConfig( root ).vendoredPaths )
-    {
-        out.push_back( std::move( extra ) );
-    }
-    std::sort( out.begin(), out.end() );
-    out.erase( std::unique( out.begin(), out.end() ), out.end() );
-    return out;
+    return mergeBuiltinsWithConfig( kBuiltinVendoredPrefixes, readRegisterMacrosConfig( root ).vendoredPaths );
 }
 
 // `rel` is ROOT-RELATIVE (the relForHash spelling every sidecar key uses). A prefix ending in '/' names a
