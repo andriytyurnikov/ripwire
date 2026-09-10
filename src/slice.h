@@ -57,6 +57,7 @@
 #include "sarif.h"         // rootPrefixOf / rootRelativeUri — root-relative p=, same as every verb
 
 #include "infra/Diagnostics.h"   // DEGRADED_PATH_ALERT — the three parse-refusal arms are degrades, not asserts
+#include "infra/fieldid.h"       // rw::fieldChild / NodeField — the field id resolved once per grammar, not per node
 
 #include <tree_sitter/api.h>
 
@@ -396,13 +397,13 @@ inline std::vector<std::string> sliceSeedLineLocals( const SliceScan& scan, std:
     return out;
 }
 
-inline TSNode sliceField( TSNode p, const char* field ) noexcept
+inline TSNode sliceField( TSNode p, NodeField field ) noexcept
 {
-    return ts_node_child_by_field_name( p, field, std::uint32_t( std::strlen( field ) ) );
+    return fieldChild( p, field );
 }
 
 // n IS the field child (identity, not containment) — the precise arm: `x = …` defs x, `arr[i] = …` does not def i
-inline bool sliceIsField( TSNode p, const char* field, TSNode n ) noexcept
+inline bool sliceIsField( TSNode p, NodeField field, TSNode n ) noexcept
 {
     const TSNode c = sliceField( p, field );
     if( ts_node_is_null( c ) )
@@ -415,7 +416,7 @@ inline bool sliceIsField( TSNode p, const char* field, TSNode n ) noexcept
 // n lies WITHIN the field child's byte span — the containment arm, for pattern-shaped fields (Rust
 // `mut x`, Python tuples). ingest.cpp's spanContains is .cpp-private, so the range compare lives inline
 // here rather than growing an export for two comparisons.
-inline bool sliceInField( TSNode p, const char* field, TSNode n ) noexcept
+inline bool sliceInField( TSNode p, NodeField field, TSNode n ) noexcept
 {
     const TSNode outer = sliceField( p, field );
     if( ts_node_is_null( outer ) )
@@ -435,7 +436,7 @@ inline bool sliceIsJsPatternKind( TSNode n ) noexcept
 // the assignment operator's own text — "+=", "=", … — read to split a plain write from a read-modify-write
 inline bool sliceOperatorIsPlainAssign( TSNode assignNode, std::string_view src ) noexcept
 {
-    const TSNode op = sliceField( assignNode, "operator" );
+    const TSNode op = sliceField( assignNode, NodeField::Operator );
     if( ts_node_is_null( op ) )
     {
         return true;   // no operator field captured — treat as plain (a def, not a def+use guess)
@@ -453,7 +454,7 @@ inline bool sliceOperatorIsPlainAssign( TSNode assignNode, std::string_view src 
 inline bool sliceIsDirectInitCtorArg( TSNode n ) noexcept
 {
     const TSNode p = ts_node_parent( n );
-    if( ts_node_is_null( p ) || !sliceKindIs( p, "parameter_declaration" ) || !sliceIsField( p, "type", n ) )
+    if( ts_node_is_null( p ) || !sliceKindIs( p, "parameter_declaration" ) || !sliceIsField( p, NodeField::Type, n ) )
     {
         return false;
     }
@@ -483,8 +484,8 @@ inline bool sliceClassifyJsBinder( TSNode n, TSNode p, const char* pk, SliceOcc&
     const char* dk = pk;
     while( !ts_node_is_null( pp ) && sliceIsJsPatternKind( pp ) )
     {
-        if( ( std::strcmp( dk, "pair_pattern" ) == 0 && !sliceInField( pp, "value", d ) )
-            || ( ( std::strcmp( dk, "object_assignment_pattern" ) == 0 || std::strcmp( dk, "assignment_pattern" ) == 0 ) && !sliceInField( pp, "left", d ) ) )
+        if( ( std::strcmp( dk, "pair_pattern" ) == 0 && !sliceInField( pp, NodeField::Value, d ) )
+            || ( ( std::strcmp( dk, "object_assignment_pattern" ) == 0 || std::strcmp( dk, "assignment_pattern" ) == 0 ) && !sliceInField( pp, NodeField::Left, d ) ) )
         {
             return false;   // the key / default side: a read
         }
@@ -499,9 +500,9 @@ inline bool sliceClassifyJsBinder( TSNode n, TSNode p, const char* pk, SliceOcc&
     // identity when n sits directly in the field (`arr[i] = …` must not def i), containment once a
     // pattern was climbed (the field then holds the pattern, not the identifier)
     const bool climbed = !ts_node_eq( d, n );
-    const auto inField = [ & ]( const char* field ) noexcept { return climbed ? sliceInField( pp, field, d ) : sliceIsField( pp, field, n ); };
+    const auto inField = [ & ]( NodeField field ) noexcept { return climbed ? sliceInField( pp, field, d ) : sliceIsField( pp, field, n ); };
     const auto def     = [ & ]( OccT t ) noexcept { o.t = t;  o.isDef = true;  return true; };
-    if( std::strcmp( dk, "variable_declarator" ) == 0 && inField( "name" ) )
+    if( std::strcmp( dk, "variable_declarator" ) == 0 && inField( NodeField::Name ) )
     {
         return def( OccT::Decl );      // let count = 0;   const { x } = o;
     }
@@ -509,19 +510,19 @@ inline bool sliceClassifyJsBinder( TSNode n, TSNode p, const char* pk, SliceOcc&
     {
         return def( OccT::Param );     // function f(count)   f({ p }, [ q ])   f(count = 0)
     }
-    if( ( std::strcmp( dk, "required_parameter" ) == 0 || std::strcmp( dk, "optional_parameter" ) == 0 ) && inField( "pattern" ) )
+    if( ( std::strcmp( dk, "required_parameter" ) == 0 || std::strcmp( dk, "optional_parameter" ) == 0 ) && inField( NodeField::Pattern ) )
     {
         return def( OccT::Param );     // TS: (count: number)   ({ p }: T)
     }
-    if( std::strcmp( dk, "assignment_expression" ) == 0 && inField( "left" ) )
+    if( std::strcmp( dk, "assignment_expression" ) == 0 && inField( NodeField::Left ) )
     {
         return def( OccT::Assign );    // count = …   ({ x } = o)
     }
-    if( std::strcmp( dk, "for_in_statement" ) == 0 && inField( "left" ) )
+    if( std::strcmp( dk, "for_in_statement" ) == 0 && inField( NodeField::Left ) )
     {
         return def( OccT::Decl );      // for (x of xs)   for (const { k } of xs)
     }
-    if( std::strcmp( dk, "catch_clause" ) == 0 && inField( "parameter" ) )
+    if( std::strcmp( dk, "catch_clause" ) == 0 && inField( NodeField::Parameter ) )
     {
         return def( OccT::Decl );      // catch (e)   catch ({ message })
     }
@@ -569,27 +570,27 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             }
             if( !ts_node_is_null( pp ) )
             {
-                if( std::strcmp( dk, "init_declarator" ) == 0 && sliceInField( pp, "declarator", d ) )
+                if( std::strcmp( dk, "init_declarator" ) == 0 && sliceInField( pp, NodeField::Declarator, d ) )
                 {
                     def( OccT::Decl );  return o;      // int count = 0;   (the value side falls through to uses)
                 }
-                if( std::strcmp( dk, "declaration" ) == 0 && !sliceInField( pp, "type", d ) && !sliceInField( pp, "value", d ) )
+                if( std::strcmp( dk, "declaration" ) == 0 && !sliceInField( pp, NodeField::Type, d ) && !sliceInField( pp, NodeField::Value, d ) )
                 {
                     def( OccT::Decl );  return o;      // int count;  — but not the `x` of `if( int k = x )`: tree-sitter-cpp's
                 }                                      //   condition-clause declaration carries its initializer in a `value` field
                                                        //   with no init_declarator, and that x is a READ (a false def here became a
                                                        //   false binding once block scopes were separated, 2026-09-02)
                 if( ( std::strcmp( dk, "parameter_declaration" ) == 0 || std::strcmp( dk, "optional_parameter_declaration" ) == 0 )
-                    && !sliceInField( pp, "type", d ) && !sliceInField( pp, "default_value", d ) )
+                    && !sliceInField( pp, NodeField::Type, d ) && !sliceInField( pp, NodeField::DefaultValue, d ) )
                 {
                     def( OccT::Param );  return o;     // int limit  — a default value's identifiers stay uses
                 }
-                if( std::strcmp( dk, "for_range_loop" ) == 0 && sliceInField( pp, "declarator", d ) )
+                if( std::strcmp( dk, "for_range_loop" ) == 0 && sliceInField( pp, NodeField::Declarator, d ) )
                 {
                     def( OccT::Decl );  return o;      // for( auto x : v )
                 }
             }
-            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, "left", n ) )
+            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, NodeField::Left, n ) )
             {
                 if( sliceOperatorIsPlainAssign( p, src ) ) { def( OccT::Assign ); } else { both( OccT::Assign ); }
                 return o;
@@ -615,19 +616,19 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             {
                 def( OccT::Param );  return o;         // def f(n):
             }
-            if( std::strcmp( pk, "typed_parameter" ) == 0 && !sliceInField( p, "type", n ) )
+            if( std::strcmp( pk, "typed_parameter" ) == 0 && !sliceInField( p, NodeField::Type, n ) )
             {
                 def( OccT::Param );  return o;         // def f(n: int):
             }
             if( ( std::strcmp( pk, "default_parameter" ) == 0 || std::strcmp( pk, "typed_default_parameter" ) == 0 )
-                && sliceIsField( p, "name", n ) )
+                && sliceIsField( p, NodeField::Name, n ) )
             {
                 def( OccT::Param );  return o;         // def f(n=0):  — the default's identifiers stay uses
             }
             if( std::strcmp( pk, "assignment" ) == 0 || std::strcmp( pk, "augmented_assignment" ) == 0 )
             {
                 const bool aug = std::strcmp( pk, "augmented_assignment" ) == 0;
-                if( sliceIsField( p, "left", n ) )
+                if( sliceIsField( p, NodeField::Left, n ) )
                 {
                     if( aug ) { both( OccT::Assign ); } else { def( OccT::Assign ); }
                     return o;
@@ -638,26 +639,26 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
                 // a, b = …  /  for a, b in …: the list itself sits in the enclosing left/target field
                 const TSNode gp = ts_node_parent( p );
                 if( !ts_node_is_null( gp )
-                    && ( ( sliceKindIs( gp, "assignment" ) && sliceInField( gp, "left", n ) )
-                         || ( sliceKindIs( gp, "for_statement" ) && sliceInField( gp, "left", n ) )
-                         || ( sliceKindIs( gp, "for_in_clause" ) && sliceInField( gp, "left", n ) ) ) )
+                    && ( ( sliceKindIs( gp, "assignment" ) && sliceInField( gp, NodeField::Left, n ) )
+                         || ( sliceKindIs( gp, "for_statement" ) && sliceInField( gp, NodeField::Left, n ) )
+                         || ( sliceKindIs( gp, "for_in_clause" ) && sliceInField( gp, NodeField::Left, n ) ) ) )
                 {
                     def( OccT::Decl );  return o;
                 }
             }
-            if( ( std::strcmp( pk, "for_statement" ) == 0 || std::strcmp( pk, "for_in_clause" ) == 0 ) && sliceInField( p, "left", n ) )
+            if( ( std::strcmp( pk, "for_statement" ) == 0 || std::strcmp( pk, "for_in_clause" ) == 0 ) && sliceInField( p, NodeField::Left, n ) )
             {
                 def( OccT::Decl );  return o;          // for total in …:
             }
-            if( std::strcmp( pk, "named_expression" ) == 0 && sliceIsField( p, "name", n ) )
+            if( std::strcmp( pk, "named_expression" ) == 0 && sliceIsField( p, NodeField::Name, n ) )
             {
                 def( OccT::Assign );  return o;        // (total := …)
             }
-            if( std::strcmp( pk, "as_pattern_target" ) == 0 || ( std::strcmp( pk, "as_pattern" ) == 0 && sliceInField( p, "alias", n ) ) )
+            if( std::strcmp( pk, "as_pattern_target" ) == 0 || ( std::strcmp( pk, "as_pattern" ) == 0 && sliceInField( p, NodeField::Alias, n ) ) )
             {
                 def( OccT::Decl );  return o;          // with open(…) as f:
             }
-            if( std::strcmp( pk, "keyword_argument" ) == 0 && sliceIsField( p, "name", n ) )
+            if( std::strcmp( pk, "keyword_argument" ) == 0 && sliceIsField( p, NodeField::Name, n ) )
             {
                 o.skip = true;  return o;              // f(count=3) — the NAME is the callee's keyword, not this local
             }
@@ -682,7 +683,7 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             {
                 return o;                              // a declarator / parameter / for-of / assignment binder, destructured or plain
             }
-            if( std::strcmp( pk, "augmented_assignment_expression" ) == 0 && sliceIsField( p, "left", n ) )
+            if( std::strcmp( pk, "augmented_assignment_expression" ) == 0 && sliceIsField( p, NodeField::Left, n ) )
             {
                 both( OccT::Assign );  return o;       // count += n
             }
@@ -712,24 +713,24 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
                 }
             }
             const char* ek = ts_node_type( eff );
-            if( std::strcmp( ek, "short_var_declaration" ) == 0 && sliceIsField( eff, "left", effChild ) )
+            if( std::strcmp( ek, "short_var_declaration" ) == 0 && sliceIsField( eff, NodeField::Left, effChild ) )
             {
                 def( OccT::Decl );  return o;          // count := 0
             }
-            if( std::strcmp( ek, "assignment_statement" ) == 0 && sliceIsField( eff, "left", effChild ) )
+            if( std::strcmp( ek, "assignment_statement" ) == 0 && sliceIsField( eff, NodeField::Left, effChild ) )
             {
                 if( sliceOperatorIsPlainAssign( eff, src ) ) { def( OccT::Assign ); } else { both( OccT::Assign ); }
                 return o;
             }
-            if( std::strcmp( ek, "range_clause" ) == 0 && sliceIsField( eff, "left", effChild ) )
+            if( std::strcmp( ek, "range_clause" ) == 0 && sliceIsField( eff, NodeField::Left, effChild ) )
             {
                 def( OccT::Decl );  return o;          // for i, v := range xs
             }
-            if( std::strcmp( pk, "var_spec" ) == 0 && !sliceInField( p, "type", n ) && !sliceInField( p, "value", n ) )
+            if( std::strcmp( pk, "var_spec" ) == 0 && !sliceInField( p, NodeField::Type, n ) && !sliceInField( p, NodeField::Value, n ) )
             {
                 def( OccT::Decl );  return o;          // var count int
             }
-            if( std::strcmp( pk, "parameter_declaration" ) == 0 && !sliceInField( p, "type", n ) )
+            if( std::strcmp( pk, "parameter_declaration" ) == 0 && !sliceInField( p, NodeField::Type, n ) )
             {
                 def( OccT::Param );  return o;         // func f(count int)
             }
@@ -746,19 +747,19 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
 
         case SliceFam::Java:
         {
-            if( std::strcmp( pk, "variable_declarator" ) == 0 && sliceIsField( p, "name", n ) )
+            if( std::strcmp( pk, "variable_declarator" ) == 0 && sliceIsField( p, NodeField::Name, n ) )
             {
                 def( OccT::Decl );  return o;          // int count = 0;
             }
-            if( std::strcmp( pk, "formal_parameter" ) == 0 && sliceIsField( p, "name", n ) )
+            if( std::strcmp( pk, "formal_parameter" ) == 0 && sliceIsField( p, NodeField::Name, n ) )
             {
                 def( OccT::Param );  return o;
             }
-            if( std::strcmp( pk, "enhanced_for_statement" ) == 0 && sliceIsField( p, "name", n ) )
+            if( std::strcmp( pk, "enhanced_for_statement" ) == 0 && sliceIsField( p, NodeField::Name, n ) )
             {
                 def( OccT::Decl );  return o;          // for (int x : xs)
             }
-            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, "left", n ) )
+            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, NodeField::Left, n ) )
             {
                 if( sliceOperatorIsPlainAssign( p, src ) ) { def( OccT::Assign ); } else { both( OccT::Assign ); }
                 return o;
@@ -782,7 +783,7 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             if( std::strcmp( pk, "let_declaration" ) == 0 || ( !ts_node_is_null( gp ) && sliceKindIs( gp, "let_declaration" ) ) )
             {
                 const TSNode letNode = std::strcmp( pk, "let_declaration" ) == 0 ? p : gp;
-                if( sliceInField( letNode, "pattern", n ) )
+                if( sliceInField( letNode, NodeField::Pattern, n ) )
                 {
                     def( OccT::Decl );  return o;
                 }
@@ -790,7 +791,7 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             if( std::strcmp( pk, "parameter" ) == 0 || ( !ts_node_is_null( gp ) && sliceKindIs( gp, "parameter" ) ) )
             {
                 const TSNode parNode = std::strcmp( pk, "parameter" ) == 0 ? p : gp;
-                if( sliceInField( parNode, "pattern", n ) )
+                if( sliceInField( parNode, NodeField::Pattern, n ) )
                 {
                     def( OccT::Param );  return o;
                 }
@@ -799,15 +800,15 @@ inline SliceOcc sliceClassify( TSNode n, SliceFam fam, std::string_view src ) no
             {
                 def( OccT::Param );  return o;         // |count| …
             }
-            if( std::strcmp( pk, "for_expression" ) == 0 && sliceInField( p, "pattern", n ) )
+            if( std::strcmp( pk, "for_expression" ) == 0 && sliceInField( p, NodeField::Pattern, n ) )
             {
                 def( OccT::Decl );  return o;          // for x in xs
             }
-            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, "left", n ) )
+            if( std::strcmp( pk, "assignment_expression" ) == 0 && sliceIsField( p, NodeField::Left, n ) )
             {
                 def( OccT::Assign );  return o;
             }
-            if( std::strcmp( pk, "compound_assignment_expr" ) == 0 && sliceIsField( p, "left", n ) )
+            if( std::strcmp( pk, "compound_assignment_expr" ) == 0 && sliceIsField( p, NodeField::Left, n ) )
             {
                 both( OccT::Assign );  return o;       // count += n
             }
@@ -1081,9 +1082,9 @@ template< class WalkFn >
 inline void sliceWalkPreproc( TSNode node, const SliceWalkCtx& ctx, SliceScan& scan, SlicePp pp, const WalkFn& walk )
 {
     const auto [ bodyState, altState ] = slicePreprocBranchStates( node, ctx.src, pp );
-    const TSNode condition   = sliceField( node, "condition" );
-    const TSNode macroName   = sliceField( node, "name" );
-    const TSNode alternative = sliceField( node, "alternative" );
+    const TSNode condition   = sliceField( node, NodeField::Condition );
+    const TSNode macroName   = sliceField( node, NodeField::Name );
+    const TSNode alternative = sliceField( node, NodeField::Alternative );
     const std::uint32_t ppChildCount = ts_node_child_count( node );
     for( std::uint32_t childIndex = 0; childIndex < ppChildCount; ++childIndex )
     {
@@ -1530,39 +1531,39 @@ struct SliceRdWalker
     {
         if( sliceKindIs( n, "if_statement" ) )
         {
-            condition( sliceField( n, "condition" ), state );
+            condition( sliceField( n, NodeField::Condition ), state );
             SliceRdState thenS = state, elseS = state;
-            stmt( sliceField( n, "consequence" ), thenS );
-            branchBody( sliceField( n, "alternative" ), elseS );
+            stmt( sliceField( n, NodeField::Consequence ), thenS );
+            branchBody( sliceField( n, NodeField::Alternative ), elseS );
             sliceRdJoin( thenS, elseS );
             state = thenS;
             return true;
         }
         if( sliceKindIs( n, "while_statement" ) )
         {
-            const TSNode cond = sliceField( n, "condition" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { condition( cond, s ); exit = s; }, sliceField( n, "body" ), TSNode{}, TSNode{}, state, false );
+            const TSNode cond = sliceField( n, NodeField::Condition );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { condition( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false );
             return true;
         }
         if( sliceKindIs( n, "do_statement" ) )
         {
-            const TSNode cond = sliceField( n, "condition" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, "body" ), TSNode{}, TSNode{}, state, true );
+            const TSNode cond = sliceField( n, NodeField::Condition );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, true );
             return true;
         }
         if( sliceKindIs( n, "for_statement" ) )
         {
-            unit( sliceField( n, "initializer" ), state );
-            const TSNode cond = sliceField( n, "condition" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, "body" ), sliceField( n, "update" ), TSNode{}, state, false );
+            unit( sliceField( n, NodeField::Initializer ), state );
+            const TSNode cond = sliceField( n, NodeField::Condition );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), sliceField( n, NodeField::Update ), TSNode{}, state, false );
             return true;
         }
         if( sliceKindIs( n, "for_range_loop" ) )
         {
-            unit( sliceField( n, "initializer" ), state );   // C++20 `for( init; x : r )`
-            unit( sliceField( n, "right" ), state );          // the range, evaluated once
-            const TSNode decl = sliceField( n, "declarator" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( decl, s ); }, sliceField( n, "body" ), TSNode{}, TSNode{}, state, false );
+            unit( sliceField( n, NodeField::Initializer ), state );   // C++20 `for( init; x : r )`
+            unit( sliceField( n, NodeField::Right ), state );          // the range, evaluated once
+            const TSNode decl = sliceField( n, NodeField::Declarator );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( decl, s ); }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false );
             return true;
         }
         if( sliceKindIs( n, "switch_statement" ) )
@@ -1612,12 +1613,12 @@ struct SliceRdWalker
     // it; break leaves; no default keeps the "no case matched" path
     void switchC( TSNode n, SliceRdState& state )
     {
-        unit( sliceField( n, "condition" ), state );
+        unit( sliceField( n, NodeField::Condition ), state );
         const SliceRdState in = state;
         SliceRdState       brk = dead(), fall = dead();
         bool               hasDefault = false;
         breakAcc.push_back( &brk );
-        const TSNode        body       = sliceField( n, "body" );
+        const TSNode        body       = sliceField( n, NodeField::Body );
         const std::uint32_t childCount = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body );
         for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
         {
@@ -1629,7 +1630,7 @@ struct SliceRdWalker
             }
             SliceRdState s = in;
             sliceRdJoin( s, fall );
-            const TSNode value = sliceField( c, "value" );
+            const TSNode value = sliceField( c, NodeField::Value );
             if( ts_node_is_null( value ) )
             {
                 hasDefault = true;
@@ -1666,7 +1667,7 @@ struct SliceRdWalker
         SliceRdState handlerIn = dead();
         tryAcc.push_back( &handlerIn );
         SliceRdState tryOut = state;
-        stmt( sliceField( n, "body" ), tryOut );
+        stmt( sliceField( n, NodeField::Body ), tryOut );
         tryAcc.pop_back();
         SliceRdState        out        = tryOut;
         const std::uint32_t childCount = ts_node_named_child_count( n );
@@ -1678,8 +1679,8 @@ struct SliceRdWalker
                 continue;
             }
             SliceRdState h = handlerIn;
-            unit( sliceField( c, "parameters" ), h );
-            stmt( sliceField( c, "body" ), h );
+            unit( sliceField( c, NodeField::Parameters ), h );
+            stmt( sliceField( c, NodeField::Body ), h );
             sliceRdJoin( out, h );
         }
         state = out;
@@ -1691,9 +1692,9 @@ struct SliceRdWalker
     void preprocC( TSNode n, SliceRdState& state )
     {
         const auto [ bodyState, altState ] = slicePreprocBranchStates( n, src, SlicePp::Live );
-        const TSNode condition   = sliceField( n, "condition" );
-        const TSNode macroName   = sliceField( n, "name" );
-        const TSNode alternative = sliceField( n, "alternative" );
+        const TSNode condition   = sliceField( n, NodeField::Condition );
+        const TSNode macroName   = sliceField( n, NodeField::Name );
+        const TSNode alternative = sliceField( n, NodeField::Alternative );
         SliceRdState bodyOut = bodyState == SlicePp::Dead ? dead() : state;
         const std::uint32_t childCount = ts_node_named_child_count( n );
         for( std::uint32_t childIndex = 0; childIndex < childCount && !bodyOut.dead; ++childIndex )
@@ -1733,19 +1734,19 @@ struct SliceRdWalker
         }
         if( sliceKindIs( n, "while_statement" ) )
         {
-            const TSNode cond = sliceField( n, "condition" );
-            const TSNode alt  = sliceField( n, "alternative" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, "body" ), TSNode{},
-                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, "body" ), state, false );
+            const TSNode cond = sliceField( n, NodeField::Condition );
+            const TSNode alt  = sliceField( n, NodeField::Alternative );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{},
+                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body ), state, false );
             return true;
         }
         if( sliceKindIs( n, "for_statement" ) )
         {
-            unit( sliceField( n, "right" ), state );   // the iterable, evaluated once
-            const TSNode left = sliceField( n, "left" );
-            const TSNode alt  = sliceField( n, "alternative" );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( left, s ); }, sliceField( n, "body" ), TSNode{},
-                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, "body" ), state, false );
+            unit( sliceField( n, NodeField::Right ), state );   // the iterable, evaluated once
+            const TSNode left = sliceField( n, NodeField::Left );
+            const TSNode alt  = sliceField( n, NodeField::Alternative );
+            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( left, s ); }, sliceField( n, NodeField::Body ), TSNode{},
+                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body ), state, false );
             return true;
         }
         if( sliceKindIs( n, "try_statement" ) )
@@ -1755,7 +1756,7 @@ struct SliceRdWalker
         }
         if( sliceKindIs( n, "with_statement" ) )
         {
-            const TSNode        body       = sliceField( n, "body" );
+            const TSNode        body       = sliceField( n, NodeField::Body );
             const std::uint32_t childCount = ts_node_named_child_count( n );
             for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
             {
@@ -1797,11 +1798,11 @@ struct SliceRdWalker
     // if / elif / else: each arm enters from the previous condition's false path; no else keeps that path
     void ifPy( TSNode n, SliceRdState& state )
     {
-        unit( sliceField( n, "condition" ), state );
+        unit( sliceField( n, NodeField::Condition ), state );
         SliceRdState falseS = state, out = dead();
         {
             SliceRdState t = state;
-            stmt( sliceField( n, "consequence" ), t );
+            stmt( sliceField( n, NodeField::Consequence ), t );
             sliceRdJoin( out, t );
         }
         bool                hasElse    = false;
@@ -1811,15 +1812,15 @@ struct SliceRdWalker
             const TSNode c = ts_node_named_child( n, childIndex );
             if( sliceKindIs( c, "elif_clause" ) )
             {
-                unit( sliceField( c, "condition" ), falseS );
+                unit( sliceField( c, NodeField::Condition ), falseS );
                 SliceRdState t = falseS;
-                stmt( sliceField( c, "consequence" ), t );
+                stmt( sliceField( c, NodeField::Consequence ), t );
                 sliceRdJoin( out, t );
             }
             else if( sliceKindIs( c, "else_clause" ) )
             {
                 SliceRdState t = falseS;
-                stmt( sliceField( c, "body" ), t );
+                stmt( sliceField( c, NodeField::Body ), t );
                 sliceRdJoin( out, t );
                 hasElse = true;
             }
@@ -1839,7 +1840,7 @@ struct SliceRdWalker
         SliceRdState handlerIn = dead();
         tryAcc.push_back( &handlerIn );
         SliceRdState tryOut = state;
-        stmt( sliceField( n, "body" ), tryOut );
+        stmt( sliceField( n, NodeField::Body ), tryOut );
         tryAcc.pop_back();
         SliceRdState        handlersOut = dead(), normalOut = tryOut;
         TSNode              finallyClause{};
@@ -1867,7 +1868,7 @@ struct SliceRdWalker
             }
             else if( sliceKindIs( c, "else_clause" ) )
             {
-                stmt( sliceField( c, "body" ), normalOut );
+                stmt( sliceField( c, NodeField::Body ), normalOut );
             }
             else if( sliceKindIs( c, "finally_clause" ) )
             {
@@ -1892,8 +1893,8 @@ struct SliceRdWalker
     // is never proven here)
     void matchPy( TSNode n, SliceRdState& state )
     {
-        unit( sliceField( n, "subject" ), state );
-        const TSNode        body       = sliceField( n, "body" );
+        unit( sliceField( n, NodeField::Subject ), state );
+        const TSNode        body       = sliceField( n, NodeField::Body );
         SliceRdState        out        = state;
         const std::uint32_t childCount = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body );
         for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
@@ -1904,7 +1905,7 @@ struct SliceRdWalker
                 continue;
             }
             SliceRdState        s           = state;
-            const TSNode        consequence = sliceField( c, "consequence" );
+            const TSNode        consequence = sliceField( c, NodeField::Consequence );
             const std::uint32_t partCount   = ts_node_named_child_count( c );
             for( std::uint32_t partIndex = 0; partIndex < partCount; ++partIndex )
             {
