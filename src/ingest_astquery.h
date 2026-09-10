@@ -1334,6 +1334,8 @@ inline SpanTier spanTierOfNodeType( const char* type ) noexcept
 static void collectSpanTiers( TSNode root, std::uint32_t byteCount, SpanTierMap& out )
 {
     std::vector<TSNode> stack;
+    std::vector<TSNode> kids;     // reused across nodes — a warm walk allocates nothing per node
+    ChildCursor         cursor( root );
     stack.push_back( root );
     while( !stack.empty() )
     {
@@ -1354,10 +1356,15 @@ static void collectSpanTiers( TSNode root, std::uint32_t byteCount, SpanTierMap&
         // ALL children, not just the named ones — a comment is an `extra` in most grammars and several
         // spell it as an anonymous node, so a named-only walk silently misses exactly the tier this
         // function exists to find.
-        const std::uint32_t childCount = ts_node_child_count( n );
-        for( std::uint32_t c = childCount; c > 0; --c )
+        // Collected once, then pushed in REVERSE so the stack pops left to right — the same visit order
+        // the indexed loop had, at O(children) instead of O(children²). The width here is the FILE's: this
+        // walk starts at the root, and a comment is an extra spliced straight into the child array, so a
+        // 16 000-comment file made --grep's tier pass 56× the plain map of the same file before this became
+        // a cursor (test/childwalkscalecheck.sh, arm B3; the rule is on src/infra/tschildren.h).
+        collectChildren( n, cursor.cur, kids );
+        for( std::size_t c = kids.size(); c > 0; --c )
         {
-            stack.push_back( ts_node_child( n, c - 1 ) );
+            stack.push_back( kids[ c - 1 ] );
         }
     }
     // The stack walk emits in DFS pop order, which is not byte order once a subtree is skipped; the
@@ -1935,11 +1942,9 @@ std::vector<LocalNameFact> collectGatedLocalNames( std::string_view defBytes, st
     const TSNode root = ts_tree_root_node( tree );
     // the def parses as a single top-level function_definition inside a translation_unit — descend into
     // the translation_unit's children (bounded: one file-worth of def text, already size-capped upstream).
-    const std::uint32_t n = ts_node_child_count( root );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        ln_collectLocalDecls( ts_node_child( root, i ), ts_node_child( root, i ), 512, out, defStartLine, defBytes );
-    }
+    ChildCursor cursor( root );
+    forEachChild( root, cursor.cur, [ & ]( TSNode child )
+    { ln_collectLocalDecls( child, child, 512, out, defStartLine, defBytes ); return true; } );
     ts_tree_delete( tree );
     ts_parser_delete( parser );
     return out;

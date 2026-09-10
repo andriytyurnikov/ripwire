@@ -172,6 +172,7 @@ void ffiVisitNode( FfiCtx& cx, TSNode n, const char* t )
             {
                 // inner DFS: collect the identifier of every function_declarator in the linkage body.
                 std::vector<TSNode> inner;
+                ChildCursor         cursor( n );   // reused across nodes — this walk never recurses
                 inner.push_back( n );
                 while( !inner.empty() )
                 {
@@ -193,11 +194,12 @@ void ffiVisitNode( FfiCtx& cx, TSNode n, const char* t )
                             }
                         }
                     }
-                    const std::uint32_t mc = ts_node_child_count( m );
-                    for( std::uint32_t i = 0; i < mc; ++i )
-                    {
-                        inner.push_back( ts_node_child( m, i ) );
-                    }
+                    // O(children), not O(children²): an `extern "C"` block's declaration list is one node
+                    // holding every declaration in it AND every comment between them (extras land in the
+                    // child array — src/infra/tschildren.h). 16 000 of them measured 14× the identical
+                    // flood outside a linkage_specification before this became a cursor
+                    // (test/childwalkscalecheck.sh, arm B5). `inner` IS the work list, so APPEND.
+                    appendChildren( m, cursor.cur, inner );
                 }
             }
         }
@@ -471,30 +473,33 @@ void routesVisitNode( RouteCtx& cx, TSNode n, const char* t )
                     handlerName.assign( nodeSrc( nameNode ) );
                 }
             }
-            const std::uint32_t cc = ts_node_child_count( n );
-            for( std::uint32_t i = 0; i < cc; ++i )
+            // decorators of ONE definition: the count comes from the input, and a comment between two
+            // decorators is a further child, so the indexed form was O(children²) here too. No scaling arm
+            // exists for it (a decorator flood is not a shape any corpus produces) — this is the
+            // pure-iteration conversion, covered by the byte-identical arms (test/childwalkscalecheck.sh).
+            ChildCursor cursor( n );
+            forEachChild( n, cursor.cur, [ & ]( TSNode dec )
             {
-                const TSNode dec = ts_node_child( n, i );
                 if( !kindIs( ts_node_type( dec ), "decorator" ) )
                 {
-                    continue;
+                    return true;
                 }
                 const TSNode expr = ts_node_named_child( dec, 0 );
                 if( ts_node_is_null( expr ) || !kindIs( ts_node_type( expr ), "call" ) )
                 {
-                    continue;
+                    return true;
                 }
                 const TSNode fn = fieldChild( expr, NodeField::Function );
                 if( ts_node_is_null( fn ) || !kindIs( ts_node_type( fn ), "attribute" ) )
                 {
-                    continue;
+                    return true;
                 }
                 const std::string_view attrName = nodeSrc( fieldChild( fn, NodeField::Attribute ) );
                 const TSNode argsNode = fieldChild( expr, NodeField::Arguments );
                 const std::string path = firstPathStringArg( argsNode, src );
                 if( path.empty() )
                 {
-                    continue;
+                    return true;
                 }
 
                 HttpMethod method = HttpMethod::Unknown;
@@ -509,11 +514,12 @@ void routesVisitNode( RouteCtx& cx, TSNode n, const char* t )
                     method = httpMethodFromName( attrName );
                     if( method == HttpMethod::Unknown )
                     {
-                        continue; // not a recognized verb shortcut (e.g. .on_event)
+                        return true; // not a recognized verb shortcut (e.g. .on_event)
                     }
                 }
                 routeDefs.push_back( RouteDef{ fileId, ts_node_start_point( n ).row + 1, method, path, handlerName } );
-            }
+                return true;
+            } );
         }
         // JS/TS: ONE dispatch over every call_expression — client shapes (`fetch`, `axios.<verb>`) are
         // checked FIRST and UNCONDITIONALLY (their callee shape is specific enough to need no file gate),

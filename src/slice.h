@@ -48,6 +48,7 @@
 // */src/parser.c), not assumed from upstream docs.
 
 #include "preprocdead.h"   // #62: the ONE literal `#if 0`/`#if 1` rule, shared with the ingest call-ref pass
+#include "infra/tschildren.h"   // ChildCursor/forEachChild — both walks below descend from the FILE root
 #include "infra/sortutil.h"
 #include "model.h"
 #include "ingest.h"        // sliceGrammarForFile — path → grammar, ingest's one table
@@ -1085,17 +1086,20 @@ inline void sliceWalkPreproc( TSNode node, const SliceWalkCtx& ctx, SliceScan& s
     const TSNode condition   = sliceField( node, NodeField::Condition );
     const TSNode macroName   = sliceField( node, NodeField::Name );
     const TSNode alternative = sliceField( node, NodeField::Alternative );
-    const std::uint32_t ppChildCount = ts_node_child_count( node );
-    for( std::uint32_t childIndex = 0; childIndex < ppChildCount; ++childIndex )
+    // O(children), not O(children²): a `#if` block's child list is the whole guarded region, INCLUDING
+    // every comment in it as a direct child (extras are spliced into the array — src/infra/tschildren.h).
+    // The cursor is this frame's own because `walk` recurses back into here.
+    ChildCursor cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child )
     {
-        const TSNode child = ts_node_child( node, childIndex );
         if( ( !ts_node_is_null( condition ) && ts_node_eq( child, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( child, macroName ) ) )
         {
-            continue;   // macro names and #if expressions are never variable occurrences
+            return true;   // macro names and #if expressions are never variable occurrences
         }
         const bool isAlt = !ts_node_is_null( alternative ) && ts_node_eq( child, alternative );
         walk( child, ctx, scan, isAlt ? altState : bodyState );
-    }
+        return true;
+    } );
 }
 
 // one occurrence node: classify, anchor, drop-or-flag by preprocessor state, bind if it introduces
@@ -1153,11 +1157,12 @@ inline void sliceWalk( TSNode node, const SliceWalkCtx& ctx, SliceScan& scan, Sl
         return;   // an identifier is a leaf — nothing beneath it
     }
 
-    const std::uint32_t childCount = ts_node_child_count( node );
-    for( std::uint32_t i = 0; i < childCount; ++i )
-    {
-        sliceWalk( ts_node_child( node, i ), ctx, scan, pp );
-    }
+    // O(children), not O(children²). This walk starts at the FILE root, so the very first node it
+    // expands has one child per top-level construct AND one per comment between them — the width a
+    // 16 000-comment file hands it measured 60× its own control before this became a cursor
+    // (test/childwalkscalecheck.sh, arm B1). The cursor is this frame's own: the loop body recurses.
+    ChildCursor cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child ) { sliceWalk( child, ctx, scan, pp ); return true; } );
 }
 
 

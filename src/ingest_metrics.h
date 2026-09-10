@@ -5,7 +5,8 @@
 
 // ingest_metrics.h — the per-definition structural metrics, moved VERBATIM from ingest.cpp in the
 // 2026-08-29 split: cyclomatic complexity (Myers' &&/|| extension), cognitive complexity with its
-// nesting/hump accounting, the O(children) child collection (ChildCursor/collectChildren), the
+// nesting/hump accounting (the O(children) child collection it used to hold, ChildCursor/collectChildren,
+// now lives in src/infra/tschildren.h so walks outside this TU can obey the same rule), the
 // essential-complexity ev(G) single-exit reduction (CtrlNode arena, EvCtx, the why-tag taxonomy),
 // the local-variable-indexing walk (ln_*), the fused complexityOf DFS, and parameter/arity counting
 // (countParams, cc_paramArityExact, callArity). Pure metric machinery: reads an AST, fills RawDef
@@ -179,35 +180,12 @@ inline bool cc_isBooleanJoin( TSNode n, std::string_view src, Lang lang ) noexce
 }
 
 // ── O(children) child collection for whole-subtree walks ─────────────────────────────────────────────
-// ts_node_child( n, i ) restarts tree-sitter's child iterator from the FIRST child on every call, so an
-// indexed loop over a node's C children costs O(C²). Width is attacker-controlled: ONE 980 KB file of
-// 14 000 line comments hands the root 14 000 children and turned ingest into ~2 s of user CPU, quadratic
-// in line count (gate: test/padscalecheck.sh). Every unbounded-width walk below therefore collects the
-// child list ONCE per node with a TSTreeCursor — the same child set (named + anonymous + extras) in the
-// same left-to-right order, O(C) total. The cursor and the out vector are caller-owned and reused across
-// nodes, so a warm walk allocates nothing per node. Bounded-shape scans (base clauses, argument lists)
-// keep the indexed form — their widths come from the grammar, not from the input file.
-struct ChildCursor   // RAII — several walkers return mid-loop, so deletion must not depend on fallthrough
-{
-    TSTreeCursor cur;
-    explicit ChildCursor( TSNode n ) noexcept : cur( ts_tree_cursor_new( n ) ) {}
-    ChildCursor( const ChildCursor& ) = delete;
-    ChildCursor& operator=( const ChildCursor& ) = delete;
-    ~ChildCursor() { ts_tree_cursor_delete( &cur ); }
-};
-inline void collectChildren( TSNode n, TSTreeCursor& cur, std::vector<TSNode>& out )   // A4-F25: NOT noexcept — `out` allocates
-{
-    out.clear();
-    ts_tree_cursor_reset( &cur, n );
-    if( ts_tree_cursor_goto_first_child( &cur ) )
-    {
-        do
-        {
-            out.push_back( ts_tree_cursor_current_node( &cur ) );
-        }
-        while( ts_tree_cursor_goto_next_sibling( &cur ) );
-    }
-}
+// ChildCursor / collectChildren MOVED to src/infra/tschildren.h (audit P1-0, 2026-09-10). They were
+// defined here, inside this TU's unnamed namespace, which put them out of reach of the whole-subtree
+// walks compiled outside ingest.cpp — src/preprocdead.h kept the indexed O(C²) form for exactly that
+// reason and cost 56.67% of a cold llvm run. Unqualified lookup from this unnamed namespace still
+// finds rw::collectChildren, so every call site below is unchanged; the rule they enforce, and why a
+// bounded-shape scan keeps the indexed form, are stated in full on the new header.
 
 // bounded-depth search for a structured_binding_declarator anywhere under `n` — the vendored tree-sitter-cpp
 // grammar nests it TWO levels below the `declaration` node (declaration -> init_declarator ->
@@ -1341,11 +1319,14 @@ inline void ln_collectLocalDecls( TSNode node, TSNode funcRoot, int depth, std::
         }
         return;   // do not descend INTO a countable declaration's own subtree again (nothing further to find)
     }
-    const std::uint32_t n = ts_node_child_count( node );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        ln_collectLocalDecls( ts_node_child( node, i ), funcRoot, depth - 1, out, defStartLine, defBytes );
-    }
+    // O(children), not O(children²): the re-parsed subtree is a whole DEFINITION, whose body node holds
+    // one child per statement AND one per comment between them (extras are spliced into the child array —
+    // src/infra/tschildren.h). A 16 000-comment body measured 15× --lint without --naming-locals before
+    // this became a cursor (test/childwalkscalecheck.sh, arm B6). The cursor is this frame's own: the
+    // loop body recurses.
+    ChildCursor cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child )
+    { ln_collectLocalDecls( child, funcRoot, depth - 1, out, defStartLine, defBytes ); return true; } );
 }
 
 // collectGatedLocalNames itself (the ingest.h-declared, EXTERNAL-linkage entry point) is defined further
