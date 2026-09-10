@@ -400,9 +400,16 @@ printf '#pragma once\nint pubfn( int a );\nint pubfn( int a ){ return a; }\n' > 
 
 printf '#pragma once\nint pubfn( int a );\nint pubfn( int a ){ return a; }\nint newpubfn(){ return 1; }\n' > "$API/include/api.h"
 ONS="$( cd "$API" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
-printf '%s' "$ONS" | grep -q 'kind="api-surface" sym="newpubfn"[^/]*sev="minor"[^/]*surface="new-symbol"' \
-    && ok "api-surface tiering: brand-new public symbol → sev=\"minor\" surface=\"new-symbol\"" \
-    || { no "api-surface tiering: new-symbol case not tiered correctly"; printf '%s\n' "$ONS" | tr '>' '\n' | grep '<r '; }
+# Q-DIAL-4 (2026-09-10): the brand-new public symbol is a header COUNT, not a row. It could never gate — the
+# legend said so — it was one row per new export, and 193 of this repo's 1,177 committed ack rows are that
+# shape, acked by hand for a fact one attribute states. The TIER is still asserted, in the only two ways left
+# that can go wrong: the count must be right, and the row must not be there.
+printf '%s' "$ONS" | grep -q 'api-new-surface="1"' \
+    && ok "api-surface tiering: brand-new public symbol counted on the root (api-new-surface=1)" \
+    || { no "api-surface tiering: new-symbol not counted on the root"; printf '%s\n' "$ONS" | tr '>' '\n' | grep -E '<quality-delta|<r '; }
+printf '%s' "$ONS" | tr '>' '\n' | grep 'kind="api-surface"' | grep -q 'newpubfn' \
+    && { no "api-surface tiering: the new-symbol row is still emitted beside the count"; printf '%s\n' "$ONS" | tr '>' '\n' | grep '<r '; } \
+    || ok "api-surface tiering: no row for the brand-new export (the count replaced it)"
 ENS="$( cd "$API" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo $? )"
 [ "$ENS" = 0 ] && ok "api-surface tiering: new-symbol-only run does not gate exit 2" || no "api-surface tiering: new-symbol run should exit 0 (got $ENS)"
 

@@ -6098,16 +6098,22 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     //   (a) ONE OVERLOAD SET — every member shares one canonical id. Overloads of a function are near-
     //       identical by construction (emitTo|emitTo, sort::stable|sort::stable); reporting them as a copy is
     //       reporting the language.
-    //   (b) ONE FILE AND NO REUSED MEMBER — every member lives in the same file and none of them is a helper
-    //       the tree already leans on (fan-in >= kReusedHelperMinFanin). A sibling pair inside one body of
-    //       code is an alternate implementation the author is looking at while writing it (mergeHi|mergeLo,
-    //       gallopLeft|gallopRight), not the reuse decline these kinds exist to catch. The fan-in half is not
-    //       a hedge: copying a helper that three call sites already use is a real erosion whether the copy
-    //       lands next door or across the tree, and dropping it on file identity alone silently retired
-    //       test/clonededupcheck.sh's whole positive case — which is how this clause was found.
+    //   (b) WITHDRAWN — see the note below.
     //   (c) VENDORED — every member sits under a vendored path (see isVendoredPath). Upstream's shape is not
     //       this repo's to fix, and one commit produced 9 such rows.
-    // NOT a token floor: raising kMinCloneTokens was measured and REFUTED. The canonical true positive
+    // ONE-FILE IS NOT ON THIS LIST, and the reason is worth more than the rows it would have dropped. The
+    // audit's labelling rule W3b called a group whose members share one file "sibling/alternate
+    // implementations" (mergeHi|mergeLo, gallopLeft|gallopRight) and 13 groups were labelled WRONG by it. The
+    // clause was written, and TWO of this repo's own gates went red on it: test/clonededupcheck.sh's whole
+    // positive case is a copy of a reused helper appended to the SAME file, and test/qualitycheck.sh §3 pins
+    // a dup1/dup2 pair inside one new file as a duplication finding. Both were written deliberately, and both
+    // are right: a copy-pasted body is duplication wherever it lands, and file identity cannot tell a
+    // deliberate specialization from a paste. A hand rule in a labelling script does not outrank two gates
+    // that encode the opposite policy, so the drop is withdrawn rather than argued around. The rows it aimed
+    // at need the discriminator the acks themselves use — no shared domain identifier — which is a
+    // cloneidiom.h round, not a group-shape predicate.
+    //
+    // NOT a token floor either: raising kMinCloneTokens was measured and REFUTED. The canonical true positive
     // (synthetic S1, a 12-line copy of a reused helper) is 59 tokens, while the idiom collisions in the same
     // replay run 22, 24, 31, 36, 56, 65, 66, 74, 78, 91, 92, 96, 114 and 127 — a floor above 22 loses true
     // positives before it clears any noise. Token count is the wrong axis.
@@ -6118,13 +6124,9 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
         {
             return false;
         }
-        const auto*      ro      = g.inEdges.rowOffsets();
         bool             oneId   = true;
-        bool             oneFile = true;
         bool             allVend = true;
-        bool             reused  = false;
         std::string_view firstId;
-        std::uint32_t    firstFile = 0;
         bool             haveFirst = false;
         for( NodeId m : cg.members )
         {
@@ -6141,19 +6143,14 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             {
                 allVend = false;
             }
-            if( std::uint32_t( ro[m + 1] - ro[m] ) >= kReusedHelperMinFanin )
-            {
-                reused = true;
-            }
             if( !haveFirst )
             {
-                firstId = g.canonId[m]; firstFile = f; haveFirst = true;
+                firstId = g.canonId[m]; haveFirst = true;
                 continue;
             }
-            if( g.canonId[m] != firstId ) { oneId   = false; }
-            if( f != firstFile )          { oneFile = false; }
+            if( g.canonId[m] != firstId ) { oneId = false; }
         }
-        return oneId || ( oneFile && !reused ) || allVend;
+        return oneId || allVend;
     };
 
     gtl::btree_map<std::uint64_t, std::uint8_t> dupSeen;

@@ -14,8 +14,8 @@
 #      gate on a bar CROSSING or >= 25% growth, and a sub-bar doubling is a minor row rather than silence.
 #   4. api-surface — new-symbol rows are a header COUNT, a surface that SHRANK is not a regression, and a
 #      single trailing DEFAULTED parameter is minor.
-#   5. duplication / new-clone-of-reused-helper — an overload set, a one-file group and a vendored path are
-#      not this change's duplication.
+#   5. duplication / new-clone-of-reused-helper — an overload set and a vendored path are not this change's
+#      duplication; a same-file copy IS, which is why the audit's one-file drop was withdrawn.
 #   6. error-masking — a block whose only content is a COMMENT is a swallow.
 #
 # Fixtures are built in temp dirs (git-init where a section needs history); the repo is never touched.
@@ -292,9 +292,12 @@ ODP="$( cd "$DP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
 dup(){ rows "$ODP" | grep 'kind="duplication"' | grep "$1"; }
 dup 'alpha' >/dev/null && ok "duplication: the CROSS-FILE copy is still reported (synthetic S1's shape)" \
     || { no "duplication: the cross-file copy was dropped — the dial cut a true positive"; rows "$ODP" | grep duplication; }
+# THE ONE-FILE DROP WAS WITHDRAWN, and this arm is what it was withdrawn in favour of: a copy-pasted body is
+# duplication wherever it lands. test/clonededupcheck.sh and test/qualitycheck.sh §3 both pin exactly this
+# shape, deliberately, and a hand rule in the audit's labelling script does not outrank two gates.
 dup 'sameA' >/dev/null \
-    && { no "duplication: a group confined to ONE FILE is still reported"; rows "$ODP" | grep duplication; } \
-    || ok "duplication: a group confined to one file produces no row"
+    && ok "duplication: a same-file copy is STILL reported (the one-file drop was withdrawn)" \
+    || { no "duplication: the same-file copy was dropped — clonededupcheck and qualitycheck pin this shape"; rows "$ODP" | grep duplication; }
 # NON-VACUITY, checked rather than assumed: three of the four built-in prefixes (third_party/, vendor/,
 # node_modules/) are already dropped by the CRAWLER, so a fixture placed there would pass this arm on any
 # binary ever built — the first draft of it did. external/ is the one the crawler indexes, so it is the one

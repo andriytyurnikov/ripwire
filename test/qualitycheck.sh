@@ -97,8 +97,10 @@ printf '%s' "$OD" | grep -q 'kind="nesting" sym="deepen" was="' \
     && ok "nesting regression: deepen flagged (nesting grew over the bar)" || no "nesting regression missing"
 printf '%s' "$OD" | grep -q 'kind="params" sym="widen" was="' \
     && ok "params regression: widen flagged (param count grew over the bar)" || no "params regression missing"
-printf '%s' "$OD" | grep -q 'kind="api-surface" sym="newly_public"' \
-    && ok "api-surface regression: newly_public flagged (new exported symbol)" || no "api-surface regression missing"
+# Q-DIAL-4 (2026-09-10): a brand-new export is counted on the root, not printed as a row it can never gate on.
+printf '%s' "$OD" | grep -q 'api-new-surface="[1-9]' \
+    && ok "api-surface: the new exported symbol is counted on the root (api-new-surface)" \
+    || { no "api-surface: newly_public not counted"; printf '%s\n' "$OD" | tr '>' '\n' | grep -E '<quality-delta|<r '; }
 # precision: the pre-existing public decl must NOT be reported (it was in the baseline set)
 printf '%s' "$OD" | grep -q 'kind="api-surface" sym="existing_public"' \
     && no "existing_public wrongly flagged (it was already public in the baseline)" || ok "pre-existing public not re-flagged (precision)"
