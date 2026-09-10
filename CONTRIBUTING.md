@@ -438,9 +438,25 @@ Release CI job covered it.
 2. Build both flavours locally; run `python3 test/pargates.py . ./build/ripwire -j 6` green.
 3. Run the sanitizer build clean, and the determinism gate three times.
 4. Add any new `test/*check.sh` to `test/regression.sh` in the same commit.
-5. If your change alters emitted output, regenerate the goldens as their **own** commit with the
+5. **Never edit the published gate count by hand.** After adding a gate — and again after any rebase
+   or merge that moved the `for _g in …; do` loop — run `python3 docs/gatecount_build.py`. See below.
+6. If your change alters emitted output, regenerate the goldens as their **own** commit with the
    diff reviewed by eye — never bundled with logic.
-6. Keep formatting churn out of logic commits.
+7. Keep formatting churn out of logic commits.
+
+**The gate count is a build product.** It is stated in `README.md`, `docs/EVALS.md` and
+`present/deck5_ripwire_build.js` — eight sites — and every one of them is written by
+`docs/gatecount_build.py` from the single absorb loop in `test/regression.sh`, then gated by
+`test/gatecountcheck.sh`. Hand-writing it is not a style preference: two lanes that each add one gate
+both write N+1, git auto-merges the **identical** text clean, and the tree publishes N+1 against a loop
+of N+2 with every existing check green (each branch's count matches its own loop, and the merged loop
+matches main's — the member *sets* differ at the same number). That collided seven times in one night
+on 2026-09-10. The merge recipe is therefore: **union the `for _g in …` sets, run the generator, done.**
+
+Each published site carries a marker comment the generator owns — `<!-- gatecount -->` in markdown and
+HTML (invisible when rendered), `// gatecount` in the deck's JavaScript. A count claim on a line
+*without* that marker is a hand-written count, and the generator refuses the tree instead of leaving it
+behind. Do not spell the marker inside a site file except at a real site.
 
 Scope each commit. A commit that touches one concern is a commit a reviewer can actually check.
 
