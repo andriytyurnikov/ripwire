@@ -29,6 +29,7 @@
 // Exit 0 = all pass; nonzero = a failure.
 
 #include "../src/serialize.h"
+#include "../src/infra/hashutil.h"
 #include "../src/infra/jsonesc.h"
 
 #include <cstdio>
@@ -213,16 +214,21 @@ static std::string escapeXmlMutatedSet( std::string_view s )
 
 // ── the corpus ────────────────────────────────────────────────────────────────────────────────────────
 
-// UB-free deterministic generator (same shape as test/harnesscommon.h's, kept local so this TU needs
-// no extra include path).
+// Deterministic generator, sanitizer-clean by construction: the multiplies go through
+// hashutil::multiplyModulo64 (a 128-bit widen and mask) rather than wrapping in 64 bits, because G1
+// compiles these gates with -fsanitize=integer -fno-sanitize-recover=all and a plain `state * k` aborts
+// the run on unsigned-integer-overflow. Same reasoning, same shape as test/harnesscommon.h's generator;
+// kept local so this TU needs no second include path. Fixed seed => a failure reproduces anywhere.
 struct Rng
 {
     std::uint64_t state = 0x9E3779B97F4A7C15ull;
     std::uint64_t next() noexcept
     {
-        state = state * 6364136223846793005ull ^ 1442695040888963407ull;
+        state = rw::hashutil::multiplyModulo64( state, 6364136223846793005ull ) ^ 1442695040888963407ull;
         std::uint64_t m = state;
-        m ^= m >> 33;  m *= 0xFF51AFD7ED558CCDull;  m ^= m >> 33;
+        m ^= m >> 33;
+        m = rw::hashutil::multiplyModulo64( m, 0xFF51AFD7ED558CCDull );
+        m ^= m >> 33;
         return m;
     }
 };
