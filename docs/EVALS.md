@@ -5729,6 +5729,91 @@ A probe over three hand-picked fixtures would not have found this; 90 repos did.
 consequence and its resolution), and `.dSYM` debug-symbol bundles — 197 yaml-format relocation files
 and zero real config in the private validation corpus — are pruned by name suffix, pinned by a gate arm.
 
+### The narrow-counter family across four vendored scanners (2026-09-10)
+
+**Instrument:** the G1 asan flavour (`-fsanitize=address,undefined,integer,float-divide-by-zero,`
+`float-cast-overflow -fno-sanitize-recover=all`) plus `test/vendorpatchcheck.sh` arm I on
+`test/vendorwrapfix/`, over seven clones that had never been sanitizer-tested.
+
+**The trigger was one real file.** `rails/guides/source/getting_started.md` (105 436 B) exits 134 on
+its own — a single `.md` file, no include graph, no ripwire logic — at `markdown/src/scanner.c:1362`,
+where `s->indentation += advance( s, lexer )` accumulates a `size_t` column count into a `uint8_t`.
+Line 122 of that guide is a pipe-table row padded to 301 columns. Pre-existing since the grammar was
+vendored (`1d11ee80`, 2026-08-12). **64 tabs also suffice**, because `advance()` charges a tab at tab
+stop 4 — far more reachable in a real repository than 256 spaces, and its own fixture arm.
+
+**The shape is a family, which ruled out the ignorelist route.** Six of markdown's `+= advance(…)`
+instances are live aborts from three-line documents, in `match`, `parse_star`, `parse_plus`,
+`parse_ordered_list_marker`, `parse_minus` and `scan` — including the soft-line-ending lookahead at
+`scanner.c:1501`, which a fixture driving only `:1362` never reaches — and
+`parse_fenced_code_block`'s `level++` is a seventh. An exact-function `fun:` entry for `scan` would
+have exempted the site that fired and left five neighbours armed: the "exempted the neighbour, not
+the site" failure arm E was written for.
+
+**Sweeping the shape found three more grammars**, each a live `rc=134`: `rust/src/scanner.c:77`
+(`opening_hash_count++`), `lua/src/scanner.c:32` (`++count`), `csharp/src/scanner.c:205`
+(`dollar_advanced++`). Cleared as bounded rather than lucky: markdown's atx `level` (`uint16_t`,
+guarded `<= 6`), cpp/cuda's `delimiter_length` (`MAX_DELIMITER_LENGTH`), csharp's brace/quote
+counters, swift's `match_count`, elixir's `length`.
+
+#### The abort window and the wrong-parse window are different sizes
+
+This is the finding that governs both the remedy and the fixtures, and it is measured, not argued.
+The sanitizer aborts at **every** width ≥ 256. The **wrong parse** only fires while the wrapped
+value lands *under the threshold the parser tests* — `N mod 256` in 0..3:
+
+| N | indented `# Buried` | fence of N marks |
+| --- | --- | --- |
+| 255 | correct | correct |
+| 256, 257 | **heading minted at exit 0** | **fence never opens; body leaks as live markdown** |
+| 300 | correct — by luck (300 − 256 = 44) | correct — by luck |
+
+Two consequences. First, **saturation is the right remedy for both markdown counters**: indentation
+is read `>= 4`, `< 4` and `< list_item_indentation( block )` (max 17), and `level` is read `>= 3`
+before a fence may open — all *fixed* thresholds, where 255 answers exactly as any larger true value
+would. Wrapping does not blur those predicates, it inverts them. Second, **a fixture pinned at a
+round 300 reproduces the abort while asserting nothing about the parse**, so its plain-build arm
+would survive a full revert of the fix. Every width in `test/vendorwrapfix/` is therefore pinned at
+exactly 256 and gated with `==`, not `>=`.
+
+**The delimiter counters are genuinely a different case, also by measurement.** rust's
+`opening_hash_count`, lua's `count` and csharp's `dollar_advanced` close a token by matching the
+opening count, not against a fixed threshold. At 255, 256, 257 and 300 the symbols *after* the token
+are recovered identically in every case — there is no extraction difference to repair, so saturation
+would be a different wrong answer that merely looks like one. Those three keep an explicit cast,
+which makes the conversion defined (all G1 asks) and contributes **nothing** to `kParserVer`.
+
+**`kParserVer` 86 → 87, and the two measurements behind it disagree, so both are reported.** Map
+output is **byte-identical over 3 538 files** (1 258 `.md`, 132 `.rs`, 96 `.lua`, a 1-in-16 sample of
+2 052 `.cs`, from rails, django, vuejs/core, ripgrep, telescope.nvim, dotnet/runtime and this
+repository): no corpus file reaches 256 columns of indentation. A **constructed** 256-column ATX line
+does move — pristine emits `n="BuriedHeading"`, saturating does not. Byte-identical on real files is
+not byte-identical on all files, which is what `swift/001` and `yaml/002` could claim and this cannot,
+so the bump is owed, with `kIngestParserVerMirror` and a re-derived `test/qschemetrip.hash` in the
+same commit.
+
+**Post-patch, three corpora that had never been sanitizer-tested sweep clean** under the full G1
+stack — exit 0, empty stderr: rails (`files=3916 symbols=60700 edges=107493`), django
+(`files=3449 symbols=47830 edges=62591`), vuejs/core (`files=628 symbols=8287 edges=6731`).
+
+**The gate has two halves and the plain-build half was mutation-proven.** One fixture file per
+grammar, so a reverted patch turns exactly one file red. The exit code is the sanitizer tripwire and
+fires only under asan; the semantic assertions hold on the plain build, where a revert is an exit-0
+wrong answer rather than a crash. Run against a **fully reverted** binary, arm I comes back red with
+exactly `buriedByTwoFiftySixColumns buriedBySixtyFourTabs buriedInsideFence` — the mutation control
+that separates a gate from a comment. The fixture's list-continuation line is deliberately **not** in
+that list: it drives `scanner.c:1501` for the abort arm but mints no phantom either way, so asserting
+its absence would be a vacuous assertion dressed as coverage. Presence guards measure in `awk`
+because BSD grep caps interval repetition at 255, so a `{256,}` regex is a hard error on the macOS
+leg while passing under GNU grep.
+
+**Running that mutation found two defects in the gate itself**, both of which would have shipped: the
+run-measuring `awk` reset its accumulator on every line, so it reported the *last* line's value (0)
+rather than the file's longest run; and the patch files were being generated with `git diff` against
+the lane's own commit rather than against pristine upstream, which still reverse-apply-checks clean
+(arm B's test) while being useless as a re-vendor record. Each of the four patches is now verified to
+reconstruct the working tree byte-for-byte when applied to `origin/main`'s vendored sources.
+
 ### Swift shape coverage + TS #private — hand-port of stranded commit bb78f97 (2026-08-10)
 
 **Instrument:** `test/swiftshapecheck.sh` over `test/swiftshapefix/{EnumsAndTypes,Members,ProtocolSurface}.swift`
