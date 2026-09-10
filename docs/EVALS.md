@@ -2205,6 +2205,57 @@ checks into their own `flowTaskChoice` function (mirroring the existing `instrum
 extraction) and by inlining the small filler-word loop directly rather than introducing a shared
 helper that collided token-for-token with `weakSymbolCandidate`'s existing shape.
 
+### The four restored stop rules become measurable (2026-09-10)
+
+**The defect (audit F-R1-03).** #112 restored four frontmatter STOP RULES to the skill descriptions —
+`before-you-build` "A small feature with an obvious home needs none of this.", `fresh-eyes` "A
+single-lens question is a single call.", `orient` "Stop at the first rung that answers.",
+`write-tests` "For one target one `--seams` or `--callers` pass suffices." — and **no row in
+`test/skillevalfix/prompts.tsv` could see any of them**. Stripping all four left `split=test` bm25-desc
+hit@1 byte-identical at 63.8% and `split=dev` **1.4pp better**, with `skillevalcheck` 15/15 green
+either way. That is the same failure #112 itself repaired: the fix restored the TEXT without adding a
+MEASUREMENT, so the next rewrite that drops a stop rule ships green.
+
+**What now measures them.** 16 rows between the `STOP-RULE ROWS (2026-09-10)` markers in the corpus
+(all `split=dev` — the test split is frozen; `test/skillevalsplitcheck.sh` confirms `split=test`
+hit@1 unchanged at 63.8%), plus a new **stop-rule arm** in `test/skillevalcheck.sh` that asserts two
+different things, because a stop rule can fail two different ways:
+
+1. **PRESENCE, exact.** Each sentence is pinned in the gate verbatim, and the arm's strip must actually
+   remove it from that skill's `SKILL.md`. A rewrite that drops OR REWORDS a rule makes its strip a
+   no-op and the gate names which rule and stops. Whitespace between words is matched as `\s+` because
+   frontmatter folds — the wrap position is formatting, not the thing being measured.
+2. **LOAD-BEARING, differential.** The 16 rows are scored against `skills/` and against a mechanically
+   stripped copy the gate builds itself; the real tree must win by ≥12.5pp.
+
+| measurement (bm25-desc hit@1) | with the four rules | stripped |
+| --- | ---: | ---: |
+| the 16 stop-rule rows | **75.0%** | 50.0% |
+| — of which the 8 that echo the rules (`desc`) | **100.0%** | 50.0% |
+| — of which the 8 written to avoid them (`judged`) | 50.0% | **50.0%** |
+| whole corpus, `split=dev` (n=99) | **76.2%** | 72.6% |
+| whole corpus, `split=test` (n=183, frozen) | 63.8% | 63.8% |
+
+**The null result is the interesting one, and it is reported rather than buried.** The audit's own
+caveat was that its 8 prompts echo the stop rules' vocabulary and are therefore `desc`-shaped, and it
+proposed rows "phrased without quoting it". Eight such rows were written and measured: **50.0% with the
+rules and 50.0% without — zero discrimination.** A BM25 arm scores description TEXT, so it can only
+detect a sentence's removal through rows that share that sentence's words. "Phrase it without quoting
+the rule" is not available to this instrument; the exact-PRESENCE assertion above is what covers the
+case a lexical corpus cannot. The 8 rows are kept as ordinary hard judged rows (4/8 route correctly —
+their misses go to `find-bug`, `write-tests`, `handoff` and `navigate`, which is its own signal about
+how the descriptions read a "one lens only" request phrased in a user's words).
+
+**Red-first.** Against a skills tree with the four sentences mechanically stripped, six arms fail
+(four PRESENCE, the absolute floor, the differential) while **all 15 pre-existing arms still pass** —
+which is precisely the F-R1-03 finding, now closed by construction.
+
+**Floors were NOT moved.** A floor move is a deliberate recalibration commit. Slack as measured after
+this round: `split=test` hit@1 63.8% vs floor 52.0 (+11.8pp), sep-auc 0.901 vs 0.83 (+0.071);
+`split=dev` hit@1 76.2% vs floor 59.0 (+17.2pp), sep-auc 0.926 vs 0.75 (+0.176). The dev pair is
+outside the gate file's own stated policy (~10pp, ~0.06–0.07) and is left as a named owner decision
+(audit F-R1-10).
+
 ### `--help-task` weak-tier precision: the self-confirming gate and the config-key read (2026-09-10)
 
 **The defect, in one sentence each.** `does` was a symbol-slot cue AND `how does` is the
