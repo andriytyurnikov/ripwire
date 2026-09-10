@@ -84,9 +84,23 @@ inline constexpr std::uint32_t kNoFile = 0xFFFFFFFFu;   // "no repo file" sentin
 // a trailing '/' is dropped. Empty segments (from `//` or a leading '/') and `.` segments are elided.
 inline std::string lexicalNormalize( std::string_view path )
 {
-    const bool                     isAbsolute = ( !path.empty() && path.front() == '/' );
-    std::vector<std::string_view>  segs;                 // the surviving path components, in order
-    segs.reserve( 8 );
+    // ONE allocation, the returned string, and it is reserved: the segment list this used to build
+    // (`std::vector<std::string_view> segs; segs.reserve( 8 );`) was a second heap block on a function
+    // probeUpward calls ~25 times PER INCLUDE — 714,000 times on a 4,923-file Ruby tree, where the include
+    // adjacency was 87 ms of a 330 ms warm run (bench/PROFILE.md). Segments are appended to `out` directly
+    // and a `..` truncates it back to the previous '/', which is the same pop the vector did: `segs` could
+    // only ever hold real segments (`.`, `..` and empties take the other branches), so its
+    // `segs.back() != ".."` guard was invariant-true and is gone with it. `rootLen` is the prefix a `..`
+    // may never eat — 1 for an absolute path, 0 for a relative one — which is what makes the two degrade
+    // rules ("no-op at the filesystem root" vs "escaping above the base is unsound") one comparison.
+    const bool  isAbsolute = ( !path.empty() && path.front() == '/' );
+    std::string out;
+    out.reserve( path.size() );
+    if( isAbsolute )
+    {
+        out.push_back( '/' );
+    }
+    const std::size_t rootLen = out.size();
 
     std::size_t i = 0;
     while( i < path.size() )
@@ -105,9 +119,10 @@ inline std::string lexicalNormalize( std::string_view path )
         }
         else if( seg == ".." )
         {
-            if( !segs.empty() && segs.back() != ".." )
+            if( out.size() > rootLen )
             {
-                segs.pop_back(); // pop the previous real segment
+                const std::size_t cut = out.rfind( '/' );                       // pop the previous real segment
+                out.resize( ( cut == std::string::npos || cut < rootLen ) ? rootLen : cut );
             }
             else if( isAbsolute )                       { /* `..` at the filesystem root is a no-op */ }
             else
@@ -117,25 +132,14 @@ inline std::string lexicalNormalize( std::string_view path )
         }
         else
         {
-            segs.push_back( seg );
+            if( out.size() > rootLen )
+            {
+                out.push_back( '/' );
+            }
+            out.append( seg );
         }
 
         i = ( j < path.size() ) ? j + 1 : j;             // skip the '/'
-    }
-
-    // reassemble
-    std::string out;
-    if( isAbsolute )
-    {
-        out.push_back( '/' );
-    }
-    for( std::size_t k = 0; k < segs.size(); ++k )
-    {
-        if( k )
-        {
-            out.push_back( '/' );
-        }
-        out.append( segs[k] );
     }
     return out;
 }
