@@ -92,6 +92,7 @@ EXEMPT = {
     "dependencypincheck.sh":     "CMake-configure-level gate (checks CMakeLists.txt text + a throwaway cmake -S/-B configure); no ripwire binary",
     "dynmapsimdcheck.sh":        "builds its OWN standalone harness binaries per SIMD arm, independent of build/ripwire",
     "flagtablecheck.sh":         "pure file/doc-table check; no binary invocation",
+    "limitstablecheck.sh":       "gates docs/LIMITS.md against the CAP DECLARATIONS in src/, so its subject is the generator and the source text, not the binary — it binds no ripwire binary at all (the file contains neither RIPWIRE_BIN nor $BIN), the same shape as formatgatecheck below",
     "formatgatecheck.sh":        "runs scripts/formatcheck.sh under a pinned clang-format; the subject is the FORMATTER and the gated file list, so no ripwire binary is bound at all — the file contains neither RIPWIRE_BIN nor $BIN (verified by reading it), which is also why (2b)'s static tell needs no exemption for it",
     "g1configcheck.sh":          "greps CMakeLists.txt for the G1 sanitizer flag derivation; no binary invocation",
     "g1freshcheck.sh":           "checks asan/ripwire's mtime on disk against src/; never executes the binary",
