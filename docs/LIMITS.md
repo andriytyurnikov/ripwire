@@ -10,7 +10,7 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 114 | 50 | 62 | **52** |
+| 114 | 50 | 69 | **45** |
 
 Plus 6 ranking and apportionment parameters, in their own table below: they are not caps, they
 are not counted as caps, and 114 + 6 is the 120 constants this generator parses out of `src/`.
@@ -66,7 +66,7 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 | `kBudgetHeadroom` | `0.90` | `src/serialize.h:604` | **unsourced** | — |
 | `kCeilingFirstEntryTolerance` | `1.15` | `src/serialize.h:615` | **unsourced** | — |
 | `kCommonNameDefThreshold` | `5` | `src/graph.h:244` | **unsourced** | >5 defs of the same name ⇒ common (aider's) |
-| `kCoreBudgetShare` | `0.34` | `src/partition.h:84` | **unsourced** | — |
+| `kCoreBudgetShare` | `0.34` | `src/partition.h:98` | **unsourced** | — |
 | `kSpecificMinLen` | `8` | `src/graph.h:250` | **unsourced** | ≥8 chars …  (aider's) |
 | `kZoneDistanceThreshold` | `0.5` | `src/arch.h:742` | **unsourced** | \|A+I-1\| past this → classify into pain/useless |
 
@@ -137,9 +137,9 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kUnitComplexityLowRiskMax` | `5` | 80 | OUTPUT | cyclomatic complexity |
-| `kUnitInterfacingLowRiskMax` | `2` | 81 | OUTPUT | parameters |
-| `kUnitSizeLowRiskMax` | `15` | 79 | OUTPUT | lines |
+| `kUnitComplexityLowRiskMax` | `5` | 91 | OUTPUT | cyclomatic complexity |
+| `kUnitInterfacingLowRiskMax` | `2` | 92 | OUTPUT | parameters |
+| `kUnitSizeLowRiskMax` | `15` | 90 | OUTPUT | lines |
 
 ### `src/editpreview.h`
 
@@ -165,8 +165,8 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kExpandMaxPer` | `8` | 36 | OUTPUT | — |
-| `kExpandMaxSeeds` | `8` | 35 | OUTPUT | out-of-range env means OFF, never a clamp-and-guess |
+| `kExpandMaxPer` | `8` | 37 | OUTPUT | — |
+| `kExpandMaxSeeds` | `8` | 36 | OUTPUT | out-of-range env means OFF, never a clamp-and-guess |
 
 ### `src/filepool.h`
 
@@ -199,7 +199,7 @@ Discloses: `importers_capped`
 
 ### `src/handoff.h`
 
-Discloses: **none**
+Discloses: `syms_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
@@ -305,9 +305,9 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 475 | INDEXING | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 476 | INDEXING | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 477 | INDEXING | global cap — bounds token cost regardless of fan-out |
+| `kDocMentionMaxAnchors` | `8` | 546 | INDEXING | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 547 | INDEXING | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 548 | INDEXING | global cap — bounds token cost regardless of fan-out |
 | `kMentionMaxDirectSymbols` | `8` | 47 | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
 | `kMentionMaxFiles` | `4` | 45 | INDEXING | strongest evidence only: files named first in the text |
 | `kMentionMaxRawTokens` | `16` | 44 | INDEXING | extraction cap: first N candidate mention tokens, text order |
@@ -362,7 +362,7 @@ Discloses: `ranking_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kPackTaskRankTopN` | `12` | 75 | — | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
+| `kPackTaskRankTopN` | `12` | 79 | — | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
 
 ### `src/pageview.h`
 
@@ -385,7 +385,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxPartitions` | `16` | 81 | OUTPUT | — |
+| `kMaxPartitions` | `16` | 94 | OUTPUT | — |
 
 ### `src/pattern.h`
 
@@ -473,8 +473,8 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kSibliftMaxSeed` | `4` | 24 | OUTPUT | env values outside [1, kSibliftMax*] mean OFF, never a clamp-and-guess |
-| `kSibliftMaxSib` | `4` | 25 | OUTPUT | — |
+| `kSibliftMaxSeed` | `4` | 25 | OUTPUT | env values outside [1, kSibliftMax*] mean OFF, never a clamp-and-guess |
+| `kSibliftMaxSib` | `4` | 26 | OUTPUT | — |
 
 ### `src/situ.h`
 
@@ -493,10 +493,10 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kSliceFlowDefaultDepth` | `8` | 2093 | — | the disclosed default bound (depth= always states it) |
-| `kSliceFlowDepthMax` | `32` | 2097 | — | — |
-| `kSliceFlowDepthMin` | `1` | 2096 | — | — |
-| `kSliceRdMaxIter` | `64` | 1204 | OUTPUT | — |
+| `kSliceFlowDefaultDepth` | `8` | 2094 | — | the disclosed default bound (depth= always states it) |
+| `kSliceFlowDepthMax` | `32` | 2098 | — | — |
+| `kSliceFlowDepthMin` | `1` | 2097 | — | — |
+| `kSliceRdMaxIter` | `64` | 1205 | OUTPUT | — |
 
 ### `src/slicediff.h`
 
@@ -517,14 +517,14 @@ Discloses: **none**
 
 ### `src/tracelocus.h`
 
-Discloses: **none**
+Discloses: `name_ladder_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMeasuredDigitsPricedWidth` | `6` | 777 | OUTPUT | — |
-| `kNameCandidateCap` | `8` | 130 | OUTPUT | — |
-| `kTestHopBasenameRowCap` | `3` | 331 | OUTPUT | — |
-| `kTestHopCalleeRowCap` | `5` | 330 | OUTPUT | — |
+| `kMeasuredDigitsPricedWidth` | `6` | 873 | OUTPUT | — |
+| `kNameCandidateCap` | `8` | 141 | OUTPUT | — |
+| `kTestHopBasenameRowCap` | `3` | 424 | OUTPUT | — |
+| `kTestHopCalleeRowCap` | `5` | 423 | OUTPUT | — |
 
 ### `src/verbs_change.h`
 
