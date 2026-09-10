@@ -402,7 +402,8 @@ wherever they live — not by file path alone. On an astral-sh/ruff clone (5,945
 ---
 
 *The table above, read two other ways. Every figure in both is one of its measured numbers; only the
-manners and the cynicism are editorial.*
+manners and the cynicism are editorial. Should the reader find the manners excessive, the author begs
+them to recall that the alternative was a second table.*
 
 <details>
 <summary>📖 &nbsp;<b>The same table, as narrated by Jane Austen</b></summary>
