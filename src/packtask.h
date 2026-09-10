@@ -1538,6 +1538,7 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
             j += ",\"boost\":\"" + jsonStr( lr.boostNote ) + "\"";
         }
         appendLiftJsonKeys( j, lr.sibliftNote, lr.expandNote );
+        j += lr.capJson;                       // the --json twin of the root cap attrs; "" unless a cap fired
         if( !lr.docMentionNote.empty() )
         {
             j += ",\"doc_mention\":\"" + jsonStr( lr.docMentionNote ) + "\"";
@@ -1698,6 +1699,14 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
         char b[ 96 ];  rw::formatTo( b, sizeof( b ), " dropped_positive=\"{}\"", rankOut.droppedPositive );
         droppedPositiveAttr = b;
     }
+    // The indexing caps that cut this ranking belong on the root as ATTRIBUTES, not only inside the prose
+    // note at line 1226. --pack-task is the agent-facing bundle: a human reading the XML comment saw
+    // lr.capNote and an agent parsing attributes saw nothing, which is backwards for who consumes this.
+    // Appending here rather than at each buildHeader site is deliberate -- this string is what
+    // appendPackTaskRootExtras splices, so the partition-slice root (in.innerBundle) inherits it too, the
+    // same way M1 gave that path dropped_positive=. Same attribute names as the --for and MCP twins, so
+    // mcpattrparitycheck still sees one spelling on every root.
+    droppedPositiveAttr += lr.capAttrs;
 
     const PackTaskHeaderParts headerParts{ task, rootOpenStr, taskNote, mentionNote, boostNote,
                                             docMentionNote, sibliftNote, expandNote, report, droppedPositiveAttr, in.rootArg };

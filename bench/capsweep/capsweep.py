@@ -48,7 +48,7 @@ confidence="high" margin_pct="22" down to confidence="low" margin_pct="0" on thi
 bench/capsweep/sweep.json into the answer to a query about a cap. assert_corpus_clean below keeps the
 harness out of the frozen CORPUS; the file format keeps it out of the INDEX. Same rule, two surfaces.
 """
-import argparse, os, pathlib, re, shutil, subprocess, sys, collections
+import argparse, os, pathlib, re, shlex, shutil, subprocess, sys, collections
 
 HERE  = pathlib.Path(__file__).resolve().parent
 REPO  = HERE.parent.parent
@@ -146,7 +146,14 @@ def run_corpus(binary, root, corpus, env, timeout=120):
     out = {}
     for line in corpus:
         try:
-            argv = [os.path.expandvars(w) for w in line.split()]
+            # shlex, not line.split(): 37 of the 195 corpus rows carry a quoted multi-word value
+            # (--for="cache invalidation", --exemplar="format byte sizes for humans"). split() hands
+            # the binary --for="cache with a literal quote plus `invalidation` as a positional root,
+            # which exits 1 with `root path does not exist` and 0 bytes of stdout -- under EVERY cap.
+            # A row that measures 0 both sides has a delta of 0 and silently leaves the cap-sensitive
+            # set, so those 19% were not measuring the caps they were written to exercise. Verified
+            # against the real corpus: shlex.split gives exit 0 / 2530 B where split() gives exit 1 / 0 B.
+            argv = [os.path.expandvars(w) for w in shlex.split(line)]
             r = subprocess.run([str(binary)] + argv + ['--no-cache'], cwd=str(root),
                                capture_output=True, stdin=subprocess.DEVNULL, env=e, timeout=timeout)
             out[line] = len(r.stdout)
@@ -298,10 +305,26 @@ def freeze_corpus(scratch):
         if (corpus / d).exists(): shutil.rmtree(corpus / d)
     return assert_corpus_clean(corpus)
 
+SCRATCH_STAMP = '.capsweep-scratch'   # written into every scratch dir we create; required before we delete one
+
+def assert_deletable_scratch(scratch):
+    """--scratch takes an arbitrary path and cmd_prepare deletes it recursively. A typo (--scratch ~,
+    or the repo itself) is unbounded and irreversible, so refuse to delete anything this harness did
+    not create. An existing directory must carry our stamp; a fresh path is fine."""
+    if not scratch.exists():
+        return
+    if not scratch.is_dir():
+        sys.exit('capsweep: --scratch %s exists and is not a directory — refusing to delete it' % scratch)
+    if not (scratch / SCRATCH_STAMP).exists():
+        sys.exit('capsweep: --scratch %s was not created by capsweep (no %s) — refusing to delete it.\n'
+                 '          Remove it yourself, or point --scratch at a new path.' % (scratch, SCRATCH_STAMP))
+
 def cmd_prepare(a):
     scratch = pathlib.Path(a.scratch)
+    assert_deletable_scratch(scratch)
     if scratch.exists(): shutil.rmtree(scratch)
     scratch.mkdir(parents=True)
+    (scratch / SCRATCH_STAMP).write_text('capsweep scratch — safe to delete\n')
     # Copy EVERYTHING the build might read. A curated list looked tidy and cost a cycle: CMakeLists.txt
     # globs queries/<lang>/tags.scm, which was not on it, and cmake failed at configure time.
     SKIP = {'.git', 'build', 'asan', 'tsan', 'node_modules', '.cache'}
@@ -352,12 +375,19 @@ def cmd_screen(a):
         return ('%g' % max(v * 8.0, v + 32.0)) if v == int(v) else ('%g' % min(v * 4.0, 1.0))
     bump = {('RWCAP_%s' % n): bumped(n) for n in meta['tunable']}
     allb = run_corpus(binary, croot, corpus, bump)
+    # run_corpus records a timeout as None, on purpose ("recorded, never silently dropped"). A row
+    # where exactly one arm timed out therefore DIFFERS and lands in `sens`, and the delta print below
+    # would then subtract None. Keep it in the sensitive set -- a timeout under one arm and not the
+    # other is real signal -- but let it carry the word TIMEOUT instead of crashing the screen.
     sens = sorted(c for c in corpus if base.get(c) != allb.get(c))
     write_screen(scratch / 'screen.tsv', corpus, base, allb, sens, meta.get('measured_at'))
     print('corpus %d — cap-sensitive: %d (%.0f%%); the other %d respond to NO cap'
           % (len(corpus), len(sens), 100.0*len(sens)/len(corpus), len(corpus)-len(sens)))
     for c in sens[:15]:
-        print('  %+8d B   %s' % (allb[c]-base[c], c[:88]))
+        if base.get(c) is None or allb.get(c) is None:
+            print('  %8s   %s' % ('TIMEOUT', c[:88]))
+        else:
+            print('  %+8d B   %s' % (allb[c]-base[c], c[:88]))
 
 def cmd_sweep(a):
     """Per cap: which of the sensitive commands actually respond to THIS cap, and by how much.
