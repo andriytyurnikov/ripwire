@@ -247,7 +247,7 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4163 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4187 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — |
 
@@ -396,12 +396,12 @@ Discloses: `hits_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kGrepCollectionBudget` | `4000000` | 1424 | — |
-| `kGrepMatchedLineMaxBytes` | `512` | 939 | — |
-| `kGrepTierFileBudget` | `128` | 2044 | hit files classified per call |
-| `kMaxAffixSet` | `8` | 193 | cap on prefix/suffix set sizes |
-| `kMaxExactLen` | `24` | 192 | beyond this exact-string length, give up exactness (⊤) |
-| `kMaxExactSet` | `8` | 191 | beyond this many exact strings, give up exactness (⊤) |
+| `kGrepCollectionBudget` | `4000000` | 1445 | — |
+| `kGrepMatchedLineMaxBytes` | `512` | 941 | — |
+| `kGrepTierFileBudget` | `128` | 2072 | hit files classified per call |
+| `kMaxAffixSet` | `8` | 195 | cap on prefix/suffix set sizes |
+| `kMaxExactLen` | `24` | 194 | beyond this exact-string length, give up exactness (⊤) |
+| `kMaxExactSet` | `8` | 193 | beyond this many exact strings, give up exactness (⊤) |
 
 ### `src/serialize.h`
 
@@ -418,9 +418,9 @@ Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
 | `kForFileTailShownCap` | `24` | 814 | — |
 | `kForLensDefaultTopN` | `40` | 739 | — |
 | `kForPayloadBudgetBytes` | `7500` | 725 | — |
-| `kMaxExpandIncludes` | `24` | 4552 | inc= cap |
-| `kMaxExpandSibs` | `100` | 4543 | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
-| `kWithGraphNodeCap` | `8` | 5610 | — |
+| `kMaxExpandIncludes` | `24` | 4583 | inc= cap |
+| `kMaxExpandSibs` | `100` | 4574 | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
+| `kWithGraphNodeCap` | `8` | 5641 | — |
 
 ### `src/siblift.h`
 
