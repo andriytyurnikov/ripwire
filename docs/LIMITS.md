@@ -247,7 +247,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxAnchorDefs` | `3` | 1787 | — | — |
+| `kMaxAnchorDefs` | `3` | 1829 | — | — |
 
 ### `src/lintrules.h`
 
@@ -295,7 +295,7 @@ Discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4218 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4217 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
 
@@ -482,7 +482,7 @@ Discloses: `tests_capped`, `untested_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxUntestedRows` | `25` | 939 | — | — |
+| `kMaxUntestedRows` | `25` | 938 | — | — |
 | `kSituPartnerFileRowsShown` | `4` | 351 | — | section [1] — decl/def partner rows |
 | `kSituPartnerRowsShown` | `8` | 350 | — | section [3] — co-change partner rows |
 | `kSituTestRowsShown` | `25` | 349 | — | section [2] — tests-to-run rows |

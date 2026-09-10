@@ -1387,6 +1387,7 @@ inline void writeDef( ByteW& w, const RawDef& d, bool withLex, std::size_t fileD
         // specialized fill loops per width — no per-byte push_back on this multi-million-pair seam.
         const std::size_t count = d.lex.tokenTfs.size();
         char*             p     = w.extend( count * ( idxWidth + tfWidth ) );
+        VERIFY( count == 0 || rowDictIndex != nullptr );   // null only with an empty row: verifyCacheRecordMinimaTripwire's probe
         if( idxWidth == 1 )
         {
             for( std::size_t k = 0; k < count; ++k )

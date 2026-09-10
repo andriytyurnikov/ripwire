@@ -38,7 +38,7 @@ namespace rw
 //   • the file can't be re-read → refuse
 namespace mcpedit
 {
-    enum class Op { ReplaceBody, InsertBefore, InsertAfter };
+    enum class Op : std::uint8_t { ReplaceBody, InsertBefore, InsertAfter };
 
     // A1: the ONE wording for the binary-payload refusal, shared by the CLI arm (which names the flag),
     // the engine arm (which also covers MCP) and the edit-plan arm — three call sites, one sentence, so a
