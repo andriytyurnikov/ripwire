@@ -1173,3 +1173,200 @@ for rep in 1 2; do for arm in --grep=zzqxvnotpresentzz --help-task=zzq --callers
   /usr/bin/time -l build_prof/ripwire <scratch>/llvm-project "$arm" >/dev/null 2>"$arm.$rep.err"; done; done
 # the stderr report's "hottest scopes" table is the phase split; buildGraph/3 is the resolve loop
 ```
+
+---
+
+## 2026-09-09 — the loop-hoist sweep: going looking for the CHA-cone bug's siblings
+
+LEDGER rows, never a gate (the no-perf-budget rule). The correctness gate this round landed is
+`test/rustanccheck.sh`; it asserts sets, never seconds. The question came from the CHA-lite cone round
+earlier the same day (the section above): **work inside a loop that should not be in there has bitten this
+project several times, so go looking rather than wait for the next one.**
+
+### The method, and why the phase table came first
+
+The cone bug was not found by reading code. It was found by a CONTROL — `--help-task`, which runs the same
+crawl, cache and model work with **no graph build**, at 3.8 s against `--grep`'s 159.7 s on llvm-project.
+This round's equivalent was the phase table itself: `PROFILE_SCOPE` covered 12 of `src/graph.h`'s 259 loops
+and **none of `src/resolve.h`'s 69**, so 35% of `buildGraph`'s warm wall on `go` — 61 ms of 172 — was
+attributed to nothing at all. Instrumenting the gap (`buildGraph/1a..1i` for the prologue, `2a..2i` for the
+side tables, plus the crawl's directory walk and the shadow post-pass's two halves) is what turned the two
+findings below from invisible into obvious. `git diff -w` for that commit is 40 added lines.
+
+The second half of the method was **corpus diversity**, and it mattered more than the instrumentation.
+Every corpus in this file before today was C++, Go, Python or this repository. Adding
+`rust-lang/rust-analyzer` and `rails/rails` moved a phase from 3% of the run to 41% and 26% respectively —
+both findings below live on paths that no previously-measured corpus exercises at all.
+
+### Phase table — warm `--callers=main`, min of 4-5 interleaved runs, `-DRIPWIRE_PROFILE=ON`, AFTER this round
+
+18-core Apple Silicon, 48 GB, shared (1-minute load 3.5-4.5 across the session): read the ratios, not the
+third digit. Corpora by `rg --files`: `golang/go` 15,865; `django/django` 7,036; `rails/rails` 4,923;
+`rust-lang/rust-analyzer` 2,303; this repository 2,263; a private C++ tree 3,248.
+
+| phase (ms) | go | django | rails | rust-analyzer | this repo | private C++ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **ingest: total** | 252.3 | 154.5 | 102.9 | 52.0 | 61.3 | 103.2 |
+| — crawl (collectSources) | 83.3 | 99.5 | 47.8 | 21.5 | 25.9 | 27.3 |
+| — — git ignore probe (one `git ls-files` fork) | 41.5 | 54.9 | 27.0 | 14.4 | 18.0 | 18.8 |
+| — — directory walk (stat + classify) | 40.8 | 44.0 | 20.4 | 6.7 | 7.7 | — |
+| — build model | 83.3 | 24.1 | 19.0 | 14.2 | 14.5 | 36.3 |
+| — — shadow suppression (r9 post-pass) | 21.7 | 6.2 | — | 3.8 | 3.4 | 9.6 |
+| — loadCache (read + deserialize) | 39.0 | 14.3 | 17.6 | 8.7 | 7.8 | 15.9 |
+| — parse pool (tree-sitter, parallel) | 21.7 | 6.3 | 8.3 | 4.0 | 3.7 | — |
+| **buildGraph: resolve refs + build CSR** | 147.2 | 69.6 | 191.8 | 46.1 | 15.0 | 40.2 |
+| — /3 resolve loop (per reference) | 80.4 | 26.4 | 54.8 | 31.5 | 6.9 | 17.0 |
+| — /2b transitive include closure (resolve.h) | — | — | **61.9** | — | — | — |
+| — /2a precise include adjacency (resolve.h) | 2.6 | 6.5 | **52.8** | 2.1 | 0.6 | 1.8 |
+| — /1a canonId + localityKey (per symbol) | 20.2 | — | 5.0 | 2.6 | 1.2 | 3.9 |
+| — /2e Phase-5 external-veto tables | 3.5 | 10.2 | — | 0.6 | 0.8 | 1.4 |
+
+**The headline shape: after the cone fix there is no single dominant phase left on any corpus — but which
+phase is largest changes completely with the corpus's LANGUAGE.** On `go` it is the resolve loop and the
+crawl; on `rails` it is the two include-resolution functions in `resolve.h` that had no instrumentation at
+all before today; on `rust-analyzer` the resolve loop was 41% of the whole run at one seventh of `go`'s file
+count. A phase table taken on one corpus family is a phase table for that family only.
+
+### F1 — the Rust qualified-call ancestor closure: the same bug, in the function next door
+
+`keepRustQualifiedCandidates` (`src/graph.h`) admits a candidate for `Qual::name()` when the candidate's
+enclosing scope reaches `Qual` through the CHA-lite base-name graph. It answered that with a fresh
+transitive BFS **per candidate per reference** — `std::vector<std::string>` frontier, a full `std::string`
+COPY per queue element, an `O(n²)` `std::find` dedup, capped at 4,096. The cone bug's four properties, all
+four, thirty lines from the memo that fixed them.
+
+It was invisible because no corpus in this file had Rust in it. On `rust-analyzer`, warm: **7,539 active
+calls, 23.9 ms, 47% of the resolve loop and 17% of the whole run.**
+
+The fix computes each scope's capped base closure once, inside `ChaConeMemo` (same interning, same walk,
+same seed and discovery order, same outer-loop-only cap), answered by binary search.
+
+| rust-analyzer, warm, interleaved A,B | before | after |
+| --- | --- | --- |
+| `buildGraph/3` resolve loop (5 reps) | 49.4 48.0 49.8 49.4 48.4 ms | **33.0 32.1 32.2 32.2 32.1 ms** (−34%) |
+| `buildGraph` (5 reps) | 66.0 64.0 66.0 64.9 64.1 ms | **49.6 48.0 47.7 48.2 47.8 ms** (−26%) |
+| `--callers=main` wall, n=21, twice | — | **−13.2% / −13.2% median, −12.7% / −13.4% min** |
+| default map wall, n=21, twice | — | **−10.4% / −11.4% median, −9.5% / −10.3% min** |
+
+Controls (n=15 each): `go` +0.2%, this repository +0.4%, the private C++ tree −0.0% — the guard's active arm
+is Rust-only, so a non-Rust corpus must not move, and does not. Byte-identical on six corpora.
+
+### F2 — `lexicalNormalize` allocated a segment vector before it allocated its answer
+
+`probeUpward` walks from the includer's directory to the tree root; for a non-relative Ruby `require` it
+does that once per load root, and there are five. Each level calls `joinNormalizeLookup` → `lexicalNormalize`,
+which allocated a `std::vector<std::string_view>` (a `reserve( 8 )` heap block) **before** the string it
+returns. On `rails`: 28,555 includes, ~25 probes each, **714,000 calls paying two allocations where one is
+the answer** — 87 ms of a 330 ms warm run, 3.05 µs per include.
+
+Segments now append straight into the returned string; a `..` truncates back to the previous `/`; `rootLen`
+(1 absolute, 0 relative) makes the two degrade rules one comparison; the vector's `segs.back() != ".."`
+guard was invariant-true (only real segments were ever pushed) and went with it.
+
+| corpus, warm | median | min |
+| --- | ---: | ---: |
+| `rails` `buildGraph/2a`, 5 interleaved reps | 74.3-76.0 → **52.6-54.8 ms** | −28%, no rep the other way |
+| `rails --callers=main`, n=21, twice | **−6.0% / −6.2%** | −6.8% / −6.1% |
+| `rails` default map, n=15 | −4.8% | −4.4% |
+| `django --callers=main`, n=15 | −3.0% | −2.0% |
+| `go` / this repo / `rust-analyzer` / private C++, n=15 each | −0.5% −0.5% −0.6% −0.7% | — |
+
+Twelve of twelve run-level statistics favour it and none flips. Equivalence: a differential harness ran the
+old body and the new one over **4,000,000 generated paths**, 0 mismatches, with two mutation controls that
+produce 411,633 and 1,518,327 mismatches. Byte-identical on seven corpora.
+
+### F3 — the shadow-suppression predicate asked its LEAST selective guard first
+
+`suppressShadowedReferences`' per-reference predicate ANDs four pure guards, so their order is a cost
+decision and nothing else. `defNames.find( calleeName )` hits whenever ANY indexed symbol carries the name —
+for a call site, nearly always. `varSpans.find( "<caller>#<name>" )` hits only when THIS caller declares a
+local of exactly that name — rare. The common one ran first, so every reference in the corpus paid a full
+string hash to learn nothing. Swapped: same verdict by construction, byte-identical on four corpora.
+
+`go`, warm, 5 interleaved reps: **30.2 30.1 31.5 31.2 31.5 ms → 22.3 22.8 22.8 28.7 22.6 ms** (≈ −26%, never
+the other way). Whole run, two independent n=21 A/Bs: `--callers=main` −0.8% / −0.1% median, −2.7% / −1.4%
+min; default map −1.0% / −0.5% median. Under ~3,000 files the phase is small enough that the run-level
+number is inside the noise band and both directions appear — **the honest claim is the phase number plus
+"about 1% of a warm run on go"**, not a run-level headline.
+
+### R1 — REFUTED: memoising the bare-name candidate spray. Volume is not cost.
+
+The resolve loop's spray — `for( NodeId c : byName[ name ] )` keeping the language- and role-compatible
+defs — is a pure function of (name, `r.lang`, `r.role`) on a single-root run, recomputed once per
+REFERENCE. Scratch volume counters, warm:
+
+| corpus | refs | name hits | spray visits | namespace gate | tier-1 scan | tier-2 scan |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `go` | 671,200 | 655,306 | 16,401,717 | 16,349,433 | 16,349,433 | 12,850,696 |
+| private C++ | 122,119 | 63,969 | 388,265 | 426,743 | 426,743 | 325,883 |
+| this repo | 58,176 | 20,528 | 469,672 | 449,290 | 449,270 | 60,609 |
+
+The spray plus the gate is **53% of the loop's whole scan volume** on `go`. A memo keyed on
+(byName index, lang, role) into one contiguous arena removes both passes; it was built, gated
+(fill / different key / hit-after-growth, with three mutation controls each reddening exactly its own arm),
+proved byte-identical on four corpora and sanitizer-clean.
+
+**It measured nothing.** Interleaved phase A/B on `go`, `buildGraph/3`: A median 80.3 ms, B median 81.5 ms —
+the memo is *slightly slower*. Whole run, two n=21 A/Bs: −0.8% then −0.1% median, and the min flipped
+positive on the repeat. Suspecting the corpus rather than the fix, a purpose-built **8×-multiplicity tree**
+(14,072 files, eight copies of this repo's source in ONE root, so every name is defined eight times — the
+llvm `test`-defined-7,405-times shape) was measured too: A median 121.3 ms, B median 121.8 ms, whole run
++0.3%. **Reverted.**
+
+Why it cannot win is the same arithmetic the cone round already published for these five passes: ~3 ns a
+visit over sequential ids, the prefetcher's happy case, and most `byName` lists are 1-2 entries held inline
+by `rw::SmallVec<NodeId,2>`. The memo trades that for a 64-bit hash lookup per name hit plus a vector
+assign, which costs about what it saves. **Scan VOLUME is not a proxy for scan COST** — this is D2's lesson
+(docs/OPTREMARKS.md §6) arriving from the profile side instead of the compiler side.
+
+### R2 — REFUTED: the duplicate `canonId` / `localityKey` string, and the opaque call in a loop condition
+
+`buildGraph/1a` computes `canonicalId(...)` and `localityKeyOf(...)` per symbol, and for a SCOPED symbol
+those are the same string built twice (`localityKeyOf`'s own comment says so). Ablation — interleaved, the
+second string simply not written for scoped symbols — gives a real phase win and an irrelevant absolute one:
+this repo 1.28 → 1.05 ms, private C++ 4.20 → 2.94 ms, the 8× tree 6.34 → 4.90 ms, and **`go` 21.5 → 22.7 ms
+(nothing, because Go symbols carry no scope)**. The best case is 1.3 ms of a 160 ms run. Dismissed on the
+arithmetic, exactly as D1 dismisses PageRank: there is no version of this work that shows up in a wall-clock
+number, and the sentinel it would need makes the code read worse.
+
+Same verdict for `for( i = 0; i < ts_node_named_child_count( node ); ++i )` — an opaque C call re-evaluated
+every iteration, which is precisely the class this round hunted. There are **7 such sites** (`ingest_elixir.h`
+×5, `ingest_relations.h` ×2); every one is on an Elixir/Lua/Ruby literal-node path, and every one iterates
+the children of a string or tuple node — one to three of them. Hoisting is correct and unmeasurable.
+
+### Open, with numbers — what this round did NOT fix
+
+1. **`buildGraph/2b` transitive include closure, 61.9 ms on `rails`** — now the single largest phase there.
+   It is an all-pairs reachability: Σ|closure| = **3,994,331** ids over 3,916 files, max closure 1,420, and
+   **38.7 ms of it is `std::sort`** on 3,916 runs averaging 1,020 elements. The `std::unique` after that sort
+   removed **0 duplicates in 3,916 calls** (the epoch stamp already guarantees uniqueness) at 0.98 ms — real,
+   provable, and too small to be worth the churn on its own. The sort exists only to make membership a
+   `binary_search`; at 26% density a bitset would remove it, but the materialisation scan is Θ(F/64) per
+   source and that trade could not be tested at llvm scale this round, so it was not attempted.
+2. **`buildGraph/2a`, still 52.8 ms on `rails` after F2** — the remaining cost is the two allocations
+   `joinNormalizeLookup` still pays per probe (`joined`, then the normalized copy) times ~25 probes per
+   include. Threading a caller-owned scratch buffer through `probeUpward`/`joinNormalizeLookup` is the
+   in-house shape (`Narrower::keyScope` and friends) and is the next thing to try.
+3. **`ingest: crawl (git ignore probe)`, 41.5 ms on `go` and 54.9 ms on `django`** — one `git ls-files` fork,
+   10-20% of a warm run, already documented 2026-09-03. Not loop work; listed because the phase table now
+   makes it the second-largest ingest item on two corpora.
+4. **`ingest/loadCache: deserialize file records`, 37.9 ms on `go`** — allocation-bound (`FileFacts` carries
+   several `std::string`s), not loop-invariant work. Read, dismissed for this round.
+
+### Reproduce
+
+```
+cmake -S . -B build_prof -DRIPWIRE_PROFILE=ON && cmake --build build_prof -j
+git clone --depth 1 https://github.com/rails/rails               <scratch>/rails
+git clone --depth 1 https://github.com/rust-lang/rust-analyzer   <scratch>/rust-analyzer
+export TMPDIR=<scratch>/tmp-rails; mkdir -p "$TMPDIR"
+build_prof/ripwire <scratch>/rails --callers=main >/dev/null 2>prime.err   # warm prime, then re-run
+# the stderr report's "hottest scopes" table is the phase split; take the MIN over >=4 runs, not one run —
+# a single run on this shared box read buildGraph/3 at 111 ms and 80 ms an hour apart, and the difference
+# was the machine, not the code. Every A/B in this section is interleaved A,B,A,B for the same reason.
+```
+
+**llvm-project could not be re-measured this round.** A `--depth 1` clone ran at ~4 MB/min against a 2.9 GB
+pack — about 12 hours — and was abandoned. Every number above is from a corpus that fits the link. The
+consequence is stated rather than buried: R1's refutation is proved up to 15,868 files and an 8×-multiplicity
+14,072-file tree, and not beyond.
