@@ -1934,7 +1934,7 @@ each verb is for. Install as symlinks back into this repo, so edits here take ef
 immediately:
 
 ```bash
-skills/install.sh                 # → ~/.claude/skills
+skills/install.sh                 # → ${CLAUDE_CONFIG_DIR:-~/.claude}/skills
 skills/install.sh --codex         # → ${AGENTS_HOME:-~/.agents}/skills (canonical Codex/agent path)
 skills/install.sh --codex --hook  # → also install Codex's task router, CLI nudge + session primer
 skills/install.sh --codex-legacy  # → ${CODEX_HOME:-~/.codex}/skills (older Codex installs)

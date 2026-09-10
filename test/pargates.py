@@ -26,7 +26,7 @@ only = None
 jsonout = None
 shard = None          # (k, n): run only the k-th of n deterministic slices of the gate list
 shard_plan = False    # print every slice's membership and predicted weight, run nothing
-budget_scale = 1.0    # multiply the DEFAULT per-gate budget (never the explicit overrides) -- CI passes >1
+budget_scale = 1.0    # scales the DEFAULT budget; a declared override acts as a FLOOR under it -- CI passes >1
 exclude_list = None   # a committed file naming gates this leg does not run (one per line, # comments)
 args = sys.argv[3:]
 for i, a in enumerate(args):
@@ -212,8 +212,19 @@ exclusive = {"editcheckcheck.sh"}
 # 151 s local -> rc=124 at 300.1 s; paginationcheck 53 s local -> rc=124 at 300.0 s). Sixty-four uncapped gates
 # sit inside that multiplier of the cap, so per-gate entries would be the wrong shape -- and raising the constant
 # itself would blunt the tripwire on the machines it was measured on. So CI passes a scale factor that applies
-# to the DEFAULT only; the explicit entries in GATE_BUDGET_SEC were derived from CI measurements and stay as
-# declared. The TIMEOUT message names the effective budget and the scale, so a red still names its own limit.
+# to the DEFAULT, and a declared entry below acts as a FLOOR under it rather than a ceiling over it. The
+# TIMEOUT message names the effective budget and the scale, so a red still names its own limit.
+#
+# The floor (2026-09-10) repairs an inversion the first shape had. Skipping the scale for declared entries
+# meant that under CI's --budget-scale 4 the gates this table calls out as HEAVY were the only gates in the
+# job running on LESS time than an ordinary one: crossdirincludecheck, which builds a whole second ripwire
+# from git HEAD, got 900 s while xmlwellformed -- which pipes one map through xmllint -- got 300 x 4 = 1200.
+# Measured on a CI run of main (34479806177, macos-14 Release shard 2/2): crossdirincludecheck rc=124 at
+# 900.1 s in a shard whose wall was 3588.6 s, with xmlwellformed at 585.8 s and rootrelcheck at 345.9 s in
+# the same job -- every gate on that runner ran 6-10x its idle-local wall, and only the UNDECLARED ones had
+# a budget that had moved with it. max(declared, default x scale) keeps each declared number meaningful on
+# the machine it was measured on (at scale 1.0 the declared value still wins, unchanged) and stops the table
+# from buying a gate less time than saying nothing would have. It never loosens a tripwire below today.
 DEFAULT_TIMEOUT_SEC = 300
 GATE_BUDGET_SEC = {
     "crossdirincludecheck.sh":    900,
@@ -377,10 +388,15 @@ def failure_report(out, logpath):
 
 def run(g):
     env = dict(os.environ, RIPWIRE_BIN=binp)
+    scaled_default = int( round( DEFAULT_TIMEOUT_SEC * budget_scale ) )
     if g in GATE_BUDGET_SEC:
-        limit, scaled = GATE_BUDGET_SEC[g], ""
+        # A declared entry is a FLOOR, not a ceiling: it is the number below which this gate would be a
+        # hang even on an idle machine. It must never buy the gate LESS time than an undeclared one gets.
+        declared = GATE_BUDGET_SEC[g]
+        limit = max( declared, scaled_default )
+        scaled = "" if limit == declared else f", declared {declared}s raised to the scaled default {DEFAULT_TIMEOUT_SEC}s x --budget-scale {budget_scale:g}"
     else:
-        limit = int(round(DEFAULT_TIMEOUT_SEC * budget_scale))
+        limit = scaled_default
         scaled = "" if budget_scale == 1.0 else f", default {DEFAULT_TIMEOUT_SEC}s x --budget-scale {budget_scale:g}"
     t0 = time.time()
     with running_lock:
