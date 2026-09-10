@@ -132,5 +132,74 @@ rows "$ODC" | grep 'kind="dead-code"' | grep -q 'Extra' \
     && ok "dead-code: byte-identical run to run (deterministic)" || no "dead-code: non-deterministic delta"
 
 
+# ── 3) verbosity counts CODE lines; verbosity + complexity gate on a CROSSING or >= 25% growth ───────────
+# Q1 measured the median growth of a GATING verbosity row at 6% and of a gating complexity row at 6%, while
+# 60 pure BLANK lines added to an 18-LOC body produced `was="18" now="78"`, gating, exit 2. Both halves are
+# fixed here: the metric stops counting blank and comment-only lines, and the severity asks how much this
+# change ADDED rather than only where the number landed. One fixture, one working edit, six shapes.
+VB="$WORK/verb"; mkdir -p "$VB/src"
+( cd "$VB" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false )
+gen(){ python3 - "$VB/src/v.cpp" "$1" <<'PY'
+import sys
+p, stage = sys.argv[1], sys.argv[2]
+def body(n):                       # n CODE lines inside the braces
+    return "".join("    x += %d;\n" % (i % 7 + 1) for i in range(n))
+def ifs(n):                        # n sequential ifs at depth 0 => cognitive complexity n
+    return "".join("    if( x == %d ) { x += 1; }\n" % i for i in range(n))
+after = stage == "after"
+out = []
+out.append("int blankGrow( int x ){\n" + body(10) + ("\n"*60 if after else "") + "    return x;\n}\n")
+out.append("int commentGrow( int x ){\n" + body(10) + ("".join("    // note %d\n" % i for i in range(60)) if after else "") + "    return x;\n}\n")
+out.append("int crosser( int x ){\n" + body(70 if after else 50) + "    return x;\n}\n")
+out.append("int chronic( int x ){\n" + body(210 if after else 200) + "    return x;\n}\n")
+out.append("int doubler( int x ){\n" + body(45 if after else 20) + "    return x;\n}\n")
+out.append("int cxDoubler( int x ){\n" + ifs(13 if after else 5) + "    return x;\n}\n")
+out.append("int cxChronic( int x ){\n" + ifs(33 if after else 30) + "    return x;\n}\n")
+out.append("int cxCrosser( int x ){\n" + ifs(20 if after else 10) + "    return x;\n}\n")
+open(p, "w").write("".join(out))
+PY
+}
+gen before
+( cd "$VB" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
+gen after
+OVB="$( cd "$VB" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+vrow(){ row "$OVB" "$1" "$2"; }
+# (a) BLANK and COMMENT lines are not debt — the two synthetics that gated before.
+for f in blankGrow commentGrow; do
+    vrow verbosity "$f" >/dev/null \
+        && { no "verbosity: $f reported — blank/comment lines are still counted as debt"; vrow verbosity "$f"; } \
+        || ok "verbosity: $f produces no row (60 blank/comment lines are not code)"
+done
+# (b) a CROSSING still gates, on both kinds — the shape commit 65d98b76 was written to clear.
+vrow verbosity crosser | grep -q 'gating="1"' \
+    && ok "verbosity: crosser 50 -> 70 code lines CROSSES the bar and gates" \
+    || { no "verbosity: a bar crossing must still gate"; vrow verbosity crosser; }
+vrow complexity cxCrosser | grep -q 'gating="1"' \
+    && ok "complexity: cxCrosser ccx 10 -> 20 CROSSES the bar and gates" \
+    || { no "complexity: a bar crossing must still gate"; vrow complexity cxCrosser; }
+# (c) over the bar but grew under 25% — a real row, printed, minor, not gating.
+vrow verbosity chronic | grep -q 'sev="minor"' \
+    && ok "verbosity: chronic 200 -> 210 (+5%) is sev=minor, not a gate" \
+    || { no "verbosity: +5% on an already-huge body must not gate"; vrow verbosity chronic; }
+vrow complexity cxChronic | grep -q 'sev="minor"' \
+    && ok "complexity: cxChronic 30 -> 33 (+10%) is sev=minor, not a gate" \
+    || { no "complexity: +10% on an already-complex body must not gate"; vrow complexity cxChronic; }
+# (d) UNDER the bar, a doubling is a minor row instead of silence (synthetics S4b / S8-sub-bar).
+vrow verbosity doubler | grep -q 'sev="minor"' \
+    && ok "verbosity: doubler 20 -> 45 code lines (under the bar, +125%) is a minor row" \
+    || { no "verbosity: a sub-bar doubling should be a minor row (S4b)"; vrow verbosity doubler; }
+vrow complexity cxDoubler | grep -q 'sev="minor"' \
+    && ok "complexity: cxDoubler ccx 5 -> 13 (under the bar, +160%) is a minor row" \
+    || { no "complexity: a sub-bar doubling should be a minor row (S8)"; vrow complexity cxDoubler; }
+vrow verbosity doubler | grep -q 'gating="1"' \
+    && no "verbosity: a sub-bar row must never gate — nothing is over the bar yet" \
+    || ok "verbosity: the sub-bar row does not gate"
+# bar= semantics are unchanged: it still names the kind's own threshold.
+vrow verbosity crosser | grep -q 'bar="60"' && ok "verbosity: bar=60 unchanged" || no "verbosity: bar= moved"
+vrow complexity cxCrosser | grep -q 'bar="15"' && ok "complexity: bar=15 unchanged" || no "complexity: bar= moved"
+[ "$OVB" = "$( cd "$VB" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
+    && ok "verbosity/complexity: byte-identical run to run (deterministic)" || no "verbosity/complexity: non-deterministic delta"
+
+
 [ "$fail" = 0 ] && echo "qddialscheck: ALL PASS" || echo "qddialscheck: FAILURES"
 exit "$fail"

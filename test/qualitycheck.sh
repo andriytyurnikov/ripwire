@@ -146,8 +146,8 @@ case "$V1EC" in
     *)     no "pre-v4 baseline crashed (exit $V1EC)" ;;
 esac
 case "$V1OUT" in
-    *"predates the pathQualifiedKey scheme"*) ok "the pre-v4 sidecar is REFUSED by name, not silently misread" ;;
-    *) no "a pre-v4 sidecar was consumed without a refusal — every symbol would read as new debt: $( printf '%s' "$V1OUT" | head -c 160 )" ;;
+    *"predates this binary's baseline format"*) ok "the outdated sidecar is REFUSED by name, not silently misread" ;;
+    *) no "an outdated sidecar was consumed without a refusal — every symbol would read as new debt: $( printf '%s' "$V1OUT" | head -c 160 )" ;;
 esac
 # (b) WITH git history the refusal must land on the disclosed git-HEAD fallback rather than on nothing.
 if command -v git >/dev/null 2>&1; then

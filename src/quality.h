@@ -93,6 +93,19 @@ constexpr std::uint32_t   kMinorCcxDelta   = 3;    // complexity: delta < 3 → 
 constexpr std::uint32_t   kMinorLocDelta   = 10;   // verbosity:  delta < 10 LOC → minor
 constexpr std::uint32_t   kMinorParamDelta = 2;    // params:     +1 param → minor; +2 or more → major
 
+// Q-DIAL-3 (2026-09-10) — GROWTH IS A SIGNAL, and the bar alone was not one. `now > was && now > BAR` says
+// nothing about how much this change added: audit lane Q1 measured the median growth of a GATING complexity
+// row at 6% and of a gating verbosity row at 6% (§2d) — +3% on a function that was 1,068 lines before the
+// change gated, while 6 → 55 LOC (9x) and ccx 5 → 13 (+160%) were invisible because neither ends up over the
+// bar. Two thresholds fix both halves, and they apply to complexity and verbosity ONLY (params is the
+// highest-precision kind in the table at 77% and nesting has no measured false positive — neither is moved
+// on a hunch):
+constexpr std::uint32_t   kMaterialGrowthPct = 25;    // over the bar: gate on a bar CROSSING, or on growth >= this. Otherwise the row is real, reported, and sev="minor" — chronic debt the change did not create.
+constexpr std::uint32_t   kSubBarGrowthPct   = 100;   // UNDER the bar: a DOUBLING is worth a minor row rather than silence (synthetics S4b/S8) — never gating, because nothing is over the bar yet.
+// …with a floor so a 3 → 6 line helper is not a finding. Two thirds of the kind's own bar, so the floor moves
+// with the bar it belongs to and there is no third number to keep in sync: ccx 10, loc 40.
+inline constexpr std::uint32_t subBarGrowthFloor( std::uint32_t bar ) noexcept { return ( bar * 2 ) / 3; }
+
 // Signal-to-noise round — the per-finding ACK RATCHET sidecar (`--quality-ack[=REASON]`): each line records one
 // deliberately-accepted finding; --quality-delta suppresses it (honestly, via acked="N") until the finding
 // WORSENS past the acked magnitude, at which point it reappears. Committable, like the baseline sidecar.
@@ -166,7 +179,7 @@ inline std::string baselineCanonId( const IngestResult& ing, NodeId i, std::stri
 struct Snapshot
 {
     gtl::btree_map<std::uint64_t, std::uint32_t> ccxBySym;    // hash(canonId) → MAX ccx (btree = sorted iteration for the byte-stable sidecar)
-    gtl::btree_map<std::uint64_t, std::uint32_t> locBySym;    // Q1 verbosity  — hash(canonId) → MAX physical LOC (the master variable, §1d)
+    gtl::btree_map<std::uint64_t, std::uint32_t> locBySym;    // Q1 verbosity  — hash(canonId) → MAX CODE lines (Q-DIAL-3: blank and comment-only lines are not debt; see codeLinesInBody). ALSO the r26 ORIGIN oracle, which reads MEMBERSHIP only, so the value change does not touch it.
     gtl::btree_map<std::uint64_t, std::uint32_t> nestBySym;   // Q1 erosion    — hash(canonId) → MAX control-nesting depth
     gtl::btree_map<std::uint64_t, std::uint32_t> paramsBySym; // Q1 erosion    — hash(canonId) → MAX parameter count
     gtl::btree_map<std::uint64_t, std::uint32_t> defsBySym;   // hash(canonId) → COUNT of definitions sharing the id (an overload set's CARDINALITY, deliberately NOT a MAX — see computeSnapshot)
@@ -766,6 +779,137 @@ inline void forEachSymbolBody( const IngestResult& ing, Fn&& visit )
             visit( i, s, std::string_view( bytes.data() + s.sigStartByte, s.endByte - s.sigStartByte ) );
         }
     }
+}
+
+// Q-DIAL-3 (2026-09-10) — THE VERBOSITY KIND'S METRIC: CODE lines, not physical lines.
+//
+// `Symbol::loc` is the def's physical line span, and the verbosity kind judged it directly. That makes blank
+// lines and comments debt: audit lane Q1 added 60 PURE BLANK lines inside an 18-LOC body and got
+// `verbosity was="18" now="78"`, gating, exit 2 — and the same for 60 pure COMMENT lines, in a repo whose own
+// CONTRIBUTING.md requires the reasoning to be written down. It is not hypothetical either: landed commit
+// 7d5dd201 ("comment(caps): update three stale cap justifications") added 7 comment lines and 1 code line and
+// produced two verbosity regression rows. Measured composition of what the kind judges, over 60 rows:
+// 72.8% code, 23.3% comment, 3.9% blank.
+//
+// A LINE HEURISTIC, NOT A LEXER, and the floor is stated rather than implied: a line counts as code unless it
+// is blank or its first non-space characters open a comment. So a trailing comment after code counts as code
+// (correct), a comment marker inside a string literal makes that line read as a comment (wrong, and rare), and
+// a multi-line raw string full of blank lines reads as blank (wrong, and rarer). The alternative is a second
+// tokenization pass per symbol on every --quality-delta, for a metric whose whole job is to say "this body is
+// big". Both sides of every comparison run the identical rule, which is the property the delta actually needs.
+//
+// Markers by language family, from the symbol's own `lang`: `//` plus `/* … */` for the C family and its
+// descendants, `#` for the shell/Python/Ruby/Elixir/config family (in the C family `#` opens a PREPROCESSOR
+// directive, which is code — that is why this is per-language and not one union set), `--` for Lua. Markdown
+// and JSON have no comment syntax, so every non-blank line there is content.
+inline bool langUsesHashComment( Lang l ) noexcept
+{
+    return l == Lang::Python || l == Lang::Bash || l == Lang::Ruby || l == Lang::Elixir
+        || l == Lang::Toml   || l == Lang::Yaml;
+}
+
+inline std::uint32_t codeLinesInBody( std::string_view body, Lang lang ) noexcept
+{
+    const bool hash   = langUsesHashComment( lang );
+    const bool cLike  = !hash && lang != Lang::Markdown && lang != Lang::Json && lang != Lang::Lua;
+    const bool lua    = lang == Lang::Lua;
+    std::uint32_t  code    = 0;
+    bool           inBlock = false;
+    std::size_t    at      = 0;
+    while( at <= body.size() )
+    {
+        const std::size_t nl   = body.find( '\n', at );
+        std::string_view  line = body.substr( at, ( nl == std::string_view::npos ? body.size() : nl ) - at );
+        at = ( nl == std::string_view::npos ) ? body.size() + 1 : nl + 1;
+        while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' || line.front() == '\r' ) )
+        {
+            line.remove_prefix( 1 );
+        }
+        while( !line.empty() && ( line.back() == ' ' || line.back() == '\t' || line.back() == '\r' ) )
+        {
+            line.remove_suffix( 1 );
+        }
+        if( inBlock )
+        {
+            const std::size_t close = line.find( "*/" );
+            if( close == std::string_view::npos )
+            {
+                continue;   // still inside the block comment
+            }
+            inBlock = false;
+            line.remove_prefix( close + 2 );
+            while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' ) )
+            {
+                line.remove_prefix( 1 );
+            }
+        }
+        if( line.empty() )
+        {
+            continue;   // blank
+        }
+        if( cLike && line.rfind( "//", 0 ) == 0 )
+        {
+            continue;
+        }
+        if( hash && line.front() == '#' )
+        {
+            continue;
+        }
+        if( lua && line.rfind( "--", 0 ) == 0 )
+        {
+            continue;
+        }
+        if( cLike && line.rfind( "/*", 0 ) == 0 )
+        {
+            inBlock = line.find( "*/", 2 ) == std::string_view::npos;
+            if( !inBlock )
+            {
+                const std::size_t close = line.find( "*/", 2 );
+                std::string_view  rest  = line.substr( close + 2 );
+                while( !rest.empty() && ( rest.front() == ' ' || rest.front() == '\t' ) )
+                {
+                    rest.remove_prefix( 1 );
+                }
+                if( rest.empty() )
+                {
+                    continue;   // `/* … */` alone on the line
+                }
+            }
+            else
+            {
+                continue;
+            }
+        }
+        ++code;
+    }
+    return code;
+}
+
+// The per-NODE code-line count for THIS tree, read off each symbol's own body bytes in ONE pass over the
+// files (forEachSymbolBody). A symbol with no readable body — a declaration, a prototype, an unreadable file —
+// keeps its physical `loc`: that span IS its signature, there is nothing to discount, and a silent 0 there
+// would read as "this symbol shrank to nothing" on the next delta.
+inline std::vector<std::uint32_t> codeLocByNode( const IngestResult& ing )
+{
+    std::vector<std::uint32_t> out( ing.symbols.size(), 0 );
+    for( NodeId i = 0; i < ing.symbols.size(); ++i )
+    {
+        out[i] = ing.symbols[i].loc;
+    }
+    forEachSymbolBody( ing, [ & ]( NodeId i, const Symbol& s, std::string_view body )
+    {
+        if( s.kind == SymKind::Section )
+        {
+            return;   // a markdown SECTION is prose: there is no code/comment line to separate, and counting
+                      // its non-blank lines as "code" makes an in-place doc rewrite that swaps 5 blank lines
+                      // for 5 sentences read as +5 verbosity. Measured on the ref-pair replay before this
+                      // clause: 03ec6f14 (a docs correction) went from a clean report to three minor rows.
+                      // Sections keep the physical span they always had — the churn kind exempts them for the
+                      // same reason ("doc sections churn by design").
+        }
+        out[i] = codeLinesInBody( body, s.lang );
+    } );
+    return out;
 }
 
 // P2.2 — every symbol in THIS tree whose own signature text is a registered-macro call (built ONCE per
@@ -2090,7 +2234,11 @@ inline void evictOldHeadSnapCaches( const std::string& dir, const std::string& r
 // dead — a whole tree of phantom regressions on the first run after an upgrade. No extraction change (the
 // symbols were always indexed; only the dead-SET predicate moved), so kParserVer and its mirrors deliberately
 // did NOT move. Bumped 8 -> 9 to retire every blob written before it.
-constexpr std::uint32_t kQSnapCacheScheme = 9;
+// v10 (Q-DIAL-3, 2026-09-10) — locBySym's VALUES are CODE lines now, not the physical span. Keys unchanged,
+// which is exactly what makes a stale blob dangerous rather than obvious: a v9 blob deserializes cleanly and
+// every symbol reads as having SHRUNK (its recorded physical loc exceeds the current code count), so the
+// verbosity kind reports NOTHING and says nothing about why. Bumped 9 -> 10.
+constexpr std::uint32_t kQSnapCacheScheme = 10;
 constexpr char          kQSnapMagic[4]    = { 'Q', 'S', 'N', 'P' };
 
 // The qsnap EXCLUDES-config key folds the qsnap SCHEME (independent of the ingest cache's kHeadSnapCacheScheme)
@@ -3006,6 +3154,7 @@ inline std::vector<std::vector<std::uint32_t>> gitCoChangeAndChurnCached(
 inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::string_view root = {} )
 {
     Snapshot snap;
+    const std::vector<std::uint32_t> codeLoc         = codeLocByNode( ing );                     // Q-DIAL-3: the verbosity kind's metric is CODE lines
     const std::vector<std::uint64_t> topLevelCallees = topLevelCalleeNameHashes( ing );          // W1-S2: dead-kind evidence, built once
     const std::vector<std::string>   macroNames      = registeredMacroNames( root );             // P2.2: built-ins + .ripwire_config
     const std::vector<NodeId>        macroIds        = registeredMacroSymbolIds( ing, macroNames );
@@ -3021,7 +3170,7 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
         // last-writer-wins; otherwise a low-metric overload written last makes every later delta report a
         // phantom regression forever (THE trap). Every new per-symbol kind mirrors this MAX exactly.
         { std::uint32_t& slot = snap.ccxBySym[ key ];    slot = std::max( slot, s.ccx ); }
-        { std::uint32_t& slot = snap.locBySym[ key ];    slot = std::max( slot, s.loc ); }
+        { std::uint32_t& slot = snap.locBySym[ key ];    slot = std::max( slot, codeLoc[i] ); }   // Q-DIAL-3: CODE lines, not the physical span
         { std::uint32_t& slot = snap.nestBySym[ key ];   slot = std::max( slot, std::uint32_t( s.maxNest ) ); }
         { std::uint32_t& slot = snap.paramsBySym[ key ]; slot = std::max( slot, std::uint32_t( s.params ) ); }
         // THE ONE KIND THAT IS NOT A MAX, and the reason is the MAX itself. Every metric above collapses the
@@ -3088,7 +3237,12 @@ inline bool writeBaseline( const Snapshot& s, const std::string& path, std::stri
     // v4 (2026-08-25): every per-symbol key is pathQualifiedKey, not fnv1a64(baselineCanonId). readBaseline
     // REFUSES v3 and older rather than reading it — see there for why a silent read would be the dishonest
     // option here.
-    f << "# ripwire quality baseline v4 — regenerate with --quality-baseline; do not hand-edit\n";
+    // v5 (Q-DIAL-3, 2026-09-10): the `loc` record's VALUE changed meaning — CODE lines, not the physical span
+    // (codeLinesInBody). The key space is untouched, so a v4 sidecar would read perfectly and be WRONG in one
+    // direction only: its loc values are larger, every symbol reads as having SHRUNK, and the verbosity kind
+    // silently reports nothing at all. A kind that quietly stops firing is the worst of the three outcomes, so
+    // this is a version refusal like v4's, not a graceful skip.
+    f << "# ripwire quality baseline v5 — regenerate with --quality-baseline; do not hand-edit\n";
     // STALENESS STAMP: the HEAD commit the baseline was pinned at. --quality-delta compares this to the
     // current HEAD and, if they differ (a baseline left by an abandoned/parallel session, or from before a
     // commit), IGNORES the sidecar and falls back to the git-HEAD auto-baseline instead of reporting a wall
@@ -3166,7 +3320,7 @@ inline bool writeBaseline( const Snapshot& s, const std::string& path, std::stri
 // cost of refusing is one `--quality-baseline` re-pin.
 inline bool baselineHeaderIsForeign( const std::string& line ) noexcept
 {
-    return line.rfind( "# ripwire quality baseline v", 0 ) == 0 && line.find( " v4 " ) == std::string::npos;
+    return line.rfind( "# ripwire quality baseline v", 0 ) == 0 && line.find( " v5 " ) == std::string::npos;
 }
 
 // 2026-09-06 stranger audit: the sidecar readers dropped what they could not parse with no trace a Release
@@ -3203,7 +3357,7 @@ inline bool readBaseline( const std::string& path, Snapshot& out, BaselineReadSt
             // The refusal is a USER-FACING disclosure, so it must survive NDEBUG: behind only a
             // DEGRADED_PATH_ALERT a Release binary refuses SILENTLY and the caller reads "no baseline
             // found" — a refusal that hides its reason misleads exactly like the misread it prevents.
-            rw::emitRaw( stderr, "ripwire: quality: baseline sidecar predates the pathQualifiedKey scheme — refused, re-pin with --quality-baseline\n" );
+            rw::emitRaw( stderr, "ripwire: quality: baseline sidecar predates this binary's baseline format — refused, re-pin with --quality-baseline\n" );
             out = Snapshot{};
             return false;
         }
@@ -5666,8 +5820,18 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     // the trap is handled the same way for every one of them.
     // `minorDelta` is the kind's materiality tier: a regression whose growth (now − was) is under it is
     // reported sev="minor" and does not gate exit 2 (0 = no tier, every regression is major).
+    //
+    // Q-DIAL-3 — `growthTiered` swaps that flat delta tier for the pair of thresholds kMaterialGrowthPct /
+    // kSubBarGrowthPct define, for complexity and verbosity only:
+    //   OVER the bar   — gate on a bar CROSSING (was <= bar < now) or on growth >= 25%; anything else is a
+    //                    real row, printed, sev="minor". It names debt the change did not create.
+    //   UNDER the bar  — a DOUBLING that clears the floor is a minor row instead of silence. Nothing here can
+    //                    gate: the symbol is still under its bar, and the row exists to be seen, not to stop
+    //                    a commit.
+    // `metricOf` takes the NodeId rather than the Symbol because verbosity's metric is not on the Symbol any
+    // more (codeLoc is read off the body bytes); the other three still just read a field.
     const auto perSymbolKind =
-        [ & ]( const char* kindName, std::uint32_t bar, std::uint32_t minorDelta,
+        [ & ]( const char* kindName, std::uint32_t bar, std::uint32_t minorDelta, bool growthTiered,
                const gtl::btree_map<std::uint64_t, std::uint32_t>& baseMap,
                auto metricOf )
     {
@@ -5679,7 +5843,7 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 continue;
             }
             std::uint32_t& slot = nowBySym[ keyByNode[i] ];
-            slot = std::max( slot, metricOf( ing.symbols[i] ) );
+            slot = std::max( slot, metricOf( i ) );
         }
         ScratchMap<std::uint8_t> reported( ing.symbols.size() );
         for( NodeId i = 0; i < ing.symbols.size(); ++i )
@@ -5701,19 +5865,41 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             const std::uint32_t now = nowIt->second;
             const auto          it  = baseMap.find( key );
             const std::uint32_t was = ( it == baseMap.end() ) ? 0u : it->second;
-            if( now > was && now > bar )
+            if( now <= was )
             {
-                regs.push_back( { kindName, g.canonId[i], was, now, key, minorDelta > 0 && now - was < minorDelta,
+                continue;   // nothing got worse on this axis
+            }
+            const std::uint64_t growthPct = ( std::uint64_t( now - was ) * 100 ) / std::max( was, 1u );
+            if( now > bar )
+            {
+                const bool crossed  = was <= bar;
+                const bool material = !growthTiered ? ( minorDelta == 0 || now - was >= minorDelta )
+                                                    : ( crossed || growthPct >= kMaterialGrowthPct );
+                regs.push_back( { kindName, g.canonId[i], was, now, key, !material,
                                   {}, !existedAtBaseline( key ) } );          // origin: the finding IS this symbol
+                stampLoc( i );
+            }
+            else if( growthTiered && was > 0 && growthPct >= kSubBarGrowthPct && now >= subBarGrowthFloor( bar ) )
+            {
+                // Q-DIAL-3 — still UNDER the bar, so this can never gate; it is the row that turns synthetics
+                // S4b (6 → 55 LOC) and S8-sub-bar (ccx 5 → 13) from silence into something a reader can see.
+                // `was > 0` is load-bearing, not defensive: growth is a RATIO and a brand-new symbol has
+                // nothing to double from, so without it every added function of 40 code lines or ccx 10
+                // reported as "grew 4200%". Measured on the 40-commit ref-pair replay: 38 of the 57 rows this
+                // tier first produced were exactly that (`was="0"`), including every symbol of the vendored
+                // timsort landing at 08416403.
+                regs.push_back( { kindName, g.canonId[i], was, now, key, /*isMinor=*/true,
+                                  {}, !existedAtBaseline( key ) } );
                 stampLoc( i );
             }
         }
     };
 
-    perSymbolKind( "complexity", kCcxBar,   kMinorCcxDelta,   base.ccxBySym,    []( const Symbol& s ){ return s.ccx; } );
-    perSymbolKind( "verbosity",  kLocBar,   kMinorLocDelta,   base.locBySym,    []( const Symbol& s ){ return s.loc; } );
-    perSymbolKind( "nesting",    kNestBar,  0,                base.nestBySym,   []( const Symbol& s ){ return std::uint32_t( s.maxNest ); } );
-    perSymbolKind( "params",     kParamBar, kMinorParamDelta, base.paramsBySym, []( const Symbol& s ){ return std::uint32_t( s.params ); } );
+    const std::vector<std::uint32_t> nowCodeLoc = codeLocByNode( ing );   // Q-DIAL-3 — the same rule computeSnapshot recorded the baseline with
+    perSymbolKind( "complexity", kCcxBar,   kMinorCcxDelta,   true,  base.ccxBySym,    [ & ]( NodeId i ){ return ing.symbols[i].ccx; } );
+    perSymbolKind( "verbosity",  kLocBar,   kMinorLocDelta,   true,  base.locBySym,    [ & ]( NodeId i ){ return nowCodeLoc[i]; } );
+    perSymbolKind( "nesting",    kNestBar,  0,                false, base.nestBySym,   [ & ]( NodeId i ){ return std::uint32_t( ing.symbols[i].maxNest ); } );
+    perSymbolKind( "params",     kParamBar, kMinorParamDelta, false, base.paramsBySym, [ & ]( NodeId i ){ return std::uint32_t( ing.symbols[i].params ); } );
 
     // PERF (P5W2) — the working-tree clone pass is the dominant --quality-delta cost: on a large private C++ corpus the
     // Type-3 pass alone is ~2.7-3.2 s (60 M intra-bucket pair-visits; tokenization is only ~3 %). It is a PURE
