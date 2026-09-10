@@ -85,10 +85,11 @@ itself.
 ### Advisory hooks (optional)
 
 `bash ~/.local/share/ripwire/skills/install.sh --hook` registers ripwire's advisory hooks for Claude Code in
-its `settings.json`: a PreToolUse nudge that suggests ripwire before whole-file reads and greps, a
-SessionStart primer, and a UserPromptSubmit router. Adding `--codex --hook` does the same for Codex in
-`~/.codex/hooks.json`; open `/hooks` in Codex to review and trust them. The hooks never block a tool call,
-they need `jq`, and they are registered only when you pass `--hook`.
+its `settings.json`: a SessionStart primer that adds ripwire's when-to-use guidance, a UserPromptSubmit router
+that suggests one ready-to-run command when it is confident, and a PreToolUse hook that suggests nothing and
+only records, on your machine, which tool calls ripwire could have answered. Adding `--codex --hook` does the
+same for Codex in `~/.codex/hooks.json`; open `/hooks` in Codex to review and trust them. The hooks never
+block a tool call, they need `jq`, and they are registered only when you pass `--hook`.
 
 ### MCP server (optional)
 
@@ -137,6 +138,15 @@ strip='def ripwire: (.command // "") | split(" ")[0] | test("/hooks/ripwire-[a-z
 for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "${CODEX_HOME:-$HOME/.codex}/hooks.json"; do
   [ -f "$f" ] && cp "$f" "$f.bak" && jq "$strip" "$f.bak" > "$f.tmp" && mv "$f.tmp" "$f"
 done
+```
+
+The hooks also keep local records in `~/.ripwire`, or in `$RIPWIRE_HOME` if you set it. The ripwire binary
+itself never writes there. This removes only ripwire's own entries, then the directory if nothing else is in it:
+
+```bash
+h="${RIPWIRE_HOME:-$HOME/.ripwire}"
+rm -rf "$h/substitution.jsonl" "$h/routing.jsonl" "$h/routing-pending" "$h/meter.conf"
+rmdir "$h" 2>/dev/null || true
 ```
 
 **4. The MCP server** (only if you added it).
