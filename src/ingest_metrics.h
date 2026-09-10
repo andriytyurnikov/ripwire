@@ -1025,7 +1025,10 @@ inline void cc_walk( TSNode start, std::uint32_t startNesting, std::string_view 
         stack.pop_back();
         if( frame.depth > 512 )
         {
-            continue; // pathological-AST guard (file size is already capped at 1 MB)
+            // pathological-AST guard, independent of file size: the old justification "file size is already capped at 1 MB" went
+            // stale when kDefaultMaxFileBytes became 4 MB (2026-07) and --max-file-size can raise it further. Measured 2026-09-10
+            // on this tree (15,926 symbols): deepest real frame 103 against a bound of 512 — 5x headroom, inert.
+            continue;
         }
         const TSNode        n          = frame.node;
         const std::uint32_t nesting    = frame.nesting;
@@ -1386,6 +1389,8 @@ inline std::uint16_t countParams( TSNode defNode )   // A4-F25: NOT noexcept —
     {
         const PF f = stack.back();
         stack.pop_back();
+        // re-derivation bound (2026-09-10): tripped 97 times over 15,926 symbols but deepest found param list was depth 6;
+        // raising to 64/256 yielded identical 12,785 params, proving bound is inert (measured C++/mixed, not at scale)
         if( f.depth > 12 )
         {
             continue; // params live near the signature; bound the search
@@ -1476,6 +1481,7 @@ inline bool cc_paramArityExact( TSNode defNode, Lang lang, SymKind kind ) noexce
     {
         const PF f = stack.back();
         stack.pop_back();
+        // same re-derivation bound as the first param walk (see comment above the first if)
         if( f.depth > 12 )
         {
             continue;

@@ -1547,6 +1547,9 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // ablation env) disables it here too. Runs BEFORE the co-change prior, same as the CLI.
     std::string   mentionNote;
     std::uint32_t mentionAnchored = 0;   // §L10b (wave-2 merge): the CLI twin's lr.anchorLifts — mention_anchored= on the root
+    // The CLI twin's lr.capAttrs: the INDEXING caps that cut this ranking, same names, same order, so the
+    // two surfaces cannot disagree about what was dropped (mention.h CapDisclosure). "" unless one bit.
+    std::string   capAttrs;
     if( !std::getenv( "RIPWIRE_NO_MENTION" ) )
     {
         MentionBoostInfo mentionInfo;
@@ -1559,6 +1562,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
             mentionNote     = nb;
             mentionAnchored = mentionInfo.fileCount + mentionInfo.symbolCount;   // §A4f: the same count the CLI candidates root emits
         }
+        absorbCapDisclosure( mentionInfo.caps, mentionNote, capAttrs );
     }
 
     // B3 (co-change prior boost) — OPT-IN, EXPERIMENTAL, same contract as CLI --cochange-boost: files that
@@ -1572,15 +1576,22 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     std::string boostNote;
     if( std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
-        const auto coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit );
+        CommitWindowCensus coCensus;   // the kCoBoostMaxFilesPerCommit census (gitmine.h)
+        const auto coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, UINT32_MAX, &coCensus );
         CoBoostInfo boostInfo;
-        if( !coSets.empty() && applyCoChangeBoost( ing, coSets, lensRank, &boostInfo ) )
+        // NOT guarded by coSets.empty(): applyCoChangeBoost records the commit-cap census BEFORE its own
+        // empty check and then returns false, so calling it unconditionally is what makes the cap honest.
+        // coSets is empty exactly when EVERY commit exceeded kCoBoostMaxFilesPerCommit -- the case where the
+        // cap bit hardest -- and a `!coSets.empty() &&` short-circuit meant coboost_commits_capped was the
+        // one disclosure never emitted at 100% drop. The return value still gates the boost NOTE alone.
+        if( applyCoChangeBoost( ing, coSets, lensRank, &boostInfo, &coCensus ) )
         {
             char nb[ 200 ];
             rw::formatTo( nb, sizeof( nb ), " [cochange boost: promoted {} symbols in {} files that historically change with the top seeds (last {} commits)]",
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             boostNote = nb;
         }
+        absorbCapDisclosure( boostInfo.caps, boostNote, capAttrs );
     }
 
     // R5 (doc-mention surfacing) — same default-on, route-agnostic contract as the CLI --for: a doc
@@ -1601,6 +1612,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
             docMentionNote = nb;
             docMentions    = docMentionInfo.docCount;
         }
+        absorbCapDisclosure( docMentionInfo.caps, docMentionNote, capAttrs );
     }
 
     // LB-A (r10 §5) — THE RELEVANCE FLOOR, the CLI --for's own call (serialize.h relevanceFloorCut): one
@@ -1676,14 +1688,18 @@ inline std::string forTaskText( const std::string& root, const std::string& task
         // form of mentionNote/docMentionNote, EACH present only when its own note fired — the CLI twin's
         // exact rule and attribute order (verbs_for.h mentionDocAttrsStr), so test/mcpattrparitycheck.sh
         // sees the same root on both surfaces.
-        if( !mentionNote.empty() )
+        // Gated on the COUNTS, not the note strings — the CLI twin's own change in the cap-disclosure lane:
+        // a note can now carry a cap clause on a run that anchored nothing, and a fabricated "0" is what
+        // non-negotiable #3 forbids.
+        if( mentionAnchored > 0 )
         {
             rootOpenStr.insert( rootOpenStr.size() - 1, " mention_anchored=\"" + std::to_string( mentionAnchored ) + "\"" );
         }
-        if( !docMentionNote.empty() )
+        if( docMentions > 0 )
         {
             rootOpenStr.insert( rootOpenStr.size() - 1, " doc_mentions=\"" + std::to_string( docMentions ) + "\"" );
         }
+        rootOpenStr.insert( rootOpenStr.size() - 1, capAttrs );   // "" unless a cap bit — an empty insert is a no-op
         rootOpenStr.insert( rootOpenStr.size() - 1, " bundle=\"sigs\"" );
         if( budgetTokens > 0 )   // M13/H9: the ceiling this bundle was shaped against, named where the CLI names it
         {
@@ -3387,18 +3403,26 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                            mentionInfo.fileCount, mentionInfo.fileCount == 1 ? "" : "s", mentionInfo.symbolCount );
             lr.mentionNote = nb;
         }
+        absorbCapDisclosure( mentionInfo.caps, lr.mentionNote, lr.capAttrs, lr.capJson );
     }
     if( std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
-        const auto  coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit );
+        CommitWindowCensus coCensus;
+        const auto  coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, UINT32_MAX, &coCensus );
         CoBoostInfo boostInfo;
-        if( !coSets.empty() && applyCoChangeBoost( ing, coSets, lr.rank, &boostInfo ) )
+        // NOT guarded by coSets.empty(): applyCoChangeBoost records the commit-cap census BEFORE its own
+        // empty check and then returns false, so calling it unconditionally is what makes the cap honest.
+        // coSets is empty exactly when EVERY commit exceeded kCoBoostMaxFilesPerCommit -- the case where the
+        // cap bit hardest -- and a `!coSets.empty() &&` short-circuit meant coboost_commits_capped was the
+        // one disclosure never emitted at 100% drop. The return value still gates the boost NOTE alone.
+        if( applyCoChangeBoost( ing, coSets, lr.rank, &boostInfo, &coCensus ) )
         {
             char nb[ 200 ];
             rw::formatTo( nb, sizeof( nb ), " [cochange boost: promoted {} symbols in {} files that historically change with the top seeds (last {} commits)]",
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             lr.boostNote = nb;
         }
+        absorbCapDisclosure( boostInfo.caps, lr.boostNote, lr.capAttrs, lr.capJson );
     }
     if( !std::getenv( "RIPWIRE_NO_DOC_MENTION" ) )
     {
@@ -3411,6 +3435,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                            docMentionInfo.anchorCount, docMentionInfo.anchorCount == 1 ? "" : "s" );
             lr.docMentionNote = nb;
         }
+        absorbCapDisclosure( docMentionInfo.caps, lr.docMentionNote, lr.capAttrs, lr.capJson );
     }
 
     const std::vector<char>    impure = computeImpure( ing, g );
@@ -3498,7 +3523,11 @@ struct EditCheckReply { std::string payload; std::string refusal; };
 // been written. Nothing writes; the field is optional and the verb stays readOnlyHint:true. The CLI form is
 // --edit-check=SYM --edit-payload=FILE --dry-run, and both surfaces route through editpreview::run, so the
 // two cannot answer differently.
-inline EditCheckReply editCheckText( const std::string& root, const std::string& symbol, const std::string& newBody = {} )
+// `pg` (2026-09-10) is the SAME limit/offset the CLI passes: the two surfaces must agree about the size of
+// one answer, which is exactly the M13 defect that named a cap living at its call site. Absent ⇒ {0,0} ⇒
+// the verb's own default window, identical to a bare `ripwire <dir> --edit-check=SYM`.
+inline EditCheckReply editCheckText( const std::string& root, const std::string& symbol, const std::string& newBody = {},
+                                     McpPageArgs pg = {} )
 {
     IngestResult ing;   // Phase-M: serialize the ingest vs the qsnap-prefetch worker (§2b), same as computeQualityDelta
     {
@@ -3532,11 +3561,13 @@ inline EditCheckReply editCheckText( const std::string& root, const std::string&
             return EditCheckReply{ {}, "new_body " + std::string( mcpedit::kBinaryPayloadRefusal ) };
         }
         const rw::editpreview::Outcome preview =
-            rw::editpreview::run( ing, g, root, kDefaultMaxFileBytes, {}, true, symbol, groups[0].lowestNode, newBody, nullptr );
+            rw::editpreview::run( ing, g, root, kDefaultMaxFileBytes, {}, true, symbol, groups[0].lowestNode, newBody, nullptr,
+                                   pg.limit, pg.offset );
         return preview.ok ? EditCheckReply{ preview.xml, {} } : EditCheckReply{ {}, preview.message };
     }
 
-    return EditCheckReply{ editCheckBundleText( ing, g, root, kDefaultMaxFileBytes, {}, groups[0].lowestNode ), {} };
+    return EditCheckReply{ editCheckBundleText( ing, g, root, kDefaultMaxFileBytes, {}, groups[0].lowestNode,
+                                                 /*ni=*/nullptr, /*preview=*/false, pg.limit, pg.offset ), {} };
 }
 
 // ─── `slice` verb (lane/tc-sliceat): the ARISE def-use slice over MCP, mirroring the CLI --slice ────────
@@ -4674,7 +4705,10 @@ inline BatchSub runBatchSub( const std::string& root, const std::string& obj, in
             return bad( missingField( "edit_check" ) );
         }
         // No new_body: the batched form is the post-hoc question only (see kBatchServedVerbs).
-        const EditCheckReply er = editCheckText( root, symbol );
+        // 2026-09-10: paged like every other windowing verb in this arm, so "does the batch arm honor limit?"
+        // keeps ONE answer. Absent limit/offset is {0,0}, which is the standalone verb's own default window —
+        // the byte-identity test/batchcheck.sh (h) asserts against the standalone call is unaffected.
+        const EditCheckReply er = editCheckText( root, symbol, {}, pageParse.page );
         if( er.payload.empty() )
         {
             return bad( er.refusal );
