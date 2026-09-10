@@ -5119,20 +5119,28 @@ verb elides* — count it and the headline becomes a function of how deep your c
 on disk. On one corpus, three spellings of the same root read **18.6 points apart** before the
 subtraction and agreed exactly after it.
 
-**Root-neutralised on this repository (re-derived 2026-08-23):**
+**Root-neutralised on this repository (re-derived 2026-09-09):**
 
-| Result size | Byte reduction | previous (2026-08-01) |
+| Result size | Byte reduction | previous (2026-08-23) |
 | --- | --- | --- |
-| top-10 | 86.5% | 46.7% |
-| **top-50** | **81.4%** | 67.0% |
-| top-100 | 81.6% | 66.2% |
+| top-10 | 81.3% | 86.5% |
+| **top-50** | **71.0%** | 81.4% |
+| top-100 | 73.7% | 81.6% |
+
+The 2026-09-09 move is a **corpus** effect, not a regression in the verb, and the control that
+establishes it is the one this document asks for elsewhere: run the PRE-conversion binary on the NEW
+tree and the NEW binary on the OLD tree. The figure tracks the tree, not the binary. That round
+converted this repository's own ~1,500 printf-family call sites to `rw::emitTo`/`emitRaw`/`formatTo`
+across 93 files, which changes the `<b>` bodies on the denominator side of the ratio — the same shape
+as the 2026-08-15 move below, and for the same reason. `--pack-signatures` elides exactly what it
+always did; what changed is the source it was measured against.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the
 full-body side of the ratio. The verb elides no more than it did. `docs/COMMANDS.md`'s own
 `--pack-signatures` caption is regenerated from a live capture and carries the same triple, and
 `test/showcasecapturecheck.sh` fails if the caption and its own recount drift more than 1.5 points
-apart — at the time of writing that recount reads 86.5 / 81.1 / 81.3.
+apart — at the time of writing that recount reads 81.3 / 71.0 / 73.7.
 
 **Quote the top-50 figure.** The signature payload is top-50 regardless of `--top-k`, so it is what
 the command actually emits. A "~70%" headline is reachable at larger N but overstates the smaller
@@ -5153,8 +5161,11 @@ tolerance (the pre-change binary measured 67.0), so the true binary-to-binary to
 **This is gated, not asserted.** `test/showcasecapturecheck.sh` re-derives all three figures from
 this repository on every run, in the same quantity as the caption, and fails if the caption and the
 recount drift more than 1.5 points apart — plus a separate regression band at top-50, derived as the
-caption's own figure ±9 points (72–90% at the caption's current 81.4%). The
-documentation cannot silently diverge from the binary.
+caption's own figure ±9 points (62–80% at the caption's current 71.0%). The band is re-centred when
+the corpus moves it, and the centre is *derived* from the two edges in the gate's own message rather
+than hand-copied, because it was hand-copied once and went stale. `--help` states the same band, and
+`test/showcasecapturecheck.sh` arm (C-help) fails if it does not. The documentation cannot silently
+diverge from the binary.
 
 See §7 for the case where this verb makes output **larger**.
 
