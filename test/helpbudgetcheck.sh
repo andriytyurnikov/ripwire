@@ -150,6 +150,24 @@ else
     no "(G) a missing <dir> printed ${eb} B on stderr — a typo must not cost a help document (and must name --help)"
 fi
 
+# ── (J) EVERY row is addressable, not a sample of them ────────────────────────────────────────────────
+# Arm (D) proves five entries come back whole. This one proves the ADDRESS SCHEME holds for all of them:
+# tier 1 advertising a row that `--help=<that row>` cannot retrieve would be the split's worst failure —
+# the reader is told a flag exists and then cannot reach what it does. 155 help prints, no corpus parse.
+addr_miss=0; addr_tot=0
+while read -r lab; do
+    [ -n "$lab" ] || continue
+    addr_tot=$(( addr_tot + 1 ))
+    "$BIN" "--help=$lab" >/dev/null 2>&1 || { addr_miss=$(( addr_miss + 1 )); echo "          UNREACHABLE: $lab"; }
+done <"$TMP/rows.concise"
+if [ "$addr_tot" -ge 100 ] && [ "$addr_miss" -eq 0 ]; then
+    ok "(J) all $addr_tot advertised rows are retrievable with --help=<row>"
+elif [ "$addr_tot" -lt 100 ]; then
+    no "(J) presence guard: only $addr_tot rows to probe — the extractor broke, so this arm proves nothing"
+else
+    no "(J) $addr_miss of $addr_tot advertised rows cannot be retrieved with --help=<row>"
+fi
+
 # ── (I) no tier-1 summary is PROVABLY cut off mid-phrase ──────────────────────────────────────────────
 # WHAT THIS ARM PROVES, AND THE PART IT DOES NOT — read this before trusting its name. Tier 1's real
 # property is "every summary stands on its own", and no lexical rule decides that: "…how much you must
