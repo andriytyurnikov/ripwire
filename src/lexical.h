@@ -16,20 +16,24 @@
                                  // over model.h despite the header's name: no cycle.
 #include "infra/profileScope.h"  // PROFILE_SCOPE self-profiling — gated by PROFILE_ENABLED (off unless -DRIPWIRE_PROFILE=ON)
 #include "infra/sortutil.h"      // deterministic sanitizer-clean score sorting for adaptive cuts
+#include "infra/charconvcompat.h" // rw::parseFloating — envKnob's full-token finite parse of a RIPWIRE_* knob
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace rw
@@ -116,16 +120,54 @@ struct Bm25Params
 
 inline constexpr Bm25Params kBm25Default{ 1.5, 0.75 };
 
+// A RIPWIRE_* calibration knob. Unset, or set empty, is the caller's default. A set value must parse IN FULL as a
+// finite number, or it is refused back to that default with one stderr line naming it, so a sweep cannot run on the
+// default while believing it set something. atof/atoi were unchecked: "nan" read as NaN, which std::clamp passes
+// straight through into every BM25 score; "8x" as 8; "abc" as 0, then clamped to the floor — three rankings nobody
+// configured (test/bm25boundcheck.sh (3b)/(3c), test/lb3namecheck.sh (b-junk)).
+template<class T> requires std::is_arithmetic_v<T>
+inline std::optional<T> envKnob( const char* name ) noexcept
+{
+    const char* const text = std::getenv( name );
+    if( text == nullptr || *text == '\0' )
+    {
+        return std::nullopt;
+    }
+    const char* const      end   = text + std::strlen( text );
+    T                      value = T{};
+    std::from_chars_result parsed{};
+    if constexpr( std::is_floating_point_v<T> )
+    {
+        parsed = rw::parseFloating( text, end, value );
+    }
+    else
+    {
+        parsed = std::from_chars( text, end, value );
+    }
+    if( parsed.ec == std::errc{} && parsed.ptr == end && std::isfinite( double( value ) ) )
+    {
+        return value;
+    }
+    // emitRaw, not emitTo: nothing here needs formatting, and every caller is a noexcept scoring path
+    rw::emitRaw( stderr, "ripwire: ignoring " );
+    rw::emitRaw( stderr, name );
+    rw::emitRaw( stderr, "=\"" );
+    rw::emitRaw( stderr, text );
+    rw::emitRaw( stderr, std::is_floating_point_v<T> ? "\" (not a finite number) — the default applies\n"
+                                                    : "\" (not a whole number in int range) — the default applies\n" );
+    return std::nullopt;
+}
+
 inline Bm25Params resolveBm25Params() noexcept
 {
     Bm25Params p = kBm25Default;
-    if( const char* k1Env = std::getenv( "RIPWIRE_BM25_K1" ) )
+    if( const std::optional<double> k1 = envKnob<double>( "RIPWIRE_BM25_K1" ) )
     {
-        p.k1 = std::clamp( std::atof( k1Env ), 0.1, 10.0 );
+        p.k1 = std::clamp( *k1, 0.1, 10.0 );
     }
-    if( const char* bEnv = std::getenv( "RIPWIRE_BM25_B" ) )
+    if( const std::optional<double> b = envKnob<double>( "RIPWIRE_BM25_B" ) )
     {
-        p.b = std::clamp( std::atof( bEnv ), 0.0, 1.0 );
+        p.b = std::clamp( *b, 0.0, 1.0 );
     }
     return p;
 }
@@ -400,8 +442,8 @@ inline std::vector<float> lexicalScoresTiered( const IngestResult& ing, const st
         {
             return 0;
         }
-        const char* bitsEnv = std::getenv( "RIPWIRE_TERMMARGIN_BITS" );
-        return bitsEnv != nullptr ? std::clamp( std::atoi( bitsEnv ), 1, 8 ) : 1;
+        const std::optional<int> bits = envKnob<int>( "RIPWIRE_TERMMARGIN_BITS" );
+        return bits ? std::clamp( *bits, 1, 8 ) : 1;
     }();
     const bool marginArmed = marginBits > 0;
 
@@ -459,9 +501,9 @@ inline std::vector<float> lexicalScoresTiered( const IngestResult& ing, const st
     // ing.files already hold "<label>/<root-relative>".
     {
         int kwPath = pathFieldDefaultW;
-        if( const char* pathTokEnv = std::getenv( "RIPWIRE_PATHTOK_W" ) )
+        if( const std::optional<int> pathTokW = envKnob<int>( "RIPWIRE_PATHTOK_W" ) )
         {
-            kwPath = std::clamp( std::atoi( pathTokEnv ), 0, 8 );
+            kwPath = std::clamp( *pathTokW, 0, 8 );
         }
         if( kwPath > 0 )
         {
@@ -489,9 +531,9 @@ inline std::vector<float> lexicalScoresTiered( const IngestResult& ing, const st
     // the other already agreeing rather than discovering half the path tokenization was still absolute.
     {
         int kwBase = basenameFieldDefaultW;
-        if( const char* baseEnv = std::getenv( "RIPWIRE_BASENAME_W" ) )
+        if( const std::optional<int> baseW = envKnob<int>( "RIPWIRE_BASENAME_W" ) )
         {
-            kwBase = std::clamp( std::atoi( baseEnv ), 0, 8 );
+            kwBase = std::clamp( *baseW, 0, 8 );
         }
         if( kwBase > 0 )
         {
