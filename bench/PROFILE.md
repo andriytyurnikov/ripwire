@@ -1370,3 +1370,167 @@ build_prof/ripwire <scratch>/rails --callers=main >/dev/null 2>prime.err   # war
 pack — about 12 hours — and was abandoned. Every number above is from a corpus that fits the link. The
 consequence is stated rather than buried: R1's refutation is proved up to 15,868 files and an 8×-multiplicity
 14,072-file tree, and not beyond.
+
+## 2026-09-09 — the 2b closure sort goes radix: one site converted, three refused, and the crossover that does not transfer
+
+LEDGER rows, never a gate (the no-perf-budget rule). The correctness gate this round landed is four new
+arms in `test/includeprecisecheck.sh`; they assert sets and invariants, never seconds.
+
+This picks up open item 1 from the loop-hoist sweep above: **`buildGraph/2b` at 61.9 ms on `rails`, of
+which 38.7 ms is `std::sort`**, over 3,916 closures averaging 1,020 ids, with a `std::unique` that removed
+0 duplicates. The owner's read was that those sorts should be radix. They should — at exactly one of the
+four sites that looked like candidates, and the three refusals are the more useful half of the result.
+
+### The recorded crossover is 2048, and honouring it literally would have forfeited the entire win
+
+`src/infra/sortutil.h` already carries a measured threshold — `kRadixThreshold = 2048` — on both
+`radixSortByFromTo` and `radixSortByScoreDescId`. The 2b closures top out at **n = 1,420**. Routed through
+that number, every single one takes the `std::sort` branch and the change does nothing.
+
+That 2048 is not wrong; it describes **different work**. `radixSortByFromTo` moves 12-byte `Edge` RECORDS
+through two full key passes. `radixSortByScoreDescId` pays a `scores[id]` GATHER, up to two `sortKeySmall`
+calls and three O(n) prechecks. 2b sorts a `std::vector<NodeId>` — one 4-byte item, one direct key — and
+because file ids span 12 bits on `rails`, the no-op pass skip in `sortKeySmall` collapses it to **two
+passes, not four**. Re-measured for that shape (`-O2 -mcpu=apple-m1 -ffast-math`, medians of 15 interleaved
+reps, random keys, ratio = radix / std::sort, <1 means radix faster):
+
+| key range | n=32 | n=64 | n=128 | n=256 | n=1024 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 12-bit (`rails`, F=3,916) | 2.31x | 0.86x | 0.47x | 0.21x | 0.18x |
+| 14-bit (`go`, F=15,868) | 1.71x | 0.85x | 0.46x | 0.31x | 0.17x |
+| 16-bit | 1.79x | 0.85x | 0.47x | 0.26x | 0.18x |
+| 20-bit | 2.46x | 1.22x | 0.64x | 0.40x | 0.23x |
+| 32-bit (full) | 4.16x | 1.50x | 0.73x | 0.45x | 0.25x |
+
+The crossover for this shape is **64 for narrow keys and 128 for a full 32-bit range**. The new entry point
+`rw::sortutil::radixSortIdsAscending` takes **128** — the crossover of the widest range measured, so the
+door holds whichever way the id range turns out — and its comment says at length why it is not 2048, so
+nobody unifies the two numbers later.
+
+### The threshold is what makes the change safe, not a nicety
+
+Replaying the REAL captured closures (every `trans[s]` written to disk, replayed against both sorts,
+medians of 15 interleaved reps). "radix always" is the unthresholded conversion:
+
+| corpus | Σ closure | max n | std::sort | radix T=128 | radix ALWAYS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rails` | 3,994,331 | 1,420 | 42.01 ms | **11.44 ms (0.272x)** | 11.50 ms |
+| private C++ (3,248 files) | 12,066 | 149 | 0.048 ms | 0.042 ms (0.865x) | 0.372 ms (**7.7x worse**) |
+| this repo | 4,182 | 137 | 0.018 ms | 0.017 ms (0.960x) | 0.052 ms (**2.9x worse**) |
+| `django` | 1,578 | 19 | 0.010 ms | 0.010 ms (0.958x) | 0.079 ms (**7.9x worse**) |
+| `rust-analyzer` | 640 | 43 | 0.0045 ms | 0.0044 ms (0.991x) | 0.021 ms (**4.7x worse**) |
+| `go` | 26 | 2 | 0.021 ms | 0.021 ms (1.000x) | 0.021 ms |
+
+An unconditional conversion regresses four of six corpora by 3–8x. With the threshold, no corpus regresses
+and `rails` gains 3.7x. **`rails` is the only corpus where this phase is large at all** — Σ|closure| there is
+331x the next-biggest — which is the loop-hoist round's own lesson repeating: this is a Ruby `require`-graph
+shape, and a C++/Go/Python corpus cannot see it.
+
+### In situ — `buildGraph/2b`, warm, interleaved A,B
+
+| corpus | base | radix | ratio |
+| --- | ---: | ---: | ---: |
+| `rails` (n=7) | min 64.97 med 65.21 ms | **min 34.73 med 35.01 ms** | **0.537** |
+| `go` (n=5) | 0.029 ms | 0.026 ms | (sub-ms, jitter) |
+| `django` (n=5) | 0.048 ms | 0.047 ms | (sub-ms, jitter) |
+| `rust-analyzer` (n=5) | 0.022 ms | 0.023 ms | (sub-ms, jitter) |
+| private C++ (n=5) | 0.289 ms | 0.300 ms | (sub-ms, jitter) |
+| this repo (n=5) | 0.097 ms | 0.101 ms | (sub-ms, jitter) |
+
+The `rails` reps do not overlap: base 65.0 65.0 65.1 65.2 65.3 65.4 65.5, radix 34.7 34.8 34.9 35.0 35.0
+35.2 35.7. `buildGraph` total on `rails`: 223.0 → 186.7 ms median (−16%); `go` 1.000x, private C++ 0.995x.
+
+Whole run, two independent n=21 interleaved A/Bs each:
+
+| run | median | min |
+| --- | ---: | ---: |
+| `rails --callers=main` | **−7.8% / −8.5%** | −8.8% / −9.1% |
+| `rails` default map | **−7.6% / −7.3%** | −8.2% / −7.6% |
+| `go` / `django` / `rust-analyzer` / private C++ / this repo (n=15 each) | −0.6% / −0.5% / −0.8% / +0.1% / +0.5% | all within ±1.7% |
+
+Byte-identical on six corpora × three verbs (default map, `--callers=main`, `--impact=main`): 18
+comparisons, 18 distinct output sizes proving the corpus argument took effect in every one.
+
+### The `std::unique` was dead, and it is dead by construction rather than by luck
+
+`w` is appended to `trans[s]` inside the same branch that stamps `seenEpoch[w] = epoch`, and nothing clears
+that stamp before `++epoch`. A file therefore reaches `trans[s]` **at most once per source** — the set is
+duplicate-free by construction, not by coincidence. Measured: **0 duplicates removed in 24,216 calls across
+six corpora**, costing **0.992 ms on `rails`** (independently reproducing the 0.98 ms recorded above).
+
+It is removed. The sibling `ancestorsReach` in `graph.h` has always relied on this same epoch stamp with no
+dedup, so this makes two walks agree rather than introducing a new assumption. It is NOT replaced by a
+`VERIFY`: in a release build `VERIFY_TEXT` still evaluates its expression before `__builtin_unreachable`, so
+an O(n) uniqueness scan there would reintroduce exactly the cost being removed. The invariant is asserted by
+a gate instead (below), which costs nothing at runtime.
+
+**The sort itself stays, and the reason is non-negotiable #2.** It is not merely making membership a
+`binary_search` — the walk's discovery order is deterministic but is NOT id order, so the sort is what makes
+`trans` a pure function of `adj`, exactly as this function's header comment claims. Radix only changes how
+it is paid for. Attribution of the 30.2 ms: ~30.6 ms is the sort, 0.99 ms is the dedup.
+
+### Three sites REFUSED — and the mechanism is presortedness, not size
+
+`g.implementors[]`, `g.mentions[]` (`graph.h`) and the CHA cone/ancestor closures were the other candidates.
+Measured on captured real data, thresholded exactly as 2b is:
+
+| site | corpus | Σ | max n | duplicates | radix T=128 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `implementors` | `django` | 646,700 | 2,401 | 0 | **2.87x WORSE** |
+| `implementors` | `rails` | 7 | 3 | 0 | 1.00x |
+| `mentions` | `rails` | 73,948 | 79 | 18,732 | 0.89x |
+| `mentions` | private C++ | 51,188 | 116 | 8,622 | 0.93x |
+| `chacone` | `django` | 2,195 | 335 | 100 | 0.83x (of 0.008 ms) |
+| `chaanc` | `rust-analyzer` | 3,326 | 27 | 0 | 0.98x |
+
+`django`'s `implementors` is the interesting refusal: Σ = 646,700 with a max of 2,401 looks like the ideal
+radix case and loses badly. The reason is that **100.0% of its 47,830 records arrive already sorted, with
+zero adjacent descents** — they are built by `push_back` while iterating references in ascending id order.
+`std::sort` detects that in O(n); radix cannot exploit it and pays both passes regardless. `rails`'
+`mentions` is 100.0% presorted for the same reason. 2b is the odd one out at **1.6% presorted** (0.18
+adjacent descents per element) because a graph walk emits in discovery order.
+
+So the rule that decided all four sites is not "how big is n" but **"was this set built by appending in id
+order, or by a scattered walk?"** — and it is now written into `radixSortIdsAscending`'s comment, because it
+is the thing a future caller will get wrong. The remaining sites' absolute costs (0.008–0.6 ms) would not
+have justified the churn even had they won.
+
+**Also noted, not attempted: the two `std::vector<std::string>` sorts** at `graph.h:1886-1887` (the
+`chaUp` / `chaDown` dedup). A string radix is a materially bigger change than an id radix — variable-length
+keys, no fixed pass count, and the whole `sortKeySmall` contract assumes a scalar key — so it was scoped
+out rather than rushed. The number that says it can wait: those two lines live inside `buildGraph/2h`, and
+that WHOLE phase (name-graph construction, interning and both sorts together) measures **0.70 ms on `rails`,
+3.69 ms on `django`, 1.93 ms on `go`, 0.90 ms on `rust-analyzer`, 0.50 ms on a private C++ tree** — a 4.5%
+ceiling on `django`'s `buildGraph` and under 1.2% everywhere else, with the sorts themselves only a fraction
+of it. It never appeared in the loop-hoist phase table because it never cleared the reporting threshold.
+
+### The gate, and the arm that proved the fixture could not see the defect
+
+`test/includeprecisecheck.sh` gained: a postcondition sweep asserting every `trans[f]` is sorted AND
+duplicate-free; a **diamond** fixture (`diamond/top.h` → `left.h`+`right.h` → both → `shared.h`) asserting
+`shared.h` appears exactly once despite two distinct paths; a **cycle** fixture (`cyc/p.h` ↔ `cyc/q.h`); and
+a **400-node synthetic** arm checked element-for-element against an independent mark-and-sweep oracle.
+
+The synthetic arm is not decoration. Two mutation controls were run:
+
+| mutation | fixture arms | large-N arm |
+| --- | --- | --- |
+| delete the sort | **all PASS** | FAIL (sorted + oracle) |
+| append without the epoch guard | uniqueness + diamond FAIL | FAIL (unique + oracle) |
+
+**With the sort deleted entirely, every fixture-based arm stayed green** — the fixture's closures are all
+under ten elements and its discovery order happens to be ascending, so it is a population that cannot
+contain the defect (CONTRIBUTING.md §2, shape 1). Only the scrambled 400-node graph, whose closures exceed
+the 128 threshold and whose discovery order is nowhere near sorted, can fail. It also carries an explicit
+non-vacuity assertion that at least one synthetic closure exceeds the radix threshold, so the radix branch
+cannot silently stop being exercised.
+
+### Reproduce
+
+```
+cmake -S . -B build_prof -DRIPWIRE_PROFILE=ON && cmake --build build_prof -j
+export TMPDIR=<scratch>/tmp-rails; mkdir -p "$TMPDIR"
+build_prof/ripwire <scratch>/rails --callers=main >/dev/null 2>prime.err   # warm prime, then re-run
+# the stderr "hottest scopes" table is the phase split; buildGraph/2b is the closure.
+# Take the MIN over >=5 interleaved A,B reps — this box ran 1-minute loads of 5-19 across the session.
+```
