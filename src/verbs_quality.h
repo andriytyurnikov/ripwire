@@ -2040,7 +2040,8 @@ std::optional<int> runEditCheck( const MainDispatch& d )
             return 1;
         }
         const rw::editpreview::Outcome preview = rw::editpreview::run( ing, d.g, d.root, cfg.maxFileBytes, cfg.excludes,
-                                                                        d.valueUses, cfg.editCheckSym, focus, payload, d.notesPtr );
+                                                                        d.valueUses, cfg.editCheckSym, focus, payload, d.notesPtr,
+                                                                        cfg.pageLimit, cfg.pageOffset );
         if( !preview.ok )
         {
             rw::emitTo( stderr, "ripwire: --edit-check --dry-run: {}\n", preview.message.c_str() );
@@ -2050,7 +2051,11 @@ std::optional<int> runEditCheck( const MainDispatch& d )
         return 0;
     }
 
-    const std::string xml = editCheckBundleText( ing, d.g, d.root, cfg.maxFileBytes, cfg.excludes, focus, d.notesPtr );
+    // 2026-09-10: --limit/--offset window the UNFLAGGED context rows and nothing else (editcheck.h,
+    // editCheckRowWindow). cli.h's honorsPaging() lists this verb, so the pair reaches here rather than
+    // being refused, and 0/0 — the un-spelled window — is the default cap, not "unbounded".
+    const std::string xml = editCheckBundleText( ing, d.g, d.root, cfg.maxFileBytes, cfg.excludes, focus, d.notesPtr,
+                                                  /*preview=*/false, cfg.pageLimit, cfg.pageOffset );
     std::fwrite( xml.data(), 1, xml.size(), stdout );
     return 0;
 }

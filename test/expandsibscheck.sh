@@ -87,7 +87,7 @@ SIBS_SHOWN="$( printf '%s' "$MTAG" | grep -oE 'sibs="[^"]*"' | tr ',' '\n' | gre
 # typical case. At 8 the cap fired on 68.5% of bodies and hid 89.3% of all sibling names; P16's stated cost,
 # "~3.5 KB per --pack-task bundle", is not reproducible — --pack-task emits NO sibs=, before P16 or after.
 # Symbols-per-file here: median 4, p90 18, p99 85, so 100 clears the tail. sibs_total= stays the TRUE count
-# and sibs_capped=1 the disclosure. See docs/LIMITS.md for all 120 caps.
+# and sibs_capped=1 the disclosure. See docs/LIMITS.md for every cap, docs/TUNING.md for what each costs.
 [ "$SIBS_SHOWN" = 100 ] && ok "(C) exactly 100 sibling names shown (kMaxExpandSibs)" \
                         || no "(C) sibs= shows $SIBS_SHOWN names, want exactly 100"
 SIBS_VALUE="$( printf '%s' "$MTAG" | grep -oE 'sibs="[^"]*"' )"

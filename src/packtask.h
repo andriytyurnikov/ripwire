@@ -48,12 +48,26 @@ struct LensRanking
     std::string        routeNote;
     std::string        mentionNote;
     std::string        boostNote;
+    std::string        sibliftNote;                // r4 EXPERIMENT (siblift.h) — "" unless RIPWIRE_SIBLIFT
+                                                    // actually promoted a symbol.
+    std::string        expandNote;                 // r6 EXPERIMENT (expand.h) — "" unless RIPWIRE_EXPAND
+                                                    // actually promoted a symbol.
     std::string        docMentionNote;             // R5: doc<->code mention-edge surfacing (see mention.h
                                                     // applyDocMentionBoost) — "" unless a resolved symbol's
                                                     // g.mentions docs actually got lifted.
     std::uint32_t      docMentionCount = 0;        // §L10b: docMentionInfo.docCount, the machine form of the
                                                     // note above (0 = the boost moved nothing) — the doc_mentions=
                                                     // root attribute reads this, mirroring anchorLifts below.
+    // The INDEXING caps that cut this ranking, accumulated across the three lift passes in the order they
+    // run (mention.h CapDisclosure). Both "" on the overwhelmingly common run where no cap bit, so a bundle
+    // that lost nothing pays nothing. The prose half already rides mentionNote/boostNote/docMentionNote,
+    // which is how --pack-task and both JSON dialects get the same fact for free.
+    std::string        capAttrs;                   // ` mention_syms_capped="1" …` — spliced onto the XML root
+    std::string        capJson;                    // `,"mention_syms_capped":true,…` — the --json twin
+    std::string        capNote;                    // the self-defining prose clause (mention.h capDisclosureNote).
+                                                    // Deliberately NOT folded into the three notes above: on --for
+                                                    // it is spliced in AFTER the sigs ladder has run, so a
+                                                    // disclosure is paid for in bytes and never in ranked rows.
     float              maxLexicalScore = 0.0f;    // R4: top raw BM25 score BEFORE --anchor/mention/cochange
                                                    // reshape it — the honest "how much real textual evidence
                                                    // is there" number the weak="1" signal reads.
@@ -142,6 +156,7 @@ struct PackTaskHeaderParts
     std::string_view rootOpenStr;      // ctxRootOpen( task, routeNote ), pre-built (its size is charged)
     std::string_view taskNote;         // the comment's scrubbed echo of `task` (xmlCommentText)
     std::string_view mentionNote, boostNote, docMentionNote;   // L1: no routeNote — route= is the one copy
+    std::string_view sibliftNote, expandNote;   // r4/r6 EXPERIMENTS — present only when the env-gated lift actually promoted something
     std::string_view report;           // the per-section truncation ledger
     // M1 (terminality round A, 2026-09-05): root attributes this bundle owes, spliced onto BOTH root
     // spellings below (the pre-built one and the ladder's route-dropped rebuild). Today that is exactly
@@ -210,6 +225,22 @@ inline constexpr const char* kPackTaskBundleLegendBody =
          // last-rung case the old wording described. Same length class, one clause, unconditional as before.
          "budget_tokens= is the token target; over_ceiling= is 1 when est_tokens exceeds it (the bundle is then complete, not trimmed). ";
 
+// r4/r6 (2026-09-10 lift-disclosure round): append the two experimental lift notes' JSON keys — same
+// absent-unless-present convention as the mention/boost/doc_mention keys beside them. Factored out (unlike
+// those three, which predate this round) purely to keep packTaskBundleText's own complexity/verbosity from
+// growing on a shape that is otherwise just two more copies of the same three-line conditional.
+inline void appendLiftJsonKeys( std::string& j, const std::string& sibliftNote, const std::string& expandNote )
+{
+    if( !sibliftNote.empty() )
+    {
+        j += ",\"siblift\":\"" + jsonStr( sibliftNote ) + "\"";
+    }
+    if( !expandNote.empty() )
+    {
+        j += ",\"expand\":\"" + jsonStr( expandNote ) + "\"";
+    }
+}
+
 // One spelling of --pack-task's header, three shapes of it. `withTaskEcho=false` replaces the comment's echo
 // with a note pointing at the task= attribute that still holds the verbatim copy — nothing is lost, only the
 // duplicate. Byte-identical to the pre-ladder header when both flags are true and extraNotes is empty.
@@ -241,6 +272,8 @@ inline std::string packTaskHeaderText( const PackTaskHeaderParts& p, bool withRo
     // route= attribute byte-for-byte in meaning; the attribute is the one copy (test/routeoncecheck.sh).
     h.append( p.mentionNote );
     h.append( p.boostNote );
+    h.append( p.sibliftNote );
+    h.append( p.expandNote );
     h.append( p.docMentionNote );
     h += kPackTaskBundleLegendBody;   // P10 (L7): the body is ONE constant — the partitioned document states it once for all slices
     h.append( p.report );
@@ -1186,7 +1219,11 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
     // one copy (test/routeoncecheck.sh pins it).
     const std::string mentionNote    = xmlCommentText( lr.mentionNote );
     const std::string boostNote      = xmlCommentText( lr.boostNote );
-    const std::string docMentionNote = xmlCommentText( lr.docMentionNote );
+    const std::string sibliftNote    = xmlCommentText( lr.sibliftNote );
+    const std::string expandNote     = xmlCommentText( lr.expandNote );
+    // …plus the indexing-cap clause, which rides the LAST note so it reads after the boosts it qualifies.
+    // "" on every run where no cap fired, and charged exactly here like every other user-length part.
+    const std::string docMentionNote = xmlCommentText( lr.docMentionNote + lr.capNote );
 
     // ── the deterministic byte budget (default 6K tokens; in.budgetTokens overrides) ────────────────────────
     const std::size_t budgetTokens = in.budgetTokens > 0 ? in.budgetTokens : std::size_t( kPackTaskDefaultTokens );
@@ -1201,7 +1238,7 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
     // trim knob of its own, so it belongs in the floor the section shares are divided under, exactly like the
     // header's own user-length parts. 0 for every caller that splices nothing.
     const std::size_t headerFloor = kPackTaskHeaderReserve + rootOpenStr.size() + taskNote.size()
-                                  + mentionNote.size() + boostNote.size() + docMentionNote.size()
+                                  + mentionNote.size() + boostNote.size() + sibliftNote.size() + expandNote.size() + docMentionNote.size()
                                   + in.trailingSectionBytes;
     std::size_t       remaining   = bundleBudget > headerFloor ? bundleBudget - headerFloor : 1;
 
@@ -1500,6 +1537,8 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
         {
             j += ",\"boost\":\"" + jsonStr( lr.boostNote ) + "\"";
         }
+        appendLiftJsonKeys( j, lr.sibliftNote, lr.expandNote );
+        j += lr.capJson;                       // the --json twin of the root cap attrs; "" unless a cap fired
         if( !lr.docMentionNote.empty() )
         {
             j += ",\"doc_mention\":\"" + jsonStr( lr.docMentionNote ) + "\"";
@@ -1660,9 +1699,17 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
         char b[ 96 ];  rw::formatTo( b, sizeof( b ), " dropped_positive=\"{}\"", rankOut.droppedPositive );
         droppedPositiveAttr = b;
     }
+    // The indexing caps that cut this ranking belong on the root as ATTRIBUTES, not only inside the prose
+    // note at line 1226. --pack-task is the agent-facing bundle: a human reading the XML comment saw
+    // lr.capNote and an agent parsing attributes saw nothing, which is backwards for who consumes this.
+    // Appending here rather than at each buildHeader site is deliberate -- this string is what
+    // appendPackTaskRootExtras splices, so the partition-slice root (in.innerBundle) inherits it too, the
+    // same way M1 gave that path dropped_positive=. Same attribute names as the --for and MCP twins, so
+    // mcpattrparitycheck still sees one spelling on every root.
+    droppedPositiveAttr += lr.capAttrs;
 
     const PackTaskHeaderParts headerParts{ task, rootOpenStr, taskNote, mentionNote, boostNote,
-                                            docMentionNote, report, droppedPositiveAttr, in.rootArg };
+                                            docMentionNote, sibliftNote, expandNote, report, droppedPositiveAttr, in.rootArg };
     const auto buildHeader = [ & ]( bool withRouteAttr, bool withTaskEcho, std::string_view extraNotes )
     {
         if( in.innerBundle )   // P10 (L7): a partition slice — the outer <ctx-partitions> legend speaks once for all of them

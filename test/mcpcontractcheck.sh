@@ -339,6 +339,9 @@ TWIN = {
     "--nonlocal-state": "", "--comment-coherence": "", "--naming-consistency": "", "--safe-delete": "",
     # P4 (L7): --pr-context joined the paging set for its changed-file window (--offset=N); CLI-only report verb.
     "--pr-context": "",
+    # 2026-09-10: --edit-check joined the paging set (it windows its unflagged caller rows) and its twin
+    # honors limit/offset through the same mcpPageArgs, so it is a MAPPED verb, not a CLI-only one.
+    "--edit-check": "edit_check",
 }
 unmapped = sorted( v for v in pagingCli if v not in TWIN )
 check( not unmapped, "(G) every paging CLI verb is classified twin-or-not (%s)" % ( ",".join( unmapped ) or "none unmapped" ) )
