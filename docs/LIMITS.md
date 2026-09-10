@@ -10,7 +10,7 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 120 | 51 | 66 | **54** |
+| 120 | 51 | 76 | **44** |
 
 ### `src/accessshape.h`
 
@@ -128,13 +128,13 @@ Discloses: **none**
 
 ### `src/gitmine.h`
 
-Discloses: **none**
+Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kCoBoostMaxFilesPerCommit` | `30` | 2802 | same bulk-commit cap as the other co-change miners here |
-| `kCoBoostMaxPartnerFiles` | `8` | 2805 | strongest partners only, by (deg desc, path asc) |
-| `kCoBoostMaxSymbolsPerFile` | `3` | 2806 | per partner file: its top-3 symbols by (lens score desc, id asc) |
+| `kCoBoostMaxFilesPerCommit` | `30` | 2836 | same bulk-commit cap as the other co-change miners here |
+| `kCoBoostMaxPartnerFiles` | `8` | 2839 | strongest partners only, by (deg desc, path asc) |
+| `kCoBoostMaxSymbolsPerFile` | `3` | 2840 | per partner file: its top-3 symbols by (lens score desc, id asc) |
 
 ### `src/graph.h`
 
@@ -247,23 +247,23 @@ Discloses: `hits_capped`, `unindexed_candidates_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4187 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4214 | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — |
 
 ### `src/mention.h`
 
-Discloses: **none**
+Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`, `mention_tokens_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kDocMentionMaxAnchors` | `8` | 475 | consult only the current top-N anchors |
-| `kDocMentionMaxDocsPerAnchor` | `2` | 476 | strongest-anchor-first, capped per anchor |
-| `kDocMentionMaxDocsTotal` | `6` | 477 | global cap — bounds token cost regardless of fan-out |
-| `kMentionMaxDirectSymbols` | `8` | 47 | directly-named (Scope.name / `name`) symbols, id asc |
-| `kMentionMaxFiles` | `4` | 45 | strongest evidence only: files named first in the text |
-| `kMentionMaxRawTokens` | `16` | 44 | extraction cap: first N candidate mention tokens, text order |
-| `kMentionMaxSymbolsPerFile` | `3` | 46 | per mentioned file: its top symbols by (lens score desc, id asc) |
+| `kDocMentionMaxAnchors` | `8` | 607 | consult only the current top-N anchors |
+| `kDocMentionMaxDocsPerAnchor` | `2` | 608 | strongest-anchor-first, capped per anchor |
+| `kDocMentionMaxDocsTotal` | `6` | 609 | global cap — bounds token cost regardless of fan-out |
+| `kMentionMaxDirectSymbols` | `8` | 126 | directly-named (Scope.name / `name`) symbols, id asc |
+| `kMentionMaxFiles` | `4` | 124 | strongest evidence only: files named first in the text |
+| `kMentionMaxRawTokens` | `16` | 123 | extraction cap: first N candidate mention tokens, text order |
+| `kMentionMaxSymbolsPerFile` | `3` | 125 | per mentioned file: its top symbols by (lens score desc, id asc) |
 
 ### `src/model.h`
 
@@ -310,11 +310,11 @@ Discloses: `cells_capped`, `decls_capped`
 
 ### `src/packtask.h`
 
-Discloses: `ranking_capped`
+Discloses: `mention_syms_capped`, `ranking_capped`
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kPackTaskRankTopN` | `12` | 75 | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
+| `kPackTaskRankTopN` | `12` | 85 | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
 
 ### `src/pageview.h`
 

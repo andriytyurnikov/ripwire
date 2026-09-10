@@ -148,6 +148,11 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
             out.mentionNote  = nb;
             out.anchorLifts  = mentionInfo.fileCount + mentionInfo.symbolCount;   // §A4f: the count the candidates root emits
         }
+        // Collected whether or not the anchor MOVED anything: a task whose named file fell outside the
+        // extraction window lifts nothing, and is the run that most needs telling.
+        out.capNote  += capDisclosureNote( mentionInfo.caps );
+        out.capAttrs += mentionInfo.caps.xml;
+        out.capJson  += mentionInfo.caps.json;
     }
 
     // r4 sibling lift (EXPERIMENTAL, pre-registered — bench/locbench/results/r4_siblift/PREREG.md): lift the
@@ -193,6 +198,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
     {
         PROFILE_SCOPE_DESCRIBE( "main: co-change prior boost (mine + apply)" );
         std::vector<std::vector<std::uint32_t>> coSets;
+        CommitWindowCensus coCensus;   // the kCoBoostMaxFilesPerCommit census (gitmine.h)
         if( multiRoot )
         {
             for( std::uint32_t r = 0; r < ws.size(); ++r )
@@ -201,7 +207,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
                 {
                     continue;
                 }
-                auto part = gitRecentCommitFileSets( ws[r].arg, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, r );
+                auto part = gitRecentCommitFileSets( ws[r].arg, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, r, &coCensus );
                 for( std::vector<std::uint32_t>& c : part )
                 {
                     coSets.push_back( std::move( c ) );
@@ -210,17 +216,20 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
         }
         else if( hasEnclosingGitRepo( root ) )
         {
-            coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit );
+            coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, UINT32_MAX, &coCensus );
         }
 
         CoBoostInfo boostInfo;
-        if( !coSets.empty() && applyCoChangeBoost( ing, coSets, lensRank, &boostInfo ) )
+        if( !coSets.empty() && applyCoChangeBoost( ing, coSets, lensRank, &boostInfo, &coCensus ) )
         {
             char nb[ 200 ];
             rw::formatTo( nb, sizeof( nb ), " [cochange boost: promoted {} symbols in {} files that historically change with the top seeds (last {} commits)]",
                            boostInfo.boostedSymbolCount, boostInfo.boostedFileCount, kCoBoostCommitWindow );
             out.boostNote = nb;
         }
+        out.capNote  += capDisclosureNote( boostInfo.caps );
+        out.capAttrs += boostInfo.caps.xml;
+        out.capJson  += boostInfo.caps.json;
     }
 
     // R5 — doc-mention surfacing (default-on, route-agnostic; see mention.h applyDocMentionBoost):
@@ -239,6 +248,9 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
             out.docMentionNote  = nb;
             out.docMentionCount = docMentionInfo.docCount;   // §L10b: machine form for the doc_mentions= root attribute
         }
+        out.capNote  += capDisclosureNote( docMentionInfo.caps );
+        out.capAttrs += docMentionInfo.caps.xml;
+        out.capJson  += docMentionInfo.caps.json;
     }
     return out;
 }
@@ -380,6 +392,9 @@ struct ForLensNotes
     std::size_t        keptCount;   // AdaptiveCut::kept — the cliff-clamped head size, in [floor, ceiling]
     std::size_t        scored;      // AdaptiveCut::positiveHits — indexed symbols with a routed score > 0
     std::size_t        corpus;      // symbols the lens scored at all — the denominator `scored` means nothing without
+    // The XML root's cap attributes, already spelled as JSON key pairs by mention.h's CapDisclosure so the
+    // two dialects cannot drift into two vocabularies. "" on every run where no indexing cap fired.
+    std::string_view   capJson;
 };
 
 // W3FIX H2 — the pieces --for's header comment is made of, so the header can be REBUILT in three shapes (as
@@ -642,7 +657,12 @@ inline std::string forLensJsonHeader( std::string_view task, const ForLensNotes&
     if( !notes.mention.empty() )
     {
         h += ",\"mention\":\"" + jsonStr( notes.mention ) + "\"";
-        // §L10b: the XML twin's mention_anchored= — same absent-unless-present gate as the prose above.
+    }
+    // §L10b: the XML twin's mention_anchored=. Gated on the COUNT since the cap-disclosure lane — the note
+    // above can now carry a cap clause on a run that anchored nothing, and "mention_anchored":0 would be a
+    // fabricated zero.
+    if( notes.mentionAnchored > 0 )
+    {
         h += ",\"mention_anchored\":" + std::to_string( notes.mentionAnchored );
     }
     if( !notes.boost.empty() )
@@ -652,9 +672,14 @@ inline std::string forLensJsonHeader( std::string_view task, const ForLensNotes&
     if( !notes.docMention.empty() )
     {
         h += ",\"doc_mention\":\"" + jsonStr( notes.docMention ) + "\"";
-        // §L10b: the XML twin's doc_mentions= — same absent-unless-present gate as the prose above.
+    }
+    // §L10b: the XML twin's doc_mentions=, gated on the COUNT for the same reason as mention_anchored above.
+    if( notes.docMentions > 0 )
+    {
         h += ",\"doc_mentions\":" + std::to_string( notes.docMentions );
     }
+    // …and the cap keys, verbatim from CapDisclosure — the XML root's own facts, same names, same order.
+    h.append( notes.capJson );
     if( !notes.adaptive.empty() )
     {
         h += ",\"adaptive\":\"" + jsonStr( notes.adaptive ) + "\"";
@@ -1701,15 +1726,19 @@ std::optional<int> runForLens( const MainDispatch& d )
         // present only when its own note fired (unlike confidence=/at=, these are not facts of every
         // ranking — a query that anchors or surfaces no docs carries neither). Same lr.anchorLifts the
         // candidates root's anchored= already reads (§A4f); lr.docMentionCount is new (§L10b, packtask.h).
+        // Both gates read the COUNTS, not the note strings — mention_anchored="0" is the fabricated zero
+        // non-negotiable #3 forbids, and a note can now be non-empty on a run that anchored nothing.
         std::string mentionDocAttrsStr;
-        if( !mentionNote.empty() )
+        if( lr.anchorLifts > 0 )
         {
             mentionDocAttrsStr += " mention_anchored=\"" + std::to_string( lr.anchorLifts ) + "\"";
         }
-        if( !docMentionNote.empty() )
+        if( lr.docMentionCount > 0 )
         {
             mentionDocAttrsStr += " doc_mentions=\"" + std::to_string( lr.docMentionCount ) + "\"";
         }
+        // The INDEXING caps do NOT join this string — they are spliced onto the root after the sigs ladder,
+        // where budget_bytes= goes and for its reason (see there).
 
         // M10: --for reads git for the per-file churn= column (folded onto the bundle below, mined once in
         // main.cpp's gitCoChangeAndChurnCached pass) and, before this fix, carried no anchor — an agent
@@ -1879,7 +1908,7 @@ std::optional<int> runForLens( const MainDispatch& d )
                                                                                               // over the whole index, so its size IS the
                                                                                               // scored corpus.
                                                                                               forCut.kept, forCut.positiveHits,
-                                                                                              lensRank.size() } ),
+                                                                                              lensRank.size(), lr.capJson } ),
                                                 ForLensJsonInputs{ ing, lensRank, forTopN, fanInPtr, impurePtr, &forChurn,
                                                                    &forClone, testedPtr, ampPtr, redactPtr,
                                                                    cfg.packBudgetBytes, cfg.tokenBudget, notesPtr,
@@ -2149,7 +2178,15 @@ std::optional<int> runForLens( const MainDispatch& d )
         const std::string sigsCeilingNote   = forDefaultCeiling
             ? std::string( " [budget_bytes= is the default BYTE ceiling this ranked payload was shaped against; it bounds that payload, not the whole document est_tokens prices]" )
             : std::string();
-        const std::size_t droppedPositiveSpliceReserve = droppedPositiveNote.size() + sigsCeilingNote.size() + sigsCeilingAttr.size();
+        // ── the INDEXING-cap disclosure (mention.h CapDisclosure), at the same splice point and for the
+        // same reason: a --for header is charged against the payload ceiling, so a disclosure folded into
+        // the notes above is paid for in ranked rows. Measured on sixteen real invocations, that cost three
+        // bundles a <d> row; riding this post-render splice costs bytes and never costs evidence.
+        // COST: zero unless a cap actually bit.
+        const std::string capAttrsStr = lr.capAttrs;
+        const std::string capNoteStr  = lr.capNote;
+        const std::size_t droppedPositiveSpliceReserve = droppedPositiveNote.size() + sigsCeilingNote.size() + sigsCeilingAttr.size()
+                                                       + capAttrsStr.size() + capNoteStr.size();
 
         // §P3 × §P4: the budget trim above can drop files the lego scope still references — narrow the lego
         // block to the RENDERED sigs' files and re-render (a byte-subset of what the budget already charged
@@ -2336,6 +2373,16 @@ std::optional<int> runForLens( const MainDispatch& d )
                 headerStr.insert( rootCloseAt, sigsCeilingAttr ); // else: unexpected shape, header left as-is
             }
         }
+        // …and the cap attributes: root facts of the RANKING, so on the root est_tokens prices, not in the
+        // ladder's input above.
+        if( !capAttrsStr.empty() )
+        {
+            const std::size_t rootCloseAt = headerStr.find( "><!--" );
+            if( rootCloseAt != std::string::npos )
+            {
+                headerStr.insert( rootCloseAt, capAttrsStr ); // else: unexpected shape, header left as-is
+            }
+        }
 
         // R4 + §L2: weak="1" — same insert-before-"-->" mechanism as est_tokens below, but unconditional on
         // sigsPreRendered (forWeak is known from lr.maxLexicalScore regardless of the sigs render path).
@@ -2378,6 +2425,16 @@ std::optional<int> runForLens( const MainDispatch& d )
             if( closeAt != std::string::npos )
             {
                 headerStr.insert( closeAt, sigsCeilingNote ); // else: unexpected shape, header left as-is
+            }
+        }
+        // ... and the cap clause, which DEFINES those attributes by carrying them verbatim — the
+        // legendcoveragecheck contract, the self-defining shape dropped_positive= uses.
+        if( !capNoteStr.empty() )
+        {
+            const std::size_t closeAt = headerStr.rfind( " -->" );
+            if( closeAt != std::string::npos )
+            {
+                headerStr.insert( closeAt, capNoteStr ); // else: unexpected shape, header left as-is
             }
         }
 
