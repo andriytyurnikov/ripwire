@@ -34,6 +34,29 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-09, REBASED onto main c38d3eea (parser 85, text-docs tier): the entry below is RE-ANSWERED
+#   against THAT tree rather than carried over — --quality-baseline written by main's own binary and by
+#   this lane's, on the same corpus, is BYTE-IDENTICAL at 930,546 B. So the conversion is still the
+#   refactor-only arm on the new base and kQSnapCacheScheme still stays 8.
+# 2026-09-09, PRINTF-FAMILY -> std::print (lane/stdprint-conversion): RE-PIN ONLY, kQSnapCacheScheme STAYS 8.
+#   One manifest function's SOURCE moved: bodyHashesBySym's hex fold went
+#     std::snprintf( b, sizeof( b ), "%016llx", ... )  ->  rw::formatTo( b, sizeof( b ), "{:016x}", ... )
+#   That string is concatenated into `joined` and fed to fnv1a64, so it IS the body hash a snapshot stores,
+#   and a byte moving there would silently repartition clone groups and the dead set. It does not move:
+#   %016llx and {:016x} were proven byte-identical over 0, 1, 255, 4886718345 and UINT64_MAX before the
+#   conversion, and the END-TO-END check is what settles it — --quality-baseline written by the
+#   pre-conversion binary and by this one, on the same corpus, is BYTE-IDENTICAL: 2,388 B on test/fixture
+#   and 924,402 B on the real src/ tree. Nothing a Snapshot means has changed, so this is the
+#   refactor-only arm of this gate's own instructions: re-pin, do not bump the scheme.
+#   RE-PINNED AGAIN in the same lane (the whitespace pass): the converter had left a double space before
+#   the closing paren, and collapsing it touched bodyHashesBySym's line a second time. Same answer, re-run
+#   rather than assumed — the --quality-baseline blobs are byte-identical again (924,394 B on src/), so it
+#   is still the refactor-only arm and the scheme still stays 8. Lesson for the next conversion: re-pin a
+#   source-text tripwire ONCE, at the end of the lane, after formatting has settled.
+#   (Note for the next reader: the manifest is TWELVE functions, not the six the family is often described
+#   by — topLevelCalleeNameHashes, bodyHashesBySym, readRegisterMacrosConfig, registeredMacroNames,
+#   startsWithRegisteredMacro and registeredMacroSymbolIds are in it too, and bodyHashesBySym is the one a
+#   formatting change can reach.)
 # 2026-09-09, PLAIN-TEXT PROSE TIER (test/textdocscheck.sh): kParserVer 84 -> 85 and
 #   kIngestParserVerMirror -> 85. `.rst`/`.adoc`/`.org`/`.mdx` join kLangTable on Lang::Markdown and the
 #   markdown BLOCK grammar, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED. That is the one class of

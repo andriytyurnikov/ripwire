@@ -21,7 +21,7 @@ section, and it is not an afterthought.
 | **Co-change / known-item evals** | `--eval`, `--eval-retrieval` (see `bench/ANSWERQUALITY.md`) | Whether the tool surfaces the other files a real historical commit touched; and known-item retrieval across four rankers. |
 | **Ensemble calibration harness** | `bench/ensemblecal/` | Whether `--ensemble`'s four evidence families are actually orthogonal, how often each fires, how stable each is across commits — and the preset ladder derived from that (§9). |
 | **Differential argv harness** | `test/argvdiffcheck.sh` | That a refactor changed *nothing observable*: two binaries, every argv vector, stdout + stderr + exit code byte-identical. |
-| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 570 gate scripts plus the determinism, cache-transparency and golden contracts. |
+| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 571 gate scripts plus the determinism, cache-transparency and golden contracts. |
 | **`--quality-delta`** | `src/quality.h` | Ten measured code-quality failure modes, reported only where a change made them worse. |
 
 ### The labeling protocol (why the held-out eval is allowed to disagree with the ranker)
@@ -5119,20 +5119,54 @@ verb elides* — count it and the headline becomes a function of how deep your c
 on disk. On one corpus, three spellings of the same root read **18.6 points apart** before the
 subtraction and agreed exactly after it.
 
-**Root-neutralised on this repository (re-derived 2026-08-23):**
+**Root-neutralised on this repository (re-derived 2026-09-10):**
 
-| Result size | Byte reduction | previous (2026-08-01) |
+| Result size | Byte reduction | previous (2026-09-09) |
 | --- | --- | --- |
-| top-10 | 86.5% | 46.7% |
-| **top-50** | **81.4%** | 67.0% |
-| top-100 | 81.6% | 66.2% |
+| top-10 | 89.5% | 81.3% |
+| **top-50** | **81.8%** | 71.0% |
+| top-100 | 84.3% | 73.7% |
+
+**`--pack-signatures` did not regress. The denominator did.** The move from 81.4% to 71.0% was
+attributed by bisection, not asserted, and it is mostly ONE commit — `08e757b0` (2026-09-05, lane L7's
+P16), which cut `kMaxExpandSibs` from **40 to 8**. That shrank `--expand`'s `<b>` elements ~23% at
+top-50 (41,827 B → 32,283 B on a FIXED tree), and since this ratio is `1 - sig/body`, a leaner
+baseline reads as a smaller saving.
+
+The attribution is a 2×2, binary × tree, on the 2026-08-30 corpus:
+
+| | 2026-08-30 binary | today's binary |
+| --- | --- | --- |
+| **2026-08-30 tree** | 85.6 / **80.2** / 80.7 | 80.6 / **74.7** / 73.6 |
+
+Same tree, same top-50 membership (44 of 45 symbols shared), signature side flat (8,269 B → 8,163 B).
+The published 80.2% was correctly measured and correctly dated; it stopped being reproducible the day
+the cap landed. The remainder — 74.7 → 72.3 → 71.0 — is ordinary corpus drift as this repository
+changed, of which the 2026-09-09 printf-to-`std::print` conversion is **1.3 points**.
+
+**Read this as a caution about the metric, not only about the number.** The denominator is `--expand`'s
+rendered output, so it includes `sibs=`/`inc=` file-context attributes that are not the symbol's body.
+That makes the headline move when `--expand`'s rendering is tuned, in both directions: adding
+`sibs=`/`inc=` on 2026-08-15 moved it UP from 70.0/61.0/63.8, and capping `sibs` moved it back down.
+A measure that rises when the baseline is padded and falls when the baseline is made cheaper is
+measuring the comparison, not the verb.
+
+**2026-09-10 — the cap was raised, and this is the same effect running forward.** `kMaxExpandSibs` went
+8 → **100**, so the figure rose 71.0% → 81.8%. `--pack-signatures` again elides exactly what it always
+did; `--expand` simply stopped hiding the file context it was cutting. The cap was set on **recall**
+grounds, not to move this number: at 8 it fired on **68.5%** of bodies and hid **89.3%** of all sibling
+names, while its stated cost — "~3.5 KB per `--pack-task` bundle" — was not reproducible, because
+`--pack-task` emits no `sibs=` at all, before or after. Symbols-per-file here is median 4, p90 18,
+p99 85; 100 clears the tail, fires on 15.8% of bodies, costs +36% on a single-symbol `--expand` answer
+and **nothing** on `--for` or `--pack-task`, which are byte-identical at every cap. The full inventory
+of the 120 caps in `src/` is `docs/LIMITS.md`, generated and gated by `test/limitstablecheck.sh`.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the
 full-body side of the ratio. The verb elides no more than it did. `docs/COMMANDS.md`'s own
 `--pack-signatures` caption is regenerated from a live capture and carries the same triple, and
 `test/showcasecapturecheck.sh` fails if the caption and its own recount drift more than 1.5 points
-apart — at the time of writing that recount reads 86.5 / 81.1 / 81.3.
+apart — at the time of writing that recount reads 89.5 / 81.8 / 84.3.
 
 **Quote the top-50 figure.** The signature payload is top-50 regardless of `--top-k`, so it is what
 the command actually emits. A "~70%" headline is reachable at larger N but overstates the smaller
@@ -5153,8 +5187,11 @@ tolerance (the pre-change binary measured 67.0), so the true binary-to-binary to
 **This is gated, not asserted.** `test/showcasecapturecheck.sh` re-derives all three figures from
 this repository on every run, in the same quantity as the caption, and fails if the caption and the
 recount drift more than 1.5 points apart — plus a separate regression band at top-50, derived as the
-caption's own figure ±9 points (72–90% at the caption's current 81.4%). The
-documentation cannot silently diverge from the binary.
+caption's own figure ±9 points (73–91% at the caption's current 81.8%). The band is re-centred when
+the corpus moves it, and the centre is *derived* from the two edges in the gate's own message rather
+than hand-copied, because it was hand-copied once and went stale. `--help` states the same band, and
+`test/showcasecapturecheck.sh` arm (C-help) fails if it does not. The documentation cannot silently
+diverge from the binary.
 
 See §7 for the case where this verb makes output **larger**.
 
@@ -5579,7 +5616,7 @@ copy here would be exactly the dialect divergence that gate exists to catch. Com
 tags, wrap, stable-order defaults), seven individually invoked standalone gates (`g1freshcheck`,
 `skillscan`, `htmlexport`, `compresscheck`, `handoffcheck`, `releaseinstallcheck`,
 `taskroutecheck`), and a single loop
-naming **570 gate scripts**, all of which exist on disk.
+naming **571 gate scripts**, all of which exist on disk.
 
 `python3 test/pargates.py . ./build/ripwire -j 6` runs the same scripts in parallel so a full
 verification fits in one sitting. It does not modify `regression.sh`.
@@ -6491,7 +6528,7 @@ Listed because the reason is more useful than the silence.
   shipped**. See `bench/locbench/anchorhop_calib.json`. The mention anchor's reproducible numbers are
   the ablations in §4.
 - **A single round gate-count.** Two in-tree numbers disagree (`test/pargates.py`'s docstring says
-  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 570. The
+  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 571. The
   loop is the authority; the stale docstrings are a known drift. `test/manifestcheck.sh` asserts this
   very number against the loop's actual length, so it cannot go stale silently again.
 - **"282 argv vectors."** The gate asserts a floor of ≥250 assembled from five sources; 282 was a
