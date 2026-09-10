@@ -13,7 +13,7 @@
 
 #include "model.h"
 #include "mention.h"   // kMentionTopGapStep / kMentionMaxSymbolsPerFile — the ONE slot-ladder vocabulary
-#include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — a malformed/out-of-range RIPWIRE_SIBLIFT degrades to OFF, and says so
+#include "infra/emit.h"          // rw::emitTo — a malformed/out-of-range RIPWIRE_SIBLIFT is REPORTED on stderr in every build flavour: a rejected user value is config feedback, not a degrade path (DEGRADED_PATH_ALERT compiles out under NDEBUG, so a Release binary would have gone silent again)
 #include <algorithm>
 #include <cstdlib>
 #include <string_view>
@@ -51,7 +51,7 @@ inline std::pair<std::size_t, std::size_t> sibliftParams()
     const auto [ seed, sib ] = sibliftParamsParse( std::string_view( env ) );
     if( seed == 0 || sib == 0 )
     {
-        DEGRADED_PATH_ALERT( "RIPWIRE_SIBLIFT is set but malformed or out of range (want \"<seedFiles 1-4>,<sibPerSeed 1-4>\") — sibling lift OFF" );
+        rw::emitTo( stderr, "ripwire: RIPWIRE_SIBLIFT is set but malformed or out of range (want \"<seedFiles 1-4>,<sibPerSeed 1-4>\") — sibling lift OFF\n" );
     }
     return { seed, sib };
 }

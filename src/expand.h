@@ -25,7 +25,7 @@
 #include "model.h"
 #include "resolve.h"   // buildPreciseIncludeAdj — resolved file->file edges, not basename guesses
 #include "mention.h"   // kMentionTopGapStep / kMentionMaxSymbolsPerFile — the ONE slot-ladder vocabulary
-#include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — a malformed/out-of-range RIPWIRE_EXPAND degrades to OFF, and says so
+#include "infra/emit.h"          // rw::emitTo — a malformed/out-of-range RIPWIRE_EXPAND is REPORTED on stderr in every build flavour: a rejected user value is config feedback, not a degrade path (DEGRADED_PATH_ALERT compiles out under NDEBUG, so a Release binary would have gone silent again)
 #include <algorithm>
 #include <cstdlib>
 #include <vector>
@@ -62,7 +62,7 @@ inline std::pair<std::size_t, std::size_t> expandParams()
     const auto [ seeds, per ] = expandParamsParse( std::string_view( env ) );
     if( seeds == 0 || per == 0 )
     {
-        DEGRADED_PATH_ALERT( "RIPWIRE_EXPAND is set but malformed or out of range (want \"<seedFiles 1-8>,<perSeed 1-8>\") — structural expansion OFF" );
+        rw::emitTo( stderr, "ripwire: RIPWIRE_EXPAND is set but malformed or out of range (want \"<seedFiles 1-8>,<perSeed 1-8>\") — structural expansion OFF\n" );
     }
     return { seeds, per };
 }
