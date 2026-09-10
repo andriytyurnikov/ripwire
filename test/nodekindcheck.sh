@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # nodekindcheck.sh — gate for rw::kindIs (src/infra/nodekind.h), the inline node-kind compare that
-# replaced ~430 per-AST-node `std::strcmp` calls in the ingest walk (docs/OPTREMARKS.md §8b/F3).
+# replaced 569 per-AST-node `std::strcmp` calls in the ingest walk (docs/OPTREMARKS.md §8b/F3).
 #
 # The claim being gated is narrow and total: `kindIs( t, "lit" )` is `std::strcmp( t, "lit" ) == 0`,
 # for every t, with no read past t's NUL. A hand-rolled byte compare is the kind of code that is
@@ -29,6 +29,9 @@
 #      is the coverage assertion — arms A-C prove the primitive is correct, and only this one keeps the
 #      measured win from being quietly reverted a site at a time. A future site that genuinely needs
 #      libc strcmp in one of these files should change this arm on purpose, not slip past it.
+#      (D-mut) performs that revert on a scratch copy and requires arm D to report every section: a
+#      mechanical 570-site conversion is exactly where an arm can be green in BOTH directions, and an
+#      arm that cannot see the change being undone is not guarding it.
 #
 # Usage:  bash test/nodekindcheck.sh   [ CXX=clang++ ]
 # Exits non-zero on any failure. Does NOT edit regression.sh.
@@ -244,25 +247,67 @@ else
 fi
 
 # ── D. population: the walk sections are on kindIs, and have no literal strcmp left ──────────────────
-missing=0
-for f in $WALK_FILES; do
-    [ -f "$ROOT/$f" ] || { no "D: $f is missing — the walk population moved and this gate is measuring a tree that is gone"; missing=1; }
-done
-if [ "$missing" = 0 ]; then
-    leftover=0
+# This is the COVERAGE arm. A-C prove the primitive is correct; only this one stops the measured win
+# from being reverted a site at a time, so it has to be able to see a revert — which is why the
+# mutation control below performs one. Sites that compare against a `const char*` VARIABLE rather than
+# a literal (ev_childText's caller-supplied list, isTypeDeclarationSite's parent table) legitimately
+# keep std::strcmp: kindIs takes `const char (&)[N]` and does not bind to them at all.
+#
+# The check is a FUNCTION OVER A DIRECTORY, not a straight-line grep of $ROOT, for one reason: the
+# mutation control has to run it against a reverted copy of the tree, and a gate that can only look at
+# its own checkout cannot be shown to fail. Never mutate $ROOT itself to prove this — a gate that edits
+# tracked source leaves the repo dirty if it dies, and an extra file in the tree perturbs anything that
+# crawls it.
+checkPopulation(){                   # $1 = tree root to inspect; prints one line per violation, empty = clean
+    local root="$1" f n k
     for f in $WALK_FILES; do
-        n="$( grep -cE 'std::strcmp\([^"]*"[^"]*"[[:space:]]*\)[[:space:]]*[!=]=[[:space:]]*0' "$ROOT/$f" 2>/dev/null || true )"
-        k="$( grep -c 'kindIs(' "$ROOT/$f" 2>/dev/null || true )"
-        if [ "${n:-0}" -ne 0 ]; then
-            no "D: $f still has $n \`std::strcmp( x, \"literal\" )\` site(s) on a per-AST-node path"
-            leftover=1
-        fi
-        if [ "${k:-0}" -lt 10 ]; then
-            no "D: $f carries only ${k:-0} kindIs sites — it is not on the inline compare"
-            leftover=1
-        fi
+        [ -f "$root/$f" ] || { printf '%s: MISSING\n' "$f"; continue; }
+        n="$( grep -cE 'std::strcmp\([^"]*"[^"]*"[[:space:]]*\)[[:space:]]*[!=]=[[:space:]]*0' "$root/$f" 2>/dev/null || true )"
+        k="$( grep -c 'kindIs(' "$root/$f" 2>/dev/null || true )"
+        [ "${n:-0}" -ne 0 ] && printf '%s: %s literal std::strcmp site(s) on a per-AST-node path\n' "$f" "$n"
+        [ "${k:-0}" -lt 10 ] && printf '%s: only %s kindIs site(s) — not on the inline compare\n' "$f" "${k:-0}"
     done
-    [ "$leftover" = 0 ] && ok "D: all $( echo $WALK_FILES | wc -w | tr -d ' ' ) walk sections are on kindIs, with no literal std::strcmp left"
+    return 0
+}
+
+violations="$( checkPopulation "$ROOT" )"
+if [ -n "$violations" ]; then
+    printf '%s\n' "$violations" | while IFS= read -r v; do no "D: $v"; done
+    fail=1
+else
+    ok "D: all $( echo $WALK_FILES | wc -w | tr -d ' ' ) walk sections are on kindIs, with no literal std::strcmp left"
+fi
+
+# ── D-mut. the revert control: arm D must SEE a revert of the whole change ───────────────────────────
+# The failure this rules out is the one a mechanical 570-site conversion invites — an arm that is green
+# in both directions, and therefore green forever. A scratch copy of the five sections is transformed
+# back to `std::strcmp( x, "lit" ) == 0` / `!= 0` (the exact inverse of the rewrite), and arm D's own
+# function must report every one of them. Anything less than all five means the arm has a blind file.
+mkdir -p "$TMP/reverted/src"
+revertedFiles=0
+for f in $WALK_FILES; do
+    if python3 - "$ROOT/$f" "$TMP/reverted/$f" <<'PYREVERT'
+import re, sys
+src = open( sys.argv[1] ).read()
+# !kindIs( A, "L" ) -> std::strcmp( A, "L" ) != 0   ·   kindIs( A, "L" ) -> std::strcmp( A, "L" ) == 0
+out, n = re.subn( r'(!?)kindIs\( (.*?), ("(?:[^"\\]|\\.)*") \)',
+                  lambda m: 'std::strcmp( %s, %s ) %s 0' % ( m.group(2), m.group(3), '!=' if m.group(1) else '==' ),
+                  src )
+open( sys.argv[2], 'w' ).write( out )
+sys.exit( 0 if n > 0 else 1 )
+PYREVERT
+    then revertedFiles=$(( revertedFiles + 1 )); fi
+done
+if [ "$revertedFiles" -ne "$( echo $WALK_FILES | wc -w | tr -d ' ' )" ]; then
+    no "D-mut: could only build a reverted copy of $revertedFiles walk section(s) — the control cannot prove arm D fires"
+else
+    mutViolations="$( checkPopulation "$TMP/reverted" )"
+    mutFiles="$( printf '%s\n' "$mutViolations" | grep -c 'literal std::strcmp' || true )"
+    if [ "${mutFiles:-0}" -eq "$( echo $WALK_FILES | wc -w | tr -d ' ' )" ]; then
+        ok "D-mut: arm D goes red on a full revert of the change — all $mutFiles section(s) reported (it is not green in both directions)"
+    else
+        no "D-mut: a full revert left arm D green on $(( $( echo $WALK_FILES | wc -w | tr -d ' ' ) - ${mutFiles:-0} )) of $( echo $WALK_FILES | wc -w | tr -d ' ' ) section(s) — the arm has a blind file"
+    fi
 fi
 
 echo

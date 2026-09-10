@@ -247,7 +247,12 @@ absent. The `.profdata` is deliberately **not committed**: a stale committed pro
 ## 5c. F3 — the per-node `strcmp` dispatch, and why a hand-written SIMD routine lost to a byte loop
 
 **The lead.** §8b, from the newly-covered 98%: **528 distinct `inline/NoDefinition` sites naming
-`strcmp`**, in node-kind dispatch chains (`isDecisionType`, `cc_isNestingControl`, `ev_ctrlKindFor`,
+`strcmp`** — a figure inherited from §8b, not re-measured here, and one that carries the site→callee
+selection §7 documents: `scripts/optremarks.py` keys a distinct site on `( file, line, remark-name )`
+and keeps the FIRST record, while the callee lives in the detail, so a site naming more than one
+callee is counted under whichever it named first. **Nothing below rests on it.** F3's conclusion rests
+on leaf-of-stack attribution and an instrumented call count; a different reading of the site count
+changes no sentence in this section. The chains it points at are (`isDecisionType`, `cc_isNestingControl`, `ev_ctrlKindFor`,
 `bindsVisitNode`) that are ~forty comparisons long and run per AST node. Neither F1 nor any §6
 dismissal covered it: LTO cannot make libc's `strcmp` available (so F1's answer does not reach), and
 D4's "inlining a syscall wrapper saves nothing" does not apply to a leaf string compare.
@@ -273,8 +278,8 @@ almost entirely one walk: `cc_walk` 60.7%, `isDecisionType` 17.9%, `bindsVisitNo
 
 **The change.** `rw::kindIs` (`src/infra/nodekind.h`): `kindIs( t, "if_statement" )` is exactly
 `std::strcmp( t, "if_statement" ) == 0`, unrolled inline against a literal whose length the type
-system carries. Applied mechanically to the ~430 literal-compare sites in the five ingest walk
-sections. Sites comparing against a *variable* (`ev_childText`'s caller-supplied list,
+system carries. Applied mechanically to the **569** `std::strcmp` call sites (on 412 lines) in the five ingest
+walk sections. Sites comparing against a *variable* (`ev_childText`'s caller-supplied list,
 `isTypeDeclarationSite`'s parent table) keep `std::strcmp` — the array-reference signature does not
 bind to them, deliberately.
 
@@ -344,7 +349,7 @@ rather than merged into a helper parameterised on an unrelated table.
 
 **One known red, handed off rather than fixed here.** `test/showcasecapturecheck.sh` arm (C-band)
 asserts the top-50 `--pack-signatures` reduction on **this repository as its own corpus** lands in
-72–90%. Shortening ~430 dispatch comparisons cut top-50 *body* bytes 31,887 → 30,275 (−5.1%), which
+72–90%. Shortening 569 dispatch comparisons cut top-50 *body* bytes 31,887 → 30,275 (−5.1%), which
 moves the ratio 72.4% → 71.7%. It is this lane's doing — one fixed binary over the twelve preceding
 checkouts reads 72.3–72.4%, so the quantity barely moves on its own and the floor had 0.4 points of
 margin — but the elider itself is byte-identical, so what the arm caught is **our own source getting

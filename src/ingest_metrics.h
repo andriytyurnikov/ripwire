@@ -1536,8 +1536,8 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
         }
         const char* pt = ts_node_type( p );
         if(    kindIs( pt, "call_expression" )     // C++/TS/JS/Swift
-            || kindIs( pt, "call" )     // Python
-            || kindIs( pt, "method_invocation" )     // Java
+            || kindIs( pt, "call" )                // Python
+            || kindIs( pt, "method_invocation" )   // Java
             || kindIs( pt, "invocation_expression" ) )   // C#
         { call = p; found = true; break; }
         n = p;

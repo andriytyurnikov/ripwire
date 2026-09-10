@@ -26,7 +26,7 @@
 //     compare (`std::memcmp( t, lit, N )` would have it), and test/nodekindcheck.sh arm B proves the
 //     absence by putting the NUL on the last readable byte before an mprotect(PROT_NONE) guard page.
 //
-// SCOPE. This is for grammar strings — node kinds and field names — in the per-AST-node dispatch of
+// SCOPE. 569 call sites across the five ingest walk sections. This is for grammar strings — node kinds and field names — in the per-AST-node dispatch of
 // the ingest walk sections. It is not a general-purpose string compare, and there is no reason to
 // convert `std::strcmp` sites that are not on a per-node path: nothing measured says they cost
 // anything, and D2 in docs/OPTREMARKS.md is what happens when a correct change is made on a cold one.
