@@ -308,15 +308,39 @@ EOF
 # --help is the ONE pre-existing vector an additive flag is REQUIRED to change: deckcheck.sh fails unless a
 # new flag's rows land in --help in the same commit. So when BIN advertises a flag BASE does not, the two help
 # texts must differ, and byte-identity there would mean the rows were never written. It is replaced by a
-# STRICTER assertion for that case — BASE's help must survive VERBATIM inside BIN's, line for line — which
-# catches a reworded or deleted row that byte-identity would have caught and a plain skip would not.
+# stricter assertion for that case: every flag BASE DOCUMENTS must still have a row in BIN's catalog.
+#
+# TWO THINGS CHANGED HERE ON 2026-09-09, and both are worth stating rather than discovering later.
+#
+# (1) THE SPELLING IS ASYMMETRIC ON PURPOSE. BASE is a PREVIOUS RELEASE, and `--help=all` did not exist
+#     before the two-tier split — asking an old binary for it yields an unknown-flag refusal and an EMPTY
+#     capture, which this arm would then read as "nothing missing" and pass. That is the empty-equals-
+#     agreement shape (CONTRIBUTING §2, row 3): the arm would stay in the file and leave the conjunction.
+#     So BASE is asked with `--help` (its full catalog) and BIN with `--help=all` (its full catalog), and
+#     the presence guard below makes an empty BASE capture a FAILURE rather than a pass.
+#
+# (2) THE ASSERTION IS NOW ABOUT ROWS, NOT LINES. It used to require BASE's help to survive VERBATIM inside
+#     BIN's, line for line. The two-tier split deliberately reworded 133 opening lines and moved the old
+#     prose down one row, so line-verbatim now fails on a change that deleted nothing — and it would have
+#     failed the same way on any honest rewording, which this project does routinely. Rows are the property
+#     the arm was really protecting: a flag whose documentation silently DISAPPEARS between releases. A
+#     reworded row still has to be there. test/helpbudgetcheck.sh holds the within-release half of this
+#     (every row advertised in tier 1 is retrievable from tier 2).
 if [ -s "$TMP/flags.added.txt" ]; then
     grep -vE '(^|[[:space:]])(--help|-h)([[:space:]]|$)' "$VEC" > "$TMP/vec.trimmed" && mv "$TMP/vec.trimmed" "$VEC"
-    "$BASE" --help=all 2>&1 > "$TMP/help.base"
-    "$BIN"  --help=all 2>&1 > "$TMP/help.new"
-    missing="$( grep -Fxv -f "$TMP/help.new" "$TMP/help.base" | head -3 )"
-    [ -z "$missing" ] && ok "help is ADDITIVE: every line of BASE's --help survives verbatim in BIN's" \
-                      || { no "BASE --help line(s) reworded or removed — not additive:"; printf '%s\n' "$missing" | sed 's/^/        /'; }
+    "$BASE" --help     >"$TMP/help.base" 2>/dev/null
+    "$BIN"  --help=all >"$TMP/help.new"  2>/dev/null
+    helprows(){ grep -E '^    (--[^ ]+|[^ ]+  +[^ ])' "$1" | sed -E 's/^    ([^ ]+) .*/\1/' | sort -u; }
+    helprows "$TMP/help.base" >"$TMP/rows.base"
+    helprows "$TMP/help.new"  >"$TMP/rows.new"
+    nbase="$( grep -c . "$TMP/rows.base" )"
+    if [ "$nbase" -lt 50 ]; then
+        no "only $nbase rows read out of BASE's --help — the capture broke, so the additive check proves nothing"
+    else
+        missing="$( comm -23 "$TMP/rows.base" "$TMP/rows.new" | head -3 )"
+        [ -z "$missing" ] && ok "help is ADDITIVE: all $nbase rows BASE documents still have a row in BIN's catalog" \
+                          || { no "row(s) BASE documents are gone from BIN's --help — not additive:"; printf '%s\n' "$missing" | sed 's/^/        /'; }
+    fi
 fi
 
 TOTAL="$( grep -c . "$VEC" )"
