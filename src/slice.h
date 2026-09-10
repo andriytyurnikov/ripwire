@@ -1201,6 +1201,7 @@ inline const char* sliceReachName( std::uint8_t rule ) noexcept
 
 // the fixpoint bound — a loop's header state is monotone so it converges in at most (defs of its bindings + 1)
 // rounds; the bound only guards a broken lattice, and hitting it is a degrade (the state is used as is)
+// (2026-09-10: 4,528 fixpoints over 3,026 symbols, max iteration count 1; bound inert, no disclosure attribute)
 inline constexpr std::uint32_t kSliceRdMaxIter = 64;
 
 // the dataflow state at one program point: per SLOT (a binding, or an unbound name) the sorted all-indices

@@ -1388,8 +1388,45 @@ inline void mapChurnCountsOntoFiles( const HashMap<std::string, std::uint32_t>& 
 // "-N " (trailing space required, exactly as sinceLogArgs emits). Extracted (B3) so gitCommitFileSets
 // (date/rev windows) and gitRecentCommitFileSets (last-N-commits window) share ONE parser instead of
 // cloning it; gitCommitFileSets' behavior is byte-identical to its pre-extraction form.
+// What the window held and what this parser threw away for exceeding `maxFiles`. A dropped bulk commit is
+// invisible downstream — the co-change boost simply never sees that evidence — so the caller that discloses
+// the cut (kCoBoostMaxFilesPerCommit) needs the numbers from here. One struct, so the miners keep an arity.
+struct CommitWindowCensus
+{
+    std::uint32_t commits     = 0;   // commits in the window with at least one INDEXED file
+    std::uint32_t bulkDropped = 0;   // of those, the ones dropped for touching more than maxFiles of them
+};
+
+// The per-commit keep/drop decision, lifted out of gitLogFileSets so the census lives beside the rule it
+// counts and the parser stays a parser. `cur` is consumed (sorted, deduped, then cleared).
+inline void recordCommitFileSet( std::vector<std::uint32_t>& cur, std::size_t maxFiles,
+                                 std::vector<std::vector<std::uint32_t>>& sets, CommitWindowCensus* census )
+{
+    std::sort( cur.begin(), cur.end() );
+    cur.erase( std::unique( cur.begin(), cur.end() ), cur.end() );
+    if( cur.empty() )
+    {
+        cur.clear();
+        return;
+    }
+    if( census )
+    {
+        ++census->commits;
+    }
+    if( cur.size() <= maxFiles )
+    {
+        sets.push_back( cur ); // keep 1..max (freq needs size-1 too)
+    }
+    else if( census )
+    {
+        ++census->bulkDropped;
+    }
+    cur.clear();
+}
+
+// `outCensus` is optional and left alone when null; every caller that passes nothing is byte-identical.
 inline std::vector<std::vector<std::uint32_t>> gitLogFileSets( const std::string& root, const IngestResult& ing, const std::string& windowArgs, std::size_t maxFiles,
-                                                               std::uint32_t onlyRoot = UINT32_MAX )
+                                                               std::uint32_t onlyRoot = UINT32_MAX, CommitWindowCensus* outCensus = nullptr )
 {
     std::vector<std::vector<std::uint32_t>> sets;
 
@@ -1405,16 +1442,7 @@ inline std::vector<std::vector<std::uint32_t>> gitLogFileSets( const std::string
     }
 
     std::vector<std::uint32_t> cur;
-    const auto flush = [ & ]()
-    {
-        std::sort( cur.begin(), cur.end() );
-        cur.erase( std::unique( cur.begin(), cur.end() ), cur.end() );
-        if( cur.size() >= 1 && cur.size() <= maxFiles )
-        {
-            sets.push_back( cur ); // keep 1..max (freq needs size-1 too)
-        }
-        cur.clear();
-    };
+    const auto flush = [ & ]() { recordCommitFileSet( cur, maxFiles, sets, outCensus ); };
     std::string s;
     while( readByteSafeLine( pipe, s ) )   // F6: THE line reader, not a char[4096] a long path can be split across
     {
@@ -1456,10 +1484,10 @@ inline std::vector<std::vector<std::uint32_t>> gitCommitFileSets( const std::str
 // checkouts (a repo pinned to a 2024 base commit has nothing inside a wall-clock window measured in 2026,
 // which is exactly the LocBench-eval shape). Degrades to empty on no-git / no-history, like every miner here.
 inline std::vector<std::vector<std::uint32_t>> gitRecentCommitFileSets( const std::string& root, const IngestResult& ing, std::uint32_t commitCount, std::size_t maxFiles,
-                                                                        std::uint32_t onlyRoot = UINT32_MAX )
+                                                                        std::uint32_t onlyRoot = UINT32_MAX, CommitWindowCensus* outCensus = nullptr )
 {
     PROFILE_SCOPE_DESCRIBE( "gitmine: gitRecentCommitFileSets (co-change boost window)" );
-    return gitLogFileSets( root, ing, "-" + std::to_string( commitCount ) + " ", maxFiles, onlyRoot );
+    return gitLogFileSets( root, ing, "-" + std::to_string( commitCount ) + " ", maxFiles, onlyRoot, outCensus );
 }
 
 // git's approxidate for "<months> months ago" is calendar-month subtraction from the current local time
@@ -2863,6 +2891,12 @@ inline bool hasEnclosingGitRepo( const std::string& root )
 //     both selection sorts use total orders ((deg desc, path asc) / (score desc, id asc)).
 
 // Fixed knobs — deliberately NOT flags (one documented behavior, one ablation switch to kill it whole).
+// Two of the three CUT INVISIBLE EVIDENCE and therefore disclose (mention.h CapDisclosure states the rule):
+// kCoBoostMaxPartnerFiles drops whole partner files that then appear nowhere, and kCoBoostMaxFilesPerCommit
+// throws away whole COMMITS before the boost ever reads them, so a partner that only ever moves inside big
+// refactor commits is silently unreachable. kCoBoostMaxSymbolsPerFile does NOT: it trims symbols out of a
+// partner file whose promoted rows already carry p="<that file>", so the caller can see the file and page
+// into it, and it fires on nearly every promotion (any real file has more than three symbols).
 inline constexpr std::uint32_t kCoBoostCommitWindow      = 500;    // last-N-commits mining window (matches the eval's --history-depth=500 deepening)
 inline constexpr std::size_t   kCoBoostMaxFilesPerCommit = 30;     // same bulk-commit cap as the other co-change miners here
 inline constexpr std::uint32_t kCoBoostSeedCount         = 3;      // seeds = the top-3 positively-scored symbols' files
@@ -2877,14 +2911,23 @@ struct CoBoostInfo
     std::uint32_t partnerFileCount   = 0;   // partner files that passed support (before the kCoBoostMaxPartnerFiles cap)
     std::uint32_t boostedFileCount   = 0;   // partner files in which at least one symbol's score actually rose
     std::uint32_t boostedSymbolCount = 0;   // symbols whose score actually rose
+    CapDisclosure caps;                     // coboost_partners_capped= / coboost_commits_capped= (mention.h)
 };
 
 // Apply the co-change prior to `lensRank` in place. `sets` = per-commit changed-file sets from
 // gitRecentCommitFileSets (or empty ⇒ no-op). Returns true iff at least one score changed. Pure function
 // of (ing, sets, lensRank): no git, no I/O — callers own the mining (CLI --for / MCP `for` verb).
-inline bool applyCoChangeBoost( const IngestResult& ing, const std::vector<std::vector<std::uint32_t>>& sets, std::vector<float>& lensRank, CoBoostInfo* outInfo = nullptr )
+// `census` is the caller's own gitRecentCommitFileSets census (nullptr ⇒ the caller did not ask for it, and
+// nothing about commits is disclosed) — the mining happens outside this pure function, so the numbers have
+// to arrive with the sets they describe.
+inline bool applyCoChangeBoost( const IngestResult& ing, const std::vector<std::vector<std::uint32_t>>& sets, std::vector<float>& lensRank, CoBoostInfo* outInfo = nullptr,
+                                const CommitWindowCensus* census = nullptr )
 {
     VERIFY( lensRank.size() == ing.symbols.size() );
+    if( outInfo && census )
+    {
+        outInfo->caps.note( "coboost_commits_capped", "coboost_commits_total", census->bulkDropped > 0, census->commits );
+    }
     if( sets.empty() || lensRank.empty() || lensRank.size() != ing.symbols.size() )
     {
         return false;
@@ -3022,6 +3065,10 @@ inline bool applyCoChangeBoost( const IngestResult& ing, const std::vector<std::
     if( outInfo )
     {
         outInfo->partnerFileCount = std::uint32_t( partners.size() );
+        // Read BEFORE the resize below: partners.size() here is the true number of files that passed the
+        // support threshold, so coboost_partners_total= is exact at no cost.
+        outInfo->caps.note( "coboost_partners_capped", "coboost_partners_total",
+                            partners.size() > kCoBoostMaxPartnerFiles, std::uint64_t( partners.size() ) );
     }
 
     // strongest partners only: (deg desc, path asc) is a total order (paths are unique) → deterministic cap

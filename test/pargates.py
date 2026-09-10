@@ -191,6 +191,11 @@ exclusive = {"editcheckcheck.sh"}
 # for them -- it is shorter than the work. Measured: rc=124 at 300.1 s on ALL FOUR Linux legs of CI run
 # 31182301976, green on macOS where the same build fits in ~60 s. headbinlib.sh's own waiter budget
 # must stay well under 900 -- its comment explains the coupling.
+# Since 2026-09-10 CI no longer builds that binary inside any gate: ci.yml builds it in its own step BEFORE this
+# harness starts and exports RIPWIRE_HEADBIN, and headbinlib's STAGED mode then never builds and never waits
+# (test/headbinstagecheck.sh). No timeout could have fixed it -- the build is super-linear in the -j contention
+# these budgets run under, so a slow draw outgrew 900 s and then 1200 s. The six numbers stay as declared because
+# the unstaged path (a local run with RIPWIRE_HEADBIN unset) still builds inside the first gate and still waits.
 #
 # cppbenchcheck / regexbombcheck: legitimate ASan-on-a-cold-cache work, not a hang -- ~856 s and ~804 s
 # measured respectively -- so the old flat 300 s cap read a healthy run as a timeout. 1200 s leaves
