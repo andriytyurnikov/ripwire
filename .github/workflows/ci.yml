@@ -116,10 +116,15 @@ jobs:
       - name: clang-format — advisory report over the whole first-party set (non-gating)
         run: CLANG_FORMAT=clang-format-"$CLANG_VERSION" bash scripts/formatcheck.sh --advisory
 
-      # embedded_queries.h and version.h are written at CONFIGURE time, not build time, so a configure
-      # is the whole provisioning story for a compile database — no compile needed to lint.
+      # embedded_queries.h is written at CONFIGURE time (file(WRITE) in CMakeLists.txt). version.h is NOT: it is
+      # the BYPRODUCT of the ripwire_version_stamp custom target, which only runs at build time. src/cli.h
+      # includes it, so a configure-only database handed clang-tidy a fatal "'version.h' file not found" in
+      # every TU and the report was taken over a broken parse. Building that one target runs a cmake -P script,
+      # not the compiler, so there is still no compile needed to lint.
       - name: Configure a compile database for clang-tidy
-        run: cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        run: |
+          cmake -S . -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build-tidy --target ripwire_version_stamp
 
       - name: clang-tidy — ADVISORY, never gates
         continue-on-error: true
