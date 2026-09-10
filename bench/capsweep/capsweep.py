@@ -25,12 +25,29 @@ build — a gate that cannot go red is worse than no gate:
   patch        run the cap patcher against --root SOMETREE and stop. The gate hands it a synthetic
                tree and reads the rewritten line.
   check-corpus run the corpus-cleanliness assertion against --corpus SOMEDIR and stop. The gate hands
-               it a synthetic corpus with bench/capsweep/ inside and asserts the refusal.
+               it a synthetic corpus with bench/capsweep/ inside and asserts the refusal, and one with
+               a .git ABOVE it and asserts that refusal too.
+  plant-history  plant the synthetic git history in --root and stop. `git archive HEAD` leaves no
+               .git at all, so without it ~20 git-dependent corpus rows measure their DEGRADED path
+               (--handoff reports changed="0"; --cochange/--situ/--map-diff exit 1 with 0 bytes) and
+               are scored "responds to NO cap" while measuring a refusal.
+  run-corpus   run both screen arms against --binary (a stub) over --corpus-file and stop. The gate
+               hands it six synthetic rows — one answering, one cap-sensitive, one refusing, one with an
+               unbalanced quote, one naming an undefined variable, one that litters the corpus — and
+               reads the census, the refusal and the denominator back out.
+
+EVERY ROW CARRIES A STATE, and only `ok` carries a byte count. `len(stdout)` alone made a REFUSAL
+(exit 1, no output) and an ANSWER OF NOTHING the same measurement, which is how 37 corpus rows mangled
+by a quoting bug sat inside "responds to NO cap" for a whole round: 0 under both arms is a delta of 0,
+and a delta of 0 leaves the sensitive set silently. The split's denominator is the rows that ANSWERED —
+a row that emits nothing cannot respond to a cap — and a run in which NO row answered refuses to report
+a split at all rather than printing a clean 0%.
 
 Usage: python3 bench/capsweep/capsweep.py prepare|screen|sweep|emit [--scratch DIR] [--jobs N]
        python3 bench/capsweep/capsweep.py emit [--data bench/capsweep] [--out docs/TUNING.md] [--check]
        python3 bench/capsweep/capsweep.py patch --root TREE
        python3 bench/capsweep/capsweep.py check-corpus --corpus DIR
+       python3 bench/capsweep/capsweep.py run-corpus --binary B --corpus DIR --corpus-file F [--bump K=V]
 
 WHERE THE MEASUREMENTS LIVE, AND WHY THEY ARE TSV. `prepare`/`screen`/`sweep` write their records into
 --scratch, never into the repo and never into the frozen corpus. Publishing a round means copying
@@ -126,24 +143,92 @@ def read_corpus():
     return [l for l in (HERE / 'corpus.txt').read_text().splitlines()
             if l.strip() and not l.lstrip().startswith('#')]
 
+# ── what a corpus row DID, which is not the same question as how many bytes it produced ─────────────
+# The harness recorded `len(stdout)` and nothing else, so a row that REFUSED (exit 1, no output) and a
+# row that ANSWERED with nothing were the same measurement: 0. That is how 37 mangled rows sat inside
+# "responds to NO cap" for a whole round — a row measuring 0 under both arms has a delta of 0 and leaves
+# the sensitive set silently. Every row now carries a STATE, and only kStateOk carries a byte count; the
+# other three record kNullField, because a refusal is not a measurement of zero bytes.
+kStateOk          = 'ok'            # exit 0 — the byte count means something
+kStateTimeout     = 'timeout'       # neither arm's value is known
+kStateUnparseable = 'unparseable'   # shlex could not split the row: a corpus defect, not a result
+kStateUnexpanded  = 'unexpanded'    # the row names a variable this harness does not define (see F17)
+
+def state_refused( rc ):
+    return 'rc=%d' % rc
+
+def answered( sizes, states, line ):
+    """The one definition of "this row produced an answer", used by every count below."""
+    return states.get( line ) == kStateOk and ( sizes.get( line ) or 0 ) > 0
+
+VAR = re.compile(r'\$(\w+)|\$\{(\w+)\}')
+
+def expandvars_from(word, env):
+    """Expand $VARS from the environment the CHILD will get — not from os.environ.
+
+    os.path.expandvars reads os.environ, and the harness binds RIPWIRE_CAPSWEEP_TMP in a dict it hands
+    subprocess.run. With the variable unset in the operator's shell — the normal case, and the one the
+    corpus comment was written for — all nine rows naming it received the LITERAL string
+    `$RIPWIRE_CAPSWEEP_TMP`, and `--cache=`/`--export=`/`--html=` then wrote it as a relative path INSIDE
+    the frozen corpus (a 10.4 MB cache blob). `--batch=$RIPWIRE_CAPSWEEP_TMP` read that blob back and
+    "responded" to 103 of 108 caps: its input was the accumulated output of the run measuring it.
+
+    An unresolved variable RAISES rather than passing through as a literal. os.path.expandvars leaves it
+    alone, which is the shell's rule and exactly the behaviour that turned a variable into a path.
+    """
+    missing = []
+    def one(m):
+        name = m.group(1) or m.group(2)
+        if name not in env:
+            missing.append(name)
+            return m.group(0)
+        return env[name]
+    out = VAR.sub(one, word)
+    if missing:
+        raise KeyError(', '.join(sorted(set(missing))))
+    return out
+
+def assert_tmp_outside(tmp, corpus):
+    """The scratch path corpus rows write into must not resolve INSIDE the corpus.
+
+    `--cache=`, `--export=`, `--html=` and `--brief=` take a destination, and run_corpus runs with
+    cwd=corpus. A destination that lands in the corpus makes the harness write into the tree it is
+    measuring — the artifact assert_corpus_clean exists past, arriving through a path that assertion
+    does not check.
+    """
+    t, c = pathlib.Path(tmp).resolve(), pathlib.Path(corpus).resolve()
+    if t == c or c in t.parents:
+        sys.exit('capsweep: RIPWIRE_CAPSWEEP_TMP (%s) resolves INSIDE the corpus (%s) — corpus rows would\n'
+                 '          write into the tree being measured' % (t, c))
+    return str(t)
+
 def run_corpus(binary, root, corpus, env, timeout=120):
-    """Run each corpus line and return its stdout SIZE.
+    """Run each corpus line; return ({line: stdout size or None}, {line: state}).
 
     Two things here were learned the hard way:
       - the corpus lines already carry their own root ("." where the verb takes one), so this must NOT
         prepend one; doing so passed the root twice and every command refused;
       - stdin is DEVNULL, because `--from-trace=-` reads stdin and otherwise blocks until the timeout.
 
-    $VARS in a corpus line are expanded from the environment. The corpus was harvested from a recorded
-    showcase run whose scratch directory was a machine-local macOS temp path; committing that literal
-    would have pinned the corpus to one laptop and put somebody's filesystem layout in a public file, so
-    those occurrences are spelled $RIPWIRE_CAPSWEEP_TMP and bound here.
+    $VARS in a corpus line are expanded from the environment THIS FUNCTION BUILDS (expandvars_from — not
+    os.path.expandvars). The corpus was harvested from a recorded showcase run whose scratch directory
+    was a machine-local macOS temp path; committing that literal would have pinned the corpus to one
+    laptop and put somebody's filesystem layout in a public file, so those occurrences are spelled
+    $RIPWIRE_CAPSWEEP_TMP and bound here.
+
+    GIT_CEILING_DIRECTORIES stops the `git` processes ripwire spawns from walking out of the corpus.
+    It is NOT the whole guard: ripwire walks up for `.git` in its own code (src/gitmine.h,
+    src/ingest_crawl.h) and honours no such variable, so assert_corpus_clean's ancestor scan is what
+    actually keeps a git verb from measuring the operator's repository.
     """
     e = dict(os.environ)
-    e.setdefault('RIPWIRE_CAPSWEEP_TMP', str(pathlib.Path(root).parent / 'corpus-tmp'))
+    if not e.get('RIPWIRE_CAPSWEEP_TMP'):     # not setdefault: an EMPTY value is not a binding, and
+        e['RIPWIRE_CAPSWEEP_TMP'] = str(pathlib.Path(root).parent / 'corpus-tmp')   # Path('') is the CWD
     e.update(env)
+    e['RIPWIRE_CAPSWEEP_TMP'] = assert_tmp_outside(e['RIPWIRE_CAPSWEEP_TMP'], root)
+    e['GIT_CEILING_DIRECTORIES'] = str(pathlib.Path(root).resolve().parent)
     os.makedirs(e['RIPWIRE_CAPSWEEP_TMP'], exist_ok=True)
-    out = {}
+    sizes, states = {}, {}
     for line in corpus:
         try:
             # shlex, not line.split(): 37 of the 195 corpus rows carry a quoted multi-word value
@@ -153,13 +238,32 @@ def run_corpus(binary, root, corpus, env, timeout=120):
             # A row that measures 0 both sides has a delta of 0 and silently leaves the cap-sensitive
             # set, so those 19% were not measuring the caps they were written to exercise. Verified
             # against the real corpus: shlex.split gives exit 0 / 2530 B where split() gives exit 1 / 0 B.
-            argv = [os.path.expandvars(w) for w in shlex.split(line)]
+            #
+            # And shlex RAISES on an unbalanced quote, which two corpus rows carry. Catching only
+            # TimeoutExpired turned the fix into a hard crash of the whole phase. NOT `as e`: the child
+            # environment two lines above is named `e`, Python DELETES an except-name at block end, and
+            # the obvious one-line repair therefore kills the NEXT row with UnboundLocalError.
+            argv = [expandvars_from(w, e) for w in shlex.split(line)]
+        except ValueError as parseErr:
+            sizes[line], states[line] = None, '%s: %s' % (kStateUnparseable, parseErr)
+            continue
+        except KeyError as missingVar:
+            sizes[line], states[line] = None, '%s: $%s' % (kStateUnexpanded, missingVar.args[0])
+            continue
+        try:
             r = subprocess.run([str(binary)] + argv + ['--no-cache'], cwd=str(root),
                                capture_output=True, stdin=subprocess.DEVNULL, env=e, timeout=timeout)
-            out[line] = len(r.stdout)
         except subprocess.TimeoutExpired:
-            out[line] = None          # recorded, never silently dropped
-    return out
+            sizes[line], states[line] = None, kStateTimeout   # recorded, never silently dropped
+            continue
+        if r.returncode != 0:
+            # A refusal is a DISTINCT state, never a byte count of zero. Most of these are refusals the
+            # corpus deliberately contains (--callers=DoesNotExist, --rank-by=bogus); they belong in the
+            # corpus and they do not belong in any denominator.
+            sizes[line], states[line] = None, state_refused(r.returncode)
+        else:
+            sizes[line], states[line] = len(r.stdout), kStateOk
+    return sizes, states
 
 # ── the records: TSV, because the harness must not enter the index it measures ───────────────────────
 # The corpus-freeze assertion below keeps this harness out of the TREE being measured. It says nothing
@@ -186,15 +290,22 @@ def parse_bytes(s, where):
     try:    return int(s)
     except ValueError: sys.exit('capsweep: %s: %r is not a byte count' % (where, s))
 
-def write_records(path, what, columns, rows, measured_at):
-    """One `#` provenance line naming the columns and the measured commit, then tab-separated data."""
+def write_records(path, what, columns, rows, measured_at, recipe=()):
+    """`#` provenance lines naming the columns, the measured commit and the RECIPE, then the data.
+
+    `recipe` is not decoration. A published ratio whose denominator is unstated is one list counted four
+    defensible ways: the round that published "59 of 195" was counting 56 rows that emit nothing at all
+    into the half that "responds to NO cap". The recipe travels with the records so the next reader does
+    not have to re-derive which population a number was over.
+    """
     for r in rows:
         for f in r:
             if '\t' in str(f) or '\n' in str(f):
                 sys.exit('capsweep: field %r holds a tab or newline — it cannot be a TSV record' % (f,))
-    head = '# capsweep %s — columns: %s — measured_at=%s — %s' % (
-        what, ' / '.join(columns), measured_at or 'unrecorded', kRecordNote)
-    path.write_text('\n'.join([head] + ['\t'.join(str(f) for f in r) for r in rows]) + '\n')
+    head = ['# capsweep %s — columns: %s — measured_at=%s — %s' % (
+        what, ' / '.join(columns), measured_at or 'unrecorded', kRecordNote)]
+    head += ['# %s' % line for line in recipe]
+    path.write_text('\n'.join(head + ['\t'.join(str(f) for f in r) for r in rows]) + '\n')
 
 def read_records(path, ncol):
     """(measured_at, rows). `#` lines are provenance, not data — the rule corpus.txt already follows.
@@ -218,7 +329,7 @@ def read_records(path, ncol):
     return at, rows
 
 kTunableCols = ('kind', 'value')
-kScreenCols  = ('baseline_bytes', 'all_bumped_bytes', 'sensitive', 'invocation')
+kScreenCols  = ('baseline_bytes', 'all_bumped_bytes', 'sensitive', 'baseline_state', 'all_bumped_state', 'invocation')
 kSweepCols   = ('cap', 'value', 'probe', 'site', 'default_bytes', 'probe_bytes', 'invocation')
 
 def write_tunable(path, made, exclude, measured_at, corpus=None):
@@ -237,19 +348,21 @@ def read_tunable(path):
         else: sys.exit('capsweep: %s: unknown kind %r' % (rel(path), kind))
     return meta
 
-def write_screen(path, corpus, base, allb, sens, measured_at):
+def write_screen(path, corpus, base, allb, sens, measured_at, bstate, gstate, recipe=()):
     hot  = set(sens)
-    rows = [(fmt_bytes(base.get(c)), fmt_bytes(allb.get(c)), 1 if c in hot else 0, c) for c in corpus]
-    write_records(path, 'screen', kScreenCols, rows, measured_at)
+    rows = [(fmt_bytes(base.get(c)), fmt_bytes(allb.get(c)), 1 if c in hot else 0,
+             bstate.get(c, '?'), gstate.get(c, '?'), c) for c in corpus]
+    write_records(path, 'screen', kScreenCols, rows, measured_at, recipe)
 
 def read_screen(path):
     at, rows = read_records(path, len(kScreenCols))
-    base, allb, sens = {}, {}, []
-    for b, g, s, cmd in rows:
+    base, allb, sens, bst = {}, {}, [], {}
+    for b, g, s, bs, gs, cmd in rows:
         base[cmd] = parse_bytes(b, rel(path))
         allb[cmd] = parse_bytes(g, rel(path))
+        bst[cmd]  = bs
         if s == '1': sens.append(cmd)
-    return {'baseline': base, 'all_bumped': allb, 'sensitive': sens}
+    return {'baseline': base, 'all_bumped': allb, 'sensitive': sens, 'baseline_state': bst}
 
 def write_sweep(path, sweep, measured_at):
     rows = [(cap, sweep[cap]['value'], sweep[cap]['probe'], sweep[cap]['site'], b, g, cmd)
@@ -290,9 +403,143 @@ def assert_corpus_clean(corpus):
         sys.exit('capsweep: REFUSING to measure a corpus that contains the harness measuring it: %s\n'
                  '          (this is the 18-21-verbs-move artifact; see assert_corpus_clean)'
                  % ', '.join(str(corpus / d) for d in inside))
+    assert_no_git_above(corpus)
     return corpus
 
+def assert_no_git_above(corpus):
+    """No `.git` in any STRICT ancestor of the corpus. The corpus's own `.git` is the fixture; anything
+    above it is somebody else's repository.
+
+    ripwire walks UP the directory chain looking for `.git` (src/gitmine.h:2792, src/ingest_crawl.h:929)
+    and honours no ceiling variable. A frozen corpus sitting inside a checkout therefore measures THAT
+    checkout's history: the round of 2026-09-10 recorded `. --stray-content=lane/ --plan` at 11,670,369 B
+    on a corpus produced by `git archive`, which has no branches at all. Eleven megabytes of somebody
+    else's branch names, recorded as a cap measurement.
+
+    This is not covered by the harness-in-corpus check above: that one looks INSIDE the corpus and this
+    failure is entirely OUTSIDE it. GIT_CEILING_DIRECTORIES (set in run_corpus) confines the `git`
+    processes ripwire spawns; only this scan confines ripwire's own walk.
+    """
+    d = pathlib.Path(corpus).resolve().parent
+    while True:
+        if (d / '.git').exists():
+            sys.exit('capsweep: REFUSING to measure a corpus with a git repository ABOVE it: %s\n'
+                     '          ripwire walks up for .git, so every git verb would measure that\n'
+                     '          repository instead of the frozen corpus. Point --scratch outside it.'
+                     % (d / '.git'))
+        if d.parent == d:
+            return
+        d = d.parent
+
+# ── the corpus must not change while it is being measured ───────────────────────────────────────────
+# assert_corpus_clean guards ONE hardcoded directory name against an unbounded class. The class is what
+# actually bit: `--cache=$RIPWIRE_CAPSWEEP_TMP` with the variable unexpanded wrote a 10.4 MB cache blob
+# into the frozen corpus mid-sweep, and `--batch=` read it back. A name-based assertion could never have
+# seen it. A file LIST taken after the freeze and re-checked after every arm sees any of it.
+FINGERPRINT = 'corpus.filelist'          # lives in --scratch, never in the corpus
+
+def fingerprint_corpus(corpus):
+    """The corpus's file list, `.git/` excluded.
+
+    `.git/` is excluded deliberately and it is the one place a git verb may legitimately write:
+    reading a repository refreshes the index stat cache and can write ORIG_HEAD or a reflog. Those are
+    git's bookkeeping about the fixture, not the tree being measured. Everything else is the subject.
+    """
+    corpus = pathlib.Path(corpus)
+    out = []
+    for p in corpus.rglob('*'):
+        rp = p.relative_to(corpus)
+        if rp.parts and rp.parts[0] == '.git':
+            continue
+        if p.is_file() or p.is_symlink():
+            out.append(str(rp))
+    return sorted(out)
+
+def write_fingerprint(scratch, corpus):
+    pathlib.Path(scratch, FINGERPRINT).write_text('\n'.join(fingerprint_corpus(corpus)) + '\n')
+
+def read_fingerprint(scratch):
+    f = pathlib.Path(scratch, FINGERPRINT)
+    if not f.exists():
+        sys.exit('capsweep: %s is missing — the corpus was never fingerprinted.\n'
+                 '          Re-run `prepare`; a corpus nobody took a fingerprint of cannot be shown to\n'
+                 '          have held still while it was measured.' % f)
+    return [l for l in f.read_text().splitlines() if l]
+
+def assert_corpus_unchanged(corpus, before, where):
+    now  = fingerprint_corpus(corpus)
+    new  = sorted(set(now) - set(before))
+    gone = sorted(set(before) - set(now))
+    if new or gone:
+        lines = ['capsweep: the frozen corpus CHANGED during %s — every byte count in this run is a' % where,
+                 '          measurement of the harness as much as of the subject.']
+        lines += ['          + %s' % f for f in new[:20]]
+        lines += ['          - %s' % f for f in gone[:20]]
+        if len(new) + len(gone) > 40:
+            lines.append('          (%d more)' % (len(new) + len(gone) - 40))
+        sys.exit('\n'.join(lines))
+
 # ── phases ──────────────────────────────────────────────────────────────────────────────────────────
+# The files the synthetic history touches. Four, and all four are prose: a marker line appended to a
+# markdown file adds no symbol to the map, so the perturbation this fixture costs the OTHER 190 corpus
+# rows is four lines of comment. Chosen over src/ headers for exactly that reason.
+FIXTURE_FILES = ('CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/METHODOLOGY.md', 'docs/EVALS.md')
+FIXTURE_MARK  = '<!-- capsweep history fixture: commit %d — not part of the document -->'
+
+def plant_history(corpus):
+    """Give the frozen corpus a real, tiny history — because `git archive HEAD` leaves none.
+
+    Without this, every git-dependent row in the corpus measures its DEGRADED path and says nothing
+    about any cap: `--handoff` reports `changed="0"` with no <f> rows at all, and `--cochange`, `--situ`,
+    `--map-diff`, `--quality-delta`, `--rank-by=churn` and `--merge-scout` exit 1 with 0 bytes. Roughly
+    twenty corpus rows, scored as "responds to NO cap" while measuring a refusal.
+
+    Three commits and one uncommitted edit, all over the same four files, is the smallest shape that
+    gives each of those verbs its real path: >1 commit for a diff, the SAME files twice for a co-change
+    pair, and a dirty working tree for the verbs that default to `git diff`.
+
+    It does NOT exercise per-file symbol caps (kHandoffSymbolsPerFile and its kind): one appended line
+    is one changed symbol, and a cap of 6 never fires on that. Those need a real diff of a real commit,
+    which is a different instrument — do not read a per-file cap's silence in the sweep as evidence.
+    """
+    env = dict(os.environ)
+    env.update({'GIT_AUTHOR_NAME': 'capsweep', 'GIT_AUTHOR_EMAIL': 'capsweep@invalid',
+                'GIT_COMMITTER_NAME': 'capsweep', 'GIT_COMMITTER_EMAIL': 'capsweep@invalid',
+                'GIT_AUTHOR_DATE': '2001-01-01T00:00:00+00:00',
+                'GIT_COMMITTER_DATE': '2001-01-01T00:00:00+00:00',
+                'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
+    present = [f for f in FIXTURE_FILES if (corpus / f).exists()]
+    if len(present) < 2:
+        sys.exit('capsweep: the history fixture found %d of its %d files in the corpus — it would plant\n'
+                 '          an empty history and every git row would still measure a refusal.\n'
+                 '          Update FIXTURE_FILES: %s' % (len(present), len(FIXTURE_FILES),
+                                                         ', '.join(FIXTURE_FILES)))
+    def git(*args, **kw):
+        r = subprocess.run(['git', '-C', str(corpus)] + list(args), capture_output=True, text=True, env=env)
+        if r.returncode != 0 and not kw.get('soft'):
+            sys.exit('capsweep: history fixture: git %s failed:\n%s%s' % (' '.join(args), r.stdout, r.stderr))
+        return r
+    git('init', '-q')
+    git('symbolic-ref', 'HEAD', 'refs/heads/main')
+    git('add', '-A')
+    git('-c', 'user.name=capsweep', '-c', 'user.email=capsweep@invalid',
+        'commit', '-q', '-m', 'capsweep fixture: the frozen corpus')
+    for n in (2, 3):
+        for f in present:
+            with (corpus / f).open('a') as fh:
+                fh.write(FIXTURE_MARK % n + '\n')
+        git('-c', 'user.name=capsweep', '-c', 'user.email=capsweep@invalid',
+            'commit', '-q', '-a', '-m', 'capsweep fixture: commit %d over the same files' % n)
+    for f in present:                      # left UNCOMMITTED: the verbs that default to `git diff`
+        with (corpus / f).open('a') as fh:
+            fh.write(FIXTURE_MARK % 4 + '\n')
+    head = git('rev-list', '--count', 'HEAD').stdout.strip()
+    dirty = git('diff', '--name-only').stdout.split()
+    if head != '3' or len(dirty) != len(present):
+        sys.exit('capsweep: history fixture planted %s commit(s) and %d dirty file(s) — expected 3 and %d'
+                 % (head, len(dirty), len(present)))
+    return len(present)
+
 def freeze_corpus(scratch):
     """A corpus that CANNOT move while we measure it. Tracked files only, frozen at a commit."""
     corpus = scratch / 'corpus-tree'
@@ -303,6 +550,9 @@ def freeze_corpus(scratch):
     subprocess.run(['tar', '-x', '-C', str(corpus)], input=tar.stdout, check=True)
     for d in HARNESS_IN_CORPUS:                 # the harness is tracked now — prune it back out
         if (corpus / d).exists(): shutil.rmtree(corpus / d)
+    assert_corpus_clean(corpus)                 # ancestor scan included — BEFORE we plant a .git
+    n = plant_history(corpus)
+    print('planted a 3-commit history over %d file(s) — the git verbs measure their real path' % n)
     return assert_corpus_clean(corpus)
 
 SCRATCH_STAMP = '.capsweep-scratch'   # written into every scratch dir we create; required before we delete one
@@ -354,18 +604,86 @@ def cmd_prepare(a):
     else:
         sys.exit('capsweep: could not converge on a buildable tunable tree')
     corpus = freeze_corpus(scratch)
-    print('frozen corpus at %s (tracked files only, from git archive HEAD)' % corpus)
+    write_fingerprint(scratch, corpus)
+    print('frozen corpus at %s (tracked files only, from git archive HEAD) — %d files fingerprinted'
+          % (corpus, len(read_fingerprint(scratch))))
     ref = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], capture_output=True, text=True)
     out = pathlib.Path(a.scratch) / 'tunable.tsv'
     write_tunable(out, made, exclude, ref.stdout.strip(), corpus)
     print('wrote %s' % out)
+
+def census(corpus, sizes, states):
+    """The four states a corpus row can be in. `ok` is the only one that carries a byte count."""
+    ok   = [c for c in corpus if answered(sizes, states, c)]
+    unp  = [c for c in corpus if states.get(c, '').startswith(kStateUnparseable)]
+    unx  = [c for c in corpus if states.get(c, '').startswith(kStateUnexpanded)]
+    to   = [c for c in corpus if states.get(c) == kStateTimeout]
+    ref  = [c for c in corpus if states.get(c, '').startswith('rc=')]
+    zero = [c for c in corpus if states.get(c) == kStateOk and (sizes.get(c) or 0) == 0]
+    return ok, unp, unx, to, ref, zero
+
+def screen_core(binary, croot, corpus, bump, out_path, measured_at, before):
+    """Both arms, the executability census, the refusal, and the split — over the ANSWERING rows.
+
+    Two rules live here and nowhere else:
+
+      1. A run in which no row answered must not report anything. The harness used to print
+         `cap-sensitive: 0 (0%)` and exit 0 for a corpus that was 100% inert — a green result from an
+         instrument that measured nothing, which is how a whole round's worth of retrieval rows passed
+         unnoticed. Refusing costs one `if`; not refusing cost a night.
+      2. The denominator is the rows that ANSWERED, not every row in the file. 56 of the 195 rows never
+         produce an answer under any cap (deliberate refusals like --callers=DoesNotExist, plus rows the
+         corpus harvest truncated). A row that emits nothing cannot respond to a cap, and counting it in
+         the half that "responds to NO cap" inflated that half by 56.
+    """
+    base, bstate = run_corpus(binary, croot, corpus, {})
+    assert_corpus_unchanged(croot, before, 'the baseline arm')
+    allb, gstate = run_corpus(binary, croot, corpus, bump)
+    assert_corpus_unchanged(croot, before, 'the all-bumped arm')
+
+    ok, unp, unx, to, ref, zero = census(corpus, base, bstate)
+    print('EXECUTABILITY (baseline arm): %d/%d answered | %d unparseable | %d unexpanded variable | '
+          '%d timed out | %d refused (non-zero exit) | %d exit 0 with 0 bytes'
+          % (len(ok), len(corpus), len(unp), len(unx), len(to), len(ref), len(zero)))
+    # The state is printed in FULL. Truncating it to a column width hid which variable was unexpanded,
+    # which is the whole content of that row's finding.
+    for c in unp + unx:  print('  %-28s %s' % (bstate[c], c[:88]))
+    for c in to:         print('  %-28s %s' % (kStateTimeout, c[:88]))
+    for c in zero:       print('  %-28s %s' % ('ok but 0 bytes', c[:88]))
+    if not ok:
+        sys.exit('capsweep: 0 of %d rows produced an answer — REFUSING to write records or report a\n'
+                 '          split. A ratio over a population that measured nothing is not a result.'
+                 % len(corpus))
+
+    sens  = sorted(c for c in corpus if base.get(c) != allb.get(c))
+    answ  = set(ok)
+    hot   = [c for c in sens if c in answ]
+    late  = [c for c in sens if c not in answ]      # answered ONLY under the bumped arm — real signal
+    recipe = ('split recipe: DENOMINATOR = rows that answered under the BASELINE arm (state=ok, >0 bytes).',
+              'A row that emits nothing cannot respond to a cap; %d row(s) of %d never answer and are'
+              % (len(corpus) - len(ok), len(corpus)),
+              'recorded here but excluded from the ratio.',
+              'cap-sensitive=%d of %d answering (%.0f%%); %d row(s) answer only when a cap is bumped.'
+              % (len(hot), len(ok), 100.0 * len(hot) / len(ok), len(late)))
+    write_screen(out_path, corpus, base, allb, sens, measured_at, bstate, gstate, recipe)
+    print('corpus %d — %d answered — cap-sensitive: %d of %d answering rows (%.0f%%); the other %d '
+          'answering rows respond to NO cap'
+          % (len(corpus), len(ok), len(hot), len(ok), 100.0 * len(hot) / len(ok), len(ok) - len(hot)))
+    for c in late:
+        print('  %8s   %s' % ('BY-CAP', c[:88]))       # refused at the default, answers when bumped
+    for c in hot[:15]:
+        if base.get(c) is None or allb.get(c) is None:
+            print('  %8s   %s' % ('TIMEOUT', c[:88]))
+        else:
+            print('  %+8d B   %s' % (allb[c] - base[c], c[:88]))
+    return sens
 
 def cmd_screen(a):
     scratch = pathlib.Path(a.scratch); binary = scratch / 'build' / 'ripwire'
     meta = read_tunable(scratch / 'tunable.tsv')
     corpus = read_corpus()
     croot = assert_corpus_clean(meta.get('corpus') or scratch / 'corpus-tree')   # re-checked per phase
-    base = run_corpus(binary, croot, corpus, {})
+    before = read_fingerprint(scratch)
     # RELATIVE bump, not a flat huge value: several of these are query/work budgets in the 10^5 range,
     # and slamming them all to 999999 makes the screen measure the machine rather than the cap.
     vals = {c[0]: c[1] for c in caps_in(REPO)}
@@ -374,32 +692,24 @@ def cmd_screen(a):
         except ValueError: v = 8.0
         return ('%g' % max(v * 8.0, v + 32.0)) if v == int(v) else ('%g' % min(v * 4.0, 1.0))
     bump = {('RWCAP_%s' % n): bumped(n) for n in meta['tunable']}
-    allb = run_corpus(binary, croot, corpus, bump)
-    # run_corpus records a timeout as None, on purpose ("recorded, never silently dropped"). A row
-    # where exactly one arm timed out therefore DIFFERS and lands in `sens`, and the delta print below
-    # would then subtract None. Keep it in the sensitive set -- a timeout under one arm and not the
-    # other is real signal -- but let it carry the word TIMEOUT instead of crashing the screen.
-    sens = sorted(c for c in corpus if base.get(c) != allb.get(c))
-    write_screen(scratch / 'screen.tsv', corpus, base, allb, sens, meta.get('measured_at'))
-    print('corpus %d — cap-sensitive: %d (%.0f%%); the other %d respond to NO cap'
-          % (len(corpus), len(sens), 100.0*len(sens)/len(corpus), len(corpus)-len(sens)))
-    for c in sens[:15]:
-        if base.get(c) is None or allb.get(c) is None:
-            print('  %8s   %s' % ('TIMEOUT', c[:88]))
-        else:
-            print('  %+8d B   %s' % (allb[c]-base[c], c[:88]))
+    screen_core(binary, croot, corpus, bump, scratch / 'screen.tsv', meta.get('measured_at'), before)
 
 def cmd_sweep(a):
     """Per cap: which of the sensitive commands actually respond to THIS cap, and by how much.
 
-    Only the 59 cap-sensitive commands are used. The other 136 answered identically with every cap
-    bumped at once, so no single cap can move them — running them per-cap would be 16,000 wasted runs.
+    Only the cap-sensitive commands are used. The rest answered identically with every cap bumped at
+    once, so no single cap can move them — running them per-cap would be 16,000 wasted runs.
+
+    The corpus fingerprint is re-checked after EVERY cap's arm, not once at the end: the failure this
+    guards against (the harness writing into the corpus it measures) is cumulative, and the arm that
+    created the file is the one worth naming.
     """
     scratch = pathlib.Path(a.scratch); binary = scratch / 'build' / 'ripwire'
     meta   = read_tunable(scratch / 'tunable.tsv')
     screen = read_screen(scratch / 'screen.tsv')
     sens, base = screen['sensitive'], screen['baseline']
     croot = assert_corpus_clean(meta.get('corpus') or scratch / 'corpus-tree')   # re-checked per phase
+    before = read_fingerprint(scratch)
     vals = {c[0]: c[1] for c in caps_in(REPO)}
     sites = {c[0]: '%s:%d' % (c[2], c[3]) for c in caps_in(REPO)}
     out = {}
@@ -409,7 +719,8 @@ def cmd_sweep(a):
         if v != int(v) or v <= 0:      # ladders only make sense for integral counts
             continue
         hi = '%d' % max(int(v) * 8, int(v) + 32)
-        got = run_corpus(binary, croot, sens, {'RWCAP_%s' % cap: hi})
+        got, gstate = run_corpus(binary, croot, sens, {'RWCAP_%s' % cap: hi})
+        assert_corpus_unchanged(croot, before, 'the %s arm' % cap)
         moved = {c: (base[c], got[c]) for c in sens
                  if got.get(c) is not None and base.get(c) is not None and got[c] != base[c]}
         if moved:
@@ -549,22 +860,64 @@ def cmd_patch(a):
 
 def cmd_checkcorpus(a):
     assert_corpus_clean(a.corpus)
-    print('capsweep: corpus %s is clean of the harness' % rel(a.corpus))
+    print('capsweep: corpus %s is clean of the harness and has no git repository above it' % rel(a.corpus))
+
+def cmd_planthistory(a):
+    """Plant the history fixture in --root and stop, so the gate can drive it without a full prepare."""
+    root = pathlib.Path(a.root).resolve()
+    if root == REPO:
+        sys.exit('capsweep: refusing to plant a fixture history in the repository itself')
+    n = plant_history(root)
+    print('capsweep: planted a 3-commit fixture history over %d file(s) in %s' % (n, rel(root)))
+
+def cmd_runcorpus(a):
+    """Both screen arms against an ARBITRARY binary and corpus, and stop.
+
+    This exists so test/capsweepcheck.sh can drive the real screen_core — the census, the refusal, the
+    denominator and the corpus fingerprint — against a stub binary and a six-row synthetic corpus,
+    WITHOUT a patched build. Every one of those rules was added because it had already failed silently
+    once; a rule whose gate cannot go red is a comment.
+    """
+    croot  = assert_corpus_clean(a.corpus)
+    corpus = [l for l in pathlib.Path(a.corpus_file).read_text().splitlines()
+              if l.strip() and not l.lstrip().startswith('#')]
+    bump   = {}
+    for kv in (a.bump or []):
+        if '=' not in kv:
+            sys.exit('capsweep: --bump takes NAME=VALUE, got %r' % kv)
+        k, v = kv.split('=', 1)
+        bump[k] = v
+    before = fingerprint_corpus(croot)
+    # NOT --out: that flag already means "the document emit writes" and defaults to docs/TUNING.md, so
+    # reusing it here would overwrite the generated document with a record file.
+    screen_core(pathlib.Path(a.binary).resolve(), croot, corpus, bump,
+                pathlib.Path(a.records or (pathlib.Path(a.corpus).parent / 'screen.tsv')),
+                'synthetic', before)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('phase', choices=['prepare', 'screen', 'sweep', 'emit', 'patch', 'check-corpus'])
+    ap.add_argument('phase', choices=['prepare', 'screen', 'sweep', 'emit', 'patch', 'check-corpus',
+                                     'run-corpus', 'plant-history'])
     ap.add_argument('--scratch', default=str(pathlib.Path.home() / '.cache' / 'ripwire-capsweep'))
     ap.add_argument('--jobs', type=int, default=8)
     ap.add_argument('--data', default=str(HERE), help='emit: dir holding the frozen tunable/sweep TSV')
     ap.add_argument('--out',  default=str(REPO / 'docs' / 'TUNING.md'), help='emit: the document to write')
     ap.add_argument('--check', action='store_true', help='emit: compare instead of writing; exit 1 on drift')
     ap.add_argument('--root', default=None, help='patch: the SCRATCH tree to rewrite (never the repo)')
-    ap.add_argument('--corpus', default=None, help='check-corpus: the frozen corpus to assert on')
+    ap.add_argument('--corpus', default=None, help='check-corpus/run-corpus: the frozen corpus')
+    ap.add_argument('--binary', default=None, help='run-corpus: the binary (or stub) to run')
+    ap.add_argument('--corpus-file', default=None, help='run-corpus: the invocation list to run')
+    ap.add_argument('--bump', action='append', default=None, help='run-corpus: NAME=VALUE for the bumped arm')
+    ap.add_argument('--records', default=None, help='run-corpus: where to write the screen records')
     a = ap.parse_args()
     if a.phase == 'patch' and not a.root:
         ap.error('patch requires --root TREE')
     if a.phase == 'check-corpus' and not a.corpus:
         ap.error('check-corpus requires --corpus DIR')
+    if a.phase == 'run-corpus' and not (a.corpus and a.binary and a.corpus_file):
+        ap.error('run-corpus requires --binary, --corpus and --corpus-file')
+    if a.phase == 'plant-history' and not a.root:
+        ap.error('plant-history requires --root TREE')
     {'prepare': cmd_prepare, 'screen': cmd_screen, 'sweep': cmd_sweep, 'emit': cmd_emit,
-     'patch': cmd_patch, 'check-corpus': cmd_checkcorpus}[a.phase](a)
+     'patch': cmd_patch, 'check-corpus': cmd_checkcorpus, 'run-corpus': cmd_runcorpus,
+     'plant-history': cmd_planthistory}[a.phase](a)
