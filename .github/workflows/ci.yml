@@ -70,7 +70,11 @@ jobs:
   # C arrays, 32-bit handles, VERIFY instead of exceptions), so the config is curated down to bugprone-* /
   # clang-analyzer-* / performance-* / misc-dangling-* and even those only report. Baseline at the commit
   # that added it: 312 unique sites, of which 126 are bugprone-easily-swappable-parameters and 85 are
-  # bugprone-exception-escape. Read it as a to-triage list, not a queue of defects.
+  # bugprone-exception-escape. Re-measured 2026-09-10 at d90acb2c, unique file:line:check: 358 while main.cpp's
+  # TU failed to parse (see the configure step below), 396 once it parsed, 359 after triage — 204 of them
+  # bugprone-easily-swappable-parameters and 30 bugprone-exception-escape. Every remaining class was read and
+  # refused with evidence; the record is in the commit that wrote these numbers. Read it as a to-triage list,
+  # not a queue of defects.
   style:
     name: style (clang-format gate + advisory clang-tidy)
     runs-on: ubuntu-24.04
