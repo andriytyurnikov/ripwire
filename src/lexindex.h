@@ -227,7 +227,10 @@ inline void forEachLexSubtoken( std::string_view text, EmitFn&& emit )
 // "MCP", and hashing that as "mCP" would make the postings path miss the query token "mcp" that the scan
 // path matches. 64-bit keys make a cross-token collision (the only other way the postings path could
 // diverge from the scan path) astronomically unlikely; the postingscheck equivalence gate verifies
-// byte-identity on the real corpora, and test/subtokencheck.sh arm C pins this against the fused walker.
+// byte-identity on the real corpora, and test/subtokencheck.sh arm C pins this against the hashed walker.
+// KEEP THE RANGE TEST HERE. The hashed walker uses the branchless `c | ( ( c & 0x40 ) >> 1 )` fold, which
+// is exact for [A-Za-z0-9] and WRONG for anything else ('@' would become '`'); this entry point is the one
+// external callers reach with bytes nothing has classified, so it stays general.
 inline std::uint64_t lexSubtokenHash( const char* tok, std::size_t tokLen ) noexcept
 {
     std::uint64_t h = 1469598103934665603ull;
