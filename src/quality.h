@@ -138,7 +138,7 @@ inline std::string acksPath( const std::string& root )     { return rootQualifie
 // reader, no `RIPWIRE_CONFIG` constant). Smallest thing consistent with the two house sidecar
 // conventions already in the tree — `.ripwire_notes` (committed, degrade-don't-throw, absent=inert) and
 // `.ripwire_quality_acks` (root-qualified via rootQualifiedSidecar, never the process CWD): a committed,
-// human-editable key=value text file at the repo root. ONE recognized key today (readRegisterMacrosConfig
+// human-editable key=value text file at the repo root. TWO recognized keys today (readRegisterMacrosConfig
 // below); an unrecognized key is skipped rather than refused, so the file can grow new keys later without
 // a binary that predates them choking on it — notes.h's own forward-compat rule, restated here for a new
 // file rather than invented twice.
@@ -337,10 +337,16 @@ inline bool isValidMacroToken( std::string_view token ) noexcept
 struct RegisterMacrosConfig
 {
     std::vector<std::string> names;              // valid register_macros=NAME tokens, sorted + deduped
-    std::vector<std::string> unrecognizedKeys;    // distinct non-"register_macros" keys seen, sorted + deduped
+    std::vector<std::string> vendoredPaths;      // Q-DIAL-5: vendored_paths=PATH[, PATH...] tokens, sorted + deduped
+    std::vector<std::string> unrecognizedKeys;    // distinct key seen that is neither of the two above, sorted + deduped
 };
+// NAME NOTE: this type and its reader are spelled for the FIRST key they carried, and they keep those names
+// on purpose — test/qschemetripcheck.sh's manifest keys the determinism guard on the function NAME
+// `readRegisterMacrosConfig`, so renaming it for tidiness would silently retire a guard. It is the
+// .ripwire_config reader; it reads two keys.
 
-// `.ripwire_config`'s ONE recognized key: `register_macros = NAME[, NAME...]`. Grammar: one directive per
+// `.ripwire_config`'s TWO recognized keys: `register_macros = NAME[, NAME...]` and, since 2026-09-10,
+// `vendored_paths = PATH[, PATH...]` (Q-DIAL-5 — code this repo carries but did not write). Grammar: one directive per
 // line, '#' full-line comments, blank lines ignored; a line with no '=' at all carries no key/value shape
 // this file defines anything for, so it is left alone rather than guessed at (same "never throws, never
 // guesses" posture as the malformed-token skip below). A line that DOES have that shape but whose key is
@@ -376,8 +382,10 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
         }
         std::string_view key = line.substr( 0, eq );
         while( !key.empty() && ( key.back() == ' ' || key.back() == '\t' ) ) { key.remove_suffix( 1 ); }
-        constexpr std::string_view kKey = "register_macros";
-        if( key != kKey )
+        constexpr std::string_view kKey       = "register_macros";
+        constexpr std::string_view kVendorKey = "vendored_paths";   // Q-DIAL-5
+        const bool                 isVendor   = key == kVendorKey;
+        if( key != kKey && !isVendor )
         {
             out.unrecognizedKeys.emplace_back( key );   // F-13: disclosed, not skipped
             continue;
@@ -390,7 +398,17 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
             std::string_view  tok( rest.data() + start, ( comma == std::string_view::npos ? rest.size() : comma ) - start );
             while( !tok.empty() && ( tok.back() == ' ' || tok.back() == '\t' ) ) { tok.remove_suffix( 1 ); }
             while( !tok.empty() && ( tok.front() == ' ' || tok.front() == '\t' ) ) { tok.remove_prefix( 1 ); }
-            if( isValidMacroToken( tok ) )
+            if( isVendor )
+            {
+                // A PATH, not an identifier: root-relative, no '..' segment, no leading '/' — anything else is
+                // a value this file's grammar defines nothing for and is dropped rather than guessed at, the
+                // same posture the macro-token check takes.
+                if( !tok.empty() && tok.front() != '/' && tok.find( ".." ) == std::string_view::npos )
+                {
+                    out.vendoredPaths.emplace_back( tok );
+                }
+            }
+            else if( isValidMacroToken( tok ) )
             {
                 out.names.emplace_back( tok );
             }
@@ -403,6 +421,8 @@ inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
     }
     std::sort( out.names.begin(), out.names.end() );
     out.names.erase( std::unique( out.names.begin(), out.names.end() ), out.names.end() );
+    std::sort( out.vendoredPaths.begin(), out.vendoredPaths.end() );
+    out.vendoredPaths.erase( std::unique( out.vendoredPaths.begin(), out.vendoredPaths.end() ), out.vendoredPaths.end() );
     std::sort( out.unrecognizedKeys.begin(), out.unrecognizedKeys.end() );
     out.unrecognizedKeys.erase( std::unique( out.unrecognizedKeys.begin(), out.unrecognizedKeys.end() ), out.unrecognizedKeys.end() );
     return out;
@@ -420,6 +440,61 @@ inline std::vector<std::string> registeredMacroNames( std::string_view root )
     std::sort( names.begin(), names.end() );
     names.erase( std::unique( names.begin(), names.end() ), names.end() );
     return names;
+}
+
+// Q-DIAL-5 (2026-09-10) — VENDORED PATHS: code this repo CARRIES but did not WRITE. No such notion existed
+// anywhere in this file, and the clone kinds paid for it: one commit (08416403, the timsort landing) produced
+// 9 duplication rows, 8 of 8 dead-code:new-symbol acks and 37 api-surface acks against an upstream body whose
+// shape is not this repo's to fix. The ledger says so in its own words, 11 times.
+//
+// Built-in conventions plus whatever `.ripwire_config`'s vendored_paths= adds. The built-ins are the four
+// directory names the ecosystem agrees on; a vendored file that lives somewhere else (this repo's own
+// src/infra/timsort.hpp) is exactly what the config key is for, because no convention can guess it.
+// HONEST SCOPE, measured while writing the gate for this: the CRAWLER already drops third_party/, vendor/
+// and node_modules/, so those three names are here for completeness rather than effect — `external/` is the
+// only built-in the indexer actually reaches, and everything else vendored is reached through the config key.
+inline constexpr std::array<std::string_view, 4> kBuiltinVendoredPrefixes = { "third_party/", "vendor/", "node_modules/", "external/" };
+
+inline std::vector<std::string> vendoredPathPrefixes( std::string_view root )
+{
+    std::vector<std::string> out;
+    for( std::string_view p : kBuiltinVendoredPrefixes )
+    {
+        out.emplace_back( p );
+    }
+    for( std::string& extra : readRegisterMacrosConfig( root ).vendoredPaths )
+    {
+        out.push_back( std::move( extra ) );
+    }
+    std::sort( out.begin(), out.end() );
+    out.erase( std::unique( out.begin(), out.end() ), out.end() );
+    return out;
+}
+
+// `rel` is ROOT-RELATIVE (the relForHash spelling every sidecar key uses). A prefix ending in '/' names a
+// DIRECTORY and matches everything under it; one that does not is a whole path and must match exactly, so
+// `vendored_paths = src/infra/timsort.hpp` cannot silently swallow src/infra/timsort_extra.hpp.
+inline bool isVendoredPath( std::string_view rel, const std::vector<std::string>& prefixes ) noexcept
+{
+    for( const std::string& p : prefixes )
+    {
+        if( p.empty() )
+        {
+            continue;
+        }
+        if( p.back() == '/' )
+        {
+            if( rel.size() >= p.size() && rel.compare( 0, p.size(), p ) == 0 )
+            {
+                return true;
+            }
+        }
+        else if( rel == p )
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 // A registered macro's own call syntax, read starting at the CALLEE's own signature start byte (`region`
@@ -6005,6 +6080,71 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     const std::vector<CloneIdiomVerdict> exactIdioms = classifyCloneGroupIdioms( ing, exactClones );
     const std::vector<CloneIdiomVerdict> type3Idioms = classifyCloneGroupIdioms( ing, type3Clones );
 
+    // ── Q-DIAL-5 (2026-09-10) — three shapes that are not THIS CHANGE'S duplication ─────────────────────
+    // Duplication's gating precision over 40 replayed commits was 0%: 11 gating rows, 9 noise and 2 wrong.
+    // Three mechanisms produced them, and each is a property of the GROUP rather than of its text, so each is
+    // decidable here without touching the clone matcher:
+    //   (a) ONE OVERLOAD SET — every member shares one canonical id. Overloads of a function are near-
+    //       identical by construction (emitTo|emitTo, sort::stable|sort::stable); reporting them as a copy is
+    //       reporting the language.
+    //   (b) ONE FILE AND NO REUSED MEMBER — every member lives in the same file and none of them is a helper
+    //       the tree already leans on (fan-in >= kReusedHelperMinFanin). A sibling pair inside one body of
+    //       code is an alternate implementation the author is looking at while writing it (mergeHi|mergeLo,
+    //       gallopLeft|gallopRight), not the reuse decline these kinds exist to catch. The fan-in half is not
+    //       a hedge: copying a helper that three call sites already use is a real erosion whether the copy
+    //       lands next door or across the tree, and dropping it on file identity alone silently retired
+    //       test/clonededupcheck.sh's whole positive case — which is how this clause was found.
+    //   (c) VENDORED — every member sits under a vendored path (see isVendoredPath). Upstream's shape is not
+    //       this repo's to fix, and one commit produced 9 such rows.
+    // NOT a token floor: raising kMinCloneTokens was measured and REFUTED. The canonical true positive
+    // (synthetic S1, a 12-line copy of a reused helper) is 59 tokens, while the idiom collisions in the same
+    // replay run 22, 24, 31, 36, 56, 65, 66, 74, 78, 91, 92, 96, 114 and 127 — a floor above 22 loses true
+    // positives before it clears any noise. Token count is the wrong axis.
+    const std::vector<std::string> vendoredPrefixes = vendoredPathPrefixes( root );
+    const auto cloneGroupIsOutOfScope = [ & ]( const CloneGroup& cg )
+    {
+        if( cg.members.size() < 2 )
+        {
+            return false;
+        }
+        const auto*      ro      = g.inEdges.rowOffsets();
+        bool             oneId   = true;
+        bool             oneFile = true;
+        bool             allVend = true;
+        bool             reused  = false;
+        std::string_view firstId;
+        std::uint32_t    firstFile = 0;
+        bool             haveFirst = false;
+        for( NodeId m : cg.members )
+        {
+            if( m >= ing.symbols.size() || m >= g.canonId.size() )
+            {
+                return false;   // unclassifiable member — never claim a whole-group property
+            }
+            const std::uint32_t f = ing.symbols[m].fileId;
+            if( f >= ing.files.size() )
+            {
+                return false;
+            }
+            if( !isVendoredPath( relForHash( ing.files[f], root ), vendoredPrefixes ) )
+            {
+                allVend = false;
+            }
+            if( std::uint32_t( ro[m + 1] - ro[m] ) >= kReusedHelperMinFanin )
+            {
+                reused = true;
+            }
+            if( !haveFirst )
+            {
+                firstId = g.canonId[m]; firstFile = f; haveFirst = true;
+                continue;
+            }
+            if( g.canonId[m] != firstId ) { oneId   = false; }
+            if( f != firstFile )          { oneFile = false; }
+        }
+        return oneId || ( oneFile && !reused ) || allVend;
+    };
+
     gtl::btree_map<std::uint64_t, std::uint8_t> dupSeen;
     const auto reportNewClones =
         [ & ]( const std::vector<CloneGroup>& cgs, const std::vector<CloneIdiomVerdict>& vx )
@@ -6030,6 +6170,10 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             if( allTestScript )
             {
                 continue;
+            }
+            if( cloneGroupIsOutOfScope( cg ) )
+            {
+                continue;   // Q-DIAL-5 — an overload set, one file, or vendored upstream (see the block above)
             }
             if( !dupSeen.insert( { h, 1 } ).second )
             {
@@ -6417,6 +6561,11 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 if( maxFanin < kReusedHelperMinFanin )
                 {
                     continue; // no PREEXISTING reused helper in the group
+                }
+                if( cloneGroupIsOutOfScope( cg ) )
+                {
+                    continue;   // Q-DIAL-5 — the same three shapes, on the same groups: a helper cannot have
+                                // eroded its own reuse by being overloaded, and an upstream body is not ours.
                 }
                 if( !reuseSeen.insert( { h, 1 } ).second )
                 {

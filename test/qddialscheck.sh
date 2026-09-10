@@ -254,5 +254,75 @@ printf '%s' "$OAP" | grep -q 'api-new-surface="1"' \
     && ok "api-surface: byte-identical run to run (deterministic)" || no "api-surface: non-deterministic delta"
 
 
+# ── 5) duplication: an overload set, one file, and vendored upstream are not this change's copies ────────
+# 11 gating duplication rows over 40 replayed commits, 0% precision: overload pairs (emitTo|emitTo,
+# sort::stable|sort::stable), sibling implementations inside one body of code (mergeHi|mergeLo,
+# gallopLeft|gallopRight), and one commit's 9 rows against vendored upstream. The cross-file copy of a real
+# helper — synthetic S1, the shape these kinds exist for — must survive all three drops.
+DP="$WORK/dup"; mkdir -p "$DP/src" "$DP/src/infra" "$DP/external"
+( cd "$DP" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false )
+# FOUR DISTINCT SHAPES, one per case. The clone matcher normalizes identifiers, so four copies of one body
+# collapse into a SINGLE six-member group and no per-case assertion can separate them — the first draft of
+# this fixture did exactly that and every arm was vacuous. Each shape below differs STRUCTURALLY (different
+# statements, different control flow), so each case forms its own two-member group.
+clonebody(){ python3 - "$1" "$2" <<'PY'
+import sys
+name, shape = sys.argv[1], sys.argv[2]
+bodies = {
+ "1": "    int acc = 0;\n    for( int i = 0; i < n; ++i ) {\n        if( i % 3 == 0 ) { acc += i * 2; }\n        else if( i % 5 == 0 ) { acc -= i; }\n        else { acc += 1; }\n    }\n    if( acc < 0 ) { acc = 0; }\n    return acc;\n",
+ "2": "    int total = n;\n    while( total > 1 ) {\n        total = total / 2;\n        total = total + 7;\n        if( total > 900 ) { break; }\n    }\n    for( int k = 0; k < 4; ++k ) { total ^= k; }\n    return total;\n",
+ "3": "    int r = 1;\n    switch( n % 4 ) {\n        case 0: r = n + 11; break;\n        case 1: r = n - 11; break;\n        case 2: r = n * 3; break;\n        default: r = n / 2; break;\n    }\n    do { r += 5; } while( r < 0 );\n    return r;\n",
+ "4": "    int q = 0;\n    for( int a = 0; a < n; ++a ) {\n        for( int b = 0; b < a; ++b ) { q += a * b; }\n    }\n    q = q > 1000 ? 1000 : q;\n    q = q - ( n % 17 );\n    return q;\n",
+}
+print( "int %s( int n ){\n%s}" % (name, bodies[shape]) )
+PY
+}
+clonebody alpha 1 > "$DP/src/a.cpp"
+clonebody sameA 2 > "$DP/src/same.cpp"
+clonebody vendA 3 > "$DP/external/v1.cpp"
+clonebody cfgA  4 > "$DP/src/infra/w1.hpp"
+printf 'int drive(){ return alpha(1) + sameA(1) + vendA(1) + cfgA(1); }\n' > "$DP/src/drive.cpp"
+( cd "$DP" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
+# the working edit: four copies, one per shape.
+clonebody beta  1 > "$DP/src/b.cpp"                       # CROSS-FILE — must still be reported
+clonebody sameB 2 >> "$DP/src/same.cpp"                  # same file
+clonebody vendB 3 > "$DP/external/v2.cpp"                # both members vendored by the built-in convention
+clonebody cfgB  4 > "$DP/src/infra/w2.hpp"               # vendored only if .ripwire_config says so
+ODP="$( cd "$DP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+dup(){ rows "$ODP" | grep 'kind="duplication"' | grep "$1"; }
+dup 'alpha' >/dev/null && ok "duplication: the CROSS-FILE copy is still reported (synthetic S1's shape)" \
+    || { no "duplication: the cross-file copy was dropped — the dial cut a true positive"; rows "$ODP" | grep duplication; }
+dup 'sameA' >/dev/null \
+    && { no "duplication: a group confined to ONE FILE is still reported"; rows "$ODP" | grep duplication; } \
+    || ok "duplication: a group confined to one file produces no row"
+# NON-VACUITY, checked rather than assumed: three of the four built-in prefixes (third_party/, vendor/,
+# node_modules/) are already dropped by the CRAWLER, so a fixture placed there would pass this arm on any
+# binary ever built — the first draft of it did. external/ is the one the crawler indexes, so it is the one
+# that can prove the rule.
+( cd "$DP" && "$BIN" . --top-k=100000 --no-cache 2>/dev/null ) | grep -q 'vendA' \
+    && ok "duplication: the external/ pair IS indexed (the vendored arm is not vacuous)" \
+    || no "duplication: external/ is not indexed — the vendored arm proves nothing"
+dup 'vendA' >/dev/null \
+    && { no "duplication: a group inside external/ is still reported"; rows "$ODP" | grep duplication; } \
+    || ok "duplication: a group under a built-in vendored prefix produces no row"
+dup 'cfgA' >/dev/null && ok "duplication: src/infra/ IS reported with no .ripwire_config (the control)" \
+    || { no "duplication: the config control is vacuous — src/infra/ was already silent"; rows "$ODP" | grep duplication; }
+# now name it vendored, and only that row goes away.
+printf 'vendored_paths = src/infra/\n' > "$DP/.ripwire_config"
+ODP2="$( cd "$DP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+rows "$ODP2" | grep 'kind="duplication"' | grep -q 'cfgA' \
+    && { no "duplication: vendored_paths= in .ripwire_config did not exempt src/infra/"; rows "$ODP2" | grep duplication; } \
+    || ok "duplication: vendored_paths=src/infra/ in .ripwire_config exempts the group"
+rows "$ODP2" | grep 'kind="duplication"' | grep -q 'alpha' \
+    && ok "duplication: the cross-file copy survives the config key too" \
+    || no "duplication: vendored_paths= swallowed an unrelated group"
+printf '%s' "$ODP2" | grep -q 'config-warnings=' \
+    && { no "duplication: vendored_paths= was reported as an unrecognized .ripwire_config key"; } \
+    || ok "duplication: vendored_paths= is a RECOGNIZED key (no config-warnings on the root)"
+rm -f "$DP/.ripwire_config"
+[ "$ODP" = "$( cd "$DP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
+    && ok "duplication: byte-identical run to run (deterministic)" || no "duplication: non-deterministic delta"
+
+
 [ "$fail" = 0 ] && echo "qddialscheck: ALL PASS" || echo "qddialscheck: FAILURES"
 exit "$fail"
