@@ -5159,7 +5159,9 @@ names, while its stated cost — "~3.5 KB per `--pack-task` bundle" — was not 
 `--pack-task` emits no `sibs=` at all, before or after. Symbols-per-file here is median 4, p90 18,
 p99 85; 100 clears the tail, fires on 15.8% of bodies, costs +36% on a single-symbol `--expand` answer
 and **nothing** on `--for` or `--pack-task`, which are byte-identical at every cap. The full inventory
-of the 120 caps in `src/` is `docs/LIMITS.md`, generated and gated by `test/limitstablecheck.sh`.
+of the 114 caps in `src/` — and of the 6 ranking parameters partitioned out of the same census, which
+together make the 120 cap-shaped constants the generator parses — is `docs/LIMITS.md`, generated and
+gated by `test/limitstablecheck.sh`. What each cap COSTS, measured per verb, is `docs/TUNING.md`.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the

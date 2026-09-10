@@ -1,6 +1,6 @@
 # ripwire documentation
 
-Fifteen entries, each written for one reader. Start with the row that matches why you are here.
+Sixteen entries, each written for one reader. Start with the row that matches why you are here.
 
 | File | Who it is for | What it answers |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ Fifteen entries, each written for one reader. Start with the row that matches wh
 | **[`CODEX_ORCHESTRATION.md`](CODEX_ORCHESTRATION.md)** | Anyone orchestrating parallel Codex lanes | The deterministic model/effort policy emitted by `--plan-lanes`, the structural signals and caveats behind it, the task-matched agent roles used to implement it, and the verification record. |
 | **[`LINEAGE.md`](LINEAGE.md)** | Anyone asking what is actually new here | Every idea folded into the tool, row by row: the paper, specification or repository it came from, the one-line lesson taken, and the flag or source file where that lesson lives — plus the labelled survey of the wider field, kept explicitly separate from what was borrowed. |
 | **[`docs_commands_build.py`](docs_commands_build.py)** | Maintainers | The generator behind `COMMANDS.md`. Reads the binary's `--help` and a recorded showcase capture; `--check` is the drift comparison that `test/docscommandscheck.sh` runs. |
+| **[`limits_classes.tsv`](limits_classes.tsv)** | Maintainers | Cap name -> INDEXING or OUTPUT, the taxonomy `LIMITS.md` renders in its `class` column: does this cap bound what can EVER be found, or only what is shown from what was found. A sidecar with a known expiry — the tag belongs on the declaration in `src/` — kept honest by `limitstablecheck.sh`, which fails if a row names a cap that no longer exists. |
 | **[`lineage-paper-dates.tsv`](lineage-paper-dates.tsv)** | Maintainers | arXiv id -> publication date for every 2026 paper in `LINEAGE.md`. The ID stem does not track the date (`2607.09691` was published 2026-06-19), so the README's recency claim is re-derived from this file by `readmedriftcheck.sh` arm (H2) rather than from the ids. Adding a 2026 paper without a date row fails that arm. |
 | **[`assets/`](assets/)** | The front page | The README banner and tagline artwork (SVG, self-contained). |
 | **[`captures/`](captures/)** | Maintainers, and the curious | One recorded run of every verb against a real repository — the source of `COMMANDS.md`'s sample output, and the harvest source for the differential argv harness. |
