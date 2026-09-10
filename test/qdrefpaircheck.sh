@@ -18,11 +18,20 @@
 #
 # Two literals ARE pinned, and only as a cross-check that the two shas still name the round the comment
 # above describes: the harvest round record (PLAN_HARVEST_REPORTS_2026-08-15/ROUTING_LEDGER.md) states
-# `--dmm=4b9386c..ba380b5` = 0.530 and 18 gating rows. Both reproduce.
+# `--dmm=4b9386c..ba380b5` = 0.530 and 18 gating rows.
 #
-# ── THE ONE DEFENSIBLE DISCREPANCY: 18 vs 11 ─────────────────────────────────────────────────────────────
-# The overlay reports 18 gating rows; the ref-pair form reports 11. The difference is exactly the 7
-# short-horizon-churn rows, and it is a property of the QUESTION, not a bug:
+# THE 18 IS A HISTORICAL READING, AND IT MOVED — 2026-09-10, the per-kind dial round (test/qddialscheck.sh).
+# 18 is what the kinds reported when churn="self" gated on its own, when verbosity counted physical lines,
+# when any growth over the bar was major, and when every new export was a row. Four of those changed on
+# purpose, so the same two shas now report 8. The literal is re-pinned to 8 rather than deleted, because what
+# it checks is unchanged: that these shas still name a wave with regressions in it. dmm is a different
+# instrument and does not read the gating tiers, so 0.530 is untouched — which is itself the cross-check that
+# the CORPUS did not move, only the tiers.
+#
+# ── THE ONE DEFENSIBLE DISCREPANCY: the overlay's total exceeds the ref-pair form's ───────────────────────
+# The overlay's gating total is higher than the ref-pair form's, and the difference is exactly the
+# short-horizon-churn rows (7 of the historical 18; the dial round left fewer). It is a property of the
+# QUESTION, not a bug:
 #
 #   The churn kind needs git history AT THE TREE BEING JUDGED — it counts commits per file in a recent
 #   window and compares body hashes against a window-reference commit. The overlay's judged tree is a real
@@ -217,9 +226,9 @@ else
 
         # the two RECORDED literals from the round record — a cross-check that these shas still name that wave
         overlayTotal=$(( oracleN + overlayChurn ))
-        [ "$overlayTotal" = 18 ] \
-            && ok "(E) the overlay reproduces the RECORDED 18 gating rows (= $oracleN + $overlayChurn churn)" \
-            || no "(E) the overlay gave $overlayTotal gating rows; the round record states 18 — the shas or the corpus moved"
+        [ "$overlayTotal" = 8 ] \
+            && ok "(E) the overlay reproduces the pinned 8 gating rows (= $oracleN + $overlayChurn churn; 18 pre-dial)" \
+            || no "(E) the overlay gave $overlayTotal gating rows; this binary is pinned at 8 (18 before the 2026-09-10 dial round) — the shas, the corpus or a kind's tier moved"
         dmmVal="$( "$BIN" "$ROOT" "--dmm=$WAVE_A..$WAVE_B" 2>/dev/null | grep -o ' dmm="[0-9.]*"' | head -1 | sed -E 's/.*"([0-9.]*)".*/\1/' )"
         # tolerance band, not equality: dmm is a float printed to 3 places (house float rule).
         if [ -n "$dmmVal" ] && awk -v v="$dmmVal" 'BEGIN{ exit !(v > 0.525 && v < 0.535) }'; then

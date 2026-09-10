@@ -201,5 +201,58 @@ vrow complexity cxCrosser | grep -q 'bar="15"' && ok "complexity: bar=15 unchang
     && ok "verbosity/complexity: byte-identical run to run (deterministic)" || no "verbosity/complexity: non-deterministic delta"
 
 
+# ── 4) api-surface: a count for new exports, no row for a SMALLER surface, one row per fact ──────────────
+# 103 of 119 api-surface rows over 40 replayed commits carried origin="new-symbol", which the legend itself
+# says can never gate — and 193 of the 1,177 rows in this repo's committed ack ledger are that shape, acked
+# by hand one at a time. Three more findings from the same replay: three rows reported an arity DROP as a
+# regression in a document whose first sentence is "only what a change made WORSE"; 113 of 132 api-surface
+# acks say "one trailing DEFAULTED parameter, every existing caller compiles unchanged"; and one parameter
+# change emitted TWO rows, under `params` and again under `api-surface`.
+AP="$WORK/api"; mkdir -p "$AP/src"
+( cd "$AP" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false )
+apigen(){ python3 - "$AP/src" "$1" <<'PY'
+import sys, os
+d, stage = sys.argv[1], sys.argv[2]
+after = stage == "after"
+h = []
+h.append("inline int shrink( int a, int b%s ){ return a + b%s; }\n" % ("" if after else ", int c", "" if after else " + c"))
+h.append("inline int defaulted( int a%s ){ return a%s; }\n" % (", int b = 0" if after else "", " + b" if after else ""))
+h.append("inline int wide( int a, int b, int c, int d, int e%s ){ return a+b+c+d+e%s; }\n"
+         % (", int f, int g" if after else "", "+f+g" if after else ""))
+if after:
+    h.append("inline int fresh( int a ){ return a + 1; }\n")
+open(os.path.join(d, "api.hpp"), "w").write("".join(h))
+m = ['#include "api.hpp"\n', "int driver(){\n",
+     "    return shrink( 1, 2%s ) + defaulted( 3 ) + wide( 1,2,3,4,5%s )%s;\n" % ("" if after else ", 3", "" if after else "", " + fresh( 9 )" if after else ""),
+     "}\n", "int main(){ return driver(); }\n"]
+open(os.path.join(d, "m.cpp"), "w").write("".join(m))
+PY
+}
+apigen before
+( cd "$AP" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
+apigen after
+OAP="$( cd "$AP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
+row "$OAP" api-surface shrink >/dev/null \
+    && { no "api-surface: shrink 3 -> 2 params reported — a SMALLER surface is not what a change made worse"; rows "$OAP"; } \
+    || ok "api-surface: an arity DROP produces no row"
+row "$OAP" api-surface defaulted | grep -q 'sev="minor"' \
+    && ok "api-surface: one trailing DEFAULTED parameter is sev=minor (callers still compile)" \
+    || { no "api-surface: a trailing defaulted parameter should be minor"; rows "$OAP"; }
+APIWIDE="$( rows "$OAP" | grep -c 'sym="wide"' )"
+[ "$APIWIDE" = 1 ] && ok "api-surface: wide 5 -> 7 params emits ONE row, not one per kind" \
+    || { no "api-surface: expected 1 row for wide, got $APIWIDE (params + api-surface both fired)"; rows "$OAP" | grep 'sym="wide"'; }
+rows "$OAP" | grep -q 'kind="params" sym="wide"' \
+    && ok "api-surface: the surviving row is the params one (77% precision, the kind that keeps the fact)" \
+    || { no "api-surface: the params row must be the one that survives"; rows "$OAP" | grep 'sym="wide"'; }
+row "$OAP" api-surface fresh >/dev/null \
+    && { no "api-surface: a brand-new export is still a row — it can never gate, so it is a count"; rows "$OAP"; } \
+    || ok "api-surface: a brand-new export produces no row"
+printf '%s' "$OAP" | grep -q 'api-new-surface="1"' \
+    && ok "api-surface: the root carries api-new-surface=\"1\" (nothing is hidden, it is counted)" \
+    || { no "api-surface: api-new-surface= missing or wrong on the root"; printf '%s' "$OAP" | head -c 200; }
+[ "$OAP" = "$( cd "$AP" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
+    && ok "api-surface: byte-identical run to run (deterministic)" || no "api-surface: non-deterministic delta"
+
+
 [ "$fail" = 0 ] && echo "qddialscheck: ALL PASS" || echo "qddialscheck: FAILURES"
 exit "$fail"

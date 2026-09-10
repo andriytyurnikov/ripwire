@@ -912,6 +912,85 @@ inline std::vector<std::uint32_t> codeLocByNode( const IngestResult& ing )
     return out;
 }
 
+// Q-DIAL-4 (2026-09-10) — DOES THE LAST DECLARED PARAMETER CARRY A DEFAULT?
+//
+// 113 of the 132 `api-surface` acks in this repo's own committed ledger (85.6%) say the same sentence: "one
+// trailing DEFAULTED parameter, every existing caller compiles unchanged". A kind whose acks are 86% one
+// shape is describing that shape, so the shape is read off the signature and reported sev="minor" instead of
+// being acked one row at a time. It is still a row — the contract DID change, and a defaulted parameter is
+// how most contract rot starts.
+//
+// A BRACE-DEPTH SCAN, NOT A PARSER, and the floor is stated: the signature's first '(' opens the parameter
+// list, its matching ')' closes it, the last comma at depth 0 starts the final parameter, and an '=' in that
+// final parameter is a default. Depth counts ( ) [ ] { } and, for C++ templates, < > — which is where the
+// heuristic can be fooled (`a < b` inside a default expression, an `operator<`), and where being fooled costs
+// exactly one severity tier on one row. Languages that spell defaults the same way (Python, TypeScript, PHP,
+// Ruby, C#, Swift) are covered by the same scan for free; a language that does not spell them at all simply
+// never matches.
+inline bool trailingParamHasDefault( std::string_view signature ) noexcept
+{
+    const std::size_t open = signature.find( '(' );
+    if( open == std::string_view::npos )
+    {
+        return false;
+    }
+    int         depth      = 0;
+    int         angle      = 0;
+    std::size_t lastComma  = std::string_view::npos;
+    std::size_t close      = std::string_view::npos;
+    for( std::size_t i = open; i < signature.size(); ++i )
+    {
+        const char c = signature[i];
+        if( c == '(' || c == '[' || c == '{' ) { ++depth; }
+        else if( c == ')' || c == ']' || c == '}' )
+        {
+            --depth;
+            if( depth == 0 ) { close = i; break; }
+        }
+        else if( c == '<' ) { ++angle; }
+        else if( c == '>' && angle > 0 ) { --angle; }
+        else if( c == ',' && depth == 1 && angle == 0 ) { lastComma = i; }
+    }
+    if( close == std::string_view::npos || close <= open + 1 )
+    {
+        return false;   // unclosed, or an empty parameter list
+    }
+    const std::size_t     from = ( lastComma == std::string_view::npos ) ? open + 1 : lastComma + 1;
+    const std::string_view last = signature.substr( from, close - from );
+    for( std::size_t i = 0; i < last.size(); ++i )
+    {
+        if( last[i] != '=' )
+        {
+            continue;
+        }
+        const bool cmp = ( i + 1 < last.size() && last[ i + 1 ] == '=' )
+                      || ( i > 0 && ( last[ i - 1 ] == '=' || last[ i - 1 ] == '!' || last[ i - 1 ] == '<' || last[ i - 1 ] == '>' ) );
+        if( !cmp )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The per-NODE answer for THIS tree, read off each symbol's own signature bytes in the same one-pass shape
+// codeLocByNode uses. forEachSymbolBody hands back [sigStartByte, endByte), and the signature is its prefix.
+inline std::vector<std::uint8_t> trailingDefaultByNode( const IngestResult& ing )
+{
+    std::vector<std::uint8_t> out( ing.symbols.size(), 0 );
+    forEachSymbolBody( ing, [ & ]( NodeId i, const Symbol& s, std::string_view body )
+    {
+        const std::size_t sigLen = s.sigEndByte > s.sigStartByte ? std::size_t( s.sigEndByte - s.sigStartByte ) : 0;
+        if( sigLen == 0 || sigLen > body.size() )
+        {
+            return;
+        }
+        out[i] = trailingParamHasDefault( body.substr( 0, sigLen ) ) ? 1 : 0;
+    } );
+    return out;
+}
+
+
 // P2.2 — every symbol in THIS tree whose own signature text is a registered-macro call (built ONCE per
 // computeSnapshot/computeDelta run, exactly like topLevelCallees above), reading each file's bytes once via
 // forEachSymbolBody — whose per-symbol `body` view already starts at sigStartByte, which is precisely where
@@ -5655,12 +5734,17 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                                              std::string_view root = {},
                                              const std::vector<std::string>& excludes = {},
                                              std::size_t maxFileBytes = kDefaultMaxFileBytes,
-                                             std::size_t* registerMacroExcludedOut = nullptr )   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
+                                             std::size_t* registerMacroExcludedOut = nullptr,   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
+                                             std::size_t* apiNewSurfaceOut = nullptr )          // Q-DIAL-4: the api-surface new-symbol COUNT that replaced N never-gating rows
 {
     std::vector<Regression> regs;
     if( registerMacroExcludedOut )
     {
         *registerMacroExcludedOut = 0;
+    }
+    if( apiNewSurfaceOut )
+    {
+        *apiNewSurfaceOut = 0;
     }
 
     // A4-P10 — HOIST the per-symbol quality key. It materializes a path-qualified string + hashes it; the
@@ -6043,6 +6127,17 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
         std::uint32_t& slot = nowParamsBySym[ keyByNode[i] ];
         slot = std::max( slot, std::uint32_t( ing.symbols[i].params ) );
     }
+    // Q-DIAL-4 — the two inputs the tiering below reads. `paramsRowKeys` is derived from the rows ALREADY
+    // pushed rather than plumbed out of perSymbolKind: `params` is the only kind that can have reported an
+    // arity change by now, and reading it off `regs` keeps the fold honest even if that kind's own gate moves.
+    std::vector<std::uint64_t> paramsRowKeys;
+    for( const Regression& r : regs )
+    {
+        if( r.kind == "params" ) { paramsRowKeys.push_back( r.key ); }
+    }
+    std::sort( paramsRowKeys.begin(), paramsRowKeys.end() );
+    const std::vector<std::uint8_t> trailingDefaults = trailingDefaultByNode( ing );
+
     ScratchMap<std::uint8_t> apiSeen( ing.symbols.size() );
     for( NodeId i = 0; i < ing.symbols.size(); ++i )
     {
@@ -6059,7 +6154,21 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
         if( !std::binary_search( base.publicApi.begin(), base.publicApi.end(), key ) )
         {
             const bool isNewSymbol = !existedAtBaseline( key );                // SAME oracle the r26 origin axis uses — one source of truth
-            regs.push_back( { "api-surface", g.canonId[i], 0, 0, key, isNewSymbol, isNewSymbol ? "new-symbol" : "contract-change", isNewSymbol } );
+            if( isNewSymbol )
+            {
+                // Q-DIAL-4 — A COUNT, NOT N ROWS. This row could never gate (the legend says so), it is one
+                // per new export, and it dominated the document: 103 of 119 api-surface rows over 40 replayed
+                // commits, 193 of the 1,177 rows in this repo's own committed ack ledger — acked one at a
+                // time, by hand, for a fact the header can state in one attribute. api-new-surface= on the
+                // root says how much new public surface arrived; nothing is hidden, and nothing about it was
+                // ever actionable per row.
+                if( apiNewSurfaceOut )
+                {
+                    ++( *apiNewSurfaceOut );
+                }
+                continue;
+            }
+            regs.push_back( { "api-surface", g.canonId[i], 0, 0, key, false, "contract-change", false } );   // a visibility flip: it existed, and it is public now
             stampLoc( i );
             continue;
         }
@@ -6070,11 +6179,30 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             continue; // no baseline params recorded — nothing to compare
         }
         const std::uint32_t nowParams = nowParamsBySym[ key ];                // MAX-aggregated — see the overload-trap note above
-        if( nowParams != pit->second )
+        if( nowParams == pit->second )
         {
-            regs.push_back( { "api-surface", g.canonId[i], pit->second, nowParams, key, false, "contract-change", false } );   // origin: reached only for a symbol already in the baseline public set
-            stampLoc( i );
+            continue;
         }
+        if( nowParams < pit->second )
+        {
+            continue;   // Q-DIAL-4 — the surface got SMALLER. This document's first sentence is "only what a
+                        // change made WORSE"; three rows over 40 commits reported an arity DROP as a
+                        // regression (probeBodyCost 7->5, selectMonotoneBodySubset 7->5,
+                        // liftPackageDirMention 4->3). Drift is not the contract this verb publishes.
+        }
+        if( std::binary_search( paramsRowKeys.begin(), paramsRowKeys.end(), key ) )
+        {
+            continue;   // Q-DIAL-4 — ONE FACT, ONE ROW. The `params` kind already reported this symbol's arity
+                        // change, and it is the highest-precision kind in the table (77% TRUE); a second row
+                        // saying the same thing under another kind is what agents ack. Synthetic S3
+                        // (3 -> 7 parameters) produced two rows for one edit.
+        }
+        // Q-DIAL-4 — one ADDED parameter that carries a DEFAULT is source-compatible by construction: every
+        // existing caller still compiles, which is what 113 of this repo's 132 api-surface acks say in those
+        // words. Still a row (the contract moved), reported sev="minor".
+        const bool trailingDefault = nowParams == pit->second + 1 && i < trailingDefaults.size() && trailingDefaults[i] != 0;
+        regs.push_back( { "api-surface", g.canonId[i], pit->second, nowParams, key, trailingDefault, "contract-change", false } );   // origin: reached only for a symbol already in the baseline public set
+        stampLoc( i );
     }
 
     // ── §D#4-1 error-masking (GitClear +47%) ──────────────────────────────────────────────────────────────
