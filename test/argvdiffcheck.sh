@@ -70,8 +70,8 @@ VEC="$TMP/vectors.txt"; : > "$VEC"
 # ADDITIVE change — the exact result that makes a differential gate get ignored. New flags are counted and
 # NAMED below (never silently dropped) and are covered by their own dedicated gate; the pre-existing surface
 # is what must stay byte-identical, and every one of it is still probed.
-"$BIN"  --help 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]+' | sort -u > "$TMP/flags.new.txt"
-"$BASE" --help 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]+' | sort -u > "$TMP/flags.base.txt"
+"$BIN"  --help=all 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]+' | sort -u > "$TMP/flags.new.txt"
+"$BASE" --help=all 2>&1 | grep -oE '\-\-[a-z][a-z0-9-]+' | sort -u > "$TMP/flags.base.txt"
 comm -12 "$TMP/flags.new.txt" "$TMP/flags.base.txt" > "$TMP/flags.txt"
 comm -23 "$TMP/flags.new.txt" "$TMP/flags.base.txt" > "$TMP/flags.added.txt"
 if [ -s "$TMP/flags.added.txt" ]; then
@@ -116,7 +116,7 @@ SKIP=" --mcp --listen --mcp-token --allow-remote-edits --refetch --doctor \
 # deckcheck.sh already forces its author to write in the same commit. The UNION of the two binaries'
 # answers is used, because the two error directions are not symmetric: over-classifying only swaps one
 # nonsense value for another, under-classifying puts a file back in the repo root.
-placeholders(){ "$1" --help 2>&1 | grep -oE '^ +--[a-z][a-z0-9-]*\[?="?[A-Za-z][^ ]*' | sed 's/^ *//;s/"//g' | sed -E 's/\[?=/ /'; }
+placeholders(){ "$1" --help=all 2>&1 | grep -oE '^ +--[a-z][a-z0-9-]*\[?="?[A-Za-z][^ ]*' | sed 's/^ *//;s/"//g' | sed -E 's/\[?=/ /'; }
 { placeholders "$BIN"; placeholders "$BASE"; } > "$TMP/placeholders.txt"
 PATHFLAGS=" $( awk '$2 ~ /^(FILE|DIR|PATH|BASE|TESTFILE|FILE\|-)\]?$/ {print $1}' "$TMP/placeholders.txt" | sort -u | tr '\n' ' ' )"
 CMDFLAGS=" $(  awk '$2 ~ /^CMD\]?$/                                  {print $1}' "$TMP/placeholders.txt" | sort -u | tr '\n' ' ' )"
@@ -312,8 +312,8 @@ EOF
 # catches a reworded or deleted row that byte-identity would have caught and a plain skip would not.
 if [ -s "$TMP/flags.added.txt" ]; then
     grep -vE '(^|[[:space:]])(--help|-h)([[:space:]]|$)' "$VEC" > "$TMP/vec.trimmed" && mv "$TMP/vec.trimmed" "$VEC"
-    "$BASE" --help 2>&1 > "$TMP/help.base"
-    "$BIN"  --help 2>&1 > "$TMP/help.new"
+    "$BASE" --help=all 2>&1 > "$TMP/help.base"
+    "$BIN"  --help=all 2>&1 > "$TMP/help.new"
     missing="$( grep -Fxv -f "$TMP/help.new" "$TMP/help.base" | head -3 )"
     [ -z "$missing" ] && ok "help is ADDITIVE: every line of BASE's --help survives verbatim in BIN's" \
                       || { no "BASE --help line(s) reworded or removed — not additive:"; printf '%s\n' "$missing" | sed 's/^/        /'; }

@@ -101,7 +101,7 @@ def body_of(rawChunk):
 
 
 # ── (D) flag coverage ─────────────────────────────────────────────────────────────────────────────
-helpText = subprocess.run([BIN, '--help'], capture_output=True, text=True, timeout=120).stdout
+helpText = subprocess.run([BIN, '--help=all'], capture_output=True, text=True, timeout=120).stdout
 _preamble, sections = dcb.parse_help(helpText)
 allFlags = {f for f in dcb.binary_flags(sections) if f.startswith('--')}
 
