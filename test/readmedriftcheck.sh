@@ -83,7 +83,7 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -f "$README" ] || { echo "readmedriftcheck: missing $README"; exit 2; }
 [ -f "$LINEAGE" ] || { echo "readmedriftcheck: missing $LINEAGE — arm (E) has no ground truth to check against"; exit 2; }
 
-HELP="$( "$BIN" --help 2>&1 )"
+HELP="$( "$BIN" --help=all 2>&1 )"
 
 # ── (A) derive the distinct flag count from --help ──────────────────────────────────────────────────
 # Reuses flagsurfacecheck.sh's own harvest idiom verbatim (see its "the advertised surface" comment).
