@@ -392,7 +392,13 @@ def failure_report(out, logpath):
 
 
 def run(g):
-    env = dict(os.environ, RIPWIRE_BIN=binp)
+    # PYTHONDONTWRITEBYTECODE: a gate that imports a module straight out of the checkout (agentlooplockcheck:
+    # bench/agentloop/; aiderbytescheck: bench/headtohead/r4-2026-08-06/) would otherwise have Python drop a
+    # __pycache__/ beside it. That directory is gitignored, so the tree tripwire below cannot see it, and its
+    # name is on the crawl's built-in denylist, so every crawl of the live repo still counts it
+    # (corpus_pruned_dirs=). Created between the two re-crawls of pagingsweepcheck's cold grep (G) pair, it
+    # made that pair disagree on main twice (CI runs 34534320580, 34536435376). pargatescheck.sh pins it.
+    env = dict(os.environ, RIPWIRE_BIN=binp, PYTHONDONTWRITEBYTECODE="1")
     scaled_default = int( round( DEFAULT_TIMEOUT_SEC * budget_scale ) )
     if g in GATE_BUDGET_SEC:
         # A declared entry is a FLOOR, not a ceiling: it is the number below which this gate would be a
@@ -481,6 +487,11 @@ def _bin_fingerprint():
 # counts. A hit FAILS the run: a writer is a defect whether or not a determinism arm happened to be
 # reading in that window, and the same suite would only flake somewhere else next time.
 # `--no-optional-locks` keeps the sampler from ever taking the index lock a gate might need.
+#
+# Its blind spot is a write git ignores. That is usually harmless, because the crawl skips gitignored paths
+# too -- EXCEPT a directory whose NAME is on the crawl's own denylist (build, __pycache__, node_modules, ...):
+# a crawl of the live repo still counts it in corpus_pruned_dirs= while `git status` stays empty. Python's
+# bytecode cache was one such writer (see run()'s PYTHONDONTWRITEBYTECODE); a clean report stays "none found".
 DIRT_POLL_SEC = float(os.environ.get("PARGATES_DIRT_POLL_SEC", "0.25"))
 
 
@@ -603,7 +614,8 @@ if dirt_seen:
         print(f"***   {ln}  seen {n}x, T+{t_first}s..T+{t_last}s; running then: {who}")
     print("***   Every stamped verb reads `git status --porcelain` for its at=\"...+dirty\" bit from ANY crawl root")
     print("***   inside this checkout, so a determinism arm that ran in that window can red with the tree innocent.")
-    print("***   Fix the writer first (work on a copy, or a gitignored name); only then triage the arms above.")
+    print("***   Fix the writer first (work on a copy, or a gitignored name that is not a crawl-pruned directory")
+    print("***   name -- never build/, __pycache__/ or node_modules/); only then triage the arms above.")
 if skips:
     print("\nSKIPPED (ran, but proved nothing — not counted as passing):")
     for g, rc, dt, out, _ in skips:
