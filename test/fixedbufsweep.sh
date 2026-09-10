@@ -147,7 +147,7 @@ TABLE = {
     # ── src/lanes.h — THE REFERENCE SAFE SHAPE ───────────────────────────────────────────────────────────
     ( "src/lanes.h", "buf" ): ( 10, "safe",       "buf[640] x3: snprintf-THEN-escape. :723 interpolates an UNBOUNDED file path and is still safe for exactly that reason — the warning text is escaped downstream, so a cut shortens prose and can never land inside markup. This is the shape §B14's six were not." ),
     # ── src/main.cpp ─────────────────────────────────────────────────────────────────────────────────────
-    ( "src/main.cpp", "tail" ): ( 2, "not-markup", "tail[48]: the cache FILENAME ('rich'/'lean' + a %016llx). Bounded and never emitted." ),
+    ( "src/main.cpp", "tail" ): ( 1, "not-markup", "tail[48]: the shallow-clone cache DIR suffix (\"/ripwire-remote-\" + a fixed-width 16-hex). Bounded and never emitted. Was 2 sites: defaultCachePath's cache FILENAME left this buffer when the root-key unification moved its assembly into quality.h::rootKeyedCachePath, which is where its row now lives." ),
     ( "src/verbs_for.h", "nb" ): ( 14, "safe",       "nb[160] x2: the mention/doc-mention/siblift/expand header notes. Every %s is the plural '' or 's'; everything else is %u." ),
     ( "src/verbs_report.h", "exemptAttr" ): ( 1, "safe",       "exemptAttr[40]: ' exempt=\"%s\"' with groupExemptKind's fixed vocabulary (longest 'fixture' = 7 B, total 19 B)." ),
     ( "src/verbs_report.h", "hdr" ):    ( 1, "safe",       "hdr[512]: runSkipped's <skipped ...> root (§L1). 175 B of literal + ELEVEN %zu/%llu counters at 20 B worst case = 395 B, plus the ONE %s, which is the compile-time literal ' rows_capped=\"1\"' or '' (18 B) = 413 B against 511 usable. No path, no name, nothing user-supplied reaches this buffer — every emitted path goes through escapeXml straight into the writer, outside it." ),
@@ -163,7 +163,7 @@ TABLE = {
     # ── src/prcontext.h ──────────────────────────────────────────────────────────────────────────────────
     ( "src/prcontext.h", "tail" ):     ( 1, "latent",     "tail[256]: truncated=\"%s\" is ESCAPE-THEN-SNPRINTF in shape, but the value is bounded — kPrTrims[].dropped is a const table (longest 48 B) plus ';budget-floor-exceeded' (22 B), none of which escapes. Worst case 88 lit + 90 digits + 70 = 248 B + NUL against 256: SEVEN bytes of margin. A fifth trim level or one more attribute crosses it." ),
     # ── src/quality.h ────────────────────────────────────────────────────────────────────────────────────
-    ( "src/quality.h", "tail" ):       ( 1, "not-markup", "tail[96]: the qsnap/qheadsnap cache FILENAME; family + two hex digests + %016llx, all fixed-width." ),
+    ( "src/quality.h", "tail" ):       ( 2, "not-markup", "tail[96] in shaKeyedCachePath: the qsnap/qheadsnap cache FILENAME; family + two hex digests + %016llx, all fixed-width. tail[64] in rootKeyedCachePath: the lean/rich + mcp cache FILENAME, a literal prefix + the 16-hex root key + a literal suffix — every part a compile-time or fixed-width constant. Neither is emitted." ),
     # ── src/serialize.h ──────────────────────────────────────────────────────────────────────────────────
     ( "src/serialize.h", "fitAttr" ):  ( 1, "safe",       "fitAttr[96]: two %zu plus the literal ' over_ceiling=1'." ),
     ( "src/serialize.h", "attr" ):     ( 2, "safe",       "attr[352] x2: the per-symbol metric attrs. Widest 26 lit + 4x10 digits + 11 role + qbuf(<=95) + ambs(<=35: amb= + lpin=) + kbuf(<=23) = 230 B." ),
@@ -218,7 +218,6 @@ NUMERIC_ONLY = {
     ( "src/mcpedit.h", "name" ): 1,
     ( "src/mcpedit.h", "oldStamp" ): 1,
     ( "src/mcpindex.h", "buf" ): 1,
-    ( "src/mcpindex.h", "name" ): 1,
     ( "src/mcpverbs.h", "connectCeiling" ): 1,
     ( "src/mcpverbs.h", "d" ): 1,
     ( "src/mcpverbs.h", "deg" ): 1,
@@ -397,7 +396,7 @@ if not bad:
 #            the same buffer is now written from six sites rather than three. formatToRuntime is gone with
 #            them: it was the only format in the tree not checked at compile time, and the only one that
 #            could fail at runtime and return an empty buffer.
-EXPECTED = { "mentions": 316, "calls": 213, "sites": 213, "rows": 89, "widthforms": 0 }
+EXPECTED = { "mentions": 315, "calls": 212, "sites": 212, "rows": 88, "widthforms": 0 }
 #            2026-09-04 (capture-audit L6, H9): +1 call/+1 mention, sites/rows UNCHANGED — re-read, not
 #            re-counted. packConnect gained ONE snprintf into a new `char connectCeiling[32]` for the
 #            H9 ` max_tokens="%d"` ceiling disclosure: a single %d of a caller-supplied INTEGER, no %s,

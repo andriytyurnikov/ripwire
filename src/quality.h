@@ -1356,19 +1356,83 @@ inline bool gitRepoHasHistory( const std::string& root )
 // header already self-validates). Folded into the filename key so an old-scheme file is simply never named.
 constexpr std::uint32_t kHeadSnapCacheScheme = 1;
 
-// The 16-hex repo key: fnv1a64 of realpath(root) (matching defaultCachePath) so two spellings of one repo
-// share one warm cache AND one eviction group. A null realpath (missing path) degrades to the verbatim
-// spelling — still correct, at worst one extra cold miss. Used by both the filename and the eviction glob.
-inline std::string headSnapRepoHex( const std::string& root )
+// ─── THE ROOT KEY — one canonical spelling, for every cache family ────────────────────────────────────
+//
+// The 16-hex field every cache blob's filename carries, identifying the ROOT the blob belongs to:
+// `ripwire-<rootKey>-{lean,rich}.bin` (main.cpp::defaultCachePath), `ripwire-mcp-<rootKey>.cache`
+// (mcpindex.h::mcpCachePath) and `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`
+// (shaKeyedCachePath below: qheadsnap, qsnap, qbody, qhist, qms, qchurn, stier). It is what makes
+// "which root does this blob belong to?" answerable from the NAME alone — see cacheBlobRootKey and the
+// byte-budget pin in evictBySizeBudget, which is only ever as wide as the set of blobs that spell the
+// key the SAME way.
+//
+// AND TWO SPELLINGS SHIPPED. Both builders hashed realpath(root) with FNV-1a, but with DIFFERENT offset
+// bases: `defaultCachePath` (and `mcpCachePath`) seeded 1469598103934665603 — seventeen digits, a
+// TRUNCATED FNV-1a-64 basis — while this function seeded arch.h's `fnv1a64`, i.e. the real
+// 14695981039346656037. Same material, two keys, on every root, always. Measured on llvm-project:
+// lean/rich carried 4280d3ca01d82374 while qchurn carried 6b73c58ba5897c7a; reproduced on a four-file
+// fixture as `ripwire-844a155665d606eb-{lean,rich}.bin` beside `ripwire-qchurn-526f2ad625b9f069--….bin`.
+// The consequence is exactly the gap P1-1 stated: the pin covered lean+rich and left every git-metadata
+// family evictable by the very root that had just written it.
+//
+// WHY THE SURVIVING BASIS IS THE TRUNCATED ONE, AND WHY IT MUST NOT BE "FIXED". A key change orphans
+// every blob spelled the old way. Adopting `fnv1a64`'s basis would have renamed the MAIN PARSE CACHE —
+// 1.76 GB of it on llvm-project alone (rich 1.19 GB + lean 0.57 GB), a full cold re-parse for every root
+// on the machine. Adopting defaultCachePath's renames only the git-metadata families, which are
+// kilobytes and rebuild from one `git log` walk. The constant is an IDENTITY, not a digest: FNV-1a's
+// avalanche comes from the prime multiply, and any odd seed gives the same distribution over these
+// inputs, so nothing is weaker — only the naming compatibility differs, and it differs by three orders
+// of magnitude. Changing `kCacheRootKeySeed` to the textbook basis would silently throw away every warm
+// parse cache in existence; test/evictioncheck.sh (k) is what makes such a change visible, but it will
+// go GREEN on a uniform wrong seed, so this paragraph is the guard.
+//
+// NORMALIZED, so the key follows the TREE and not its spelling: `realpath` collapses symlinks, `.`/`..`,
+// `//` and a trailing '/'. When realpath fails — the path does not exist, so there is nothing to cache
+// under it anyway — the same folding is done LEXICALLY (resolve.h's `lexicalNormalize`, the house's
+// segment-stack folder) so that at least the trailing-slash and `.`/`..` cases still agree; an unsound
+// `..` escape yields "" there and degrades to the verbatim spelling, still correct, at worst one extra
+// cold miss. Gate: test/evictioncheck.sh (k) one root ⇒ one key across every family, (l) a trailing
+// slash and a symlinked spelling add no new key.
+//
+// NO SCHEME BUMP, AND THE REASON IS THE HOUSE RULE ITSELF, NOT AN OMISSION. `kQChurnCacheScheme`,
+// `kQSnapCacheScheme` and `kHeadSnapCacheScheme` exist so that a blob whose CONTENT MEANING changed
+// becomes a clean miss rather than a wrong answer served from cache (see kQChurnCacheScheme's own comment:
+// scheme 2 was a merge-blind stream). Nothing about any blob's content changes here — only the root FIELD
+// of its NAME. Every pre-existing blob is therefore already never NAMED again, which is precisely the
+// effect a bump buys, reached by the key rather than by a version. Bumping on top would assert a content
+// change that did not happen, and would additionally invalidate the blobs that are about to be re-minted
+// under the unified key anyway. The old-spelling blobs are ordinary orphans: the "ripwire-" family sweep
+// still matches them by prefix, so the 30-day age pass deletes them on schedule — verified by seeding one
+// backdated `ripwire-qchurn-<old-key>-…bin` and watching a later run remove it. That pass is silent for
+// every blob it takes (it has no disclosure line at all — see evictBySizeBudget's note on why only the
+// byte-budget pass speaks), so an orphan is treated exactly as any other aged-out blob, with no special
+// case in either direction.
+inline constexpr std::uint64_t kCacheRootKeySeed = 1469598103934665603ull;
+
+inline std::string cacheRootKeyHex( const std::string& root )
 {
-    char* rp = ::realpath( root.c_str(), nullptr );
-    const std::string absRoot = rp ? std::string( rp ) : root;
-    if( rp )
+    char*       rp = ::realpath( root.c_str(), nullptr );
+    std::string absRoot;
+    if( rp != nullptr )
     {
+        absRoot = rp;
         std::free( rp );
     }
+    else
+    {
+        absRoot = lexicalNormalize( root );
+        if( absRoot.empty() )
+        {
+            absRoot = root;   // a `..` that escapes above its own base — unsound to fold, hash it verbatim
+        }
+    }
+    std::uint64_t h = kCacheRootKeySeed;
+    for( const char c : absRoot )
+    {
+        h = rw::hashutil::fnv1aAbsorb( h, c );
+    }
     char hex[ 20 ];
-    rw::formatTo( hex, sizeof( hex ), "{:016x}", static_cast<unsigned long long>( fnv1a64( absRoot ) ) );
+    rw::formatTo( hex, sizeof( hex ), "{:016x}", static_cast<unsigned long long>( h ) );
     return std::string( hex );
 }
 
@@ -1642,6 +1706,197 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
     return shaKeyedCachePath( "qheadsnap", repoHex, exclHex, headSha );
 }
 
+// The builder for the two families whose whole key IS the root — the main parse cache
+// (`ripwire-<rootKey>-lean.bin` / `-rich.bin`, main.cpp::defaultCachePath) and the MCP index
+// (`ripwire-mcp-<rootKey>.cache`, mcpindex.h::mcpCachePath). They sat in different translation units and
+// each open-coded the same three lines around its own copy of the hash, which is exactly how the two root
+// spellings drifted apart in the first place; one body means a future family joins by naming a prefix and
+// a suffix rather than by re-deriving a key. `prefix`/`suffix` bracket the 16-hex field because that is the
+// only thing the two shapes disagree about — everything the pin reads is in the middle.
+inline std::string rootKeyedCachePath( const std::string& root, const char* prefix, const char* suffix )
+{
+    char tail[ 64 ];
+    rw::formatTo( tail, sizeof( tail ), "{}{}{}", prefix, cacheRootKeyHex( root ).c_str(), suffix );
+    return resolveCacheBlobPath( cacheDirLadder(), tail );
+}
+
+// P1-1 (2026-09-10 full audit) — THE PIN KEY. Every cache blob's filename carries the SAME 16-hex root
+// field, and since the follow-up round it really is the same one: `defaultCachePath` writes
+// `ripwire-<rootKey>-{lean,rich}.bin`, `mcpCachePath` writes `ripwire-mcp-<rootKey>.cache` and
+// `shaKeyedCachePath` writes `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`, all three through the ONE
+// canonical `cacheRootKeyHex` above — so ONE root's every family (lean, rich, mcp, qheadsnap, qsnap, qbody,
+// qhist, qms, qchurn, stier) spells the same key in the same place. That makes "which root does this blob
+// belong to?" answerable from the NAME alone, with no plumbing: the byte-budget sweep reads the key off the
+// very blob it is about to write (`keepPath`) and pins its siblings.
+//
+// The rule is positional-free on purpose: return the FIRST '-'-delimited field that is exactly 16 hex
+// digits. No family tag is 16 characters of hex ("qheadsnap", "qsnap", "qbody", "qhist", "qms", "qchurn",
+// "stier", "mcp"), so the first such field is the root key in every filename shape, and a foreign or legacy
+// blob that carries no such field yields "" — which pins nothing and evicts exactly as it did before.
+//
+// TWO FAMILIES ARE EXCEPTIONS, and they are NAMED rather than guessed at — their 16-hex field is a real
+// key, just not a key over a ROOT:
+//   * `ripwire-docmd-<hash>.bin`  (ingest_docpass.h) is CONTENT-addressed: fnv1a64 of the DOCUMENT'S
+//     BYTES, so one PDF extracted under two checkouts is cached once.
+//   * `ripwire-stier-<hash>-…`    (ingest_astquery.h::spanTierMemoPath) is FILE-addressed: it passes a
+//     per-file disk path to cacheRootKeyHex, one memo per source file above a 32 KiB floor. An llvm --for
+//     leaves ~30 of them beside the three root-keyed blobs, each with its own key.
+// Reading either as a root key would be a wrong answer about OWNERSHIP — it names a document or a file,
+// not the tree the blob belongs to — and at 1-in-2^64 could pin a blob to an unrelated root. Both are
+// excluded here rather than renamed: their names are correct for what they identify, and renaming would
+// orphan the most expensive thing in this directory to rebuild (a docmd blob costs a markitdown popen and
+// a Python start, seconds per file). They yield "" and are treated as unowned, which is what they are —
+// the byte-budget sweep may take them, and that is the right policy for a per-file memo whose recompute
+// cost is one file, not one tree.
+//
+// KEEP THE LIST HONEST: test/evictioncheck.sh arm (k) mirrors these prefixes in shell and FAILS if the two
+// lists disagree, so a family added later with a non-root 16-hex field is a gate failure rather than a
+// blob quietly pinned to a stranger.
+inline constexpr std::string_view kNonRootKeyedBlobPrefixes[] = { "ripwire-docmd-", "ripwire-stier-" };
+
+inline bool isNonRootKeyedBlob( std::string_view blobName ) noexcept
+{
+    return std::any_of( std::begin( kNonRootKeyedBlobPrefixes ), std::end( kNonRootKeyedBlobPrefixes ),
+                        [ blobName ]( const std::string_view prefix ) noexcept { return blobName.starts_with( prefix ); } );
+}
+
+inline std::string cacheBlobRootKey( std::string_view blobName ) noexcept
+{
+    const auto isHex16 = []( std::string_view f ) noexcept
+    {
+        if( f.size() != 16 )
+        {
+            return false;
+        }
+        for( const char c : f )
+        {
+            if( !std::isxdigit( static_cast<unsigned char>( c ) ) )
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if( isNonRootKeyedBlob( blobName ) )
+    {
+        return std::string{};   // content- or file-addressed, root-independent by design — see above
+    }
+
+    std::size_t at = 0;
+    while( at < blobName.size() )
+    {
+        const std::size_t      dash  = blobName.find( '-', at );
+        const std::string_view field = blobName.substr( at, dash == std::string_view::npos ? std::string_view::npos : dash - at );
+        if( isHex16( field ) )
+        {
+            return std::string( field );
+        }
+        if( dash == std::string_view::npos )
+        {
+            break;
+        }
+        at = dash + 1;
+    }
+    return std::string{};
+}
+
+// One matching cache artifact as the sweep sees it: what it costs, how old it is, where it is. Hoisted out
+// of evictOldCacheFamily's body so the byte-budget pass below can be its own function rather than a third
+// in-line pass inside an already-long one.
+struct CacheBlobStat
+{
+    std::filesystem::file_time_type mtime;
+    std::uintmax_t                  byteSize;
+    std::string                     path;
+};
+
+// P1-1 (2026-09-10 full audit) — THE BYTE-BUDGET PASS: delete oldest-first until the family is under a
+// LOW-WATER mark of 7/8 budget, taking OTHER roots' blobs first and the MRU root's last. Returns the blobs
+// that survived. `mine` arrives unsorted; it is sorted oldest-first here.
+//
+// THE LOW-WATER MARK is F6's live-cache finding (B7.4, 2026-07-14): trimming to exactly the budget left the
+// dir hovering AT the ceiling, so every subsequent process re-crossed it on its first write and paid
+// deletion work on every save — sweeping to low water buys ~12% burst headroom and makes the common
+// next-process sweep a scan-only no-op.
+//
+// WHOSE BLOB GOES FIRST. Oldest-first alone is wrong at scale, and it was measured wrong: one llvm-project
+// root needs 1.76 GB for its OWN two families (rich 1.19 GB + lean 0.57 GB) against a 2 GB budget, so a
+// second corpus — or one --edit-check HEAD snapshot (0.52 GB) — made the sweep delete the SIBLING FAMILY OF
+// THE ROOT THE USER IS WORKING IN, the one thing they are certain to need next. Identical argv, same
+// session, same binary: `--grep` 20 s → 206 s, `--for` 19 s → 268 s, and SELF-SUSTAINING, because each cold
+// run's own save then evicts the other family again. `keepPath` alone never covered it: the blob being
+// written is precisely the family we are NOT about to need. src/main.cpp:181-189 already records the same
+// mechanism as a registered negative for a different key change ("the cache directory's 2 GiB cap evicts the
+// blob a running gate is about to reuse"). The BUDGET IS NOT LOWERED (owner rule
+// `quality-first-caps-are-blowup-guards`) — the ORDER is what changes, and the pin costs no state and no
+// stat: the root key is read off `keepPath`, i.e. whoever is writing IS the most-recently-used root.
+//
+// WHY ONLY THIS PASS IS PINNED. The age pass stays unpinned deliberately: a blob nobody has touched in 30
+// days is stale by that policy's own definition and losing it costs ONE cold parse, not a ping-pong —
+// whereas a blob evicted here is, by construction, one this very root just used.
+//
+// DISCLOSURE, and the reason P1-1 stayed invisible: all four measured 250 s runs wrote 0 bytes to stderr.
+// Conditional by construction — a sweep that frees nothing and is not over budget on its pinned set alone
+// says nothing at all, so no ordinary run, and no gate that compares stderr, grows a line. Plain emits,
+// NEVER DEGRADED_PATH_ALERT: NDEBUG compiles that out, and a Release binary is exactly where a 10x
+// slowdown needs to be visible.
+inline std::vector<CacheBlobStat> evictBySizeBudget( std::vector<CacheBlobStat>& mine, const std::string& dir,
+                                                     const std::string& keepPath, std::uintmax_t maxTotalBytes )
+{
+    namespace fs = std::filesystem;
+
+    std::uintmax_t totalBytes = 0;
+    for( const CacheBlobStat& b : mine )
+    {
+        totalBytes += b.byteSize;
+    }
+    if( totalBytes <= maxTotalBytes )
+    {
+        return std::move( mine );
+    }
+
+    const std::string    pinRootKey    = cacheBlobRootKey( fs::path( keepPath ).filename().string() );
+    const std::uintmax_t lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
+    std::sort( mine.begin(), mine.end(), []( const CacheBlobStat& a, const CacheBlobStat& b ){ return a.mtime < b.mtime; } );   // oldest first
+
+    std::vector<CacheBlobStat> kept;
+    kept.reserve( mine.size() );
+    std::size_t    evictedCount = 0;
+    std::uintmax_t pinnedBytes  = 0;
+    for( const CacheBlobStat& b : mine )
+    {
+        const bool pinned = b.path == keepPath
+                         || ( !pinRootKey.empty() && cacheBlobRootKey( fs::path( b.path ).filename().string() ) == pinRootKey );
+        if( pinned )
+        {
+            pinnedBytes += b.byteSize;
+        }
+        else if( totalBytes > lowWaterBytes )
+        {
+            std::error_code de;
+            fs::remove( fs::path( b.path ), de );
+            totalBytes -= b.byteSize;
+            ++evictedCount;
+            continue;
+        }
+        kept.push_back( b );
+    }
+
+    constexpr std::uintmax_t kMiB = 1024ull * 1024;
+    if( evictedCount > 0 )
+    {
+        rw::emitTo( stderr, "ripwire: cache {}: over its {} MiB budget — evicted {} blob(s) of other roots (this root's own families are kept)\n",
+                      dir.c_str(), maxTotalBytes / kMiB, evictedCount );
+    }
+    if( totalBytes > maxTotalBytes )
+    {
+        rw::emitTo( stderr, "ripwire: cache {}: this root's own families are {} MiB, past the {} MiB budget — kept anyway (evicting one costs a full re-parse)\n",
+                      dir.c_str(), pinnedBytes / kMiB, maxTotalBytes / kMiB );
+    }
+    return kept;
+}
+
 // Hygiene: within one (repo, excludes) FAMILY, keep at most `keep` HEAD-snapshot cache files (newest by mtime);
 // delete older ones so HEAD-sha churn (a new file per commit) cannot grow the cache dir without bound. Scoping
 // per family (repoHex-exclHex prefix) — not per bare repo — means alternating --exclude configs do not evict
@@ -1666,14 +1921,17 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
 // subdirectories, "00".."ff") — so a family's blobs are found and evicted correctly regardless of which
 // layout wrote them, and a mid-migration mix of both is swept as one set. The 256 shard names are an EXACT,
 // bounded set (never an open-ended recursive walk of a shared $TMPDIR that may hold unrelated large trees).
+//
+// P1-1: the byte-budget pass additionally PINS the root `keepPath` belongs to (see evictBySizeBudget). That
+// needs no new parameter and no plumbing — the pin key is a function of `keepPath`, which every call site
+// already passes — and it cannot reach the keep-N call sites below, which run with maxTotalBytes == 0.
 inline void evictOldCacheFamily( const std::string& dir, const std::string& prefix,
                                  const std::string& keepPath, std::size_t keep,
                                  double maxAgeDays = 0.0, std::uintmax_t maxTotalBytes = 0 )
 {
     namespace fs = std::filesystem;
 
-    struct Blob { fs::file_time_type mtime; std::uintmax_t byteSize; std::string path; };
-    std::vector<Blob> mine;
+    std::vector<CacheBlobStat> mine;
     const auto matches = [ & ]( const std::string& name )
     {
         if( name.size() < prefix.size() || name.compare( 0, prefix.size(), prefix ) != 0 )
@@ -1713,7 +1971,7 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
             }
             std::error_code se;
             const auto sz = sit->file_size( se );
-            mine.push_back( Blob{ mt, se ? std::uintmax_t( 0 ) : sz, sit->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
+            mine.push_back( CacheBlobStat{ mt, se ? std::uintmax_t( 0 ) : sz, sit->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
         }
     };
 
@@ -1754,7 +2012,7 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
         }
         std::error_code se;
         const auto sz = it->file_size( se );
-        mine.push_back( Blob{ mt, se ? std::uintmax_t( 0 ) : sz, it->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
+        mine.push_back( CacheBlobStat{ mt, se ? std::uintmax_t( 0 ) : sz, it->path().string() } );   // size-stat failure degrades to 0 (age/count passes still see the file)
     }
     for( const fs::path& sd : shardDirs )
     {
@@ -1766,9 +2024,9 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
     {
         const auto ageBudget = std::chrono::duration_cast<fs::file_time_type::duration>( std::chrono::duration<double, std::ratio<86400>>( maxAgeDays ) );
         const auto cutoff = fs::file_time_type::clock::now() - ageBudget;
-        std::vector<Blob> kept;
+        std::vector<CacheBlobStat> kept;
         kept.reserve( mine.size() );
-        for( const Blob& b : mine )
+        for( const CacheBlobStat& b : mine )
         {
             if( b.mtime < cutoff && b.path != keepPath )
             {
@@ -1781,43 +2039,17 @@ inline void evictOldCacheFamily( const std::string& dir, const std::string& pref
         mine.swap( kept );
     }
 
-    // size pass: if the family is still over budget, delete oldest-first until under a LOW-WATER mark of
-    // 7/8 budget (disabled when maxTotalBytes == 0). The hysteresis is F6's live-cache finding (B7.4,
-    // 2026-07-14): trimming to exactly the budget left the dir hovering AT the ceiling, so every subsequent
-    // process re-crossed it on its first write and paid deletion work on every save — sweep-to-low-water
-    // buys ~12% burst headroom and makes the common next-process sweep a scan-only no-op.
+    // size pass — the byte budget, its eviction order and its disclosure all live in evictBySizeBudget
+    // above (disabled when maxTotalBytes == 0, which is every keep-N call site below).
     if( maxTotalBytes > 0 )
     {
-        const std::uintmax_t lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
-        std::uintmax_t totalBytes = 0;
-        for( const Blob& b : mine )
-        {
-            totalBytes += b.byteSize;
-        }
-        if( totalBytes > maxTotalBytes )
-        {
-            std::sort( mine.begin(), mine.end(), []( const Blob& a, const Blob& b ){ return a.mtime < b.mtime; } );   // oldest first
-            std::vector<Blob> kept;
-            kept.reserve( mine.size() );
-            for( const Blob& b : mine )
-            {
-                if( totalBytes > lowWaterBytes && b.path != keepPath )
-                {
-                    std::error_code de;
-                    fs::remove( fs::path( b.path ), de );
-                    totalBytes -= b.byteSize;
-                    continue;
-                }
-                kept.push_back( b );
-            }
-            mine.swap( kept );
-        }
+        mine = evictBySizeBudget( mine, dir, keepPath, maxTotalBytes );
     }
 
     // count pass (the original behavior): keep only the `keep` newest, delete the rest (disabled via keep == max()).
     if( keep != std::numeric_limits<std::size_t>::max() && mine.size() > keep )
     {
-        std::sort( mine.begin(), mine.end(), []( const Blob& a, const Blob& b ){ return a.mtime > b.mtime; } );   // newest first
+        std::sort( mine.begin(), mine.end(), []( const CacheBlobStat& a, const CacheBlobStat& b ){ return a.mtime > b.mtime; } );   // newest first
         for( std::size_t i = keep; i < mine.size(); ++i )
         {
             if( mine[i].path == keepPath )
@@ -2521,7 +2753,7 @@ inline std::pair<Snapshot, bool> computeHeadSnapshot( const std::string& root, c
     // Cache keys, computed ONCE and shared by both the Snapshot cache (this step) and the ingest cache (step 3).
     const std::string headSha   = gitHeadSha( root );        // non-empty: gitRepoHasHistory passed above
     const bool        useCache  = !headSha.empty();
-    const std::string repoHex   = useCache ? headSnapRepoHex( root )     : std::string{};
+    const std::string repoHex   = useCache ? cacheRootKeyHex( root )     : std::string{};
     const std::string exclHex   = useCache ? headSnapExclHex( excludes, maxFileBytes ) : std::string{};   // ingest-cache family
     const std::string qExclHex  = useCache ? qsnapExclHex( excludes, maxFileBytes )    : std::string{};   // Snapshot-cache family
     const std::string qsnapPath = useCache ? qsnapCachePath( repoHex, qExclHex, headSha ) : std::string{};
@@ -2657,7 +2889,7 @@ inline bool loadRefTree( const std::string& repoRoot, const std::string& sha, co
     std::string cachePath;
     if( sha == gitHeadSha( repoRoot ) )
     {
-        cachePath = headSnapCachePath( headSnapRepoHex( repoRoot ), headSnapExclHex( excludes, maxFileBytes ), sha );
+        cachePath = headSnapCachePath( cacheRootKeyHex( repoRoot ), headSnapExclHex( excludes, maxFileBytes ), sha );
     }
 
     {
@@ -2699,7 +2931,7 @@ computeWindowRefBodyHashes( const std::string& root, std::uint32_t days,
         return { {}, false };
     }
 
-    const std::string repoHex   = headSnapRepoHex( root );
+    const std::string repoHex   = cacheRootKeyHex( root );
     const std::string exclHex   = headSnapExclHex( excludes, maxFileBytes );   // ingest-cache family (shared with qheadsnap)
     const std::string qbExclHex = qbodyExclHex( excludes, maxFileBytes );
     const std::string qbodyPath = qbodyCachePath( repoHex, qbExclHex, refSha );
@@ -2910,7 +3142,7 @@ inline std::vector<std::vector<std::uint32_t>> gitCoChangeAndChurnCached(
         return resolveCommitStream( gitLogNameOnlyRaw( root, coSince ), ing, maxFiles, churnCutoff, outChurn, onlyRoot );
     }
 
-    const std::string repoHex  = headSnapRepoHex( root );
+    const std::string repoHex  = cacheRootKeyHex( root );
     const std::string boundary = gitWindowBoundarySha( root, coSince );   // cheap — no --name-only
     std::string       keyMat   = headSha;
     keyMat.push_back( '\x1f' ); keyMat += coSince;
