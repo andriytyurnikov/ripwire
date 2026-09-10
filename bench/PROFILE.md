@@ -1495,6 +1495,15 @@ order, or by a scattered walk?"** — and it is now written into `radixSortIdsAs
 is the thing a future caller will get wrong. The remaining sites' absolute costs (0.008–0.6 ms) would not
 have justified the churn even had they won.
 
+**Also noted, not attempted: the two `std::vector<std::string>` sorts** at `graph.h:1886-1887` (the
+`chaUp` / `chaDown` dedup). A string radix is a materially bigger change than an id radix — variable-length
+keys, no fixed pass count, and the whole `sortKeySmall` contract assumes a scalar key — so it was scoped
+out rather than rushed. The number that says it can wait: those two lines live inside `buildGraph/2h`, and
+that WHOLE phase (name-graph construction, interning and both sorts together) measures **0.70 ms on `rails`,
+3.69 ms on `django`, 1.93 ms on `go`, 0.90 ms on `rust-analyzer`, 0.50 ms on a private C++ tree** — a 4.5%
+ceiling on `django`'s `buildGraph` and under 1.2% everywhere else, with the sorts themselves only a fraction
+of it. It never appeared in the loop-hoist phase table because it never cleared the reporting threshold.
+
 ### The gate, and the arm that proved the fixture could not see the defect
 
 `test/includeprecisecheck.sh` gained: a postcondition sweep asserting every `trans[f]` is sorted AND
