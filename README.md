@@ -1602,8 +1602,8 @@ via `PL2_CACHE_MISS_LD`).
 **Every number on this page is the DEFAULT build — and there is a faster one you can opt into.** A
 clang optimization-remarks pass over `src/` (`-DRIPWIRE_OPT_REMARKS=ON`; the whole triage is in
 [`docs/OPTREMARKS.md`](docs/OPTREMARKS.md)) found that the phases above spend their time calling
-tree-sitter's C API across a translation-unit boundary — 397 of 636 distinct `inline/NoDefinition`
-remarks in the hot TU name a `ts_*` accessor. Two build options answer that, both **off by default**:
+tree-sitter's C API across a translation-unit boundary — 831 of 1,437 distinct `inline/NoDefinition`
+sites in the hot TU name a `ts_*` accessor. Two build options answer that, both **off by default**:
 
 | build | cold | warm | |
 | --- | --- | --- | --- |
