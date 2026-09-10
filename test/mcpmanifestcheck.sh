@@ -101,6 +101,16 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # obliges), +1,568 B in all; nothing else moved. The same rule (a DECLARED argument, its bytes attributed, never
 # prose) and the same posture (159 B of headroom). What this buys back per session: every XML answer under
 # legend:"compact" drops 2.9–5.2 KB of repeated legend (compactlegendcheck (M): edit_check 5,561 → 582 B).
+# RE-ANCHORED 2026-09-10 (--edit-check answer-safe window): 41,000 → 41,300, measured 41,129 (from 40,895).
+# TWO declared optional arguments, `limit` and `offset`, on ONE verb — `edit_check`, which now honors them
+# (it windows its UNFLAGGED caller rows; the flagged callers, their sites_l= and the def census are never
+# paged, so the verdict cannot be paged away). Attributed against a build of the parent commit: edit_check
+# +234 B and nothing else moved — 92 B for the `limit` property entry and 92 B for `offset` (the schema
+# envelope plus the description arm (A/M12) obliges every declared property to carry), plus the 49 B clause
+# in the tool description that says WHAT they page, without which a router reads a paging verb whose page is
+# undefined. Same rule as the two re-anchors above (a DECLARED argument, its bytes attributed here, in the
+# commit that lands it, never prose) and the same posture: 171 B of headroom, less than one more argument.
+#
 # ── THE CEILING, DECIDED 2026-09-05 (terminality round A, lane M / M2): IT STAYS 41,000. ─────────────
 # Registered as an OWNER DECISION with the arithmetic, so it can be overruled with numbers rather than
 # re-litigated. Measured on this tree at the M1 commit: manifest 40,841 B (~10,210 tokens), descriptions
@@ -150,7 +160,7 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 #   TOTAL        40,986 -> 40,902 B; nothing else moved. Raw wire bytes (this gate measures json.dumps
 #                      with ensure_ascii, which spends 6 for each em dash instead of 3): 40,901 -> 40,811.
 # Headroom goes back UP, 14 B -> 98 B. That is item 5 below working, not a new allowance.
-CEILING = 41000
+CEILING = 41300
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )
