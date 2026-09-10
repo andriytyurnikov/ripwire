@@ -2,7 +2,7 @@
 # limits_build.py — generate docs/LIMITS.md: every compile-time cap in src/, what it bounds, and
 # whether the file it lives in DISCLOSES a truncation when it fires.
 #
-# WHY GENERATED. A hand-kept table of 120 constants is a table that rots. The 2026-09-09 round found a
+# WHY GENERATED. A hand-kept table of two hundred constants is a table that rots. The 2026-09-09 round found a
 # published figure that had been wrong for four days because one number lived in six places and only
 # four were wired together; the fix is to make the doc a build product with a gate, not a promise.
 #
@@ -16,8 +16,27 @@
 import re, sys, pathlib, collections, argparse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DECL = re.compile(r'^\s*inline\s+constexpr\s+[\w:<>, ]*?\b(k[A-Z][A-Za-z0-9_]*)\s*=\s*([0-9][0-9_.eE+-]*)\s*;(.*)$')
-KEY  = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width')
+# WHAT THIS REGEX ADMITS, AND WHY IT WAS WIDENED. It used to require the literal `inline constexpr`
+# with the value on the SAME line, and to name a cap by a keyword list. Both halves were leaking:
+#
+#   * `inline` is optional at namespace scope and forbidden on a class member, so `constexpr` and
+#     `static constexpr` declarations were invisible. 92 declarations — 81 distinct names — sat outside
+#     a register whose own first line says "Every compile-time cap in src/". Among them
+#     `kType3MaxBucket` (bounds clone DETECTION, so clone_groups is a floor), `kSkillScanFindingCap`
+#     (bounds a SECURITY verdict), `kMaxFlipRows`/`kMaxSitesShown` (whose files emit no disclosure
+#     vocabulary at all) and `kChaConeCap`.
+#   * the value may be wrapped onto the next line, so the scan is over the file text with re.M rather
+#     than line by line.
+#   * `Shown|PerFile|Hits` were missing from the NAME filter, which is how `kHandoffSymbolsPerFile` —
+#     a cap that truncates output and discloses `syms_capped="1"` — appeared in neither this register
+#     nor docs/TUNING.md, and was raised on 2026-09-10 without ever having been listed anywhere.
+#
+# The published "120 of 202" was the size of a regex's output presented as the size of a population.
+# It is now 212 declarations under 200 names, and the recipe is this comment.
+DECL = re.compile(r'^[ \t]*(?:static[ \t]+)?(?:inline[ \t]+)?constexpr[ \t]+[\w:<>, ]*?'
+                  r'\b(k[A-Z][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:\r?\n[ \t]*)?([0-9][0-9_.eE+-]*)[ \t]*;(.*)$',
+                  re.M)
+KEY  = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width|Shown|PerFile|Hits')
 
 # A CAP answers "how many of X survive". A HYPERPARAMETER answers "how is X weighted or apportioned".
 # They are not the same instrument and must not share a table: a cap is judged by what it truncates and
@@ -40,7 +59,15 @@ KEY  = re.compile(r'Max|Cap|Limit|Top|Budget|Ceil|Threshold|Rows|Len|Depth|Width
 # review notices it; the gate below reports the partition sizes so an empty guard cannot hide.
 WEIGHT_NAME = re.compile(r'Mul(?!ti)|Blend|Share|Tolerance|Headroom|Decay|Weight|Prior|Factor|Ratio'
                           r'|Threshold|Min(?:Len|Words|Chars)')
+# Two names the widened census brought in that WEIGHT_NAME would misfile. A duration is not a weight —
+# 30.0 is thirty days, not a proportion — and `kRadixThreshold` is the point at which a sort switches
+# algorithm, which apportions nothing. Both would have rendered in the parameter table as **unsourced**
+# ranking parameters, which is a claim about them that is simply false. They are BOUNDARY caps below.
+NOT_A_WEIGHT = re.compile(r'AgeDays|RadixThreshold')
+
 def is_weight(name, val):
+    if NOT_A_WEIGHT.search(name):
+        return False
     if WEIGHT_NAME.search(name):
         return True
     try:
@@ -57,12 +84,11 @@ def scan():
         txt = p.read_text(errors='replace')
         for a in re.findall(r'([a-z_]+)_capped', txt):
             disc[rel].add(a)
-        for i, line in enumerate(txt.splitlines(), 1):
-            m = DECL.match(line)
-            if not m or not KEY.search(m.group(1)):
+        for m in DECL.finditer(txt):
+            if not KEY.search(m.group(1)):
                 continue
             note = m.group(3).strip().lstrip('/ ').strip()
-            caps.append((m.group(1), m.group(2), rel, i, note))
+            caps.append((m.group(1), m.group(2), rel, txt[:m.start()].count('\n') + 1, note))
     return caps, disc
 
 def partition(caps):
@@ -104,8 +130,8 @@ def read_classes(path):
         if not line.strip() or line.lstrip().startswith('#'):
             continue
         parts = line.split('\t')
-        if len(parts) != 2 or parts[1].strip() not in ('INDEXING', 'OUTPUT'):
-            sys.exit('limits_build: %s:%d is not "<capName>\\t(INDEXING|OUTPUT)": %r' % (path, i, line))
+        if len(parts) != 2 or parts[1].strip() not in ('INDEXING', 'OUTPUT', 'BOUNDARY'):
+            sys.exit('limits_build: %s:%d is not "<capName>\\t(INDEXING|OUTPUT|BOUNDARY)": %r' % (path, i, line))
         out[parts[0].strip()] = parts[1].strip()
     return out
 
@@ -137,17 +163,26 @@ def render(caps, disc, classes):
       % (len(caps), len(weights), len(allcaps)))
     ix = sum(1 for c in caps if classes.get(c[0]) == 'INDEXING')
     op = sum(1 for c in caps if classes.get(c[0]) == 'OUTPUT')
-    w('## INDEXING or OUTPUT — which half of the answer a cap bounds\n')
+    bd = sum(1 for c in caps if classes.get(c[0]) == 'BOUNDARY')
+    w('## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds\n')
     w('**INDEXING** caps bound what can EVER be found. A silent one is unrecoverable by the caller: no')
     w('flag, no budget, no second call gets the answer back, and the output reads as "none exists".')
     w('**OUTPUT** caps bound what is SHOWN from what was found; a silent one is still a defect, but a')
     w('`--detail`, a page or a follow-up call can recover the answer. The two are not the same severity')
     w('and a single table that does not distinguish them invites fixing the cheap one first.\n')
+    w('**BOUNDARY** is the third answer and it is not a cap at all — it is the one the census kept')
+    w('getting wrong. `kUnitSizeLowRiskMax = 15` decides which SIDE of a rule a unit falls on ("15 lines')
+    w('or fewer is low-risk"); `kMaxNameLen = 96` decides that a 97-character backticked token is a')
+    w('sentence rather than an identifier; `kMaxPartitions = 16` bounds a hand-written `--partition=N`.')
+    w('None of them truncates anything, so none can be judged by `shown=`/`total=` and none should carry')
+    w('a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.')
+    w('The distinction was named in review on #108 and the rows below now carry it.\n')
     w('The `class` column below carries that answer where it is known. **%d of %d caps are classified'
-      % (ix + op, len(caps)))
-    w('(%d INDEXING, %d OUTPUT); the remaining %d render `—`, which means NOT YET CLASSIFIED — never'
-      % (ix, op, len(caps) - ix - op))
-    w('"neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with a known expiry:')
+      % (ix + op + bd, len(caps)))
+    w('(%d INDEXING, %d OUTPUT, %d BOUNDARY); the remaining %d render `—`, which means NOT YET'
+      % (ix, op, bd, len(caps) - ix - op - bd))
+    w('CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with')
+    w('a known expiry:')
     w('the tag belongs on the declaration itself, and this file exists only because the round that')
     w('produced the taxonomy could not touch `src/`. `test/limitstablecheck.sh` fails if a row there')
     w('names a cap that no longer exists.\n')

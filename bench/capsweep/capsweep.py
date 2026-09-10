@@ -14,7 +14,7 @@ file dropped into src/ perturbs the crawl other gates measure.
   prepare  copy + patch + build the tunable binary (caps that must stay constexpr are detected by
            compiling and excluded, iteratively, so a cap used as an array bound cannot break the sweep)
   screen   corpus at BASELINE vs ALL-CAPS-BUMPED -> the commands that are cap-sensitive at all.
-           This is the step that makes it tractable: 120 caps x 195 commands is 23,400 runs, but most
+           This is the step that makes it tractable: ~120 caps x 195 commands is 23,400 runs, but most
            commands respond to no cap, so the second phase only pays for the ones that move.
   sweep    per cap x sensitive command, a value ladder -> bytes at each value
   emit     markdown tables -> docs/TUNING.md  (--check compares instead of writing; the gate runs that)

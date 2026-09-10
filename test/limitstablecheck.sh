@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # limitstablecheck.sh — docs/LIMITS.md is a BUILD PRODUCT of src/, and this gate says so.
 #
-# WHY. A cap is a routing decision: it decides what an agent can and cannot find. This tree has 114 of
-# them across 50 files — plus 6 ranking parameters partitioned out of the same census on 2026-09-10,
-# which is why "120 constants" and "114 caps" are both right — and before 2026-09-09 nothing listed them
-# together, so kMaxExpandSibs could sit
+# WHY. A cap is a routing decision: it decides what an agent can and cannot find. Before 2026-09-09
+# nothing listed them together, so kMaxExpandSibs could sit
 # at 8, fire on 68.5% of bodies and hide 89.3% of every sibling name, justified by a cost ("~3.5 KB per
 # --pack-task bundle") that was not reproducible, because --pack-task emits no sibs= at all. Nobody was
 # wrong on purpose; the caps were simply never visible next to each other.
@@ -27,12 +25,17 @@
 #   (F) THE SIDECAR IS LIVE. Every name in docs/limits_classes.tsv must be a cap that still exists in
 #       src/. A sidecar keyed by name rots exactly this way, and a stale row is a classification applied
 #       silently to nothing. Control: a fabricated row in a COPY of the sidecar must be refused.
+#   (H) THE DECLARATION SHAPE. `inline constexpr … = N;` on ONE line was never the shape of the
+#       population, only of one habit: `inline` is optional at namespace scope and forbidden on a class
+#       member. A plain `constexpr`, a `static constexpr` member and a wrapped initializer are each
+#       planted alone in a synthetic --root tree and required to appear, with a non-cap beside them
+#       required NOT to. Control: the same arm proves the NAME filter now admits `*PerFile`.
 #   (G) THE COLUMN MATCHES THE SIDECAR. Every INDEXING/OUTPUT cell is read back out of the RENDERED
 #       document and compared against the sidecar, so a classification cannot be right in the file and
 #       wrong on the page. Control: flipping a class in a copy must move the rendered cell.
 #
-# WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — 114 caps that truncate, 6
-# parameters that weight — because they need different instruments: a cap is judged by what it cuts and
+# WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — caps that truncate, parameters
+# that weight — because they need different instruments: a cap is judged by what it cuts and
 # gated by shown/total, a parameter by the eval that chose it. The split is only worth having if the
 # document cannot claim a source it does not have, and cannot claim a class the sidecar never gave it.
 set -u
@@ -142,7 +145,7 @@ for line in open( os.path.join( ROOT, "docs", "limits_classes.tsv" ), encoding="
 # The class cell is read back out of the RENDERED markdown, not out of the generator's own data
 # structures. Reading the artifact is the whole point: a column that is correct in memory and wrong on
 # the page is exactly the drift this arm exists for.
-row = re.compile( r'^\| `(k[A-Za-z0-9_]*)` \| `[^`]*` \| \d+ \| (INDEXING|OUTPUT|—) \|' )
+row = re.compile( r'^\| `(k[A-Za-z0-9_]*)` \| `[^`]*` \| \d+ \| (INDEXING|OUTPUT|BOUNDARY|—) \|' )
 got = {}
 for line in open( os.path.join( ROOT, "docs", "LIMITS.md" ), encoding="utf-8" ):
     m = row.match( line )
@@ -172,6 +175,49 @@ if re.search( r'^\| `%s` \| `[^`]*` \| \d+ \| %s \|' % ( re.escape( name ), cls 
     no( "(G) mutation control: flipping %s in the sidecar did NOT change the rendered column" % name )
 ok( "(G) mutation control: flipping a sidecar row moves the rendered class, so (G) is not inert" )
 CLASSCOL
+
+# ── (H) THE DECLARATION SHAPE: a plain `constexpr` and a wrapped initializer are caps too ───────────
+# The register's first line says "Every compile-time cap in src/". It used to require the literal
+# `inline constexpr` with the value on the SAME line, and 92 declarations — 81 distinct names — were
+# outside it, among them kType3MaxBucket (bounds clone DETECTION), kSkillScanFindingCap (bounds a
+# SECURITY verdict) and kChaConeCap. `inline` is optional at namespace scope and FORBIDDEN on a class
+# member, so "inline constexpr" was never the shape of the population; it was the shape of one habit.
+#
+# Three fixtures, three ways a real cap is spelled, each planted alone in a synthetic --root tree and
+# each required to appear in the generated table. A NON-cap name in the same file must NOT appear, or
+# the arm would pass on a generator that admits everything.
+for shape in plain static wrapped; do
+    d="$TMP/decl-$shape"
+    mkdir -p "$d/src" "$d/docs"
+    cp "$GEN" "$d/docs/limits_build.py"
+    case "$shape" in
+        plain)   printf 'constexpr std::size_t kProbeRowCap = 3;\n' > "$d/src/probe.h" ;;
+        static)  printf 'struct S\n{\n    static constexpr std::size_t kProbeRowCap = 3;\n};\n' > "$d/src/probe.h" ;;
+        wrapped) printf 'inline constexpr std::size_t kProbeRowCap =\n    3;\n' > "$d/src/probe.h" ;;
+    esac
+    printf 'inline constexpr double kProbePlainConstant = 3.5;\n' >> "$d/src/probe.h"
+    if ! python3 "$d/docs/limits_build.py" --root "$d" --out "$d/docs/LIMITS.md" >/dev/null 2>&1; then
+        no "(H) $shape: the generator refused a tree whose only cap is spelled that way"
+    elif ! grep -Fq '`kProbeRowCap`' "$d/docs/LIMITS.md"; then
+        no "(H) $shape: a cap declared as \`$shape constexpr\` is INVISIBLE to the register"
+    elif grep -Fq '`kProbePlainConstant`' "$d/docs/LIMITS.md"; then
+        no "(H) $shape: a NON-cap constant was admitted — the census is too greedy to mean anything"
+    else
+        ok "(H) $shape: a cap spelled that way is found, and a non-cap beside it is not"
+    fi
+done
+# and the control that (H) is measuring the DECL regex and not the KEY one: a cap-shaped name the KEY
+# vocabulary does not know must still be missed, or "the register found it" says nothing about how.
+mkdir -p "$TMP/decl-key/src" "$TMP/decl-key/docs"
+cp "$GEN" "$TMP/decl-key/docs/limits_build.py"
+printf 'constexpr std::size_t kProbeRowCap = 3;\nconstexpr std::size_t kProbeSymbolsPerFile = 4;\n' \
+    > "$TMP/decl-key/src/probe.h"
+python3 "$TMP/decl-key/docs/limits_build.py" --root "$TMP/decl-key" --out "$TMP/decl-key/docs/LIMITS.md" >/dev/null 2>&1
+if grep -Fq '`kProbeSymbolsPerFile`' "$TMP/decl-key/docs/LIMITS.md"; then
+    ok "(H) control: the NAME filter admits PerFile too — kHandoffSymbolsPerFile is no longer invisible"
+else
+    no "(H) control: a *PerFile cap is still outside the NAME filter, which is how kHandoffSymbolsPerFile"
+fi
 
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail

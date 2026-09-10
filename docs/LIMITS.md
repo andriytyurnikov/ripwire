@@ -10,12 +10,12 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 114 | 50 | 79 | **35** |
+| 205 | 81 | 99 | **106** |
 
-Plus 6 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 114 + 6 is the 120 constants this generator parses out of `src/`.
+Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
+are not counted as caps, and 205 + 7 is the 212 constants this generator parses out of `src/`.
 
-## INDEXING or OUTPUT — which half of the answer a cap bounds
+## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
 **INDEXING** caps bound what can EVER be found. A silent one is unrecoverable by the caller: no
 flag, no budget, no second call gets the answer back, and the output reads as "none exists".
@@ -23,9 +23,18 @@ flag, no budget, no second call gets the answer back, and the output reads as "n
 `--detail`, a page or a follow-up call can recover the answer. The two are not the same severity
 and a single table that does not distinguish them invites fixing the cheap one first.
 
-The `class` column below carries that answer where it is known. **26 of 114 caps are classified
-(10 INDEXING, 16 OUTPUT); the remaining 88 render `—`, which means NOT YET CLASSIFIED — never
-"neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with a known expiry:
+**BOUNDARY** is the third answer and it is not a cap at all — it is the one the census kept
+getting wrong. `kUnitSizeLowRiskMax = 15` decides which SIDE of a rule a unit falls on ("15 lines
+or fewer is low-risk"); `kMaxNameLen = 96` decides that a 97-character backticked token is a
+sentence rather than an identifier; `kMaxPartitions = 16` bounds a hand-written `--partition=N`.
+None of them truncates anything, so none can be judged by `shown=`/`total=` and none should carry
+a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
+The distinction was named in review on #108 and the rows below now carry it.
+
+The `class` column below carries that answer where it is known. **108 of 205 caps are classified
+(37 INDEXING, 36 OUTPUT, 35 BOUNDARY); the remaining 97 render `—`, which means NOT YET
+CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
+a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
 produced the taxonomy could not touch `src/`. `test/limitstablecheck.sh` fails if a row there
 names a cap that no longer exists.
@@ -55,7 +64,7 @@ measurement that chose it; listing them beside truncation caps invites tuning th
 
 The **anchor** column is read from each constant's own trailing comment. **unsourced** means the
 comment cites no measurement — the value came from somewhere, but not from anything a reader can
-check. All 6 read unsourced today, which is the finding, not an omission: `kSpecificMinLen` has
+check. All 7 read unsourced today, which is the finding, not an omission: `kSpecificMinLen` has
 the widest measured blast radius of any constant in this tree (14 invocations across 9 verbs, per
 `docs/TUNING.md`) and its entire stated provenance is the parenthetical `(aider's)`. Sourcing them
 means editing `src/`; a cited anchor that `docs/EVALS.md` does not contain makes this generator
@@ -67,8 +76,17 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 | `kCeilingFirstEntryTolerance` | `1.15` | `src/serialize.h:616` | **unsourced** | — |
 | `kCommonNameDefThreshold` | `5` | `src/graph.h:244` | **unsourced** | >5 defs of the same name ⇒ common (aider's) |
 | `kCoreBudgetShare` | `0.34` | `src/partition.h:98` | **unsourced** | — |
+| `kExemplarCcxCeilFactor` | `4` | `src/exemplar.h:58` | **unsourced** | — |
 | `kSpecificMinLen` | `8` | `src/graph.h:250` | **unsourced** | ≥8 chars …  (aider's) |
 | `kZoneDistanceThreshold` | `0.5` | `src/arch.h:742` | **unsourced** | \|A+I-1\| past this → classify into pain/useless |
+
+### `src/abicheck.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxStructsPerRef` | `12` | 129 | OUTPUT | display cap per ref (mirrors crossref::kStrayFilesPerRef); --detail lifts it |
 
 ### `src/accessshape.h`
 
@@ -113,6 +131,25 @@ Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `ro
 | `kIntFlagMax` | `1000000000` | 3092 | — | parsePosInt/parseNonNegInt's own overflow ceiling |
 | `kPageValueMax` | `1000000000` | 591 | — | — |
 
+### `src/cloneidiom.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kIdiomMaxCondTokens` | `8` | 81 | BOUNDARY | `( a.b < Limit::Hi )` is 7; anything longer is not a scalar threshold |
+| `kIdiomMaxLabelTokens` | `6` | 82 | BOUNDARY | `case Enum::Member :` |
+| `kIdiomMaxReturnTokens` | `6` | 80 | BOUNDARY | `return Enum::Member ;` is 3; a call or an expression is not a table return |
+
+### `src/clones.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kType3MaxBucket` | `1024` | 475 | INDEXING | skip fingerprint buckets larger than this (stop-gram cut) |
+| `kType3MaxTokensForLcs` | `4096` | 456 | INDEXING | cap the LCS DP dimension per body (cost guard) |
+
 ### `src/commentcoherence.h`
 
 Discloses: **none**
@@ -131,15 +168,68 @@ Discloses: `defs_capped`, `files_capped`, `syms_capped`
 | `kFileRowCap` | `40` | 89 | — | — |
 | `kSymbolRowCap` | `40` | 88 | — | — |
 
+### `src/crossref.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxGitWorkers` | `12` | 802 | — | matches the ingest pool's measured ~12-way; these are |
+| `kMaxRefs` | `512` | 130 | INDEXING | refusal bound — a sweep, not a fork-network crawl |
+| `kWhereisHits` | `60` | 135 | OUTPUT | — |
+
+### `src/darkflags.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxAliasDepth` | `8` | 859 | INDEXING | — |
+| `kMaxEnvNameLen` | `128` | 58 | BOUNDARY | longest plausible environment-variable name |
+| `kMaxSitesShown` | `8` | 57 | OUTPUT | per gate, per list; the rest are counted in a <more/> |
+
+### `src/didyoumean.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxEditDistance` | `3` | 155 | BOUNDARY | same bandwidth cutoff as didYouMean |
+| `kMaxEditDistance` | `3` | 205 | BOUNDARY | bandwidth cutoff (§P12.1): beyond this a "hint" is noise, not help |
+
 ### `src/dmm.h`
 
 Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kUnitComplexityLowRiskMax` | `5` | 91 | OUTPUT | cyclomatic complexity |
-| `kUnitInterfacingLowRiskMax` | `2` | 92 | OUTPUT | parameters |
-| `kUnitSizeLowRiskMax` | `15` | 90 | OUTPUT | lines |
+| `kUnitComplexityLowRiskMax` | `5` | 91 | BOUNDARY | cyclomatic complexity |
+| `kUnitInterfacingLowRiskMax` | `2` | 92 | BOUNDARY | parameters |
+| `kUnitSizeLowRiskMax` | `15` | 90 | BOUNDARY | lines |
+
+### `src/docdrift.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxAnchorsShown` | `12` | 130 | OUTPUT | drifted anchors printed per doc; detail lifts the cap |
+| `kMaxClaimedLine` | `200000` | 138 | BOUNDARY | past this a "line number" is a hostile-input example, not a claim |
+| `kMaxDecDigits` | `10` | 134 | BOUNDARY | overflow guard on a doc/code integer literal |
+| `kMaxExtLen` | `6` | 136 | BOUNDARY | "cpp", "swift", "metal" — longer is not an extension |
+| `kMaxFrontMatter` | `12` | 150 | — | — |
+| `kMaxHexDigits` | `15` | 135 | BOUNDARY | …hex fits 15 nibbles in 64 bits with room to spare |
+| `kMaxNameLen` | `96` | 133 | BOUNDARY | past this it is a sentence, not an identifier |
+| `kMinMentionLen` | `4` | 131 | BOUNDARY | a backticked name shorter than this is prose, not code |
+| `kMinValueNameLen` | `3` | 132 | BOUNDARY | …and the bar for a `= N` / `[N]` subject name |
+
+### `src/editcheck.h`
+
+Discloses: `unflagged_capped`
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kEditCheckSpellingsShown` | `6` | 154 | OUTPUT | — |
 
 ### `src/editpreview.h`
 
@@ -159,6 +249,15 @@ Discloses: `files_capped`, `findings_capped`, `syms_capped`
 | `kEnsembleSymbolRowCap` | `40` | 107 | — | — |
 | `kOrdinalWindowCap` | `40` | 112 | — | — |
 
+### `src/eval.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxSample` | `80` | 275 | INDEXING | — |
+| `kMaxScored` | `4000` | 697 | INDEXING | — |
+
 ### `src/expand.h`
 
 Discloses: **none**
@@ -168,6 +267,19 @@ Discloses: **none**
 | `kExpandMaxPer` | `8` | 37 | OUTPUT | — |
 | `kExpandMaxSeeds` | `8` | 36 | OUTPUT | out-of-range env means OFF, never a clamp-and-guess |
 
+### `src/fieldaffinity.h`
+
+Discloses: `aggs_capped`, `as_loops_capped`, `as_query_capped`
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxAggsModeled` | `8000` | 145 | INDEXING | refusal bound on the whole-repo modelling pass |
+| `kMaxFieldsShown` | `32` | 144 | OUTPUT | per struct (touched fields only) |
+| `kMaxFnsShown` | `8` | 143 | OUTPUT | per struct |
+| `kMaxPairsShown` | `12` | 142 | OUTPUT | per struct |
+| `kMaxScopeChars` | `120` | 146 | OUTPUT | displayed prefix of a PROFILE_SCOPE description |
+| `kMaxStructsShown` | `20` | 141 | OUTPUT | whole-repo form: the ranked head, `capped="1"` past it |
+
 ### `src/filepool.h`
 
 Discloses: **none**
@@ -175,6 +287,18 @@ Discloses: **none**
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kPoolMaxTopK` | `32` | 29 | — | env values outside range mean OFF, never a clamp-and-guess |
+
+### `src/flipimpact.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxBindings` | `32` | 93 | INDEXING | value-style constants tracked — bounds pass B's needle count |
+| `kMaxChainDepth` | `8` | 92 | INDEXING | alias-chain depth cap (mirrors darkflags::kMaxAliasDepth) |
+| `kMaxFamily` | `64` | 91 | INDEXING | gates one flip may light — an alias fan-out past this is a table, not a switch |
+| `kMaxFlipRows` | `25` | 94 | OUTPUT | per emitted list; --detail lifts every cap |
+| `kMaxNearMisses` | `5` | 95 | OUTPUT | "did you mean" suggestions on an unknown gate name |
 
 ### `src/gitmine.h`
 
@@ -186,16 +310,29 @@ Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 | `kCoBoostMaxPartnerFiles` | `8` | 2839 | INDEXING | strongest partners only, by (deg desc, path asc) |
 | `kCoBoostMaxSymbolsPerFile` | `3` | 2840 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
 
+### `src/gitoracle.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxNameLen` | `96` | 96 | BOUNDARY | past this it is a minified blob, not an identifier |
+| `kMaxNamesTracked` | `2000000` | 99 | INDEXING | map bound; 44,904 on the deepest repo measured |
+| `kMaxProbeCommits` | `40000` | 97 | INDEXING | walk bound — past it, misses are "unknown", never "never" |
+| `kMinNameLen` | `4` | 95 | BOUNDARY | — |
+
 ### `src/graph.h`
 
 Discloses: `importers_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
+| `kChaConeCap` | `4096` | 465 | INDEXING | per-walk discovery cap, unchanged from the per-call walk |
 | `kMaxEdges` | `256` | 5385 | — | total emitted edge cap |
 | `kMaxNodes` | `96` | 5384 | — | total emitted node cap (§3 size caps) |
 | `kMaxRadius` | `12` | 5387 | — | — |
 | `kMaxTerminals` | `16` | 5383 | — | >16 is the CALLER's usage error; the core CLAMPS (never VERIFYs on hostile input) |
+| `kMemberSpellingsShown` | `6` | 4325 | OUTPUT | — |
 
 ### `src/handoff.h`
 
@@ -206,6 +343,7 @@ Discloses: `syms_capped`
 | `kHandoffCochangeRows` | `8` | 43 | OUTPUT | heuristic co-change rows shown |
 | `kHandoffDocRows` | `4` | 41 | OUTPUT | heuristic doc pointers shown |
 | `kHandoffNoteRows` | `8` | 42 | OUTPUT | heuristic note rows shown |
+| `kHandoffSymbolsPerFile` | `6` | 50 | OUTPUT | — |
 
 ### `src/infra/blanktext.h`
 
@@ -223,6 +361,16 @@ Discloses: **none**
 | --- | --- | --- | --- | --- |
 | `kMaxEvents` | `8` | 62 | — | — |
 
+### `src/infra/sortutil.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kRadixThreshold` | `128` | 194 | BOUNDARY | — |
+| `kRadixThreshold` | `2048` | 99 | BOUNDARY | — |
+| `kRadixThreshold` | `2048` | 224 | BOUNDARY | — |
+
 ### `src/ingest.h`
 
 Discloses: `ellipsis_capped`, `hits_capped`
@@ -230,7 +378,66 @@ Discloses: `ellipsis_capped`, `hits_capped`
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kBinarySniffCap` | `4096` | 207 | — | NUL-byte sniff window |
+| `kMaxSkipRowsPerClass` | `500` | 125 | OUTPUT | — |
 | `kUnreachableMaxHits` | `5000` | 414 | — | — |
+
+### `src/ingest_astquery.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxEditDistance` | `3` | 377 | BOUNDARY | same bandwidth as didYouMean()'s symbol-name cutoff |
+
+### `src/ingest_model.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kRadixThreshold` | `64` | 465 | BOUNDARY | — |
+
+### `src/ingest_names.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxQualifierHops` | `32` | 219 | INDEXING | `a::b::c::…` past 32 segments is not written C++ |
+
+### `src/ingest_parsepool.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kCapPerThread` | `256` | 92 | — | — |
+| `kMaxPendingParsedFiles` | `4` | 286 | — | — |
+
+### `src/ingest_relations.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxImportContainerDepth` | `256` | 1547 | INDEXING | — |
+
+### `src/ingest_sidecap.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kSideDepthStd` | `256` | 1150 | INDEXING | FFI / routes / bindings — their own guard |
+| `kSideDepthUses` | `512` | 1151 | INDEXING | value-uses — twice the others, as it always was |
+
+### `src/landingplan.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxPlanScout` | `12` | 68 | OUTPUT | — |
 
 ### `src/lanes.h`
 
@@ -241,6 +448,17 @@ Discloses: `blast_capped`, `tests_capped`
 | `kMaxBlastFiles` | `40` | 120 | — | blast-radius file rows per lane; total + capped always reported |
 | `kMaxTestRows` | `40` | 121 | — | tests_to_run rows per lane; same "never drop without a number" |
 
+### `src/layout.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxAssertChars` | `220` | 85 | OUTPUT | the displayed prefix of a static_assert's text |
+| `kMaxDefsShown` | `24` | 87 | BOUNDARY | a name defined more often than this is a generic, not a mirror |
+| `kMaxMacroDepth` | `4` | 83 | INDEXING | object-like macro expansion depth for a type name |
+| `kMaxNestDepth` | `8` | 82 | INDEXING | nested-aggregate resolution depth (a cycle stops here) |
+
 ### `src/lexical.h`
 
 Discloses: **none**
@@ -248,6 +466,16 @@ Discloses: **none**
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kMaxAnchorDefs` | `3` | 1787 | — | — |
+| `kMaxIdentifierLookupWords` | `2` | 1936 | — | — |
+| `kMaxShown` | `4` | 1608 | OUTPUT | — |
+
+### `src/lintcatalog.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxEditDistance` | `3` | 341 | BOUNDARY | — |
 
 ### `src/lintrules.h`
 
@@ -271,6 +499,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
+| `kMaxEditDistance` | `3` | 206 | BOUNDARY | the read verbs' bandwidth (didyoumean.h::didYouMean) |
 | `kReceiptRegionBudgetBytes` | `2048` | 891 | — | — |
 
 ### `src/mcpjson.h`
@@ -287,6 +516,8 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
+| `kMaxEditDistance` | `3` | 926 | BOUNDARY | — |
+| `kMaxEditDistance` | `3` | 1116 | BOUNDARY | same bandwidth cutoff nearestName searches within |
 | `kMcpEchoMaxBytes` | `160` | 363 | — | — |
 
 ### `src/mcpverbs.h`
@@ -298,6 +529,8 @@ Discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped
 | `kBatchCap` | `16` | 4218 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
+| `kOtherDefCap` | `4` | 3953 | OUTPUT | disclosure, not a listing — cap the tail |
+| `kRowCap` | `100` | 889 | — | — |
 
 ### `src/mention.h`
 
@@ -362,6 +595,7 @@ Discloses: `mention_syms_capped`, `ranking_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
+| `kOverCeilingKeyBytes` | `22` | 1653 | — | `,"over_ceiling":true` + the closing brace |
 | `kPackTaskRankTopN` | `12` | 89 | — | ranking = the top-12 head, not the full 40 — leaves budget for the later sections |
 
 ### `src/pageview.h`
@@ -385,7 +619,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxPartitions` | `16` | 94 | OUTPUT | — |
+| `kMaxPartitions` | `16` | 94 | BOUNDARY | — |
 
 ### `src/pattern.h`
 
@@ -404,6 +638,18 @@ Discloses: **none**
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kPrDefaultBudgetTokens` | `8000` | 452 | — | — |
+
+### `src/quality.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxCacheBlobAgeDays` | `30.0` | 1850 | BOUNDARY | — |
+| `kMaxCacheBlobCount` | `4096` | 1852 | BOUNDARY | bound every future hygiene scan |
+| `kMaxEditLockAgeDays` | `1.0` | 1862 | BOUNDARY | — |
+| `kRenameMaxChain` | `8` | 1038 | INDEXING | a→b→c… chain depth followed from one current path (disclosed) |
+| `kRenameMaxPairs` | `4000` | 1037 | INDEXING | hard cap on recorded pairs (disclosed when hit) |
 
 ### `src/qualitypanel.h`
 
@@ -437,6 +683,27 @@ Discloses: **none**
 | --- | --- | --- | --- | --- |
 | `kGenericMinRunLength` | `32` | 296 | — | — |
 
+### `src/renamemine.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMaxCandidates` | `200000` | 105 | INDEXING | vote-map bound; 560 on the deepest history measured |
+| `kMaxHunkSide` | `24` | 103 | INDEXING | per-side cap on the O(n²) line pairing; over-wide hunks are dropped + counted |
+| `kMaxIdentLen` | `96` | 102 | BOUNDARY | past this it is a minified blob, not an identifier |
+| `kMaxIdentsPerLine` | `256` | 106 | INDEXING | a line with more tokens than this is not hand-written code |
+| `kMaxLineLen` | `2000` | 104 | BOUNDARY | a line this long is generated/vendored, not a rename site |
+| `kMinIdentLen` | `2` | 101 | BOUNDARY | — |
+
+### `src/resolve.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kFieldWalkCap` | `16` | 2312 | INDEXING | total visited names — bounds depth and width together |
+
 ### `src/search.h`
 
 Discloses: `hits_capped`
@@ -450,12 +717,21 @@ Discloses: `hits_capped`
 | `kMaxExactLen` | `24` | 194 | — | beyond this exact-string length, give up exactness (⊤) |
 | `kMaxExactSet` | `8` | 193 | — | beyond this many exact strings, give up exactness (⊤) |
 
+### `src/selectorrefuse.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kSelectorFilesShown` | `6` | 42 | OUTPUT | — |
+
 ### `src/serialize.h`
 
 Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
+| `kCap` | `65536` | 420 | — | — |
 | `kForAnchorBodyBudgetBytes` | `22800` | 794 | — | — |
 | `kForAutoBodyBudgetBytes` | `6000` | 760 | — | — |
 | `kForCapTailSigBytes` | `96` | 727 | — | — |
@@ -465,6 +741,7 @@ Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
 | `kForPayloadBudgetBytes` | `7500` | 726 | — | — |
 | `kMaxExpandIncludes` | `24` | 4584 | — | inc= cap |
 | `kMaxExpandSibs` | `100` | 4575 | — | sibs= cap — a BLOW-UP GUARD, set above the tail, not a trim of the |
+| `kMaxSig` | `240` | 2707 | OUTPUT | — |
 | `kWithGraphNodeCap` | `8` | 5642 | — | — |
 
 ### `src/siblift.h`
@@ -483,9 +760,18 @@ Discloses: `tests_capped`, `untested_capped`
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kMaxUntestedRows` | `25` | 939 | — | — |
+| `kSituBlastFilesShown` | `8` | 348 | OUTPUT | section [1] — blast-radius file rows |
 | `kSituPartnerFileRowsShown` | `4` | 351 | — | section [1] — decl/def partner rows |
 | `kSituPartnerRowsShown` | `8` | 350 | — | section [3] — co-change partner rows |
 | `kSituTestRowsShown` | `25` | 349 | — | section [2] — tests-to-run rows |
+
+### `src/skillscan.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kSkillScanFindingCap` | `200` | 843 | INDEXING | generous for one file or a small dir; caps a pathological --scan-skills sweep |
 
 ### `src/slice.h`
 
@@ -533,4 +819,36 @@ Discloses: `seed_files_capped`
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
 | `kRunTraceRelevantLinesCap` | `40` | 696 | — | <lines view="relevant"> cap (first/last half split past it) |
+
+### `src/verbs_doctor.h`
+
+Discloses: **none**
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kShown` | `8` | 829 | OUTPUT | — |
+
+### `src/verbs_for.h`
+
+Discloses: `coboost_commits_capped`
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kJsonEnvelopeDigitsMax` | `10` | 911 | — | — |
+
+### `src/verbs_lint.h`
+
+Discloses: `count_capped`, `ellipsis_capped`, `findings_capped`, `hits_capped`, `rows_capped`
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kMatchMaxHits` | `5000` | 1296 | INDEXING | astQuery's per-spec budget, named not implied |
+
+### `src/verbs_navigate.h`
+
+Discloses: `importers_capped`
+
+| constant | value | line | class | note |
+| --- | --- | --- | --- | --- |
+| `kEvidenceCap` | `20` | 1339 | OUTPUT | — |
 
