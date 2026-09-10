@@ -120,6 +120,59 @@ assert 'C' not in cCalls, ('the class became its own callee', cCalls)
 print('  PASS constructors index under the class name and disclose the merge')
 PYC
 
+# ── the language-registration surface: an indexed language a lens cannot analyse is DISCLOSED ──
+# Appending a Lang is not one table: --nonlocal-state names the indexed languages it does NOT
+# analyse (nonlocalstate.h kUnanalyzedLangs, keyed through lintrules.h langOfPath), and a language
+# missing from either reads as "measured, found nothing" instead of "not measured". Lua is the
+# CONTRAST arm, not decoration: it proves the attribute is emitted at all on this corpus shape, so
+# a silent Dart cannot pass by the whole feature having gone away.
+mkdir "$TMP/mixed_dart" "$TMP/mixed_lua"
+cp "$ROOT/test/dartfix/math.dart" "$TMP/mixed_dart/"
+cp "$ROOT/test/luafix/util.lua"   "$TMP/mixed_lua/"
+for d in mixed_dart mixed_lua; do
+    cp "$ROOT/test/fixture/geometry.cpp" "$ROOT/test/fixture/geometry.h" "$TMP/$d/"
+    "$BIN" "$TMP/$d" --nonlocal-state --no-cache > "$TMP/$d.xml"
+done
+python3 - "$TMP/mixed_dart.xml" "$TMP/mixed_lua.xml" <<'PYNL'
+import sys, xml.etree.ElementTree as ET
+def langs(path):
+    root = ET.parse(path).getroot()
+    node = root if root.tag == 'nonlocal_state' else root.find('.//nonlocal_state')
+    assert node is not None, ('no <nonlocal_state> element in ' + path)
+    return node.get('unanalyzed_langs')
+lua = langs(sys.argv[2])
+assert lua is not None and 'lua' in lua, ('the contrast arm did not fire — unanalyzed_langs is not emitted at all', lua)
+dart = langs(sys.argv[1])
+assert dart is not None and 'dart' in dart, ('a Dart corpus is not disclosed as unanalyzed: unanalyzed_langs=%r' % (dart,))
+print('  PASS an indexed Dart corpus is disclosed as unanalyzed (lua is the live contrast)')
+PYNL
+
+# ── and the SECOND half of that surface: applicable= must not contradict count= ────────────────
+# A rule row's applicable="0" means "NONE of this rule's registered languages are present in this
+# corpus". The naming family is language-agnostic and DOES fire on Dart names, so a Dart-only corpus
+# that is not in the catalog's language vocabulary (lintcatalog.h kCatalogLangs, resolved through
+# lintrules.h langFromToken) prints applicable="0" on a rule that simultaneously reports count="1".
+mkdir "$TMP/lintdart"
+cat > "$TMP/lintdart/n.dart" <<'DART'
+int q(int value) => value;
+
+class Widget {
+  int mixed_caseName() => 1;
+}
+DART
+"$BIN" "$TMP/lintdart" --lint --no-cache > "$TMP/lintdart.xml"
+python3 - "$TMP/lintdart.xml" <<'PYLINT'
+import sys, xml.etree.ElementTree as ET
+rules = {r.get('name'): r for r in ET.parse(sys.argv[1]).iter('rule')}
+fired = [n for n, r in rules.items() if n.startswith('naming-') and int(r.get('count', '0')) > 0]
+assert fired, ('no naming rule fired on the Dart fixture — the arm cannot reach a verdict', sorted(rules))
+for n in fired:
+    assert rules[n].get('applicable') != '0', (
+        'rule %s reports count=%s yet applicable="0" — the catalog does not know this corpus is Dart'
+        % (n, rules[n].get('count')))
+print('  PASS the lint catalog knows a Dart corpus (applicable= agrees with count=)')
+PYLINT
+
 PATH="$(cd "$(dirname "$BIN")" && pwd):$PATH" "$BIN" "$TMP/fix" --doctor > "$TMP/doctor.xml"
 python3 - "$TMP/doctor.xml" <<'PYDOC'
 import sys, xml.etree.ElementTree as ET
