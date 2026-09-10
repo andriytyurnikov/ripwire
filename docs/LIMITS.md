@@ -143,10 +143,10 @@ Discloses: `importers_capped`
 | constant | value | line | note |
 | --- | --- | --- | --- |
 | `kCommonNameDefThreshold` | `5` | 244 | >5 defs of the same name ⇒ common (aider's) |
-| `kMaxEdges` | `256` | 5335 | total emitted edge cap |
-| `kMaxNodes` | `96` | 5334 | total emitted node cap (§3 size caps) |
-| `kMaxRadius` | `12` | 5337 | — |
-| `kMaxTerminals` | `16` | 5333 | >16 is the CALLER's usage error; the core CLAMPS (never VERIFYs on hostile input) |
+| `kMaxEdges` | `256` | 5385 | total emitted edge cap |
+| `kMaxNodes` | `96` | 5384 | total emitted node cap (§3 size caps) |
+| `kMaxRadius` | `12` | 5387 | — |
+| `kMaxTerminals` | `16` | 5383 | >16 is the CALLER's usage error; the core CLAMPS (never VERIFYs on hostile input) |
 | `kSpecificMinLen` | `8` | 250 | ≥8 chars …  (aider's) |
 
 ### `src/handoff.h`
@@ -271,7 +271,7 @@ Discloses: **none**
 
 | constant | value | line | note |
 | --- | --- | --- | --- |
-| `kMaxWorkspaceRoots` | `16` | 936 | — |
+| `kMaxWorkspaceRoots` | `16` | 937 | — |
 
 ### `src/namingconsistency.h`
 
