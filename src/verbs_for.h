@@ -1595,7 +1595,6 @@ std::optional<int> runForLens( const MainDispatch& d )
     const IngestResult&               ing          = d.ing;
     const Graph&                      g            = d.g;
     const std::string&                root         = d.root;
-    const bool                        multiRoot    = d.multiRoot;
     const std::vector<WorkspaceRoot>& ws           = d.ws;
     const std::vector<std::uint32_t>* fanInPtr     = d.fanInPtr;
     const std::vector<char>*          impurePtr    = d.impurePtr;
