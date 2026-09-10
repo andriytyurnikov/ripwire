@@ -407,13 +407,21 @@ inline bool namesUnkeptPackageIndex( const IngestResult& ing, const RawMention& 
     return false;
 }
 
-inline bool namesFileNotKept( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
+// WHICH files this mention names that `kept` does not — appended, never cleared, so a caller can union
+// across mentions. This is namesFileNotKept's body with "return true on the first one" replaced by "collect
+// them all": a bare boolean told the caller something was withheld and neither how much nor how to get it,
+// which is §9-3 of docs/METHODOLOGY.md unmet, and the sibling caps in this same file already pass a total.
+// Verdict-equivalent to the predicate below by construction — same resolution order, same three rules, and
+// a level that resolves with only KEPT matches still ends resolution with nothing appended.
+inline void mentionUnkeptFiles( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept,
+                                std::vector<std::uint32_t>& out )
 {
     const std::size_t fileCount = ing.files.size();
     for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1; --suffixLen )
     {
         const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
-        bool                           named = false;
+        const std::size_t              before = out.size();
+        bool                           named  = false;
         for( std::uint32_t f = 0; f < fileCount; ++f )
         {
             if( !pathSuffixMatches( ing.files[f], suffix ) )
@@ -422,20 +430,35 @@ inline bool namesFileNotKept( const IngestResult& ing, const RawMention& m, cons
             }
             if( std::find( kept.begin(), kept.end(), f ) == kept.end() )
             {
-                return true;
+                out.push_back( f );
+                continue;
             }
             named = true;
         }
-        if( named )
+        if( out.size() > before || named )
         {
-            return false;
+            return;              // the longest matching suffix wins and ends resolution — capped or not
         }
     }
     if( !m.isPath && m.segments.size() == 2 && definesScopeName( ing, m.segments[0], m.segments[1] ) )
     {
-        return false;
+        return;
     }
-    return namesUnkeptPackageIndex( ing, m, kept );
+    for( std::uint32_t f = 0; f < fileCount; ++f )
+    {
+        if( isIndexBaseName( baseNameOf( ing.files[f] ) ) && dirSuffixMatches( ing.files[f], m.segments )
+            && std::find( kept.begin(), kept.end(), f ) == kept.end() )
+        {
+            out.push_back( f );
+        }
+    }
+}
+
+inline bool namesFileNotKept( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
+{
+    std::vector<std::uint32_t> unkept;
+    mentionUnkeptFiles( ing, m, kept, unkept );
+    return !unkept.empty();
 }
 
 // The file-cap verdict for the whole task: did kMentionMaxFiles keep out a file ANY mention names? A cut needs a full
@@ -448,6 +471,27 @@ inline bool mentionFilesCut( const IngestResult& ing, const std::vector<RawMenti
         return false;
     }
     return std::any_of( raw.begin(), raw.end(), [ & ]( const RawMention& m ) { return namesFileNotKept( ing, m, kept ); } );
+}
+
+// How many DISTINCT files the task's mentions name in total — the kept ones plus the ones the cap refused.
+// Equal to kept.size() when nothing was cut, so `total > kept.size()` is exactly mentionFilesCut's verdict
+// and the two can never disagree. The union is only computed on the runs where the list is full, so the
+// common anchored query pays the same one size test it always did.
+inline std::uint32_t mentionFilesNamedTotal( const IngestResult& ing, const std::vector<RawMention>& raw,
+                                             const std::vector<std::uint32_t>& kept )
+{
+    if( kept.size() < kMentionMaxFiles )
+    {
+        return std::uint32_t( kept.size() );
+    }
+    std::vector<std::uint32_t> named( kept.begin(), kept.end() );
+    for( const RawMention& m : raw )
+    {
+        mentionUnkeptFiles( ing, m, kept, named );
+    }
+    std::sort( named.begin(), named.end() );
+    named.erase( std::unique( named.begin(), named.end() ), named.end() );
+    return std::uint32_t( named.size() );
 }
 
 // extract candidate mentions from the task text: '/'-joined path tokens, dot-joined identifier chains,
@@ -657,7 +701,11 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
             liftPackageDirMention( ing, m, mentionedFiles );
         }
     }
-    noteCap( outInfo, "mention_files_capped", nullptr, mentionFilesCut( ing, raw, mentionedFiles ), 0 );   // a STOP is not a CUT
+    // a STOP is not a CUT (namesFileNotKept), and a CUT without a total is a fact the caller cannot act on:
+    // mention_files_total= is every distinct file the task names, so `total - shown` is what the cap withheld.
+    const std::uint32_t mentionFilesTotal = mentionFilesNamedTotal( ing, raw, mentionedFiles );
+    noteCap( outInfo, "mention_files_capped", "mention_files_total",
+             mentionFilesTotal > mentionedFiles.size(), mentionFilesTotal );
     noteCap( outInfo, "mention_syms_capped", "mention_syms_total", directSymbolTotal > kMentionMaxDirectSymbols, directSymbolTotal );
     if( mentionedFiles.empty() && directSymbols.empty() )
     {
@@ -773,12 +821,17 @@ struct DocMentionBoostInfo
     CapDisclosure caps;
 };
 
-// Would any anchor in order[from, to) have lifted a doc that is not already at or above its own lift
-// target? True proves kDocMentionMaxDocsTotal turned a liftable doc away when it ended the consult loop;
-// false is a proof of the negative, not a shrug. Bounded by kDocMentionMaxAnchors, so it never scans the
-// corpus. Callers pass only the CONSULT WINDOW: anchors past it are the kDocMentionMaxAnchors cut, which
-// is on the caller's screen and by design carries no attribute.
-inline bool docLiftWasRefused( const Graph& g, const std::vector<float>& lensRank, const std::vector<NodeId>& order, std::size_t from, std::size_t to )
+// WHICH docs the anchors in order[from, to) would have lifted and did not — appended to `out`. A doc that
+// WAS lifted now sits at its target, so it cannot appear here; every doc that does is one a cap turned away.
+// Non-empty proves kDocMentionMaxDocsTotal ended the consult loop on a liftable doc; empty is a proof of
+// the negative, not a shrug. Bounded by kDocMentionMaxAnchors, so it never scans the corpus. Callers pass
+// only the CONSULT WINDOW: anchors past it are the kDocMentionMaxAnchors cut, which is on the caller's
+// screen and by design carries no attribute.
+//
+// It collects rather than returning bool because the disclosure needs a COUNT: lifted + refused is exactly
+// how many docs the caps had to choose from, which is what doc_mentions_total= reports.
+inline void collectRefusedDocLifts( const Graph& g, const std::vector<float>& lensRank, const std::vector<NodeId>& order,
+                                    std::size_t from, std::size_t to, std::vector<NodeId>& out )
 {
     for( std::size_t k = from; k < to; ++k )
     {
@@ -792,11 +845,10 @@ inline bool docLiftWasRefused( const Graph& g, const std::vector<float>& lensRan
         {
             if( doc < lensRank.size() && lensRank[doc] < target )
             {
-                return true;
+                out.push_back( doc );
             }
         }
     }
-    return false;
 }
 
 inline bool applyDocMentionBoost( const Graph& g, std::vector<float>& lensRank, DocMentionBoostInfo* outInfo = nullptr )
@@ -822,7 +874,7 @@ inline bool applyDocMentionBoost( const Graph& g, std::vector<float>& lensRank, 
 
     // Set ONLY where a refusal is provable — a doc below its anchor's lift target that a cap turned away.
     // "There might be more" is not a fact and never sets it.
-    bool          docsCapped = false;
+    std::vector<NodeId> refusedDocs;  // docs a cap turned away — the count half of the disclosure
     std::size_t   stoppedAt  = 0;    // how far the consult loop actually got — the post-loop sweep resumes here
     std::uint32_t liftedDocs = 0, usedAnchors = 0;
     for( std::size_t k = 0; k < topN && liftedDocs < kDocMentionMaxDocsTotal; ++k )
@@ -844,11 +896,12 @@ inline bool applyDocMentionBoost( const Graph& g, std::vector<float>& lensRank, 
         {
             if( perAnchor >= kDocMentionMaxDocsPerAnchor || liftedDocs >= kDocMentionMaxDocsTotal )
             {
-                // A cap, not the fan-out, ended this anchor: look only until one refused doc is shown liftable.
+                // A cap, not the fan-out, ended this anchor. The whole remaining fan-out is walked rather
+                // than broken out of at the first hit: a bare "something was cut" could stop early, a TOTAL
+                // cannot. Nothing here touches lensRank, so the lift is byte-identical either way.
                 if( doc < lensRank.size() && lensRank[doc] < target )
                 {
-                    docsCapped = true;
-                    break;
+                    refusedDocs.push_back( doc );
                 }
                 continue;
             }
@@ -870,9 +923,16 @@ inline bool applyDocMentionBoost( const Graph& g, std::vector<float>& lensRank, 
     }
 
     // The other half of the total cap: it can also end the OUTER loop, leaving consulted-window anchors
-    // whose docs were never looked at (see docLiftWasRefused).
-    docsCapped = docsCapped || docLiftWasRefused( g, lensRank, order, stoppedAt, topN );
-    noteCap( outInfo, "doc_mentions_capped", nullptr, docsCapped, 0 );
+    // whose docs were never looked at (see collectRefusedDocLifts).
+    collectRefusedDocLifts( g, lensRank, order, stoppedAt, topN, refusedDocs );
+    std::sort( refusedDocs.begin(), refusedDocs.end() );      // one doc under two anchors is ONE refusal
+    refusedDocs.erase( std::unique( refusedDocs.begin(), refusedDocs.end() ), refusedDocs.end() );
+    // doc_mentions_total= is lifted + refused: how many docs the caps had to choose from. It was nullptr —
+    // a bare boolean saying content was withheld and neither how much nor how to get it, which is §9-3 of
+    // docs/METHODOLOGY.md unmet by the same file whose mention_tokens_capped/mention_syms_capped both pass
+    // a total. `doc_mentions=` on the root already carries the shown half, so total - doc_mentions is the gap.
+    noteCap( outInfo, "doc_mentions_capped", "doc_mentions_total", !refusedDocs.empty(),
+             std::uint64_t( liftedDocs ) + refusedDocs.size() );
 
     if( liftedDocs == 0 )
     {

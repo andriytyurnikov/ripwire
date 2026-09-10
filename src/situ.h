@@ -1092,12 +1092,19 @@ inline void writeTestGateReport( std::FILE* out, const IngestResult& ing, const 
     // §P11.4: this gate EXITS 4 on the obligation, so its rows carry the command that discharges it — where
     // one is derivable. Absent run= = not derivable (testmap.h states why a fallback would be a lie).
     const TestRunnerIndex gateRunners( ing );
+    // shown_tests= / tests_capped= are DERIVED from the rows this document actually emits, not asserted.
+    // tests_capped= was the string literal "0" — a disclosure that could never become "1", so if a <t> row
+    // cap were ever added the attribute would keep saying nothing was cut while something was. It is kept
+    // present at 0 rather than omitted, because pageview.h rule 1 pairs shown_*/=*_capped per LISTING and its
+    // sibling untested_capped="0" is pinned by test/testgatepagecheck.sh (a') and test/impactpartitioncheck.sh:
+    // dropping one half of a documented pair is a new inconsistency, not a fix for this one.
+    const std::size_t shownTests = r.testRows.size() + r.shellGates.obligations.size();
     rw::emitTo( out, "<test-gate changed=\"{}\" impacted=\"{}\" tests=\"{}\" untested=\"{}\""
-                       " shown_tests=\"{}\" tests_capped=\"0\" shown_untested=\"{}\" untested_capped=\"{}\""
+                       " shown_tests=\"{}\" tests_capped=\"{}\" shown_untested=\"{}\" untested_capped=\"{}\""
                        " script_gates_unmodelled=\"{}\" script_gates_registered=\"{}\" script_gates_mapped=\"{}\""
                        " script_gates_unresolved_dynamic=\"{}\" ccx_bar=\"{}\"{}{}{}{}{}>",
                   r.changedFiles, r.impactedSymbols, testRows, r.untested.size(),
-                  testRows, shownRows, shownRows < r.untested.size() ? 1 : 0,
+                  shownTests, shownTests < testRows ? 1 : 0, shownRows, shownRows < r.untested.size() ? 1 : 0,
                   scriptGatesUnmodelledCount( ing ),
                   r.shellGates.registered, r.shellGates.mapped, r.shellGates.unresolvedDynamic, kTestGateCcxBarMirror,   // P8 (L7): ccx_bar=
                   graphCountFloorAttrXml( g ).c_str(),   // M15: gauge + counts_floor="1", the one splice every graph-floored root shares
@@ -1162,12 +1169,15 @@ inline void writeTestGateReportJson( std::FILE* out, const IngestResult& ing, co
     const TestRunnerIndex gateRunnersJ( ing );   // P3 (L7): the root's next= needs the runner index before the rows
     const bool         tgJHasRows  = ( testRows > 0 || !r.untested.empty() );
     const std::string  tgJRootJson = ( root.empty() || !tgJHasRows ) ? std::string() : ( ",\"root\":\"" + jsonStr( root ) + "\"" );
+    // The XML twin's derived pair, mirrored key-for-key: "tests_capped":false was a literal here too.
+    const std::size_t shownTestsJ = r.testRows.size() + r.shellGates.obligations.size();
     rw::emitTo( out, "{{\"changed\":{},\"impacted\":{},\"tests\":{},\"untested\":{}"
-                       ",\"shown_tests\":{},\"tests_capped\":false,\"shown_untested\":{},\"untested_capped\":{}"
+                       ",\"shown_tests\":{},\"tests_capped\":{},\"shown_untested\":{},\"untested_capped\":{}"
                        ",\"script_gates_unmodelled\":{},\"script_gates_registered\":{},\"script_gates_mapped\":{}"
                        ",\"script_gates_unresolved_dynamic\":{},\"ccx_bar\":{}{}{},\"at\":{}{}{},\"tests_to_run\":[",
                  r.changedFiles, r.impactedSymbols, testRows, r.untested.size(),
-                 testRows, shownRows, shownRows < r.untested.size() ? "true" : "false",
+                 shownTestsJ, shownTestsJ < testRows ? "true" : "false", shownRows,
+                 shownRows < r.untested.size() ? "true" : "false",
                  scriptGatesUnmodelledCount( ing ), r.shellGates.registered, r.shellGates.mapped, r.shellGates.unresolvedDynamic, kTestGateCcxBarMirror,
                  graphCountFloorAttrJson( g ).c_str(),   // M15: the JSON twin's gauge + "counts_floor":true
                  rw::cstr( pageJson ), atJson.c_str(), tgJRootJson.c_str(),   // M12: root= rides only when the document has rows (same gate as the XML twin)
