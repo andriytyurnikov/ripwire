@@ -1010,6 +1010,13 @@ inline std::string cacheDirLadder()
 // still spell quality::popenTrimmed, which this using-declaration resolves. Not a wrapper: one definition.
 using rw::popenTrimmed;
 
+// isBareCommitSha (THE object-name gate) and gitResolveCommitSha (THE commit resolver) live in gitmine.h too —
+// moved down 2026-09-10 when resolveSinceScope needed them, so --since hands git a resolved sha instead of the
+// caller's string. gitIsAncestor / materializeCommitTree below and crossref.h still spell them quality::…,
+// which these using-declarations resolve. One definition each.
+using rw::isBareCommitSha;
+using rw::gitResolveCommitSha;
+
 // Run one short git query against `root` and return its whitespace-trimmed output (expected single-line), or
 // "" on any failure. The shared shape behind gitHeadSha / gitWindowRefSha — `tail` is everything after
 // `git -C <root>` INCLUDING redirects (so a caller can pipe, e.g. "rev-list HEAD 2>/dev/null | tail -1").
@@ -1208,54 +1215,6 @@ inline std::string gitCommitterDateIso( const std::string& root )
 // the CLI while the MCP arm honestly reported zero); `selectBaseline` now decides staleness by STRICT sha
 // equality and never calls this. The remaining caller is `binstale.h`'s "is the built binary older than the
 // sources?" check, which is a genuine reachability question — do not delete this.
-// ─── r27 (Lane C routing) — the OBJECT-NAME gate on every token that reaches a git argv ────────────────
-//
-// `shSingleQuote` stops SHELL injection, but the token still arrives as its own argv ENTRY, and git reads a
-// leading `-` as an OPTION. Lane C's P0.1 defect is the proof this matters: `--pr-context=--output=FILE`
-// reached `git diff` as an option and TRUNCATED a file outside the repo, exit 0. The durable defense is not
-// quoting — it is refusing anything that is not a bare object name.
-//
-// A commit sha is 40 (SHA-1) or 64 (SHA-256) lowercase hex and NOTHING else: it cannot begin with `-`, cannot
-// contain a path separator, and cannot spell an option. Checking that SHAPE is a complete defense on its own
-// and needs no subprocess, so it is applied at both ends — at the trust boundary where an untrusted value is
-// READ (readBaselineHeadSha, whose input is a COMMITTED, therefore clone-attacker-influenceable sidecar) and
-// again at the SINK, here, because a future caller will not remember the boundary.
-//
-// KNOWN DUPLICATE, flagged by our own --quality-delta and left deliberately: `crossref::isBlobSha`
-// (crossref.h) is the same predicate for git BLOB shas. It cannot be reused from here — crossref.h INCLUDES
-// quality.h, so the dependency only runs one way. The consolidation is a one-line change in crossref.h
-// (`isBlobSha` delegating to this), which is outside this lane's file boundary; it is written up in the lane
-// report rather than done silently across a file this lane does not own.
-inline bool isBareCommitSha( std::string_view s ) noexcept
-{
-    if( s.size() != 40 && s.size() != 64 )
-    {
-        return false;
-    }
-    for( char c : s )
-    {
-        if( !std::isxdigit( static_cast<unsigned char>( c ) ) )
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Resolve `ref` to a concrete commit sha, or "" if it does not resolve to one. Belt AND braces: the ref is
-// refused outright if it could be read as an option, and the ANSWER must itself be a bare object name — a
-// `rev-parse` that echoes something else (a path, an error, a multi-line answer) is not trusted. Callers that
-// hand a token to git should hand THIS result, never the caller's own string.
-inline std::string gitResolveCommitSha( const std::string& root, const std::string& ref )
-{
-    if( ref.empty() || ref[0] == '-' )
-    {
-        return {};
-    }
-    const std::string out = gitOneLine( root, "rev-parse --verify --quiet " + shSingleQuote( ref + "^{commit}" ) + " 2>/dev/null" );
-    return isBareCommitSha( out ) ? out : std::string{};
-}
-
 inline bool gitIsAncestor( const std::string& root, const std::string& ancestor, const std::string& descendant )
 {
     if( ancestor.empty() || descendant.empty() )

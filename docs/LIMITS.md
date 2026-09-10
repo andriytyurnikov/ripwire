@@ -182,9 +182,9 @@ Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kCoBoostMaxFilesPerCommit` | `30` | 2836 | INDEXING | same bulk-commit cap as the other co-change miners here |
-| `kCoBoostMaxPartnerFiles` | `8` | 2839 | INDEXING | strongest partners only, by (deg desc, path asc) |
-| `kCoBoostMaxSymbolsPerFile` | `3` | 2840 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
+| `kCoBoostMaxFilesPerCommit` | `30` | 2901 | INDEXING | same bulk-commit cap as the other co-change miners here |
+| `kCoBoostMaxPartnerFiles` | `8` | 2904 | INDEXING | strongest partners only, by (deg desc, path asc) |
+| `kCoBoostMaxSymbolsPerFile` | `3` | 2905 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
 
 ### `src/graph.h`
 
