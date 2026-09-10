@@ -1664,30 +1664,14 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
                 }
             }
 
-            // Dart: the grammar makes `function_body` a SIBLING of `function_signature` /
-            // `method_signature`, never a "body" field and never a child — so the ancestor walk above
-            // leaves body null and the definition's span stops at the closing paren of the signature.
-            // Every call in the body then falls to the nearest ENCLOSING symbol: measured before this
-            // arm, test/dartfix put `square` on the class `Calculator` instead of the method
-            // `accumulate`, and the three top-level edges (twice->square, answer->secret,
-            // branchy->square) were lost entirely — 5 edges where 8 were expected. Adopt the
-            // immediately-following function_body sibling and run the span through it, the same shape
-            // LB-E already uses for a test-macro block. An abstract member (`void f();`) has no such
-            // sibling: the scan stops at the next NAMED node, body stays null, and it stays a
-            // declaration. Gate: test/dartcheck.sh.
+            // Dart's body is a SIBLING of the signature, so neither defBodyNodeOf nor the climb above can
+            // find it and the span would stop at the signature — see dartFollowingBody (ingest_relations.h)
+            // for the measurement and for why an abstract member still comes back null.
             bool dartSiblingBody = false;
             if( ts_node_is_null( body ) && le.lang == Lang::Dart )
             {
-                for( TSNode sib = ts_node_next_sibling( defNode ); !ts_node_is_null( sib ); sib = ts_node_next_sibling( sib ) )
-                {
-                    if( std::strcmp( ts_node_type( sib ), "function_body" ) == 0 )
-                    {
-                        body            = sib;
-                        dartSiblingBody = true;
-                        break;
-                    }
-                    if( ts_node_is_named( sib ) ) { break; }   // the signature/body pair ended
-                }
+                body            = dartFollowingBody( defNode );
+                dartSiblingBody = !ts_node_is_null( body );
             }
             // Both flags mean the same thing to the three span consumers below: the code this symbol
             // owns lives in a SIBLING node, so byte/row extents and complexity must run through it.
