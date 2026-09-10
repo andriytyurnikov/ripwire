@@ -33,8 +33,14 @@
 #       saveCache publishes via tmp-then-rename, and a double fs::remove of an already-gone file is a
 #       benign ENOENT no-op — so two sweepers racing on the same stale blob is safe by construction.
 #
+#   (h) P1-1: the MRU root's SIBLING family is PINNED through a byte-budget sweep — the sweep takes another
+#       root's blob instead, and says so once on stderr.
+#   (i) P1-1: when the pinned set ALONE exceeds the budget it is kept anyway, said once on stderr.
+#   (j) P1-1: a sweep that evicts nothing writes ZERO bytes to stderr (the disclosure is conditional).
+#
 # Sparse filler (truncate -s) keeps the ">2 GB" file logically oversized (what fs::file_size measures)
-# without touching real disk, so the gate stays fast. Does NOT edit regression.sh.
+# without touching real disk, so the gate stays fast — which is also why arms (h)-(j) can exercise the REAL
+# 2 GB budget rather than a test-only override. Does NOT edit regression.sh.
 # Usage:  test/evictioncheck.sh   |   RIPWIRE_BIN=build_r2a1/ripwire test/evictioncheck.sh
 set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
@@ -239,5 +245,140 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
                        || no "(c3) a fresh lock was removed — the age bound is not binding"
 # (d) .bin behavior unchanged: already covered above by the pre-existing OLD/FILLER/FRESH .bin arms (both
 # flat and sharded layouts), which this section's separate TMPDIR/CACHEDIR does not touch or interact with.
+
+# ── (h)(i)(j) P1-1 (2026-09-10 audit) — the MRU ROOT'S OWN FAMILIES ARE PINNED DURING A BUDGET SWEEP ────
+# THE DEFECT. One llvm-project root needs 1.76 GB of cache for its OWN two families (rich 1.19 GB + lean
+# 0.57 GB) against a dir-wide 2 GB oldest-first sweep. Add anything else — a second corpus, or one
+# --edit-check HEAD snapshot (0.52 GB on llvm) — and the sweep evicts the SIBLING FAMILY OF THE SAME ROOT,
+# because evictOldCacheFamily only ever protected `keepPath` (the one blob being written). Measured, same
+# argv, same session, same binary: `--grep=SmallVector` 20 s → 206 s, `--for=...` 19 s → 268 s, and the
+# ping-pong is self-sustaining (each cold run's save evicts the other family again). Zero disclosure: all
+# four .err files were 0 bytes. The 2 GB constant is a blow-up guard and is NOT lowered (owner rule
+# `quality-first-caps-are-blowup-guards`); the eviction ORDER is what changes.
+#
+# THE CONTRACT UNDER TEST (quality.h: cacheBlobRootKey + evictOldCacheFamily's size pass):
+#   (h) every blob of the MRU root — lean, rich, qheadsnap, qsnap, … — is PINNED for the duration of a
+#       byte-budget sweep; the sweep takes OTHER roots first, oldest-first, exactly as before. Red-first:
+#       against the pre-change binary the pinned sibling is the FIRST thing deleted (it is the oldest).
+#   (i) if the pinned set ALONE still exceeds the budget, it is kept anyway (evicting it would force the
+#       full re-parse this whole change exists to prevent) and ONE `ripwire: cache …` line says so. That
+#       line is a plain stderr emit, never DEGRADED_PATH_ALERT: NDEBUG compiles the alert out and the
+#       whole point is that a Release binary discloses this too.
+#   (j) the disclosure is CONDITIONAL: a run whose sweep evicts nothing writes ZERO bytes to stderr.
+# The PIN KEY is the 16-hex fnv1a64(realpath(root)) field that every family's filename already carries —
+# defaultCachePath's `ripwire-<rootHex>-{lean,rich}.bin` and shaKeyedCachePath's
+# `ripwire-<family>-<rootHex>-<exclHex>-<shaHex>.bin` alike (headSnapRepoHex hashes the same material as
+# defaultCachePath), so no plumbing is needed: the sweep reads it off `keepPath` itself.
+#
+# The AGE pass is deliberately NOT pinned — a blob nobody has touched in 30 days is stale by the hygiene
+# policy's own definition, and its eviction costs one cold parse rather than a self-sustaining ping-pong.
+# Every arm below therefore seeds mtimes inside the 30-day window, so only the size pass can fire.
+#
+# Sparse fillers again (truncate -s), so these arms exercise the REAL 2 GB budget — no test-only override
+# env var is introduced, and the constant under test is the shipped one.
+
+# apparent bytes of every ripwire-*.bin under an arbitrary cache dir (the arms below each own a private
+# one, so the file-scope allblobs()/dirapparentbytes() — which are bound to $CACHEDIR — do not apply).
+dirbytesof(){
+    local total=0 f sz
+    while IFS= read -r f; do
+        [ -e "$f" ] || continue
+        sz="$( apparentsize "$f" )"
+        total=$(( total + sz ))
+    done < <( find "$1" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null )
+    echo "$total"
+}
+
+# ---- (h) two roots, the MRU root's sibling family is the OLDEST blob in the dir --------------------
+TMP3="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3"' EXIT
+CB3="$TMP3/cachebase"; CD3="$CB3/ripwire"; mkdir -p "$CD3"
+R3="$TMP3/repo"; mkdir -p "$R3"
+printf 'int pinme( void )\n{\n    return 1;\n}\n' > "$R3/f.cpp"
+
+env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >/dev/null 2>"$TMP3/prime.err"
+OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null | head -1 )"
+ROOTHEX3="$( basename "${OWN3:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+if printf '%s' "$ROOTHEX3" | grep -qE '^[0-9a-f]{16}$'; then
+    ok "(h) primed: this root's lean blob names root key $ROOTHEX3"
+else
+    no "(h) could not read a 16-hex root key off the primed blob (own='$OWN3')"
+fi
+
+# the SIBLING family of the SAME root — seeded FLAT (the sweep must find it in either layout) and made
+# the OLDEST blob in the dir, which is exactly what the pre-change oldest-first sweep deletes first.
+SIB3="$CD3/ripwire-$ROOTHEX3-rich.bin"
+truncate -s 1200M "$SIB3"
+sleep 1
+# a DIFFERENT root's blob, newer and bigger — the one an oldest-first sweep would keep, and the one the
+# fixed sweep must take instead.
+OTHER3="$CD3/ripwire-00000000deadf00d-lean.bin"
+truncate -s 1500M "$OTHER3"
+
+b3="$( dirbytesof "$CD3" )"
+[ "$b3" -gt 2147483648 ] && ok "(h) seed: dir exceeds the 2 GB budget (~$b3 bytes: 1200M sibling + 1500M other root)" \
+    || no "(h) seed: dir does not exceed budget (~$b3 bytes) — fillers too small"
+
+printf 'int pinme2( void )\n{\n    return 2;\n}\n' >> "$R3/f.cpp"   # Win-2: saveCache (and the sweep) only run when something changed
+env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >"$TMP3/run.xml" 2>"$TMP3/run.err"
+rc4=$?
+[ "$rc4" -eq 0 ] && ok "(h) run exits 0" || { no "(h) run exited $rc4"; cat "$TMP3/run.err"; }
+grep -q 'n="pinme"' "$TMP3/run.xml" 2>/dev/null && ok "(h) run output still correct (pinme present)" || no "(h) run output missing pinme()"
+
+[ -e "$SIB3" ] && ok "(h) the MRU root's SIBLING family survives a budget sweep (pinned) — P1-1's 206 s ping-pong" \
+    || no "(h) the MRU root's sibling family was EVICTED — the sweep still takes the blob this root is about to need"
+[ ! -e "$OTHER3" ] && ok "(h) the OTHER root's blob is what the sweep took instead" \
+    || no "(h) the other root's blob survived — the sweep did not free the bytes it needed"
+
+[ -s "$TMP3/run.err" ] && ok "(h) the eviction is DISCLOSED on stderr (was 0 bytes before this change)" \
+    || no "(h) an eviction happened with ZERO disclosure — the honesty rule does not reach the cache layer"
+grep -q '^ripwire: cache ' "$TMP3/run.err" 2>/dev/null && ok "(h) the disclosure uses the house 'ripwire: cache …' shape" \
+    || { no "(h) no 'ripwire: cache …' line on stderr"; cat "$TMP3/run.err"; }
+errlines3="$( wc -l < "$TMP3/run.err" | tr -d ' ' )"
+[ "$errlines3" -eq 1 ] && ok "(h) exactly ONE disclosure line (not one per evicted blob)" \
+    || no "(h) expected 1 stderr line, got $errlines3"
+
+# ---- (i) the pinned set ALONE exceeds the budget → kept anyway, said once ---------------------------
+TMP4="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4"' EXIT
+CB4="$TMP4/cachebase"; CD4="$CB4/ripwire"; mkdir -p "$CD4"
+R4="$TMP4/repo"; mkdir -p "$R4"
+printf 'int solo( void )\n{\n    return 1;\n}\n' > "$R4/f.cpp"
+
+env -u XDG_CACHE_HOME TMPDIR="$CB4" "$BIN" "$R4" >/dev/null 2>/dev/null
+OWN4="$( find "$CD4" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null | head -1 )"
+ROOTHEX4="$( basename "${OWN4:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+SIB4="$CD4/ripwire-$ROOTHEX4-rich.bin"
+if printf '%s' "$ROOTHEX4" | grep -qE '^[0-9a-f]{16}$'; then
+    truncate -s 2600M "$SIB4"   # this root's own sibling ALONE blows the 2 GB budget (llvm's rich blob is 1.19 GB; a second root doubles it)
+    ok "(i) primed: root key $ROOTHEX4, sibling family seeded at 2600M (over budget on its own)"
+else
+    no "(i) could not read a 16-hex root key off the primed blob (own='$OWN4')"
+fi
+
+printf 'int solo2( void )\n{\n    return 2;\n}\n' >> "$R4/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB4" "$BIN" "$R4" >"$TMP4/run.xml" 2>"$TMP4/run.err"
+rc5=$?
+[ "$rc5" -eq 0 ] && ok "(i) run exits 0 even with the pinned set over budget" || { no "(i) run exited $rc5"; cat "$TMP4/run.err"; }
+grep -q 'n="solo"' "$TMP4/run.xml" 2>/dev/null && ok "(i) run output still correct (solo present)" || no "(i) run output missing solo()"
+[ -e "$SIB4" ] && ok "(i) the pinned set is KEPT even though it alone exceeds the budget" \
+    || no "(i) the pinned set was evicted when nothing else could be freed — the ping-pong is back"
+grep -q '^ripwire: cache ' "$TMP4/run.err" 2>/dev/null && ok "(i) the over-budget pinned set is said once on stderr" \
+    || { no "(i) the pinned set exceeded the budget with no disclosure"; cat "$TMP4/run.err"; }
+errlines4="$( wc -l < "$TMP4/run.err" | tr -d ' ' )"
+[ "$errlines4" -eq 1 ] && ok "(i) exactly ONE stderr line" || no "(i) expected 1 stderr line, got $errlines4"
+
+# ---- (j) nothing evicted → ZERO stderr bytes -------------------------------------------------------
+# The disclosure must be conditional, or every warm run in every gate that compares stderr grows a line.
+TMP5="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4" "$TMP5"' EXIT
+CB5="$TMP5/cachebase"; CD5="$CB5/ripwire"; mkdir -p "$CD5"
+R5="$TMP5/repo"; mkdir -p "$R5"
+printf 'int quiet( void )\n{\n    return 1;\n}\n' > "$R5/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >/dev/null 2>/dev/null
+printf 'int quiet2( void )\n{\n    return 2;\n}\n' >> "$R5/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >"$TMP5/run.xml" 2>"$TMP5/run.err"
+rc6=$?
+[ "$rc6" -eq 0 ] && ok "(j) run exits 0" || no "(j) run exited $rc6"
+[ ! -s "$TMP5/run.err" ] && ok "(j) a sweep that evicts nothing writes ZERO bytes to stderr" \
+    || { no "(j) stderr is not empty on a no-eviction run — the disclosure is unconditional"; cat "$TMP5/run.err"; }
+
 
 [ "$fail" -eq 0 ] && echo "evictioncheck: ALL PASS" || { echo "evictioncheck: SOME CHECKS FAILED"; exit 1; }
