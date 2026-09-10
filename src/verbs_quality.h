@@ -618,7 +618,10 @@ inline constexpr const char* kQdRowLegend =
     "the numeric kinds; p=\"path:line\" is the locator (root-relative; the first-sorting member for the "
     "clone kinds; omitted, never faked, when none resolves). churn= and surface= are per-kind "
     "classification facets (short-horizon-churn's self/ambient split; api-surface's new-symbol/"
-    "contract-change tier). Every row the header's gating= counter counts also carries a gating attribute "
+    "contract-change tier). BOTH churn facets are informational: what gates that kind is a symbol whose "
+    "edited lines were rewritten by 2 or more COMMITTED commits inside the window, the working edit never "
+    "counted, so churn=\"self\" alone reports that this edit touches hot content and stops there. "
+    "Every row the header's gating= counter counts also carries a gating attribute "
     "set to 1 — marked positively, never by the ABSENCE of sev or origin. ";
 
 // Emitted only when a clone-family row (duplication / new-clone-of-reused-helper) is in the document,

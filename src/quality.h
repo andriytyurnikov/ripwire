@@ -3444,10 +3444,15 @@ inline BaselineSelection selectBaseline( const std::string& root, const std::str
 //
 // The three existing gates (file churn-hot / this diff rewrites the symbol / committed thrash evidence)
 // establish that a symbol IS short-horizon churn. This pass answers a NARROWER question about the CURRENT
-// uncommitted edit specifically: does it MODIFY pre-existing (committed) lines that were themselves last
-// touched inside the churn window (SELF — genuine thrash, keep current severity), or does it only ADD new
-// lines / touch lines that predate the window (AMBIENT — the file is hot, but this particular edit isn't
-// touching hot content) — sev=minor, facet churn="ambient".
+// uncommitted edit specifically: how many COMMITTED commits inside the churn window last wrote the
+// pre-existing lines this edit modifies. One or more ⇒ the edit touches hot content, facet churn="self"; none
+// (the edit only ADDS lines, or touches lines that predate the window) ⇒ churn="ambient".
+//
+// Q-DIAL-1 (2026-09-10) — SEVERITY no longer follows that facet. BOTH facets are informational; what GATES is
+// the count reaching kShortHorizonMinCommits, i.e. "rewritten by >= 2 COMMITTED commits inside the window, the
+// working edit not counted". SELF-gates was measured at 0% precision over twelve landed commits (135 of 171
+// gating rows, audit Q1 §2b/§2d) for a structural reason: on an active branch every symbol you wrote this week
+// and are touching again modifies a line you yourself committed inside the window.
 //
 // Mechanism: `git diff --unified=0 HEAD -- path` gives zero-context unified-diff hunks
 // ("@@ -oldStart[,oldCount] +newStart[,newCount] @@"; git omits a count of 1). A hunk with oldCount==0 is a
@@ -3485,15 +3490,36 @@ inline std::string gitBlameConfigPins( const std::string& root )
     return hasFile ? " -c blame.ignoreRevsFile=" + shSingleQuote( ignoreRevs ) : std::string( " -c blame.ignoreRevsFile=" );
 }
 
-// Blame `root`'s HEAD over `relPath`'s [startLine, startLine+lineCount-1] and report whether ANY line in that
-// range was last committed at or after `windowCutoffEpoch` (the same cutoff basis gitFileCommitCountsInDayWindow
-// and gitWindowRefSha use: HEAD's own committer epoch minus the window, never wall-clock).
-inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::string& relPath,
-                                          std::uint32_t startLine, std::uint32_t lineCount, std::int64_t windowCutoffEpoch )
+// Blame `root`'s HEAD over `relPath`'s [startLine, startLine+lineCount-1] and APPEND, to `outShas`, the
+// fnv1a64 of every DISTINCT commit that last wrote a line in that range at or after `windowCutoffEpoch` (the
+// same cutoff basis gitFileCommitCountsInDayWindow and gitWindowRefSha use: HEAD's own committer epoch minus
+// the window, never wall-clock).
+//
+// Q-DIAL-1 (2026-09-10) — this used to answer a BOOL ("is any line in this range hot"), which is the SELF vs
+// AMBIENT question and nothing more. The churn kind's GATING question is narrower and needs a count: was this
+// symbol rewritten by >= kShortHorizonMinCommits COMMITTED commits inside the window, not counting the working
+// edit? One in-window commit is a single touch — the branch you are on — and gating on it made 135 of 171
+// gating rows on twelve landed commits the agent's own footprint (audit Q1 §2b/§2d). Blame runs on HEAD, so
+// the uncommitted edit is excluded BY CONSTRUCTION rather than by subtraction.
+//
+// The accumulator is a caller-owned vector rather than a return value because one symbol spans several diff
+// hunks and a commit that wrote lines in two of them must count ONCE; the caller sorts + uniques the union.
+// Ordering: blame output order, which is deterministic for a fixed HEAD + path, and the caller's sort makes
+// the count order-independent anyway. NO short-circuit any more (the bool arm could stop at the first hot
+// line): the whole range is read, which costs the rest of ONE already-spawned blame and no extra subprocess.
+//
+// PORCELAIN SHAPE, and why the sha is tracked separately from the time: `git blame --porcelain` prints a
+// commit's metadata (committer-time among it) only the FIRST time that commit appears; later lines from the
+// same commit carry the bare "<sha> <orig> <final> <n>" header alone. So the header line sets the CURRENT
+// sha and the committer-time line decides whether that sha counts — a repeat header with no metadata needs no
+// second decision, because the sha is already in (or already out of) the set.
+inline void gitBlameRangeWindowCommits( const std::string& root, const std::string& relPath,
+                                        std::uint32_t startLine, std::uint32_t lineCount, std::int64_t windowCutoffEpoch,
+                                        std::vector<std::uint64_t>& outShas )
 {
     if( startLine == 0 || lineCount == 0 )
     {
-        return false;
+        return;
     }
     const std::string cmd = "git -c core.quotepath=false" + gitBlameConfigPins( root ) + " -C " + shSingleQuote( root )
                           + " blame --porcelain -L " + std::to_string( startLine ) + ",+" + std::to_string( lineCount )
@@ -3501,9 +3527,9 @@ inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::st
     std::FILE* pipe = popen( cmd.c_str(), "r" );
     if( !pipe )
     {
-        return false;
+        return;
     }
-    bool hot = false;
+    std::uint64_t curSha = 0;
     char buf[ 512 ];
     while( std::fgets( buf, sizeof( buf ), pipe ) )
     {
@@ -3518,16 +3544,19 @@ inline bool gitBlameRangeHasWindowCommit( const std::string& root, const std::st
             && ( ln.size() == 40 || ln[40] == ' ' );
         if( isHeaderSha )
         {
-            continue; // the sha itself carries no date — wait for its committer-time line
+            curSha = fnv1a64( ln.substr( 0, 40 ) );   // the sha itself carries no date — wait for its committer-time line
+            continue;
         }
         if( ln.rfind( "committer-time ", 0 ) == 0 )
         {
             const std::int64_t t = std::strtoll( std::string( ln.substr( 15 ) ).c_str(), nullptr, 10 );
-            if( t >= windowCutoffEpoch ) { hot = true; break; }     // one hot line is enough — short-circuit
+            if( t >= windowCutoffEpoch && curSha != 0 )
+            {
+                outShas.push_back( curSha );
+            }
         }
     }
     pclose( pipe );
-    return hot;
 }
 
 // One zero-context unified-diff hunk, in the two coordinate systems the SELF test needs: the OLD-side range
@@ -3544,7 +3573,7 @@ static_assert( sizeof( DiffHunk ) == 16, "DiffHunk is a 4×u32 POD" );
 
 // P3 (r27) — the RUN-SCOPED hunk memo. `git diff --unified=0 HEAD -- <path>` is a pure function of (HEAD,
 // working tree), both FIXED for the life of one --quality-delta call (the code's own section comment says so),
-// yet churnEditTouchesHotLine spawned it once PER SYMBOL: a subprocess-shim log showed EIGHT byte-identical
+// yet the churn blame pass spawned it once PER SYMBOL: a subprocess-shim log showed EIGHT byte-identical
 // spawns for a single dirty file. Caller owns the storage (house rule — views/handles at seams, no hidden
 // process-global state that a second root or a second MCP request would silently share).
 using DiffHunkMemo = HashMap<std::string, std::vector<DiffHunk>>;
@@ -3611,17 +3640,26 @@ inline const std::vector<DiffHunk>& diffHunksMemoized( DiffHunkMemo& memo, const
     return memo.emplace( relPath, gitDiffHunksVsHead( root, relPath ) ).first->second;
 }
 
-// Does the CURRENT uncommitted edit to `relPath` (vs HEAD) modify any pre-existing line that overlaps the
-// symbol's current [symStart, symStart+symLoc-1] span AND was itself last committed inside the window? See the
-// section comment above for the full mechanism. `symStart`/`symLoc` come straight from the working-tree
-// Symbol (s.line / s.loc). `memo` is the caller-owned per-run hunk cache (P3).
-inline bool churnEditTouchesHotLine( DiffHunkMemo& memo, const std::string& root, const std::string& relPath,
-                                     std::uint32_t symStart, std::uint32_t symLoc, std::int64_t windowCutoffEpoch )
+// HOW MANY DISTINCT in-window COMMITS last wrote the pre-existing lines that the CURRENT uncommitted edit to
+// `relPath` (vs HEAD) modifies inside the symbol's [symStart, symStart+symLoc-1] span. See the section comment
+// above for the full mechanism. `symStart`/`symLoc` come straight from the working-tree Symbol (s.line /
+// s.loc). `memo` is the caller-owned per-run hunk cache (P3).
+//
+// Q-DIAL-1: the two facts the churn kind reads off this ONE number, so they cannot drift apart —
+//   >= 1  the edit touches hot content at all  → churn="self" (informational; it was the GATING rule until
+//         2026-09-10, and it is the agent's own edit window on any active branch);
+//   >= kShortHorizonMinCommits  the lines were rewritten by that many COMMITTED commits inside the window,
+//         the working edit excluded (blame is on HEAD) → this is the rewrite-thrash the kind exists to name,
+//         and the only form of it that gates.
+// 0 (no hunk, no git, no blame) stays AMBIENT, the degrade that never inflates severity on missing evidence.
+inline std::uint32_t churnEditWindowCommitCount( DiffHunkMemo& memo, const std::string& root, const std::string& relPath,
+                                                 std::uint32_t symStart, std::uint32_t symLoc, std::int64_t windowCutoffEpoch )
 {
     if( symStart == 0 )
     {
-        return false;
+        return 0;
     }
+    std::vector<std::uint64_t> shas;
     const std::uint32_t symEnd = symStart + ( symLoc > 0 ? symLoc - 1 : 0 );
 
     for( const DiffHunk& h : diffHunksMemoized( memo, root, relPath ) )
@@ -3654,12 +3692,11 @@ inline bool churnEditTouchesHotLine( DiffHunkMemo& memo, const std::string& root
             continue; // this hunk falls outside the symbol
         }
 
-        if( gitBlameRangeHasWindowCommit( root, relPath, h.oldStart, h.oldCount, windowCutoffEpoch ) )
-        {
-            return true;                                             // one hot line is enough — short-circuit
-        }
+        gitBlameRangeWindowCommits( root, relPath, h.oldStart, h.oldCount, windowCutoffEpoch, shas );
     }
-    return false;
+    std::sort( shas.begin(), shas.end() );
+    shas.erase( std::unique( shas.begin(), shas.end() ), shas.end() );   // a commit spanning two hunks of one symbol counts ONCE
+    return std::uint32_t( shas.size() );
 }
 
 // one reported regression (something the change made WORSE).
@@ -5860,7 +5897,7 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                 // B10.2d — SELF-vs-AMBIENT window cutoff, same basis as gates 1/3 (HEAD's own committer epoch
                 // minus the window, never wall-clock). A failed lookup (should not happen here since refOk
                 // already proved resolvable history, but kept defensive) leaves churnCutoffEpoch==0, which
-                // degrades every symbol below to AMBIENT (churnEditTouchesHotLine is gated on `> 0`).
+                // degrades every symbol below to AMBIENT (churnEditWindowCommitCount is gated on `> 0`).
                 std::int64_t churnCutoffEpoch = 0;
                 {
                     const std::string epochStr = gitOneLine( std::string( root ), "log -1 --format=%ct HEAD 2>/dev/null" );
@@ -5928,13 +5965,23 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                     }
 
                     // B10.2d: SELF vs AMBIENT — does THIS diff modify a pre-existing line that was itself
-                    // last committed inside the window? See the section comment above churnEditTouchesHotLine.
-                    const bool self = churnCutoffEpoch > 0
-                                    && churnEditTouchesHotLine( churnHunkMemo, std::string( root ),
-                                                                std::string( relForHash( ing.files[ s.fileId ], root ) ),
-                                                                s.line, s.loc, churnCutoffEpoch );
+                    // last committed inside the window? See the section comment above churnEditWindowCommitCount.
+                    // Q-DIAL-1 — ONE blame-derived number decides both the facet and the severity (see
+                    // churnEditWindowCommitCount): >=1 in-window commit on the edited lines is SELF, and it
+                    // is now INFORMATIONAL exactly as AMBIENT already was; >= kShortHorizonMinCommits is the
+                    // rewrite-thrash that gates. Measured on twelve LANDED commits of this repo (audit Q1
+                    // §2b): the old "SELF gates" rule fired 135 of 171 gating rows, 0% of them a finding a
+                    // reviewer would act on, because on an active branch the symbol you wrote this week and
+                    // are touching again is churn="self" by construction.
+                    const std::uint32_t windowCommits = churnCutoffEpoch > 0
+                                                      ? churnEditWindowCommitCount( churnHunkMemo, std::string( root ),
+                                                                                    std::string( relForHash( ing.files[ s.fileId ], root ) ),
+                                                                                    s.line, s.loc, churnCutoffEpoch )
+                                                      : 0u;
+                    const bool self  = windowCommits > 0;
+                    const bool gates = windowCommits >= kShortHorizonMinCommits;
                     regs.push_back( { "short-horizon-churn", g.canonId[i], 0, commitCounts[ s.fileId ], key,
-                                      !self, self ? "self" : "ambient", false } );   // now = window commit count on the file; origin: ALWAYS preexisting (gate 2 above required a baseline body)
+                                      !gates, self ? "self" : "ambient", false } );   // now = window commit count on the file; origin: ALWAYS preexisting (gate 2 above required a baseline body)
                     stampLoc( i );
                 }
             }
