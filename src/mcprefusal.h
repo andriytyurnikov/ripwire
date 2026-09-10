@@ -1000,7 +1000,10 @@ inline constexpr McpVerbFields kMcpVerbFields[] = {
     { "connect",                  "path paths symbols radius legend" },
     { "explore",                  "path paths task budget_tokens partition legend" },
     { "from_trace",               "path paths trace budget_tokens legend" },
-    { "edit_check",               "path paths symbol new_body legend" },
+    // 2026-09-10: limit/offset are DECLARED here because the verb now HONORS them (mcpPageArgs -> the
+    // unflagged-row window in editcheck.h), the same rule the `impact`/`uses` rows above state. They
+    // page the CONTEXT rows only; the flagged callers this verb exists to name are never windowed.
+    { "edit_check",               "path paths symbol new_body limit offset legend" },
     { "whereis",                  "path symbol kind limit offset legend" },
     { "stray_content",            "path kind limit offset legend" },
     { "flags",                    "path kind symbol legend" },

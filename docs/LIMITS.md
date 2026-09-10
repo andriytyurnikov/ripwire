@@ -105,7 +105,7 @@ Discloses: **none**
 
 ### `src/cli.h`
 
-Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `untested_capped`
+Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
