@@ -46,8 +46,8 @@ namespace rw
 
 // ── time-window scope for the churn/co-change miners (--since=REV|DATE) ──────────────────────────
 
-// The resolved form of a --since value: EITHER a revision boundary (git log REV.. — deterministic,
-// used by the det-gate) OR a date passed straight through to `git log --since=DATE` (a git
+// The resolved form of a --since value: EITHER a revision boundary (git log <sha>.., the revision resolved to its
+// commit — deterministic, used by the det-gate) OR a date passed straight through to `git log --since=DATE` (a git
 // approxidate like "2 weeks ago" — NOT deterministic across wall-clock days, by construction; that
 // is inherent to a relative-date window, not a bug here). `active=false` means "no scoping" — either
 // the caller passed no --since at all, or the value didn't resolve to anything git accepts, in which
@@ -56,15 +56,19 @@ namespace rw
 struct SinceScope
 {
     bool        active = false;   // false → caller uses its existing default window (degrade / no --since)
-    bool        isRev  = true;    // true → `revBoundary` is a commit-ish; false → `sinceDate` is a git approxidate
-    std::string revBoundary;      // e.g. "HEAD~20" or a tag — used as `git log <revBoundary>..`
+    bool        isRev  = true;    // true → `baselineSha` is the commit the window starts after; false → `sinceDate` is a git approxidate
     std::string sinceDate;        // e.g. "2 weeks ago" — used as `git log --since=<sinceDate>`
     // N4 (capture-audit verify-wave1 2026-09-04): the BASELINE COMMIT this value names — a revision is its own
     // sha, a date is the newest commit at or before it — EMPTY when the history never reaches it (a date before
-    // the first commit). The window hosts (--hotspots/--cochange/--rank-by=churn) never read it: 1999.. is all
-    // of history and an honest window. The baseline host (--slice compares against a commit) needs it, and the
-    // decision that it is missing is made ONCE, in main.cpp beside the M8 validation, from this field — so a
-    // fifth consumer cannot resolve the same value by a different rule (slicediff.h used to resolve it itself).
+    // the first commit). A window host walking a DATE never reads it: 1999.. is all of history and an honest
+    // window. The baseline host (--slice compares against a commit) needs it, and the decision that it is missing
+    // is made ONCE, in main.cpp beside the M8 validation, from this field — so a fifth consumer cannot resolve the
+    // same value by a different rule (slicediff.h used to resolve it itself).
+    // For a REVISION it is also the only spelling of the boundary git is ever handed (`git log <sha>..`, see
+    // sinceLogArgs). A `revBoundary` beside it used to keep the caller's RAW string, and that is what reached git
+    // log as a positional argv entry — shell-quoted, but git reads a leading '-' as an option whatever the quoting.
+    // Nothing displayed it (window= and <since rev=> print cfg.since), so it is gone rather than left for a future
+    // caller to hand git by mistake. Invariant: active && isRev ⇒ isBareCommitSha( baselineSha ).
     std::string baselineSha;
 };
 
@@ -206,15 +210,6 @@ inline std::string sinceUnresolvedRefusal( std::string_view value )
            "'2 weeks ago', yesterday)";
 }
 
-// Resolve a raw --since=VALUE into a SinceScope. Tries VALUE as a revision first (`git rev-parse
-// --verify --quiet VALUE^{commit}` — the ^{commit} peel rejects anything that isn't a committish, e.g.
-// a blob/tree hash or a malformed ref); a hit is unambiguous and deterministic, so it wins. Otherwise,
-// if VALUE passes the coarse looksLikeDate() gate, pass it through verbatim as a `--since=DATE` (git's
-// own approxidate does the real parsing — relative forms are inherently wall-clock-relative, which is
-// expected and documented, not a determinism bug). Anything else (no git / not a repo / VALUE is
-// neither a resolvable rev nor date-shaped) degrades to `active=false` + one stderr note; callers then
-// fall back to their pre-flag default window, so a bad --since can never crash or silently scope to
-// zero commits without explanation.
 // popen a shell command and return its trimmed stdout ("" on any failure — never crashes). THE one copy of the
 // popen-trim shape in the tool: the quality.h git one-liners, the doctor probes, crossref.h and binstale.h all
 // reach it as quality::popenTrimmed (a using-declaration of this). It lives HERE — the lower header, which
@@ -245,6 +240,65 @@ inline std::string popenTrimmed( const std::string& cmd )
     return out;
 }
 
+// ─── r27 (Lane C routing) — the OBJECT-NAME gate on every token that reaches a git argv ────────────────
+//
+// `shSingleQuote` stops SHELL injection, but the token still arrives as its own argv ENTRY, and git reads a
+// leading `-` as an OPTION. Lane C's P0.1 defect is the proof this matters: `--pr-context=--output=FILE`
+// reached `git diff` as an option and TRUNCATED a file outside the repo, exit 0. The durable defense is not
+// quoting — it is refusing anything that is not a bare object name.
+//
+// A commit sha is 40 (SHA-1) or 64 (SHA-256) lowercase hex and NOTHING else: it cannot begin with `-`, cannot
+// contain a path separator, and cannot spell an option. Checking that SHAPE is a complete defense on its own
+// and needs no subprocess, so it is applied at both ends — at the trust boundary where an untrusted value is
+// READ (quality.h's readBaselineHeadSha, whose input is a COMMITTED, therefore clone-attacker-influenceable
+// sidecar) and again at the SINK (quality.h's gitIsAncestor), because a future caller will not remember the
+// boundary. crossref::isBlobSha delegates here: an object name is an object name, blob or commit.
+//
+// This pair lived in quality.h until 2026-09-10 and moved down when resolveSinceScope needed it (the same move
+// popenTrimmed made); quality.h's using-declarations keep every quality::isBareCommitSha / gitResolveCommitSha
+// call site spelled as it was.
+inline bool isBareCommitSha( std::string_view s ) noexcept
+{
+    if( s.size() != 40 && s.size() != 64 )
+    {
+        return false;
+    }
+    for( char c : s )
+    {
+        if( !std::isxdigit( static_cast<unsigned char>( c ) ) )
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Resolve `ref` to a concrete commit sha, or "" if it does not resolve to one. Belt AND braces: the ref is
+// refused outright if it could be read as an option, and the ANSWER must itself be a bare object name — a
+// `rev-parse` that echoes something else (a path, an error, a multi-line answer, or the `^<sha>` that
+// `rev-parse --verify` prints for `^REF`) is not trusted. Callers that hand a token to git should hand THIS
+// result, never the caller's own string.
+inline std::string gitResolveCommitSha( const std::string& root, const std::string& ref )
+{
+    if( ref.empty() || ref[0] == '-' )
+    {
+        return {};
+    }
+    const std::string out = popenTrimmed( "git -c core.quotepath=false -C " + shSingleQuote( root )
+                                          + " rev-parse --verify --quiet " + shSingleQuote( ref + "^{commit}" ) + " 2>/dev/null" );
+    return isBareCommitSha( out ) ? out : std::string{};
+}
+
+// Resolve a raw --since=VALUE into a SinceScope. A value beginning with '-' is refused before any git call — git
+// reads a leading '-' as an OPTION whatever the quoting, and no ref name can begin with one. Otherwise VALUE is
+// tried as a revision first, through gitResolveCommitSha (`rev-parse --verify --quiet VALUE^{commit}` — the peel
+// rejects anything that isn't a committish, and an answer that is not a bare sha is not trusted); a hit is
+// unambiguous and deterministic, so it wins, and its sha — never VALUE — is what git log is handed (sinceLogArgs).
+// Otherwise, if VALUE passes the coarse looksLikeDate() gate, pass it through verbatim as a `--since=DATE` (git's
+// own approxidate does the real parsing — relative forms are inherently wall-clock-relative, which is expected
+// and documented, not a determinism bug). Anything else (no git / not a repo / VALUE is neither a resolvable rev
+// nor date-shaped) returns `active=false`, which main.cpp refuses once for every host — so a bad --since can
+// never crash or silently scope to zero commits without explanation.
 inline SinceScope resolveSinceScope( const std::string& root, std::string_view value )
 {
     SinceScope scope;
@@ -255,17 +309,24 @@ inline SinceScope resolveSinceScope( const std::string& root, std::string_view v
 
     const std::string val( value );
 
-    // 1) try as a revision boundary — deterministic, preferred when it resolves. The peeled sha rev-parse prints
-    //    IS the baseline (N4); before N4 only its EXISTENCE was read. popenTrimmed is the G3 reader
-    //    (readByteSafeLine) every git pipe in this header uses — gitCommandLines is defined further down.
+    // 0) option-shaped → refused before EITHER step below can hand it to git. The revision step alone would not
+    //    cover it: `-17 days ago` passes looksLikeDate, and reached `git rev-list --before=` and `git log --since=`
+    //    at exit 0 under window="-17 days ago". Inactive is main.cpp's unresolvable-value refusal, exactly as for
+    //    any other value that names nothing (sincecheck.sh S3).
+    if( val[0] == '-' )
     {
-        const std::string sha = popenTrimmed( "git -C " + shSingleQuote( root )
-                                              + " rev-parse --verify --quiet " + shSingleQuote( val + "^{commit}" ) + " 2>/dev/null" );
+        return scope;   // active=false
+    }
+
+    // 1) try as a revision boundary — deterministic, preferred when it resolves. The peeled sha IS the baseline
+    //    (N4) and the boundary git log is handed. Resolved by THE shared resolver, so `^HEAD~3` — which
+    //    `rev-parse --verify` answers with `^<sha>` at rc 0 — is not a revision here (sincecheck.sh S4).
+    {
+        const std::string sha = gitResolveCommitSha( root, val );
         if( !sha.empty() )
         {
             scope.active      = true;
             scope.isRev       = true;
-            scope.revBoundary = val;
             scope.baselineSha = sha;
             return scope;
         }
@@ -294,7 +355,7 @@ inline SinceScope resolveSinceScope( const std::string& root, std::string_view v
     return scope;   // active=false
 }
 
-// Build the `git log` window arguments for a SinceScope: either a `LOW..` revision-range prefix (REV
+// Build the `git log` window arguments for a SinceScope: either a `<sha>..` revision-range prefix (REV
 // form — deterministic) or a `--since=DATE ` flag (date form — wall-clock-relative by construction).
 // `inactive` (scope.active==false) returns the caller-supplied fallback window verbatim, so every call
 // site's pre-flag behavior is reproduced byte-for-byte when --since is absent or unresolvable.
@@ -306,7 +367,11 @@ inline std::string sinceLogArgs( const SinceScope& scope, const char* fallbackSi
     }
     if( scope.isRev )
     {
-        return shSingleQuote( scope.revBoundary + ".." ) + " ";   // positional rev-range, not a --since flag
+        // The RESOLVED commit, never the caller's string: this is a positional argv entry, and a bare sha cannot
+        // begin with '-', so it can only ever be read as a revision range (sincecheck.sh S2). resolveSinceScope is
+        // the one producer of an active REV scope and stores nothing but a bare sha there.
+        VERIFY( isBareCommitSha( scope.baselineSha ) );
+        return shSingleQuote( scope.baselineSha + ".." ) + " ";   // positional rev-range, not a --since flag
     }
     return "--since=" + shSingleQuote( scope.sinceDate ) + " ";
 }
@@ -1319,7 +1384,7 @@ inline void mapChurnCountsOntoFiles( const HashMap<std::string, std::uint32_t>& 
 //
 // Shared stream core for the per-commit changed-file-set miners: run `git log <windowArgs> --name-only`
 // and resolve each commit's paths to ingested fileIds (the ONE exact git-path join), keeping sets of
-// 1..maxFiles files. `windowArgs` is the caller-built window clause — "--since='DATE' ", "'REV..' ", or
+// 1..maxFiles files. `windowArgs` is the caller-built window clause — "--since='DATE' ", "'<sha>..' ", or
 // "-N " (trailing space required, exactly as sinceLogArgs emits). Extracted (B3) so gitCommitFileSets
 // (date/rev windows) and gitRecentCommitFileSets (last-N-commits window) share ONE parser instead of
 // cloning it; gitCommitFileSets' behavior is byte-identical to its pre-extraction form.
@@ -3041,7 +3106,8 @@ inline bool applyCoChangeBoost( const IngestResult& ing, const std::vector<std::
 // that never changes costs nothing; complex code that changes constantly is where bugs live).
 // `scope`: nullptr (default) reproduces the pre-flag `--since=<since>` window byte-for-byte; a non-null
 // active scope (CLI --since=REV|DATE, see gitmine.h resolveSinceScope) overrides it with the resolved
-// window — REV form as a deterministic `REV..` range, date form as `--since=DATE` (wall-clock-relative).
+// window — REV form as the resolved commit's deterministic `<sha>..` range, date form as `--since=DATE`
+// (wall-clock-relative).
 inline bool gitChurnCounts( const std::string& root, const rw::IngestResult& ing, std::vector<std::uint32_t>& out, const char* since, const rw::SinceScope* scope = nullptr,
                      std::uint32_t onlyRoot = UINT32_MAX )   // multi-root §5: count ONLY files of that root
 {
