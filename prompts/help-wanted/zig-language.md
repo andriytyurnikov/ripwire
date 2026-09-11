@@ -86,6 +86,14 @@ Write both numbers into the plan, per corpus and per pin.
 
 ## Zig-specific design notes
 
+**Scope — `@import` edges are STEP 5, and STEP 5 is optional.** add-a-language.md calls dependency
+edges "optional, and a separate round", and that holds here. The first PR is registration,
+definitions, calls, visibility, scaling and disclosure; resolving an `@import` specifier to a file in
+the corpus is a second round unless your plan says otherwise. **Say which one you are doing, in the
+plan, before you write anything** — three things below hang on the answer: the `fs.openFile()` edge,
+the case-collision import fixture, and acceptance criterion 4. Deferring is fine. Leaving it unstated
+is not, because a reader cannot tell a deferred edge from a missing one.
+
 **Registration.**
 
 - Append `Lang::Zig` at the **end** of `enum class Lang` in `src/model.h`.
@@ -105,8 +113,11 @@ Write both numbers into the plan, per corpus and per pin.
   conventional extraction module — and follow how the existing extractors build scoped symbol ids
   rather than inventing a new scheme.
 - **Files are values too.** `const fs = @import("fs.zig");` binds that file's top-level declarations
-  to `fs`, so `fs.openFile()` is a call into `fs.zig`. This is the resolver's most valuable edge.
-  Make it the first thing a decoy fixture attacks.
+  to `fs`, so `fs.openFile()` is a call into `fs.zig`. This is the resolver's most valuable edge —
+  and it *is* `@import` resolution, so it is STEP 5 and it follows **Scope** above. In this PR: make
+  it the first thing a decoy fixture attacks. Deferred: `fs.openFile()` binds **nothing** — no edge,
+  and above all no guess at a same-named definition somewhere else in the corpus — and the fixture
+  pins that zero, with the blind spot disclosed alongside the others.
 - **A function that returns `type` is a type constructor** (`fn ArrayList(comptime T: type) type`).
   A call to one is both a call edge and a type use. If the extraction cannot tell the two apart,
   disclose that. Do not guess.
@@ -138,8 +149,10 @@ unions, `try` and `catch` are control flow, not calls.
   repository's lone definition of that name, and one method gained 2,107 false callers on a real
   corpus.
 
-**Dependency edges (STEP 5, a separate round).** `@import` takes a string literal that names a
-module, a `.zig` source file, or a `.zon` data file (language reference, `@import`).
+**Dependency edges (STEP 5, optional and a separate round — see Scope).** `@import` takes a string
+literal that names a module, a `.zig` source file, or a `.zon` data file (language reference,
+`@import`). The four rules below apply **only if STEP 5 is in this PR**; deferred, `@import` yields no
+edge at all, external or otherwise, and the PR's deferred-work list says so.
 
 - **Modules.** `@import("std")` and `@import("builtin")` are modules, not files. Count them as
   external.
@@ -209,7 +222,8 @@ crash or memory-safety fixes, carried as `third_party/patches/<dep>/NNN-name.pat
 - **A memo whose key is narrower than its inputs** (add-a-language TRAPS). Zig resolves `a.b.c` by
   walking containers. If you memoize that walk, key the memo on the whole chain.
 - **A case-insensitive filesystem** answers `@import("Parser.zig")` with `parser.zig`. Plant the
-  decoy.
+  decoy either way: with STEP 5 it proves the specifier resolved through the corpus index and not by
+  a case-folded name; without STEP 5 it proves that nothing bound at all.
 - **Parser versions collide across PRs.** `kParserVer` and `kIngestParserVerMirror` move in the same
   commit, and in-flight language PRs claim versions too; #126 records two collisions. Take the next
   free value on the tree you merge onto, not the one you branched from.
@@ -230,7 +244,9 @@ crash or memory-safety fixes, carried as `third_party/patches/<dep>/NNN-name.pat
 4. **A red-first gate.** `test/zigcheck.sh`, with fixtures in `test/zigfix/`. The fixtures are
    adversarial:
    - a decoy method name in another container;
-   - a case-collision import;
+   - a case-collision import — with STEP 5, the specifier resolves through the corpus index and the
+     wrong-case file is not the answer; without STEP 5, no `@import` binds anything and the gate pins
+     that zero as the disclosed behaviour, not as a silent absence;
    - two `main`s;
    - a builtin named like a user function;
    - a construct the grammar degrades on, with its disclosed behaviour.
@@ -243,7 +259,9 @@ crash or memory-safety fixes, carried as `third_party/patches/<dep>/NNN-name.pat
    `kParserVer` and its mirror, `test/qschemetrip.hash` and `test/printf_parity.manifest` handled as
    add-a-language STEP 4 describes.
 8. **Disclosure.** The README Languages paragraph and count. The blind spots stated in the gate header
-   and in the output.
+   and in the output. If STEP 5 is deferred, "`@import` is not resolved to a file" is one of those
+   blind spots and is named in all three places — the gate header, the README paragraph and the PR —
+   and no `@import` produces an edge or a guess in the meantime.
 9. **STEP 8's suite** green in the foreground.
 
 ---
