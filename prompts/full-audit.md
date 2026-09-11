@@ -66,7 +66,11 @@ Generate adversarial files per language and run them through `asan/ripwire` with
 - merge-conflict markers;
 - one enormous initializer.
 
-A crash is HIGH. Silent corruption only shows under the sanitizer.
+A crash is HIGH. Silent corruption is the other half, and the sanitizer sees only the part of it that
+is a memory-safety violation — the out-of-bounds write, the use-after-free. A wrong count, a dropped
+row, a mis-sorted list stays in bounds and exits 0 under the sanitizer exactly as it does in the plain
+build. Catch those with an independent oracle on the same input — the conservation identity below, a
+second verb that has to agree, a byte-identical re-run — and run it in the plain build too.
 
 **Every omission counted.** Wherever a loop can drop an item — a resolver, a filter, a cap, a paging
 cut — ask two questions: does every iteration end in exactly one named outcome, and do the outcomes sum
