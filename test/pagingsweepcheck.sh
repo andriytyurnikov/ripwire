@@ -439,6 +439,7 @@ refuses "--stray-content --abi --limit=3"  "--callers" --stray-content --abi --l
 # and the honoring set really honors: every verb the message names must exit 0 under --limit=3.
 for v in --lint --hotspots --callers=escapeXml --callees=runUses --tree --deps --cochange --owners \
          --clones --doc-drift --communities --whereis=rankGraph --grep=NodeId --impact=escapeXml --uses=escapeXml \
+         --flags --situ=src/situ.h \
          --seams --zoom --external-surface --dead-code --mentions=main --stray-content; do
     if "$BIN" "$ROOT" $v --limit=3 --cache="$ROOTCACHE" >/dev/null 2>"$TMP/k2.err"; then
         ok "honoring set: $v --limit=3 exits 0"
@@ -631,6 +632,15 @@ TABLE = {
     # <u> rows, and for the same reason: one bare shown= could not describe a listing whose other half
     # deliberately prints outside the window.
     "--edit-check":         ( [ "--edit-check=escapeXml" ], "unflagged" ),
+    # 2026-09-10 (C1 F-07/F-10): --flags' per-gate <read> sites and --flip's six context listings page, and
+    # so do --situ's blast-radius and co-change sections. Neither root carries a bare shown=/capped= — every
+    # cut is disclosed on the CHILD that was cut (rule 6's secondary-listing pair), so the root is uncut by
+    # construction and this arm's "cut nothing ⇒ the quintet must be absent" branch is the one that applies.
+    "--flags":              ( [ "--flags" ], None ),
+    # --situ is the FIRST PROSE member of the honoring set: it has no XML root, so it spells the same
+    # shown=/total=/capped= facts in its section headers. Parsing a root element out of it would fail for a
+    # reason that has nothing to do with paging, so it is checked as prose below instead.
+    "--situ":               ( [ "--situ=src/situ.h" ], "PROSE" ),
 }
 fail = 0
 missing = [ v for v in universe if v not in TABLE ]
@@ -645,6 +655,21 @@ for verb in universe:
     if verb not in TABLE: continue
     args, primary = TABLE[ verb ]
     doc = subprocess.run( [ BIN, ROOT ] + args, capture_output=True, text=True, errors="replace" ).stdout
+    if primary == "PROSE":
+        # the prose dialect of rules 1+3: a cut section states shown=/total=/capped=1 inline, and nothing
+        # states capped=0. There is no window to page from, so the quintet does not apply — but the
+        # disclosure still has to be there and still has to be arithmetic.
+        cutSections = re.findall( r'shown=(\d+) total=(\d+) capped=1', doc )
+        if 'capped=0' in doc:
+            print( f"  FAIL  (L) {verb}: prose report emits capped=0 — a disclosure that fired to say nothing was cut" ); fail = 1
+        elif not cutSections:
+            print( f"  ..    (L) {verb}: prose report cut nothing on this corpus" )
+        elif any( int( sh ) >= int( to ) for sh, to in cutSections ):
+            print( f"  FAIL  (L) {verb}: prose report says capped=1 with shown >= total: {cutSections}" ); fail = 1
+        else:
+            checked += 1
+            print( f"  PASS  (L) {verb}: {len(cutSections)} cut prose section(s), each shown < total with capped=1" )
+        continue
     lead = LEAD.match( doc )
     legend = lead.group( 0 ) if lead else ""
     body = doc[ len( legend ): ]

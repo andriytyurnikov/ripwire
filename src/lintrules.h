@@ -30,6 +30,7 @@
 
 #include "model.h"              // Lang enum
 #include "ingest.h"             // AstQuerySpec, AstMatch, astQuery, IngestResult
+#include "docparse.h"           // detail::readWholeFile — THE canonical whole-file byte read; never re-rolled
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT (no-op in release; the fprintf below is the visible line)
 
 namespace rw
@@ -1060,10 +1061,122 @@ inline constexpr std::array<ErrorMaskRule, 7> kErrorMaskRules = { {
     { "(call_expression function: (member_expression property: (property_identifier) @p (#eq? @p \"then\"))  arguments: (arguments (_) (arrow_function body: (statement_block) @m)))", "swallow-then-arrow",  true  },  // .then(_, ()=>{})
 } } ;
 
-// Is the collapsed source of a captured block "empty" — only braces and whitespace? astQuery returns the
+// Does the captured block SWALLOW — is there nothing in it that could handle the error? astQuery returns the
 // @m span text with \n/\r/\t already flattened to spaces and truncated to 120 chars; an empty `{}` (even
 // `{  }` / `{ }`) is far under 120, so the collapsed check is exact for the shapes we target. Deterministic.
-inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+//
+// Q-DIAL-6 (2026-09-10) — A COMMENT IS NOT A HANDLER. This asked one question, "is the collapsed text exactly
+// {}", and audit lane Q1's synthetic S2b — `catch( const std::exception& ) { /* ignore */ }` — walked straight
+// past it, as does every `// intentionally ignored`. The comment is where the intent is WRITTEN DOWN; it is
+// the most likely spelling of a deliberate swallow, and it was the one spelling the kind could not see. A
+// block whose only content is a comment counts. Measured on 40 replayed commits of this repo: +0 rows — the
+// widening finds nothing in this history and turns S2b from a silent miss into a reported row.
+//
+// TWO FLOORS, stated. (1) astQuery truncates the span at 120 characters, so a comment-only block longer than
+// that does not end in '}' here and is not recognized — a miss, never a false hit. (2) The scan is over
+// flattened text, so a ';' or a '{' anywhere inside means "a statement survives" and the block is not a
+// swallow, which is what keeps `catch { log( x ); }` out; a semicolon inside the comment PROSE therefore also
+// keeps the block out. Both directions of the imprecision lose recall rather than manufacturing a finding.
+// The @p capture filter in findErrorMasking depends on a bare identifier ("catch"/"then") answering false
+// here, and it still does: no braces, no match.
+// The comment-only half, factored out so neither this test nor its caller crosses a complexity bar: is
+// `collapsed` a brace pair whose entire interior is one comment? Called only after the exact-`{}` test has
+// already failed.
+inline bool errorMaskBlockIsCommentOnly( std::string_view collapsed ) noexcept
+{
+    std::string_view t = collapsed;
+    while( !t.empty() && ( t.front() == ' ' || t.front() == '\t' ) ) { t.remove_prefix( 1 ); }
+    while( !t.empty() && ( t.back()  == ' ' || t.back()  == '\t' ) ) { t.remove_suffix( 1 ); }
+    if( t.size() < 2 || t.front() != '{' || t.back() != '}' )
+    {
+        return false;
+    }
+    const std::string_view mid = t.substr( 1, t.size() - 2 );
+    if( mid.find( ';' ) != std::string_view::npos || mid.find( '{' ) != std::string_view::npos )
+    {
+        return false;   // a statement survives inside it — not a swallow
+    }
+    std::size_t first = std::string_view::npos;
+    for( std::string_view opener : { std::string_view( "//" ), std::string_view( "/*" ), std::string_view( "#" ) } )
+    {
+        const std::size_t at = mid.find( opener );
+        if( at != std::string_view::npos && ( first == std::string_view::npos || at < first ) ) { first = at; }
+    }
+    if( first == std::string_view::npos )
+    {
+        return false;   // content that is not a comment at all
+    }
+    return mid.substr( 0, first ).find_first_not_of( " \t" ) == std::string_view::npos;
+}
+
+// ── the EXACT answer, over the block's UNFLATTENED bytes (CodeRabbit #127 / 3985249701) ─────────────
+// The test above is a PREFILTER and nothing more: it proves a comment OPENS the interior, never that the
+// comment CLOSES it. `catch( e ) { /* ignore */ recover() }` is valid JavaScript, holds no ';' and no inner
+// '{', and opens with a comment — so the prefilter said "comment-only" about a block that handles the
+// error, and the kind manufactured a finding. That is the one direction §Q-DIAL-6's own floors forbid.
+//
+// It cannot be fixed on the flattened text. astQuery scrubs '\n' to ' ' (makeAstMatch, the ONE cut), and a
+// `//` comment ends at a newline that is no longer there: `{ // ignore <NL> recover() }` and
+// `{ // ignore recover() }` are the same 23 bytes after the scrub, and the first is a handler while the
+// second is a swallow. So the confirm reads the block's RAW bytes and asks the only question that decides
+// it — does comment text consume the WHOLE interior?
+//
+//   /* … */   spans to its closer; an unterminated one is NOT comment-only (it cannot be, the block closed)
+//   //  #     run to the end of THEIR line — the fact the scrub destroyed
+//   between   only spaces, tabs, CR and LF
+//
+// `raw` is the block's bytes cut to exactly the length astQuery cut its text to, so the 120-byte floor
+// §Q-DIAL-6 states is preserved character for character: this confirm can only REMOVE rows, never add one.
+inline bool errorMaskCommentConsumesBlock( std::string_view raw ) noexcept
+{
+    const auto isSpace = []( char c ) noexcept { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+
+    std::string_view t = raw;
+    while( !t.empty() && isSpace( t.front() ) ) { t.remove_prefix( 1 ); }
+    while( !t.empty() && isSpace( t.back()  ) ) { t.remove_suffix( 1 ); }
+    if( t.size() < 2 || t.front() != '{' || t.back() != '}' )
+    {
+        return false;
+    }
+
+    const std::string_view mid = t.substr( 1, t.size() - 2 );
+    std::size_t            at  = 0;
+    while( at < mid.size() )
+    {
+        if( isSpace( mid[ at ] ) )
+        {
+            ++at;
+            continue;
+        }
+        if( mid.compare( at, 2, "/*" ) == 0 )
+        {
+            const std::size_t close = mid.find( "*/", at + 2 );
+            if( close == std::string_view::npos )
+            {
+                return false;      // the block closed but the comment did not — not decidable as a swallow
+            }
+            at = close + 2;
+            continue;
+        }
+        if( mid.compare( at, 2, "//" ) == 0 || mid[ at ] == '#' )
+        {
+            const std::size_t nl = mid.find( '\n', at );
+            if( nl == std::string_view::npos )
+            {
+                return true;       // the line comment runs to the end of the interior
+            }
+            at = nl + 1;
+            continue;
+        }
+        return false;              // code survives inside the block — a handler, not a swallow
+    }
+    return true;
+}
+
+// A brace pair with nothing at all between them. Split out from errorMaskBlockIsEmpty so the caller can
+// tell WHICH half answered: this one needs no confirm (there is no comment to mis-read), the comment half
+// does.
+inline bool errorMaskBlockIsBareBraces( std::string_view collapsed ) noexcept
 {
     std::string stripped;
     for( char c : collapsed )
@@ -1074,6 +1187,44 @@ inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
         }
     }
     return stripped == "{}";
+}
+
+// THE PREFILTER, over astQuery's flattened span text. Cheap and deliberately over-accepting on its comment
+// half — findErrorMasking confirms every row this admits through a comment against the block's RAW bytes
+// (errorMaskCommentConsumesBlock). Never call this alone to decide a finding.
+inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+{
+    return errorMaskBlockIsBareBraces( collapsed ) || errorMaskBlockIsCommentOnly( collapsed );
+}
+
+// THE CONFIRM (CodeRabbit #127 / 3985249701), as its own step so findErrorMasking stays under the bars.
+// The flattened prefilter cannot see where a `//` comment ends, because astQuery scrubbed the newline
+// that ended it — so a block admitted through its COMMENT half is re-asked of the file's own bytes. A
+// bare `{}` never reaches here: there is no comment there to mis-read, and skipping it keeps the cost at
+// "one read per file that has a comment-shaped candidate", a handful of files rather than the corpus.
+//
+// `m.text.size()` IS the cut length makeAstMatch used (the scrub is byte-for-byte), so the raw slice is
+// the same span — the 120-byte floor §Q-DIAL-6 discloses is preserved exactly. `memoFileId`/`memoBytes`
+// are the caller's ONE-ENTRY memo: astQuery already sorts (file, startByte, tag), so one slot holds a
+// whole file's candidates. An UNREADABLE or MOVED file answers false — a finding that cannot be
+// substantiated is not reported. Never throws.
+inline bool errorMaskConfirmOnDisk( const IngestResult& ing, const AstMatch& m,
+                                    std::uint32_t& memoFileId, std::string& memoBytes )
+{
+    if( m.fileId != memoFileId )
+    {
+        memoFileId = m.fileId;
+        memoBytes.clear();
+        if( !docparse::detail::readWholeFile( diskPath( ing, m.fileId ), memoBytes ) )
+        {
+            DEGRADED_PATH_ALERT( "lintrules: error-mask confirm cannot re-read the block's file" );
+        }
+    }
+    if( std::size_t( m.startByte ) + m.text.size() > memoBytes.size() )
+    {
+        return false;
+    }
+    return errorMaskCommentConsumesBlock( std::string_view( memoBytes ).substr( m.startByte, m.text.size() ) );
 }
 
 // One error-masking hit: the suppressing block's file + start byte (so a caller can attribute it to the
@@ -1112,6 +1263,11 @@ inline std::vector<ErrorMaskHit> findErrorMasking( const IngestResult& ing )
     // AstMatch per CAPTURE, so a swallow rule yields both a @p hit and a @m hit. We keep only the @m block by
     // its emptiness signature: @p (a bare identifier "catch"/"then") is never "{}", and for non-emptyOnly
     // Python rules @p does not exist, so every emitted capture is the block. Route by tag → rule.
+    // one-entry raw-bytes memo for the confirm below: astQuery already sorts (file, startByte, tag), so the
+    // candidates of one file arrive together and a single slot is the whole cache.
+    std::uint32_t rawFileId = ~std::uint32_t( 0 );
+    std::string   rawBytes;
+
     for( const AstMatch& m : astQuery( ing, specs ) )
     {
         std::size_t r = 0;
@@ -1134,6 +1290,11 @@ inline std::vector<ErrorMaskHit> findErrorMasking( const IngestResult& ing )
         if( rule.emptyOnly && !errorMaskBlockIsEmpty( m.text ) )
         {
             continue; // the @p identifier capture is dropped here too (never "{}")
+        }
+        if( rule.emptyOnly && !errorMaskBlockIsBareBraces( m.text )
+            && !errorMaskConfirmOnDisk( ing, m, rawFileId, rawBytes ) )
+        {
+            continue;       // a comment OPENS the block but code follows it — that is a handler
         }
         out.push_back( { m.fileId, m.startByte, m.line, std::string( rule.id ) } );
     }
