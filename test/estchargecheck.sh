@@ -469,6 +469,65 @@ FTB="$( bytes_of "$TMP/f_tb.out" )"
     && ok "#11 A7 no --token-budget: --detail keeps its --pack-budget-bytes budget (unbudgeted bundle unshrunk)" \
     || no "#11 A7 no --token-budget: --detail was trimmed anyway — the budget bound leaked into the default path"
 
+# A7 SWEEP (PR #135 CI, 2026-09-11) — the budget must bound the document at EVERY budget, not at the one operating
+# point above. That arm went red at 5 429 B against its 5 428 B allowance when a merge moved the live src/ corpus,
+# and the main binary emits the same 5 429 bytes on the same tree, so the corpus only exposed it. The defect: the
+# ceiling ladder priced the document WITHOUT the root over_ceiling="1" (17 B) and the legend clause defining it
+# (53 B), which runForLens splices on AFTER the ladder whenever est_tokens exceeds budget_tokens. est_tokens prices
+# markup at 2.50 B/tok and the allowance is sized at 2.36 x 1.15 = 2.714 B/tok, so every bundle in that band
+# carries 70 unpriced bytes, and one the ladder fitted within 70 B of the allowance is pushed past it with no rung
+# fired. One budget on the live tree only sees that when the corpus lands a bundle in the 70 B window, so this arm
+# builds its OWN git-less corpus in $TMP and runs it from a relative path (no at=, no churn, a fixed root=, nothing
+# read from the live repo) and SWEEPS the budget in 10-token steps: the window recurs with every trimmed row
+# (~50 tokens), so a sweep this dense crosses it whatever the legend lengths are. Two shapes — the default bundle
+# and A7's own --detail=20 --with-graph. THE PROPERTY: delivered bytes <= N x 2.36 x 1.15 at exit 0, or the
+# ladder's LAST rung fired and says so (the header floor alone exceeds the budget — the one overshoot it documents).
+A7S="$TMP/a7sweep"
+mkdir -p "$A7S/corpus"
+python3 - "$A7S/corpus" <<'PYG'
+import os, sys
+out = sys.argv[1]
+for i in range( 4 ):
+    lines = []
+    for j in range( 8 ):
+        nxt = f"serializeRow{i}_{j + 1}( map, row )" if j + 1 < 8 else "0"
+        lines += [ f"// serializeRow{i}_{j}: serialize one map row into the output buffer the map writer flushes",
+                   f"int serializeRow{i}_{j}( int map, int row )", "{",
+                   f"    int acc = map + row + {i * 7 + j};",
+                   f"    for( int k = 0; k < {j + 3}; ++k )", "    {",
+                   f"        acc += k * {i + 1} - row;", "    }",
+                   f"    return acc + {nxt};", "}", "" ]
+    with open( os.path.join( out, f"mod{i}.cpp" ), "w" ) as fh:
+        fh.write( "\n".join( lines ) )
+PYG
+a7s_bad=""; a7s_badn=0; a7s_runs=0; a7s_inside_labelled=0
+for spec in "default:1200:1500:" "detail_graph:2880:3080:--detail=20 --with-graph"; do
+    s_label="${spec%%:*}"; s_rest="${spec#*:}"; s_from="${s_rest%%:*}"; s_rest="${s_rest#*:}"; s_to="${s_rest%%:*}"; s_args="${s_rest#*:}"
+    for (( N = s_from; N <= s_to; N += 10 )); do
+        # shellcheck disable=SC2086
+        ( cd "$A7S" && "$BIN" corpus --for="serialize the map" --token-budget=$N $s_args --no-cache ) >"$A7S/o.xml" 2>/dev/null
+        s_rc=$?
+        a7s_runs=$(( a7s_runs + 1 ))
+        s_b="$( bytes_of "$A7S/o.xml" )"
+        s_a="$( awk "BEGIN{printf \"%d\", $N*2.36*1.15}" )"
+        s_root="$( grep -aoE '^<ctx [^>]*>' "$A7S/o.xml" | head -1 )"
+        if [ "$s_rc" -ne 0 ] || { [ "$s_b" -gt "$s_a" ] && ! grep -aqF '[over_ceiling= is 1 on the root: the header floor' "$A7S/o.xml"; }; then
+            a7s_badn=$(( a7s_badn + 1 ))
+            [ "$a7s_badn" -le 6 ] && a7s_bad="$a7s_bad $s_label@$N=${s_b}/${s_a}B(exit $s_rc)"
+        elif [ "$s_b" -le "$s_a" ] && [ "${s_root#* over_ceiling=\"1\"}" != "$s_root" ]; then
+            a7s_inside_labelled=$(( a7s_inside_labelled + 1 ))
+        fi
+    done
+done
+[ "$a7s_badn" -eq 0 ] \
+    && ok "#11 A7 sweep: $a7s_runs budgets over a git-less corpus (default 1200..1500, --detail=20 --with-graph 2880..3080, step 10) — every document within N x 2.36 x 1.15 at exit 0, or on the ladder's disclosed last rung" \
+    || no "#11 A7 sweep: $a7s_badn of $a7s_runs budgets deliver past the allowance with no ladder rung fired (first:$a7s_bad) — a byte spliced in after the ladder priced the document"
+# control: the sweep must cross the band the defect lives in — a root that says over_ceiling="1" while the document
+# still fits the allowance (est_tokens > N at 2.50 B/tok, bytes <= 2.714 B/tok). No such budget = inert, re-anchor.
+[ "$a7s_inside_labelled" -gt 0 ] \
+    && ok "#11 A7 sweep control: $a7s_inside_labelled budget(s) carry a root over_ceiling=\"1\" INSIDE the allowance — the sweep crosses the late-label band" \
+    || no "#11 A7 sweep control: no budget carried over_ceiling=\"1\" inside the allowance — the sweep no longer reaches the est_tokens > N band, re-anchor its ranges"
+
 # A9/A10 — the header's own spliced attributes are inside the number. IDENTITY, not a band: for a bundle with
 # no --detail bodies, est_tokens is markup-only, so it must equal round(delivered bytes / 2.50) EXACTLY
 # (kBytesPerTokenDefault). Pre-fix the est_tokens attribute (~19 B) and weak="1" (9 B) sat outside the sum,
