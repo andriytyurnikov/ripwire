@@ -180,6 +180,21 @@ inline const char* provLabel( std::uint8_t prov ) noexcept
 // header — lives on the C++ side of the language split; without this bridge a vendored C library's
 // `.c`/`.h` pair (or a C++ `extern "C"` caller of it) could never resolve a single call. All OTHER
 // language pairs stay strictly separate (a Python `draw` never resolves to a C++ `draw`).
+//
+// Kotlin/Java share a SECOND, independent bridge for the same reason: a mixed Android/JVM module's
+// Kotlin call sites and Java definitions (and vice versa) live in one JVM classpath, exactly as
+// C++/ObjC/C live in one link unit — without this a Nanidroid-shaped module (61 .kt + 16 .java in one
+// app/) would resolve zero cross-language calls.
+//
+// This predicate is BARE-NAME admission, and on its own that DELETES edges rather than disclosing a
+// collision: an unrelated same-named Kotlin definition joins a Java call's candidate set, and the tier
+// ladder drops a bare call whose candidates sit in several other directories without counting it anywhere
+// (so the "honestly ambiguous" pair this comment once promised only held in a one-directory fixture). The
+// bridge is therefore this predicate PLUS keepOwnJvmLanguageCandidates, which lets a Java or Kotlin
+// reference reach the other language only when its own defines no candidate of that name. That filter's
+// comment carries the measurement (square/retrofit's Response.body: 279 callers -> 5 -> 279) and the
+// trade-off it accepts (a qualified Kotlin `JavaBridge.helper()` binds a same-named Kotlin `helper`).
+// Narrowing by import or receiver type is still a resolver feature this port does not add.
 inline bool langCompatible( Lang a, Lang b ) noexcept
 {
     if( a == b )
@@ -188,7 +203,13 @@ inline bool langCompatible( Lang a, Lang b ) noexcept
     }
     const bool aCish = ( a == Lang::Cpp || a == Lang::ObjC || a == Lang::C );
     const bool bCish = ( b == Lang::Cpp || b == Lang::ObjC || b == Lang::C );
-    return aCish && bCish;
+    if( aCish && bCish )   // short-circuit before the JVM check below: langCompatible runs per candidate
+    {                       // in graph.h's hot reference-resolution loops, and the common C-family-only
+        return true;        // corpus case should not pay for two extra enum comparisons it doesn't need.
+    }
+    const bool aJvm = ( a == Lang::Kotlin || a == Lang::Java );
+    const bool bJvm = ( b == Lang::Kotlin || b == Lang::Java );
+    return aJvm && bJvm;
 }
 
 // langCompatible's sibling: which definition KINDS a reference of a given ROLE may bind to. One predicate
@@ -790,6 +811,126 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
     }
     cand.resize( keepCount );
     return keepCount != 0;
+}
+
+// THE DECL/DEF COLLAPSE, one name at a time (buildGraph step 1e; adversarial-review #1). A C++ header declaration and its
+// .cpp definition are two same-named symbols. Left alone they make tier 3 see two candidates and DROP every cross-directory
+// call to the function, and let a bodyless prototype shadow its own body in the same-file and same-directory tiers. So once
+// a name has a DEFINITION (model.h isDefinitionNotDeclaration), its declarations stop being resolution targets; a name with
+// no definition anywhere (extern, pure-virtual only) keeps its declarations as the best available target.
+//
+// A declaration is evicted only by a definition of its own COLLAPSE KEY:
+//   * its ROOT, in a multi-root workspace — root A's body must not evict root B's decl-only best-available target, so each
+//     root resolves exactly as it does alone;
+//   * its FAMILY — Kotlin rows with Kotlin rows, and every other language together, which is what the whole collapse always
+//     was (the C-family bridge's header/.c pairing lives inside that one family). Kotlin shares CANDIDATES with Java through
+//     langCompatible's JVM bridge, but never a declaration: no Java interface method is a prototype of a Kotlin function,
+//     or the reverse. Collapsed together, a Kotlin body evicted a Java interface-only declaration — so ADDING a .kt file
+//     moved a Java call's edge onto Kotlin code — and a Java body evicted a Kotlin interface member. A tree without a .kt
+//     file has one family and collapses byte-identically. Gate: test/kotlincheck.sh §13, and §14c's invariant.
+// One pass marks which keys hold a definition and one keeps — O(K) per name, where the per-root version it replaces
+// rescanned the name's ids once per declaration. `ids` keeps its order, and is untouched when nothing is evicted.
+inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot, rw::SmallVec<NodeId, 2>& ids )
+{
+    std::array<bool, 2u * kMaxWorkspaceRoots> keyHasDefinition {};
+    const auto keyOf = [ & ]( NodeId id ) noexcept -> std::size_t
+    {
+        const Symbol&     s    = ing.symbols[ id ];
+        const std::size_t root = multiRoot ? std::min<std::size_t>( ing.fileRoot[ s.fileId ], kMaxWorkspaceRoots - 1u ) : 0u;
+        return 2u * root + ( s.lang == Lang::Kotlin ? 1u : 0u );
+    };
+    bool anyDefinition = false;
+    for( NodeId id : ids )
+    {
+        if( isDefinitionNotDeclaration( ing.symbols[ id ] ) )
+        {
+            keyHasDefinition[ keyOf( id ) ] = true;
+            anyDefinition                   = true;
+        }
+    }
+    if( !anyDefinition )
+    {
+        return;
+    }
+    rw::SmallVec<NodeId, 2> kept;
+    bool                    anyEvicted = false;
+    for( NodeId id : ids )
+    {
+        if( isDefinitionNotDeclaration( ing.symbols[ id ] ) || !keyHasDefinition[ keyOf( id ) ] )
+        {
+            kept.push_back( id );
+        }
+        else
+        {
+            anyEvicted = true;
+        }
+    }
+    if( anyEvicted )
+    {
+        ids = std::move( kept );
+    }
+}
+
+// JVM OWN-LANGUAGE-FIRST — the candidate filter that keeps the Kotlin<->Java bridge from deleting edges.
+//
+// langCompatible admits a Kotlin/Java pair by bare NAME. Past it, the tier ladder resolves a bare call to the same file,
+// else the same directory, else a UNIQUE global — and drops the call, with no edge, no amb= and no unresolved=, when the
+// survivors sit in two or more other directories (tier 3 in buildGraph). Before the bridge, a Java call to a name only Java
+// defines once WAS that unique global. The bridge added every same-named Kotlin definition to the set, the global stopped
+// being unique, and the call vanished: on square/retrofit the test-only Kotlin `body()` functions (five spelled in two test
+// directories, three of them with bodies) took Response.java's `body` from 279 callers to 5 — 253 Java (caller, callee)
+// pairs deleted by files that Java code never references, with every gauge unmoved.
+//
+// THE RULE: a Java or Kotlin reference admits the OTHER JVM language's candidates only when its OWN language offers none.
+// Every name the caller's language defines then resolves exactly as it did before the bridge existed — so adding .kt files
+// never moves a Java-only edge — and the bridge keeps the job it exists for: a Kotlin call into a name only Java defines,
+// and the reverse. Applied to call candidates (buildGraph, right after the namespace gate) and to base candidates in the
+// inheritance overlay, so a Kotlin `class Tagged : Marker` stops implementing a same-named Java interface too.
+//
+// THE TRADE-OFFS, stated here rather than discovered. (1) An explicitly QUALIFIED Kotlin call `JavaBridge.helper()` binds a
+// same-named KOTLIN `helper` when one exists, not the Java class its receiver names, because Kotlin receivers do not narrow
+// candidates yet (the navigation_expression gap disclosed at ingest_binds.h isMemberAccessNode). Without this filter that
+// call reached BOTH definitions in a one-directory layout — and NEITHER once the two files sat in different directories.
+// (2) The filter runs BEFORE the locality tiers, so a Kotlin call whose Java target sits in its own directory loses it to
+// same-named Kotlin definitions elsewhere, which tier 3 may then drop: retrofit's KotlinExtensions.kt `response.body()`,
+// beside Response.java, now meets three Kotlin test `body()` functions in two other directories and gets no edge. Measured
+// over retrofit, ktor and nowinandroid, that is the whole cost: one Kotlin (caller, callee) pair. A Java caller cannot be
+// given the same locality exception — a nearer Kotlin candidate would move a Java-only edge the moment a .kt file
+// appeared, which is the invariant this filter exists to keep. Gate: test/kotlincheck.sh §5 and §14.
+//
+// `cand` is narrowed in place with its order kept, and is untouched unless the reference is Java or Kotlin AND the set
+// holds both its own language and the other one.
+inline void keepOwnJvmLanguageCandidates( const IngestResult& ing, const Reference& r, std::vector<NodeId>& cand ) noexcept
+{
+    if( r.lang != Lang::Java && r.lang != Lang::Kotlin )
+    {
+        return;
+    }
+    const auto isOtherJvm = [ & ]( NodeId id ) noexcept
+    {
+        const Lang candLang = ing.symbols[ id ].lang;
+        return ( candLang == Lang::Java || candLang == Lang::Kotlin ) && candLang != r.lang;
+    };
+    bool anyOwn   = false;
+    bool anyOther = false;
+    for( NodeId c : cand )
+    {
+        anyOwn   = anyOwn || ing.symbols[ c ].lang == r.lang;
+        anyOther = anyOther || isOtherJvm( c );
+    }
+    if( !anyOwn || !anyOther )
+    {
+        return;
+    }
+    std::size_t keepCount = 0;
+    for( std::size_t ci = 0; ci < cand.size(); ++ci )
+    {
+        if( !isOtherJvm( cand[ ci ] ) )
+        {
+            cand[ keepCount++ ] = cand[ ci ];
+        }
+    }
+    cand.resize( keepCount );
 }
 
 
@@ -1625,77 +1766,13 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
     }
 
-    // decl/def collapse (adversarial-review #1): a C++ header decl + its .cpp def are TWO same-named
-    // symbols. Left alone, that (a) makes tier-3 see cand.size()==2 and DROP every cross-dir call to the
-    // function (the most common C++ layout → a disconnected graph), and (b) lets a bodyless local prototype
-    // shadow the real def in the same-file/dir tiers, so rank flows to an empty decl. Fix once, here: if a
-    // name has ≥1 real DEFINITION (body present: endByte > sigEndByte), keep only the definitions as
-    // resolution targets — forward declarations of one function aren't an ambiguity and must not shadow or
-    // block it. Names with no def anywhere (extern / pure-virtual only) keep their decls (best available).
-    const auto hasBody = [ & ]( NodeId id ) noexcept { return ing.symbols[id].endByte > ing.symbols[id].sigEndByte; };
+    // decl/def collapse (adversarial-review #1) — collapseDeclarationsOfName carries the rule, its per-root and per-family
+    // keys, and why a Kotlin body never evicts a Java declaration (or the reverse).
     {
         PROFILE_SCOPE_DESCRIBE( "buildGraph/1e: decl/def collapse" );
         for( auto& [ name, ids ] : byName )
         {
-            if( !multiRoot )
-            {
-                bool anyDef = false;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) )
-                    {
-                        anyDef = true;
-                        break;
-                    }
-                }
-                if( !anyDef )
-                {
-                    continue;
-                }
-                rw::SmallVec<NodeId, 2> defs;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) )
-                    {
-                        defs.push_back( id );
-                    }
-                }
-                ids = std::move( defs );
-            }
-            else
-            {
-                // multi-root: collapse PER ROOT — root A's def must not evict root B's decl-only best-available
-                // target (each root's solo resolution behavior is preserved exactly; lookups are root-filtered).
-                bool anyRootCollapses = false;
-                const auto rootHasDef = [ & ]( std::uint32_t r ) noexcept
-                {
-                    for( NodeId id : ids )
-                    {
-                        if( ing.fileRoot[ing.symbols[id].fileId] == r && hasBody( id ) )
-                        {
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-                for( NodeId id : ids )
-                {
-                    if( !hasBody( id ) && rootHasDef( ing.fileRoot[ ing.symbols[id].fileId ] ) ) { anyRootCollapses = true; break; }
-                }
-                if( !anyRootCollapses )
-                {
-                    continue;
-                }
-                rw::SmallVec<NodeId, 2> kept;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) || !rootHasDef( ing.fileRoot[ing.symbols[id].fileId] ) )
-                    {
-                        kept.push_back( id );
-                    }
-                }
-                ids = std::move( kept );
-            }
+            collapseDeclarationsOfName( ing, multiRoot, ids );
         }
     }
 
@@ -1710,7 +1787,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         PROFILE_SCOPE_DESCRIBE( "buildGraph/1f: canonByName (scope::name -> def ids)" );
         for( const Symbol& s : ing.symbols )
         {
-            if( s.scope.empty() || !hasBody( s.id ) )
+            if( s.scope.empty() || !isDefinitionNotDeclaration( s ) )
             {
                 continue;
             }
@@ -2400,6 +2477,12 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             cand.resize( keepCount );
         }
 
+        // ---- JVM own-language-first — see keepOwnJvmLanguageCandidates (no-op unless a Java/Kotlin set holds both) --
+        if( !scipPinned )
+        {
+            keepOwnJvmLanguageCandidates( ing, r, cand );
+        }
+
         // ---- H4 W3: RUST qualified-call scope guard — see keepRustQualifiedCandidates ------------------
         const bool alreadyPinned = scipPinned || canonical || narrowed;
         if( !keepRustQualifiedCandidates( ing, chaCones, r, alreadyPinned, cand ) && bindingTier.empty() )
@@ -2916,6 +2999,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // than restated, because a second copy of one rule is how the two copies end up disagreeing.
     const auto isClassLike = []( SymKind k ) noexcept
     { return namespaceCompatible( RefRole::Extends, k ); };
+    std::vector<NodeId> baseCand;   // one inheritance reference's base candidates, reused across references
     {
         PROFILE_SCOPE_DESCRIBE( "buildGraph/5: inheritance edges" );
     for( const Reference& r : ing.references )
@@ -2958,6 +3042,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         {
             continue;
         }
+        baseCand.clear();
         for( NodeId baseId : it->second )
         {
             if( !isClassLike( ing.symbols[baseId].kind ) )
@@ -2979,6 +3064,13 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             {
                 continue;
             }
+            baseCand.push_back( baseId );
+        }
+        // the call edges' JVM rule, applied to bases: a Kotlin class implements a same-named Java interface only when
+        // Kotlin defines no candidate of that name, and the reverse (keepOwnJvmLanguageCandidates; kotlincheck §14c).
+        keepOwnJvmLanguageCandidates( ing, r, baseCand );
+        for( NodeId baseId : baseCand )
+        {
             g.implementors[ baseId ].push_back( derived );
         }
     }
@@ -4023,8 +4115,8 @@ inline std::size_t definitionCountOfName( const IngestResult& ing, NodeId focus 
 //     every free `size` in the repository — an over-count inside an honesty fix, which is strictly worse
 //     than the silence it replaces. A method's scope is its class, so this is exactly as specific as the
 //     `Scope::name` tier the reporter showed already working.
-//   * Bodied only, via the house predicate (`endByte > sigEndByte` — shared verbatim with the decl/def
-//     collapse and arch.h's pure-interface detection), and langCompatible with the declaration, so a
+//   * Bodied only, via the predicate the decl/def collapse reads (model.h isDefinitionNotDeclaration: the
+//     span test, and a Kotlin type), and langCompatible with the declaration, so a
 //     Python `putObject` never answers for a C++ header.
 //   * The declarations are KEPT alongside the definitions, not replaced. `--uses` counts reference sites
 //     against the decl too (a `Type::method` mention in another header), and dropping them would trade
@@ -4046,8 +4138,9 @@ inline void declToDefFollowThrough( const IngestResult& ing, std::string_view fi
     {
         return;
     }
-    const auto hasBody = [ & ]( NodeId id ) noexcept
-    { return ing.symbols[id].endByte > ing.symbols[id].sigEndByte; };
+    // The decl/def collapse's own predicate (model.h isDefinitionNotDeclaration), on purpose: a bodyless Kotlin
+    // class/interface counts as a definition here too, not a declaration to widen past.
+    const auto hasBody = [ & ]( NodeId id ) noexcept { return isDefinitionNotDeclaration( ing.symbols[ id ] ); };
 
     for( NodeId id : sel )
     {

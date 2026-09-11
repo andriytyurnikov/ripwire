@@ -68,6 +68,7 @@ is why the sizes are what they are — `parser.c` is one big static table, not h
 | `deps/php` | tree-sitter-php (v0.24.2; the `php/` sub-grammar only) | Josh Vera, GitHub | MIT | `5b5627faaa290d89eb3d01b9bf47c3bb9e797dea` | https://github.com/tree-sitter/tree-sitter-php | 6.9 MB |
 | `deps/lua` | tree-sitter-lua (v0.5.0) | Munif Tanjim | MIT | `10fe0054734eec83049514ea2e718b2a56acd0c9` | https://github.com/tree-sitter-grammars/tree-sitter-lua | 392 KB |
 | `deps/markdown` | tree-sitter-markdown (v0.5.3; the block grammar `tree-sitter-markdown/` only) | Matthias Deiml | MIT | `f969cd3ae3f9fbd4e43205431d0ae286014c05b5` | https://github.com/tree-sitter-grammars/tree-sitter-markdown | 2.1 MB |
+| `deps/kotlin` | tree-sitter-kotlin (ABI 14) | fwcd | MIT | `1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1` | https://github.com/fwcd/tree-sitter-kotlin | 32 MB |
 | `deps/doctest` | doctest (v2.4.12) | Viktor Kirilov | MIT | `1da23a3e8119ec5cce4f9388e91b065e20bf06f5` | https://github.com/doctest/doctest | 0.7 MB |
 
 Notes:
@@ -77,6 +78,9 @@ Notes:
   carrying its own `LICENSE` (Unicode-DFS-2016) and `ICU_SHA` provenance file, left untouched.
 - `deps/swift` is pinned to a bare commit rather than a tag because upstream's default branch does
   not carry a generated `parser.c`; that commit's generated output is what is vendored here.
+- `deps/kotlin` is pinned to a bare commit rather than the last tag (`v0.3.8`, Aug 2024) because
+  that tag predates a scanner segfault fix (upstream #136) present on `main`; the pinned commit is
+  `main`'s tip as of this vendoring, chosen for the fix, not for being a release.
 - `deps/ts_typescript` keeps `common/scanner.h`, which both sub-grammars' `src/scanner.c` include.
 - `deps/php` keeps the repo-relative layout `common/scanner.h` + `php/src/…` for the same reason, and
   for one more: upstream hosts TWO sub-grammars (`php/`, `php_only/`) whose `src/scanner.c` each

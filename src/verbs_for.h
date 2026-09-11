@@ -857,6 +857,112 @@ inline bool forLensOverCeiling( bool ladderFired, std::size_t tokenBudget, int m
         || ( hasBodyCeiling && maxTokens > 0 && estTokens > std::size_t( maxTokens ) );
 }
 
+// PR #135 — THE PRICED ROOT, as a function of the header shape the ceiling ladder chose. Everything runForLens
+// splices onto its header after the ladder lives here, in its original order: the late root attributes and
+// clauses, the est_tokens= clause, then the est_tokens fixpoint with over_ceiling="1" and the clause defining it.
+// It is one function so the ladder can price the header it will EMIT, not the one it builds. The label rides
+// whenever est_tokens exceeds budget_tokens (F2), and est_tokens prices markup at 2.50 B/tok while the allowance
+// is 2.36 x 1.15 = 2.714 B/tok. So a bundle in that band carried 70 bytes the ladder never saw, and one it had
+// fitted within 70 B of the allowance shipped past it with no rung fired: estchargecheck #11 A7, 5 429 B against
+// 5 428 B (the sweep beside it reds the same defect on a git-less corpus at 12 of 52 budgets).
+// `measured` is sigsPreRendered: the direct-emission degrade path gets the splices but no number, because its
+// header goes to stdout before the bundle it would describe has been measured.
+struct ForLensRootFinish
+{
+    std::string_view autoAttr, sigsCeilingAttr, capAttrs;                 // root attributes, before the first "><!--"
+    bool             weak = false;                                       // weak="1", before the last " -->"
+    std::string_view droppedPositiveNote, sigsCeilingNote, capNote;      // clauses, before the last " -->"
+    bool             measured = false;
+    std::string_view estTokensLegend, overCeilingLegend;
+    std::string_view lastRungNote;                                       // empty ⇒ the ladder did not run, so no rung fired
+    std::size_t      nonHeaderMarkupBytes = 0;                           // every markup byte outside the header, "</ctx>" included
+    std::size_t      bodyTokens           = 0;                           // the body-rate sections, already priced
+    std::size_t      tokenBudget          = 0;
+    int              maxTokens            = 0;
+    bool             bodyCeiling          = false;
+};
+
+inline std::string finishForLensHeader( std::string header, const ForLensRootFinish& f )
+{
+    // N1: the ladder's last rung is a VERDICT read off the chosen shape, before anything below is spliced into it
+    const bool ladderFired = !f.lastRungNote.empty() && header.find( f.lastRungNote ) != std::string::npos;
+
+    // T3: the bundle=auto disclosure attributes, then budget_bytes= (its presence is decided by the sigs render),
+    // then the INDEXING-cap attributes (root facts of the RANKING, so on the root est_tokens prices rather than in
+    // the ladder's input). All three go in BEFORE est_tokens is computed, so the number measures a header that
+    // already carries these bytes exactly. An attribute dropped by an unexpected shape costs nothing a reader can
+    // be misled by: the auto section is still disclosed by its own element. See spliceBefore for the boundary.
+    spliceBefore( header, "><!--", /*fromEnd=*/false, f.autoAttr );
+    spliceBefore( header, "><!--", /*fromEnd=*/false, f.sigsCeilingAttr );
+    spliceBefore( header, "><!--", /*fromEnd=*/false, f.capAttrs );
+
+    // R4 + §L2: weak="1" goes in AHEAD of est_tokens, so its 9 bytes are an exact count inside header.size()
+    // below rather than bytes of the document the number describing it had not measured (CA4 verifier L2).
+    // Absent entirely when the query cleared the threshold — never a fabricated "weak=0".
+    spliceBefore( header, " -->", /*fromEnd=*/true, f.weak ? std::string_view( " weak=\"1\"" ) : std::string_view() );
+
+    // A2 dropped_positive="N" (absent at zero, the pr_converged precedent — never a fabricated "0"), then the
+    // budget_bytes= clause, whose attribute rides only a trimmed <sigs>, then the cap clause, which DEFINES its
+    // attributes by carrying them verbatim (the legendcoveragecheck contract dropped_positive= also uses).
+    spliceBefore( header, " -->", /*fromEnd=*/true, f.droppedPositiveNote );
+    spliceBefore( header, " -->", /*fromEnd=*/true, f.sigsCeilingNote );
+    spliceBefore( header, " -->", /*fromEnd=*/true, f.capNote );
+    if( !f.measured )
+    {
+        return header;
+    }
+
+    // N1: the legend clause defining est_tokens= goes into the LAST comment first, so header.size() below
+    // already counts it exactly.
+    spliceBefore( header, " -->", /*fromEnd=*/true, f.estTokensLegend );
+
+    // SELF-REFERENCE (the §L2 mechanism generalized): the est_tokens attribute is part of the document est_tokens
+    // measures, so its own digit string belongs inside the byte total. Bounded 4-pass fixpoint, same shape and
+    // bound as serialize()'s and buildRecall's; the attribute BUILT last is the attribute inserted. On convergence
+    // (the `break`, reached in <=2 passes on every shape measured) the number stated is exactly the number the
+    // document's own bytes were measured against; on the bound, a residual under one token — never fabricated.
+    // EACH KIND OF BYTE AT ITS OWN RATE: markup (header, <sigs>, <lego>, <compose>, <routes>, the mermaid graph
+    // block, the tail, a compact <hops>) at kBytesPerTokenDefault, and the --detail / auto bodies at the
+    // kBytesPerTokenBody rate chargeSection already charged them at (one rate for both kinds is §H7's defect).
+    const auto priceFixpoint = [ & ]( std::size_t markup, std::size_t overBytes )
+    {
+        std::size_t est = rw::tokensForEmittedBytes( markup + overBytes, rw::kBytesPerTokenDefault ) + f.bodyTokens;
+        std::string a   = " est_tokens=\"" + std::to_string( est ) + "\"";
+        for( int pass = 0; pass < 4; ++pass )
+        {
+            const std::size_t next = rw::tokensForEmittedBytes( markup + a.size() + overBytes, rw::kBytesPerTokenDefault ) + f.bodyTokens;
+            if( next == est )
+            {
+                break;
+            }
+            est = next;
+            a   = " est_tokens=\"" + std::to_string( est ) + "\"";
+        }
+        return std::pair<std::size_t, std::string>{ est, a };
+    };
+    auto        priced = priceFixpoint( header.size() + f.nonHeaderMarkupBytes, 0 );
+    std::string overAttr;
+
+    // F2 (capture-audit verify-wave2 2026-09-05): over_ceiling= is a PROPERTY OF THE EMITTED DOCUMENT, not of a
+    // rung — over_ceiling="1" whenever est_tokens exceeds A CEILING THE ROOT NAMES (#61: forLensOverCeiling), on
+    // every rung; absent means inside all of them. Decided from the fixpoint because its own 17 bytes are part of
+    // the document the number prices, and in two stages because its DEFINITION is header bytes too: splicing the
+    // clause unconditionally would charge every budgeted bundle for an attribute it does not carry. Monotone —
+    // adding bytes only RAISES est_tokens — so one extra stage is exact and the flag never oscillates. The
+    // definition rides the legend of the document that carries the attribute.
+    if( forLensOverCeiling( ladderFired, f.tokenBudget, f.maxTokens, f.bodyCeiling, priced.first ) )
+    {
+        spliceBefore( header, " -->", /*fromEnd=*/true, f.overCeilingLegend );
+        overAttr = " over_ceiling=\"1\"";
+        priced   = priceFixpoint( header.size() + f.nonHeaderMarkupBytes, overAttr.size() );
+    }
+
+    // N1: onto the <ctx> root — the same "><!--" boundary the bundle= attributes above use — where --pack-task /
+    // --from-trace / --handoff / --expand put theirs (M11), not inside the comment.
+    spliceBefore( header, "><!--", /*fromEnd=*/false, priced.second + overAttr );
+    return header;
+}
+
 // DEEP-TAIL d2, JSON dialect — the tail stanza and its explicit-regime fit, as a free function over
 // emitForLensJson's locals (the forSigSideCeiling/ForLensHeaderParts precedent: that emitter is already
 // carrying the whole envelope fixpoint). Default regime: the full row cap. Explicit regime: the hard
@@ -2123,8 +2229,9 @@ std::optional<int> runForLens( const MainDispatch& d )
         // N1 (capture-audit verify-wave1 2026-09-04): est_tokens= moved from the header COMMENT onto the <ctx>
         // root (a comment-stripping parser read no price at all — the flagship budgeted verb was the one M11
         // outlier), so the legend now needs a clause defining it; the clause is fixed text, reserved here and
-        // exact-counted below. over_ceiling="1" rides the root only on the ladder's last rung, where the
-        // ceiling is already exceeded by the floor — its 17 bytes are not reserved (nothing is left to trim).
+        // exact-counted below. over_ceiling="1" and ITS clause are not reserved here: F2 made them reachable from
+        // every rung, so their bytes are not a constant — the ladder prices them per shape (PR #135,
+        // finishForLensHeader). Reserved on the last rung only, they let a bundle ship 70 B past its allowance.
         constexpr std::string_view kForEstTokensLegend = " est_tokens= prices this bundle in tokens";
         // F2: spliced ONLY onto a document that actually carries over_ceiling="1" (the attribute is now
         // reachable from every rung, not just the ladder's last), so a bundle inside its budget keeps every
@@ -2138,7 +2245,6 @@ std::optional<int> runForLens( const MainDispatch& d )
         // still selects kOverCeilingLegend, so nothing about --for --token-budget moves by a byte.
         const std::string_view kForOverCeilingLegend = rw::overCeilingLegendFor( forGateBudget, forBodyCeiling );
         const std::size_t     headerSpliceReserve   = kEstTokensAttrReserve + kForEstTokensLegend.size() + ( forWeak ? kWeakAttrBytes : 0u );
-        bool                  forOverCeiling        = false;   // N1: set when the ladder's last rung fired (root over_ceiling="1")
 
         // D10: --token-budget SHAPES this bundle (exit-0 trim) rather than gating it (exit-3 like the
         // default map/--query) — but the shaped result must still be checkable against the budget it shaped
@@ -2370,6 +2476,39 @@ std::optional<int> runForLens( const MainDispatch& d )
                                                                + routeStr.size() + graphSection.xml.size() + detailSection.xml.size()
                                                                + autoSection.xml.size() + autoAttr.size() + 6 + headerSpliceReserve + droppedPositiveSpliceReserve );
 
+        // N1: the last rung's note DEFINES the root attribute it accompanies (over_ceiling= …), so the attribute is
+        // never on a document whose legend does not explain it; the bracket spelling stays. Hoisted out of the ladder
+        // because finishForLensHeader reads it as well: that note on the chosen shape IS the last-rung verdict.
+        static constexpr rw::CeilingLadderNotes kNotes{
+            " [task_echo: dropped (ceiling)]", " [task_echo + route_attr: dropped (ceiling)]",
+            " [over_ceiling= is 1 on the root: the header floor (verbatim task echo + fixed legend) exceeds this budget"
+            " - no payload left to trim]" };
+
+        // PR #135: the priced root this header will carry — every late splice and the est_tokens fixpoint, in
+        // finishForLensHeader (above runForLens, with each splice's rationale). Assembled BEFORE the ladder so the
+        // ladder prices the header it will EMIT.
+        const ForLensRootFinish rootFinish{
+            .autoAttr             = autoAttr,
+            .sigsCeilingAttr      = sigsCeilingAttr,
+            .capAttrs             = capAttrsStr,
+            .weak                 = forWeak,
+            .droppedPositiveNote  = droppedPositiveNote,
+            .sigsCeilingNote      = sigsCeilingNote,
+            .capNote              = capNoteStr,
+            .measured             = sigsPreRendered,
+            .estTokensLegend      = kForEstTokensLegend,
+            .overCeilingLegend    = kForOverCeilingLegend,
+            .lastRungNote         = ( cfg.tokenBudget > 0 && sigsPreRendered ) ? kNotes.overCeiling : std::string_view(),
+            // F2: everything OUTSIDE the header at the markup rate. enrich.markupBytes is the compact <hops> section,
+            // folded in here rather than charged separately — one rate, one rounding (ForEnrichmentPlan).
+            .nonHeaderMarkupBytes = sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + graphSection.xml.size()
+                                  + enrich.markupBytes + tailStr.size() + 6,   // + "</ctx>" (deep-tail: the tail at the markup rate)
+            // T3: the body-rate sections; enrich.bodyTokens is zero on the compact route (markup, above)
+            .bodyTokens           = detailSection.tokens + enrich.bodyTokens,
+            .tokenBudget          = cfg.tokenBudget,
+            .maxTokens            = cfg.maxTokens,
+            .bodyCeiling          = forBodyCeiling };
+
         // W3FIX H2 — the ceiling ladder (rungs + rationale: serialize.h climbCeilingLadder), same rungs in the
         // same order --pack-task climbs. The header IS charged to the budget above, but charging is not FITTING: at
         // an explicit --token-budget the header floor (fixed legend + the task echoed twice) can exceed the stated
@@ -2378,12 +2517,6 @@ std::optional<int> runForLens( const MainDispatch& d )
         // BEFORE est_tokens so the estimate covers the disclosure; inert without an explicit --token-budget.
         if( cfg.tokenBudget > 0 && sigsPreRendered )
         {
-            // N1: the last rung's note DEFINES the root attribute it accompanies (over_ceiling= …), so the
-            // attribute is never on a document whose legend does not explain it; the bracket spelling stays.
-            static constexpr rw::CeilingLadderNotes kNotes{
-                " [task_echo: dropped (ceiling)]", " [task_echo + route_attr: dropped (ceiling)]",
-                " [over_ceiling= is 1 on the root: the header floor (verbatim task echo + fixed legend) exceeds this budget"
-                " - no payload left to trim]" };
             // §F1: the ladder prices what will actually be EMITTED, so the two sections charged above are in
             // this sum. headerSpliceReserve covers the est_tokens (and weak="1") attributes spliced in below —
             // see its definition for why a reserve rather than a measurement.
@@ -2392,6 +2525,19 @@ std::optional<int> runForLens( const MainDispatch& d )
                                                  + tailStr.size()                               // deep-tail: the tail is priced like every other section
                                                  + autoAttr.size() + 6 + headerSpliceReserve + droppedPositiveSpliceReserve;   // + "</ctx>" + the header splices below (autoAttr exact-counted; A2's own reserve is exact too)
             const std::size_t ladderCeiling      = rw::ceilingAllowanceBytes( cfg.tokenBudget );
+            // PR #135: a shape FITS when the reserve-priced header above does AND the header it would emit does —
+            // finishForLensHeader's output plus every other byte stdout receives (the body section is --detail's, else
+            // the rendered auto one). The first half is the pre-#135 test verbatim, so a bundle that was inside its
+            // allowance picks the same shape byte for byte. The second half is what the reserve cannot see:
+            // over_ceiling="1" and its legend clause (70 B), owed whenever est_tokens exceeds budget_tokens.
+            const std::size_t emittedNonHeaderBytes = sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + tailStr.size()
+                                                    + detailSection.xml.size() + ( autoSection.isRendered ? autoSection.xml.size() : 0u )
+                                                    + graphSection.xml.size() + 6;   // + "</ctx>"
+            const auto fitsCeiling = [ & ]( std::string_view candidate )
+            {
+                return candidate.size() + ladderPayloadBytes <= ladderCeiling
+                    && finishForLensHeader( std::string( candidate ), rootFinish ).size() + emittedNonHeaderBytes <= ladderCeiling;
+            };
             // RUNG ZERO — the confidence LEGEND clause, before any of the ladder's own rungs: it is the one
             // header string whose loss costs NO unique information (confidence=/margin_pct= stay on the root
             // as facts; only their explanation goes), so it must fall before the verbatim task echo does —
@@ -2401,168 +2547,16 @@ std::optional<int> runForLens( const MainDispatch& d )
             // Measured need: fornotesbudgetcheck's 850-ceiling fixture holds 35 tokens of headroom and the
             // clause is ~55 — charged-not-exempt (the explicit-regime split above) still cannot fit it,
             // because the floor there is notes + first-entry-whole, neither of which may trim.
-            if( headerStr.size() + ladderPayloadBytes > ladderCeiling
-                && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
+            if( !fitsCeiling( headerStr ) && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
             {
                 headerParts.confidenceNote = {};
                 headerParts.tailLegend     = false;   // deep-tail: the explainer falls with the confidence clause —
                                                       //   the r= attrs and the <tail> element (the facts) survive
                 headerStr = buildForHeader( /*withRouteAttr=*/true, /*withTaskEcho=*/true, {} );
             }
-            headerStr = rw::climbCeilingLadder( buildForHeader, headerStr, ladderPayloadBytes, ladderCeiling,
-                                                 /*hasRouteAttr=*/!routeNoteRaw.empty(), kNotes );
-            forOverCeiling = headerStr.find( kNotes.overCeiling ) != std::string::npos;
+            headerStr = rw::climbCeilingLadderBy( buildForHeader, headerStr, fitsCeiling, /*hasRouteAttr=*/!routeNoteRaw.empty(), kNotes );
         }
-
-        // T3: the bundle=auto disclosure attributes, spliced onto the <ctx> root AFTER the ladder, then
-        // budget_bytes= (its presence is decided by the sigs render), then the INDEXING-cap attributes
-        // (root facts of the RANKING, so on the root est_tokens prices rather than in the ladder's input
-        // above). All three go in BEFORE est_tokens is computed, so the number measures a header that
-        // already carries these bytes exactly. An attribute dropped by an unexpected shape costs nothing a
-        // reader can be misled by: the auto section is still disclosed by its own element. See
-        // spliceBefore for the boundary and the fallback.
-        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, autoAttr );
-        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, sigsCeilingAttr );
-        spliceBefore( headerStr, "><!--", /*fromEnd=*/false, capAttrsStr );
-
-        // R4 + §L2: weak="1" — same insert-before-"-->" mechanism as est_tokens below, but unconditional on
-        // sigsPreRendered (forWeak is known from lr.maxLexicalScore regardless of the sigs render path).
-        // Absent entirely when the query cleared the threshold (never a fabricated "weak=0" — same
-        // silence-means-fine convention as the other opt-in header notes above). It is spliced in AHEAD of
-        // est_tokens now: it used to go in afterwards, i.e. 9 bytes of the document that the number describing
-        // that document had not measured (CA4 verifier L2). Doing it first makes those 9 bytes part of
-        // headerStr.size() below — an exact count, not a reserve.
-        spliceBefore( headerStr, " -->", /*fromEnd=*/true, forWeak ? std::string_view( " weak=\"1\"" ) : std::string_view() );
-
-        // A2 (survey card, 2026-09-03) — dropped_positive="N": how many symbols scored above the relevance
-        // floor (LB-A's own admission rule) and were then removed by the payload ceiling, either the H1
-        // ladder's step F or the collection-phase byte gate (droppedPositiveCount, serialize.h). Same
-        // insert-before-"-->" splice as weak=/est_tokens= (its value is only known once packSignatures has
-        // already run above) — ZERO stays 0 on this path (forDroppedPositive is never set on the direct-
-        // emission degrade path), which is what keeps the no-drop path byte-identical: absent entirely, the
-        // pr_converged="0" precedent (src/prconverge.h), never a fabricated "dropped_positive=\"0\"". The
-        // bracket note is self-defining (legendcoveragecheck's "mentioned"/"defined" predicates both read the
-        // name it carries), the same reason weak=/est_tokens= need no separate legend clause of their own.
-        // ... then the budget_bytes= clause, at the same splice point and for the same reason: its presence
-        // is decided by the render above, and the attribute it defines rides only a trimmed <sigs>. Then the
-        // cap clause, which DEFINES its attributes by carrying them verbatim — the legendcoveragecheck
-        // contract, the self-defining shape dropped_positive= uses.
-        spliceBefore( headerStr, " -->", /*fromEnd=*/true, droppedPositiveNote );
-        spliceBefore( headerStr, " -->", /*fromEnd=*/true, sigsCeilingNote );
-        spliceBefore( headerStr, " -->", /*fromEnd=*/true, capNoteStr );
-
-        if( sigsPreRendered )
-        {
-            // §F1: every section this lens emits is in this sum — <sigs>, <lego>, <compose>, <routes>, the
-            // --detail bodies and the --with-graph block — each from its own RENDERED bytes.
-            //
-            // SELF-REFERENCE (the §L2 mechanism generalized): the est_tokens attribute is part of the document
-            // est_tokens measures, so its own digit string belongs inside the byte total. The previous form
-            // summed the bundle WITHOUT it and reported ~8 tokens under, which is why the measured rate read
-            // 2.51 B/tok where this emitter's rate is 2.50. Bounded 4-pass fixpoint, same shape and same bound
-            // as serialize()'s and buildRecall's; the attribute BUILT last is the attribute inserted. WHAT THE
-            // LOOP GUARANTEES: on convergence (the `break`, reached in <=2 passes on every shape measured) the
-            // number stated is exactly the number the document's own bytes were measured against; on the bound
-            // it is the number measured against a header whose est_tokens field differed by at most a digit or
-            // two, i.e. a residual under one token — never a fabricated number.
-            // EACH KIND OF BYTE AT ITS OWN RATE, summed exactly the way the map path sums
-            // mapEstTokens + extraPayloadTokens: markup (header, <sigs>, <lego>, <compose>, <routes>, the
-            // mermaid graph block) at the mid-band kBytesPerTokenDefault, and the --detail bodies at the
-            // kBytesPerTokenBody rate chargeSection already charged them at, because def-body text BPE-merges
-            // far more aggressively than signature markup. Converting the WHOLE bundle at the markup rate
-            // would over-read the bodies by ~1.5x — the same "one number for two kinds of bytes" defect §H7
-            // is about, aimed the other way, and it would report a --for --detail bundle at 2.50 B/tok when
-            // its real shape is ~3.6.
-            // enrich.markupBytes is the compact <hops> section, folded in HERE rather than charged
-            // separately — one rate, one rounding (see ForEnrichmentPlan for the off-by-one that proves it).
-            // N1: the legend clause defining est_tokens= goes into the LAST comment first (the weak=/dropped_positive=
-            // splice point), so headerStr.size() below already counts it exactly.
-            {
-                const std::size_t legendAt = headerStr.rfind( " -->" );
-                if( legendAt != std::string::npos )
-                {
-                    headerStr.insert( legendAt, kForEstTokensLegend ); // else: unexpected shape, header left as-is
-                }
-            }
-            // F2: everything OUTSIDE the header, fixed for the rest of this block — the header itself still
-            // grows by the over_ceiling legend clause below, so it is added separately.
-            const std::size_t nonHeaderBytes = sigsStr.size() + legoStr.size() + composeStr.size()
-                                             + routeStr.size() + graphSection.xml.size() + enrich.markupBytes
-                                             + tailStr.size() + 6;   // + "</ctx>" (deep-tail: the tail's bytes are measured at the markup rate)
-            std::size_t       markupBytes    = headerStr.size() + nonHeaderBytes;
-            // T3: the auto bodies at the body rate — def-body text BPE-merges differently from markup, which
-            // is why this sum splits by kind. enrich.bodyTokens is zero on the compact route (markup, above).
-            const std::size_t bodyTokens  = detailSection.tokens + enrich.bodyTokens;
-            // N1: both root attributes are inside the number — over_ceiling="1" is a fixed 17 bytes.
-            //
-            // F2 (capture-audit verify-wave2 2026-09-05): over_ceiling= is a PROPERTY OF THE EMITTED DOCUMENT,
-            // not a property of a rung. N1 set it from forOverCeiling alone — the ceiling ladder's LAST rung —
-            // so a bundle that overshot by a lot was labelled and one that overshot by a little was not:
-            //   --token-budget=1500 → budget_tokens="1500" est_tokens="1725" over_ceiling="1"
-            //   --token-budget=1600 → budget_tokens="1600" est_tokens="1665"      (65 over, NO label)
-            // Both numbers sit on ONE root in ONE unit, so a reader can subtract them; withholding the
-            // attribute that reconciles them is worse than the pre-N1 silence, because the wave's own
-            // cross-verb rule says over_ceiling= names an overshoot. THE RULE: over_ceiling="1" whenever
-            // est_tokens exceeds A CEILING THE ROOT NAMES, on every rung; absent means inside all of them.
-            //
-            // The label is decided INSIDE the fixpoint because its own 17 bytes are part of the document the
-            // number prices. Convergence: adding the attribute only RAISES est_tokens, so a document already
-            // over the budget stays over — the flag never oscillates. A document that lands exactly ON the
-            // budget stays unlabelled and its printed number is exactly the budget, which is honest.
-            std::string overAttr;
-            // #61: the predicate is forLensOverCeiling (above runForLens, beside its JSON twin) — it answers
-            // to BOTH ceilings a --for root can name, and carries the §9 argument for disclosing rather than
-            // trimming the --max-tokens overshoot.
-            // The est_tokens fixpoint, run once WITHOUT the label and — only if the label is owed — once more
-            // WITH it and with the legend clause that defines it. Two stages rather than one flag inside the
-            // loop, because the DEFINITION is header bytes: splicing it unconditionally would charge every
-            // budgeted bundle ~50 B for an attribute it does not carry (fornotesbudgetcheck's rungs are that
-            // tight), and an attribute whose legend does not define it is the §B7 defect in the other
-            // direction. Monotone, so one extra stage is exact: adding bytes only RAISES est_tokens, so a
-            // document over its budget without the label is still over it with the label.
-            const auto priceFixpoint = [ & ]( std::size_t markup, std::size_t overBytes )
-            {
-                std::size_t est  = rw::tokensForEmittedBytes( markup + overBytes, kBytesPerTokenDefault ) + bodyTokens;
-                std::string a    = " est_tokens=\"" + std::to_string( est ) + "\"";
-                for( int pass = 0; pass < 4; ++pass )
-                {
-                    const std::size_t next = rw::tokensForEmittedBytes( markup + a.size() + overBytes, kBytesPerTokenDefault ) + bodyTokens;
-                    if( next == est )
-                    {
-                        break;
-                    }
-                    est = next;
-                    a   = " est_tokens=\"" + std::to_string( est ) + "\"";
-                }
-                return std::pair<std::size_t, std::string>{ est, a };
-            };
-            auto              priced    = priceFixpoint( markupBytes, 0 );
-            std::size_t       estTokens = priced.first;
-            std::string       attr      = priced.second;
-            if( forLensOverCeiling( forOverCeiling, cfg.tokenBudget, cfg.maxTokens, forBodyCeiling, estTokens ) )
-            {
-                // The attribute rides the root, so its definition rides the legend of the document that
-                // carries it. On the ladder's last rung the bracket note explains the RUNG; this clause
-                // defines the ATTRIBUTE, which is now reachable from every rung.
-                const std::size_t overLegendAt = headerStr.rfind( " -->" );
-                if( overLegendAt != std::string::npos )
-                {
-                    headerStr.insert( overLegendAt, kForOverCeilingLegend );
-                    markupBytes = headerStr.size() + nonHeaderBytes;
-                }
-                overAttr  = " over_ceiling=\"1\"";
-                priced    = priceFixpoint( markupBytes, overAttr.size() );
-                estTokens = priced.first;
-                attr      = priced.second;
-            }
-            // N1: onto the <ctx> root — the same "><!--" boundary the bundle= attributes above use — where
-            // --pack-task / --from-trace / --handoff / --expand put theirs (M11), not inside the comment.
-            const std::size_t rootCloseAt = headerStr.find( "><!--" );
-            if( rootCloseAt != std::string::npos )
-            {
-                headerStr.insert( rootCloseAt, attr + overAttr ); // else: unexpected shape, header left as-is
-            }
-        }
+        headerStr = finishForLensHeader( std::move( headerStr ), rootFinish );
 
         std::fwrite( headerStr.data(), 1, headerStr.size(), stdout );
         if( sigsPreRendered )

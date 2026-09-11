@@ -56,8 +56,9 @@ struct LangEntry
 
 // Order does not matter (linear scan); kept grouped by language for readability.
 // The extent is EXACT, not headroom: it was 32 with 32 rows, .toml made it 33, .pyi made it 34 and the
-// .yml/.yaml pair made it 36, the .php/.phtml/.lua trio made it 40, and the .rst/.adoc/.org/.mdx prose
-// quartet made it 46. Sizing it to the row count is what makes
+// .yml/.yaml pair made it 36, the .php/.phtml/.lua trio made it 40, the .ex/.exs pair made it 42, the
+// .rst/.adoc/.org/.mdx prose quartet made it 46, .dart made it 47 and .kt made it 48. Sizing it to the row count is what
+// makes
 // `std::array<bool, kLangTable.size()> present` (the grammar-prewarm set,
 // below) exact too, and it turns "added a row and forgot the extent" into a compile error rather than a
 // silent drop.
@@ -85,7 +86,7 @@ struct LangEntry
 // the latter a list item), so those files carry the file-level node alone and serve as ONE whole-file
 // unit. A heading detector per format is a later lane with its own measurement. `.mdx` is markdown with
 // JSX, which the block grammar already reads as html blocks (opaque). Gate: test/textdocscheck.sh.
-constexpr std::array<LangEntry, 47> kLangTable = {{
+constexpr std::array<LangEntry, 48> kLangTable = {{
     { ".cpp",  Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
     { ".cc",   Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
     { ".cxx",  Lang::Cpp,        &tree_sitter_cpp,        "cpp"        },
@@ -179,6 +180,9 @@ constexpr std::array<LangEntry, 47> kLangTable = {{
     // Lua: no classes, no imports. The five function-definition spellings and the one call node are the
     // whole extractable structure (queries/lua/tags.scm states the metatable/dynamic-dispatch floor).
     { ".lua",  Lang::Lua,        &tree_sitter_lua,        "lua"        },   // Lua — function/method defs (5 shapes) + calls
+    // Kotlin: `.kts` (Gradle script DSL) is deliberately NOT a row here yet — its trailing-lambda
+    // density needs its own parse-quality probe before riding this grammar; `.kt` only for now.
+    { ".kt",   Lang::Kotlin,     &tree_sitter_kotlin,     "kotlin"     },   // Kotlin — classes/objects/interfaces/functions + calls; JVM-bridged to Java (graph.h langCompatible)
     { ".md",   Lang::Markdown,   &tree_sitter_markdown,   ""           },   // Markdown DOC tier — headings/sections via extractMarkdown()'s custom tree walk; NO tags.scm (query stays "")
     { ".markdown", Lang::Markdown, &tree_sitter_markdown, ""           },   // sibling extension, same walk
     { ".rst",  Lang::Markdown,   &tree_sitter_markdown,   ""           },   // reStructuredText — underlined titles tile as setext
@@ -469,31 +473,68 @@ bool isDenylistedName( std::string_view name ) noexcept
 // ERROR, so errBytes is a true byte measure of "what the parser could not interpret". MISSING nodes are
 // zero-width by construction (the parser inserted a token that was not there), so they contribute to
 // errNodes and nothing to errBytes — which is exactly why BOTH numbers are disclosed, not just a ratio.
+//
+// errNodes/errBytes ALSO count invalid UTF-8 byte sequences found in the leading whitespace-sample window
+// (one per bad sequence, since tree-sitter's error recovery does not reliably flag them as ERROR/MISSING —
+// a garbage byte run can parse as an unrecognized leaf with no error node at all).
 FileHealth measureFileHealth( TSNode root, std::string_view bytes )
 {
     FileHealth h;
     h.fileBytes = std::uint32_t( bytes.size() > 0xFFFFFFFFull ? 0xFFFFFFFFull : bytes.size() );
 
-    const std::size_t sample = bytes.size() < kHealthWsSampleBytes ? bytes.size() : kHealthWsSampleBytes;
-    std::uint32_t     ws     = 0;
-    for( std::size_t i = 0; i < sample; ++i )
+    // Walks the sample codepoint-by-codepoint (jsonesc::utf8SeqLen, already the shared UTF-8 validator
+    // for mcp.h/ccjson.h) rather than byte-by-byte: a whitespace byte is only meaningful outside a
+    // multi-byte sequence, and this lets the same pass also catch invalid UTF-8 — see below — for free.
+    // A bad sequence resyncs one byte at a time, same as any decoder recovering from garbage. Bad
+    // sequences are recorded as ascending START POSITIONS (the scan runs left to right), which is what
+    // lets the ERROR walk below dedup against them with std::lower_bound instead of a per-span scan.
+    const std::size_t         sample = bytes.size() < kHealthWsSampleBytes ? bytes.size() : kHealthWsSampleBytes;
+    std::uint32_t              ws    = 0;
+    std::vector<std::uint32_t> badUtf8Positions;
+    for( std::size_t i = 0; i < sample; )
     {
-        const unsigned char c = ( unsigned char ) bytes[ i ];
-        if( c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' )
+        const int seqLen = jsonesc::utf8SeqLen( bytes.data(), i, bytes.size() );
+        if( seqLen == 0 )
         {
-            ++ws;
+            badUtf8Positions.push_back( std::uint32_t( i ) );
+            ++i;
+            continue;
         }
+        if( seqLen == 1 )
+        {
+            const unsigned char c = ( unsigned char ) bytes[ i ];
+            if( c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' )
+            {
+                ++ws;
+            }
+        }
+        i += std::size_t( seqLen );
     }
     h.wsBytes = ws;
 
+    // Invalid UTF-8 in the leading sample is unparseable content by construction, but tree-sitter's own
+    // error recovery does not reliably surface it as an ERROR/MISSING node (a garbage byte run can be
+    // swallowed as an unrecognized leaf with no error flag at all — confirmed empirically on a random-byte
+    // .kt file: ts_node_has_error(root) came back false). Fold it into errNodes/errBytes rather than adding
+    // a parallel disclosure field: it is exactly what those two attributes already mean to a reader —
+    // "bytes this build could not interpret" — just found by a byte-level scan instead of a tree walk.
+    // A position that falls inside a top-most ERROR span below is the SAME problem tree-sitter already
+    // flagged there, and counting it twice would push err_ratio (errBytes/fileBytes) past its documented
+    // <=1.0 ceiling — so coverage is tallied WHILE walking and folded in ONCE, after, rather than adding
+    // every position up front and backing out duplicates mid-walk: `h` holds a correct value at every
+    // point in this function, never a transiently over-counted one a reader mid-function could observe.
     if( !ts_node_has_error( root ) )
     {
+        // no ERROR span for a bad sequence to overlap — every one found is a genuinely new finding
+        h.errNodes += std::uint32_t( badUtf8Positions.size() );
+        h.errBytes += std::uint32_t( badUtf8Positions.size() );
         return h;
     }
 
     std::vector<TSNode> stack;
     ChildCursor         cursor( root );   // reused across nodes — this walk never recurses
     stack.push_back( root );
+    std::uint32_t coveredBadUtf8 = 0;   // badUtf8Positions entries already inside a counted top-most ERROR span
     while( !stack.empty() )
     {
         const TSNode n = stack.back();
@@ -504,6 +545,12 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             const std::uint32_t lo = ts_node_start_byte( n );
             const std::uint32_t hi = ts_node_end_byte( n );
             h.errBytes += hi > lo ? hi - lo : 0u;
+            if( hi > lo && !badUtf8Positions.empty() )
+            {
+                const auto lo_it = std::lower_bound( badUtf8Positions.begin(), badUtf8Positions.end(), lo );
+                const auto hi_it = std::lower_bound( lo_it, badUtf8Positions.end(), hi );
+                coveredBadUtf8 += std::uint32_t( hi_it - lo_it );
+            }
             continue;   // top-most only — see the note above
         }
         if( ts_node_is_missing( n ) )
@@ -525,6 +572,10 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             return true;
         } );
     }
+    // Fold in only the bad-UTF-8 positions NOT already covered by a top-most ERROR span above.
+    const std::uint32_t uncoveredBadUtf8 = std::uint32_t( badUtf8Positions.size() ) - coveredBadUtf8;
+    h.errNodes += uncoveredBadUtf8;
+    h.errBytes += uncoveredBadUtf8;
     return h;
 }
 
@@ -696,6 +747,259 @@ bool mdNestsTooDeep( std::string_view bytes ) noexcept
         }
         while( i < byteCount && bytes[ i ] != '\n' ) { ++i; }
         if( i < byteCount ) { ++i; }
+    }
+    return false;
+}
+
+// ── the Kotlin string-template nesting prescan (kotlinStringsNestTooDeep) and its three lexical helpers ──────────────
+
+// The byte length of the character literal that starts at bytes[ i ] == '\'', or 0 when none does. The grammar's shape
+// is `'` (an escape, or ONE codepoint that is not a quote or a newline) `'`, and the parser's internal lexer takes it
+// whole, so a quote inside one (`'"'`) is never offered to the external scanner as a string start.
+inline std::size_t kotlinCharLiteralLength( std::string_view bytes, std::size_t i ) noexcept
+{
+    const auto byteAt = [ & ]( std::size_t k ) noexcept -> unsigned char { return k < bytes.size() ? static_cast<unsigned char>( bytes[ k ] ) : 0u; };
+    const unsigned char first  = byteAt( i + 1 );
+    std::size_t         length = 0;
+    if( first == '\\' )
+    {
+        length = ( byteAt( i + 2 ) == 'u' ) ? 8u : 4u;   // '\uXXXX' or a one-character escape
+    }
+    else if( first != 0u && first != '\'' && first != '\n' && first != '\r' )
+    {
+        std::size_t codepointBytes = 1;
+        if( ( first >> 5 ) == 0x6u )
+        {
+            codepointBytes = 2;
+        }
+        else if( ( first >> 4 ) == 0xEu )
+        {
+            codepointBytes = 3;
+        }
+        else if( ( first >> 3 ) == 0x1Eu )
+        {
+            codepointBytes = 4;
+        }
+        length = codepointBytes + 2u;
+    }
+    return ( length > 0 && byteAt( i + length - 1 ) == '\'' ) ? length : 0u;
+}
+
+// The index just past the `/* … */` comment whose `/*` starts at bytes[ i ], nesting exactly as the vendored scanner's
+// scan_multiline_comment does — including its reading of an unterminated comment, which runs to end of input.
+inline std::size_t kotlinBlockCommentEnd( std::string_view bytes, std::size_t i ) noexcept
+{
+    std::size_t k         = i + 2;
+    std::size_t depth     = 1;
+    bool        afterStar = false;
+    while( k < bytes.size() )
+    {
+        const char c = bytes[ k ];
+        ++k;
+        if( c == '*' )
+        {
+            afterStar = true;
+        }
+        else if( c == '/' && afterStar )
+        {
+            afterStar = false;
+            if( --depth == 0 )
+            {
+                return k;
+            }
+        }
+        else
+        {
+            afterStar = false;
+            if( c == '/' && k < bytes.size() && bytes[ k ] == '*' )
+            {
+                ++depth;
+                ++k;
+            }
+        }
+    }
+    return k;
+}
+
+// In Kotlin CODE: the index just past a token that is consumed WHOLE before the external scanner can see a quote inside
+// it — a `//` comment, a nested `/* */` comment, a character literal, a backtick identifier — or `i` itself when none
+// starts at bytes[ i ].
+inline std::size_t kotlinCodeTriviaEnd( std::string_view bytes, std::size_t i ) noexcept
+{
+    const std::size_t byteCount = bytes.size();
+    const char        c         = bytes[ i ];
+    const char        next      = ( i + 1 < byteCount ) ? bytes[ i + 1 ] : '\0';
+    if( c == '/' && next == '/' )
+    {
+        const std::size_t newline = bytes.find( '\n', i );
+        return ( newline == std::string_view::npos ) ? byteCount : newline;
+    }
+    if( c == '/' && next == '*' )
+    {
+        return kotlinBlockCommentEnd( bytes, i );
+    }
+    if( c == '\'' )
+    {
+        return i + kotlinCharLiteralLength( bytes, i );
+    }
+    if( c == '`' )
+    {
+        const std::size_t close = bytes.find_first_of( "`\r\n", i + 1 );
+        const bool        named = close != std::string_view::npos && bytes[ close ] == '`' && close > i + 1;
+        return named ? close + 1 : i;
+    }
+    return i;
+}
+
+enum class KotlinStringEvent : std::uint8_t { None, OpenInterpolation, CloseString };
+
+// One step of the vendored scanner's scan_string_content at bytes[ i ], inside an open string of the given shape: the
+// index after the bytes it consumes, and whether those bytes opened an interpolation or closed the string.
+//   `$`  a run of at least the string's `$` prefix followed by `{` opens an interpolation; any other run is content.
+//   `\`  skips the byte after it, and `\$` the byte after the `$` too: the scanner's loop falls through to its bottom
+//        advance, so `\$${` is content, never an interpolation. Before a quote the string's shape decides. In a
+//        single-quoted string `\$"` CLOSES it (upstream's own reading, mirrored because the stack follows it) and `\"` is
+//        content. In a triple-quoted string `\` is no escape before a quote, bare or as `\$` (vendored patch 002), so the
+//        quote is read again by the triple-quote close test.
+//   `"`  closes a single-quoted string; a run of three or more closes a triple-quoted one, and shorter runs are content.
+inline std::pair<std::size_t, KotlinStringEvent> kotlinStringStep( std::string_view bytes, std::size_t i, bool tripleQuoted,
+                                                                   std::size_t dollars ) noexcept
+{
+    const std::size_t byteCount = bytes.size();
+    const auto        byteAt    = [ & ]( std::size_t k ) noexcept -> char { return k < byteCount ? bytes[ k ] : '\0'; };
+    const auto        runOf     = [ & ]( char c ) noexcept
+    {
+        std::size_t run = 0;
+        while( i + run < byteCount && bytes[ i + run ] == c )
+        {
+            ++run;
+        }
+        return run;
+    };
+    switch( bytes[ i ] )
+    {
+        case '$':
+        {
+            const std::size_t run   = runOf( '$' );
+            const bool        opens = run >= dollars && byteAt( i + run ) == '{';
+            return { i + run + ( opens ? 1u : 0u ), opens ? KotlinStringEvent::OpenInterpolation : KotlinStringEvent::None };
+        }
+        case '\\':
+        {
+            const bool        escapesDollar = byteAt( i + 1 ) == '$';
+            const std::size_t quoteAt       = i + ( escapesDollar ? 2u : 1u );
+            if( tripleQuoted && byteAt( quoteAt ) == '"' )
+            {
+                return { quoteAt, KotlinStringEvent::None };   // the triple-quote close test reads this quote again
+            }
+            if( escapesDollar )
+            {
+                return { i + 3, byteAt( i + 2 ) == '"' ? KotlinStringEvent::CloseString : KotlinStringEvent::None };
+            }
+            return { i + 2, KotlinStringEvent::None };
+        }
+        case '"':
+        {
+            if( !tripleQuoted )
+            {
+                return { i + 1, KotlinStringEvent::CloseString };
+            }
+            const std::size_t run = runOf( '"' );
+            return { i + run, run >= 3 ? KotlinStringEvent::CloseString : KotlinStringEvent::None };
+        }
+        default:
+        {
+            return { i + 1, KotlinStringEvent::None };
+        }
+    }
+}
+
+// True when string-template nesting would take tree-sitter-kotlin's scanner string stack past kMaxKotlinStringNestDepth —
+// see that constant in ingest.h for the defect. Like the json/yaml/markdown prescans: one deterministic O(n) byte scan
+// BEFORE any parse, never a wall-clock timeout. Unlike them it is not a shape ESTIMATE, because the stack it bounds
+// changes in exactly two places — a string START pushes one entry and a string END pops one — so this scan MIRRORS the
+// vendored scanner's state machine (scan_string_start / scan_string_content; kotlinStringStep above carries the string
+// half). In code — top level, or inside an interpolation, which closes at the `}` balancing its `${` — a quote after an
+// optional `$` run is a string START, and kotlinCodeTriviaEnd skips what the parser's internal lexer takes whole first.
+// What a byte mirror cannot see is the parser's ERROR RECOVERY, which is why the ceiling sits 4x under the cliff rather
+// than at it, and why the vendored patch that turns the scanner's own abort() into a refused push is a second,
+// independent layer and not a formality.
+bool kotlinStringsNestTooDeep( std::string_view bytes ) noexcept
+{
+    struct NestFrame
+    {
+        bool        isString     = false;
+        bool        tripleQuoted = false;
+        std::size_t dollars      = 1;   // a string: how long a `$` run must be to open an interpolation inside it
+        std::size_t openBraces   = 0;   // an interpolation: `{` opened inside this `${ … }` and not yet closed
+    };
+    // String and interpolation frames strictly alternate above top-level code, so twice the ceiling bounds the stack —
+    // and the string push that would pass the ceiling IS the verdict, so it is reached before the array could fill.
+    std::array<NestFrame, 2u * kMaxKotlinStringNestDepth> frames {};
+    std::size_t       frameCount  = 0;
+    std::uint32_t     stringDepth = 0;
+    const std::size_t byteCount   = bytes.size();
+    std::size_t       i           = 0;
+    while( i < byteCount )
+    {
+        NestFrame* const top = ( frameCount > 0 ) ? &frames[ frameCount - 1 ] : nullptr;
+        if( top != nullptr && top->isString )
+        {
+            const auto [ next, event ] = kotlinStringStep( bytes, i, top->tripleQuoted, top->dollars );
+            i = next;
+            if( event == KotlinStringEvent::CloseString )
+            {
+                --frameCount;
+                --stringDepth;
+            }
+            else if( event == KotlinStringEvent::OpenInterpolation && frameCount < frames.size() )
+            {
+                frames[ frameCount ] = NestFrame{};
+                ++frameCount;
+            }
+            continue;
+        }
+        const std::size_t afterTrivia = kotlinCodeTriviaEnd( bytes, i );
+        if( afterTrivia != i )
+        {
+            i = afterTrivia;
+            continue;
+        }
+        std::size_t dollarRun = 0;
+        while( i + dollarRun < byteCount && bytes[ i + dollarRun ] == '$' )
+        {
+            ++dollarRun;
+        }
+        if( i + dollarRun < byteCount && bytes[ i + dollarRun ] == '"' )
+        {
+            if( stringDepth >= kMaxKotlinStringNestDepth || frameCount >= frames.size() )
+            {
+                return true;
+            }
+            const std::size_t quote  = i + dollarRun;
+            const bool        triple = quote + 2 < byteCount && bytes[ quote + 1 ] == '"' && bytes[ quote + 2 ] == '"';
+            frames[ frameCount ] = NestFrame{ true, triple, std::clamp<std::size_t>( dollarRun, 1u, 255u ), 0u };   // the scanner caps its prefix at 255
+            ++frameCount;
+            ++stringDepth;
+            i = quote + ( triple ? 3u : 1u );
+            continue;
+        }
+        if( top != nullptr && bytes[ i ] == '{' )
+        {
+            ++top->openBraces;
+        }
+        else if( top != nullptr && bytes[ i ] == '}' )
+        {
+            if( top->openBraces == 0 )
+            {
+                --frameCount;   // the brace that balances `${` closes the interpolation: back inside its string
+            }
+            else
+            {
+                --top->openBraces;
+            }
+        }
+        i += ( dollarRun > 0 ) ? dollarRun : 1u;
     }
     return false;
 }

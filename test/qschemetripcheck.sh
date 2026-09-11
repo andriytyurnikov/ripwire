@@ -34,6 +34,28 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-11, KOTLIN (test/kotlincheck.sh, PR #126): kParserVer 90 -> 91 and kIngestParserVerMirror -> 91, as the
+#   contributor's head 1e21943a carries them. Main stands at 90 since #135, so 91 is also the land-time
+#   value. A 24th grammar joins kLangTable (.kt), so the crawl admits files it previously refused and only the
+#   header version can reject a v90 blob. The port also widens ingest_sidecap.h's positional body fallback and adds
+#   Kotlin's scope walker, countParams and complexity arms; its vendor patch kotlin/002 changes a real parse; and the
+#   maintainer round refuses a .kt file whose string templates nest past kMaxKotlinStringNestDepth before the parse.
+#   All of that is extraction identity for .kt only. Record SHAPES are unchanged (a refused file's record is written
+#   UNKNOWN with the existing encoding), so this lane leaves kCacheVersion at #135's 20. No Snapshot-side function changed and
+#   kQSnapCacheScheme stays 10. RE-PINNED ON THE MERGED TREE, carried from neither side: main's #132 pin predates
+#   this lane's constants, and the PR's pin predates #132's readRegisterMacrosConfig move. RE-DERIVED AGAIN on the
+#   merge with main 1187b7f3 (#135): the lane's pin (957701449b76...) hashed 91 over kCacheVersion 18 and #135's
+#   (d8dcd5c0b3f9...) hashed 90 over 20, so neither hashed the merged 91/20 declaration lines.
+# 2026-09-11, EXTENT HONESTY + MEMBER-MACRO RE-PARSE (fix/cpp-macro-member-reparse-2026-09-11; test/extentcheck.sh,
+#   test/macroreparsecheck.sh): kParserVer 88 -> 89 -> 90 and kCacheVersion 18 -> 19 -> 20, with
+#   kIngestParserVerMirror / kIngestCacheVersionMirror moved in the same commits. Both are EXTRACTION identity:
+#   89 gives every def record the RawDef::recovered u8; 90 extracts a C-family file whose first parse holds error
+#   bytes from a re-parse with its semicolon-less member macro invocations blanked, and the FILE record grows
+#   FileHealth::macroBlanked. Only the hashed ingest_cache.h declaration lines moved; quality.h's one hunk is the
+#   mirror block, outside every manifest function. kQSnapCacheScheme STAYS 10: the mirrors already key each qsnap
+#   blob on the extraction behind it, and what a cached Snapshot MEANS is untouched. RE-DERIVED ON THE MERGE with
+#   main 096e3544, not carried: the lane's pin (e1e921ca, over 5afadeca) lacked #132's readRegisterMacrosConfig
+#   read below, and #132's pin (e005aacc) lacked these version lines, so neither side hashed the merged manifest.
 # 2026-09-11, OUT-PARAM RETURNS (lane/outparam-returns-2026-09-11, PR #132): RE-PIN ONLY, kQSnapCacheScheme STAYS 10.
 #   One manifest function's SOURCE moved, and only its read. Because readWholeFile returns
 #   std::optional<std::string> now, readRegisterMacrosConfig went from
