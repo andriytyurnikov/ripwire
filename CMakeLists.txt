@@ -463,7 +463,7 @@ add_ts_grammar(elixir https://github.com/elixir-lang/tree-sitter-elixir.git 4b0c
 # owns — no new leak surface, and the G1 leg is run with the existing suppressions unchanged.
 add_ts_grammar(lua    https://github.com/tree-sitter-grammars/tree-sitter-lua.git 10fe0054734eec83049514ea2e718b2a56acd0c9)  # v0.5.0
 
-# Kotlin (.kt/.kts): fwcd/tree-sitter-kotlin — the only actively maintained Kotlin grammar. Pinned
+# Kotlin (.kt): fwcd/tree-sitter-kotlin — the only actively maintained Kotlin grammar. Pinned
 # to a bare commit on `main`, not the last tag (v0.3.8, Aug 2024): that tag predates a scanner
 # segfault fix (upstream #136), and main's scanner.c is still plain C, so add_ts_grammar's
 # scanner.c-only glob applies unchanged. Local-corpus probe (501 real .kt files, 2026-09-07):

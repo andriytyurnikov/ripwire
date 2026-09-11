@@ -1874,10 +1874,7 @@ std::vector<LangCount> computeLangCounts( const rw::IngestResult& ing )
     // grammar, Metal/CUDA's C++/CUDA-as-a-language routing included, so there is nothing to disambiguate
     // — the last write among a file's own symbols is the same value every earlier one already wrote).
     std::vector<Lang> fileLangOf( ing.files.size(), Lang::Unknown );
-    std::array<std::uint64_t, kLangCount> symbolTally {};   // was hand-sized on the last enum member — Kotlin's addition
-                                                              // silently dropped from the census under that pattern
-                                                              // (guarded by < size(), so no crash, just a quiet zero);
-                                                              // kLangCount (model.h) is the one place that stays current
+    std::array<std::uint64_t, kLangCount> symbolTally {};   // model.h kLangCount — NEVER a spelled-out enumerator
     for( const Symbol& s : ing.symbols )
     {
         if( s.fileId < fileLangOf.size() )
@@ -1889,7 +1886,7 @@ std::vector<LangCount> computeLangCounts( const rw::IngestResult& ing )
             ++symbolTally[ std::size_t( s.lang ) ];
         }
     }
-    std::array<std::uint64_t, kLangCount> fileTally {};      // see symbolTally's comment above
+    std::array<std::uint64_t, kLangCount> fileTally {};     // model.h kLangCount — NEVER a spelled-out enumerator
     for( Lang l : fileLangOf )
     {
         if( l != Lang::Unknown && std::size_t( l ) < fileTally.size() )

@@ -34,6 +34,16 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-11, KOTLIN (test/kotlincheck.sh, PR #126): kParserVer 88 -> 91 and kIngestParserVerMirror -> 91, as the
+#   contributor's head 1e21943a carries them. Main stands at 88 and #135 reserves 90, so 91 is also the land-time
+#   value. A 24th grammar joins kLangTable (.kt), so the crawl admits files it previously refused and only the
+#   header version can reject a v88 blob. The port also widens ingest_sidecap.h's positional body fallback and adds
+#   Kotlin's scope walker, countParams and complexity arms; its vendor patch kotlin/002 changes a real parse; and the
+#   maintainer round refuses a .kt file whose string templates nest past kMaxKotlinStringNestDepth before the parse.
+#   All of that is extraction identity for .kt only. Record SHAPES are unchanged (a refused file's record is written
+#   UNKNOWN with the existing encoding), so kCacheVersion stays 18. No Snapshot-side function changed and
+#   kQSnapCacheScheme stays 10. RE-PINNED ON THE MERGED TREE, carried from neither side: main's #132 pin predates
+#   this lane's constants, and the PR's pin predates #132's readRegisterMacrosConfig move.
 # 2026-09-11, OUT-PARAM RETURNS (lane/outparam-returns-2026-09-11, PR #132): RE-PIN ONLY, kQSnapCacheScheme STAYS 10.
 #   One manifest function's SOURCE moved, and only its read. Because readWholeFile returns
 #   std::optional<std::string> now, readRegisterMacrosConfig went from

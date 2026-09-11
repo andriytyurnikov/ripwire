@@ -2164,10 +2164,10 @@ inline constexpr const char* kLangColors[] = {
                  // purple but still one step around the wheel from it.
 };
 inline constexpr std::size_t kLangColorCount = sizeof( kLangColors ) / sizeof( kLangColors[0] );
-// Bound on kLangCount (model.h), NOT on the last enumerator: anchored on the enumerator, appending a Lang
-// left this assert TRUE and silently unprotecting — Elixir landed with no swatch and compiled clean, and
-// only test/htmlrendercheck.sh's (N2) arm (which walks langTag() against the emitted LANG_COLORS) caught
-// it. Bumping kLangCount without adding a row here now fails the build instead.
+// NB the bound names the LAST enumerator, so appending one to Lang leaves this assert TRUE and silently
+// unprotecting: Elixir landed with no swatch and compiled clean, and test/htmlrendercheck.sh's (N2) arm —
+// which walks langTag() against the emitted LANG_COLORS — is what actually caught it. Move this bound in
+// the same commit that appends a Lang, and trust (N2), not this line, to notice if you forget.
 static_assert( kLangColorCount == kLangCount,
                "kLangColors must carry one hex colour per Lang enumerator, in declaration order — a language with "
                "no swatch renders as an unlabelled grey the legend cannot explain" );

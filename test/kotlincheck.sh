@@ -88,7 +88,7 @@
 #     DIFFERENT positional child than a plain class's `class_body` — the ObjC/Kotlin body-fallback
 #     (ingest_sidecap.h) originally recognized only `class_body`, so the Kotlin enum read as bodyless
 #     and graph.h's decl/def collapse deleted it whenever the Java Mode existed, the same silent-drop
-#     §5 exists to catch for `helper`. Fixed by adding `enum_class_body` to that fallback (kParserVer 85).
+#     §5 exists to catch for `helper`. Fixed by adding `enum_class_body` to that fallback.
 #
 # Usage:
 #   bash test/kotlincheck.sh
@@ -254,7 +254,7 @@ echo "=== 8. ENUM CLASS BODY: enum_class_body is a DIFFERENT positional child th
 # of collision §5 pins for `helper` — a same-name pair with no other evidence, both must stay real
 # candidates. The difference is WHERE the bug lived: class_declaration's enum-class form nests its
 # members under enum_class_body, not class_body, so the ObjC/Kotlin positional body-fallback missed
-# it until a second-opinion review caught the gap (kParserVer 85). Verified via a raw parse of
+# it until a second-opinion review caught the gap. Verified via a raw parse of
 # `enum class Status { READY, DONE }`: (class_declaration (type_identifier) (enum_class_body ...)).
 USES_MODE="$( "$BIN" "$FIX" --uses=Mode --no-cache 2>/dev/null )"
 echo "$USES_MODE" | grep -q 'defs="2"' && ok '--uses=Mode: defs="2" — BOTH candidates are visible (Kotlin enum class, Java class)' \

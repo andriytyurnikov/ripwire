@@ -428,8 +428,9 @@ inline bool localsCountedLang( Lang lang ) noexcept
     return lang == Lang::Cpp || lang == Lang::C;
 }
 
-// Essential-complexity coverage: 12 of the 16 CODE languages — every one EXCEPT Bash, PHP, Lua and
-// Kotlin. Bash (the essential-complexity design note, §3.2.8: `break N`/`continue N` take a numeric
+// Essential-complexity coverage: 12 of the 18 CODE languages — every one EXCEPT Bash, PHP, Lua, Elixir, Dart and
+// Kotlin (Elixir and Dart landed without joining it, so their ev is withheld the same way). Bash (the
+// essential-complexity design note, §3.2.8: `break N`/`continue N` take a numeric
 // level count, `exit` and `trap` are process-level, and function boundaries are weak — not worth a
 // wrong number). PHP and Lua are out for the language-port round's own reason and it is a DISCLOSED
 // NON-GOAL, not an oversight: ev's per-construct weights must mirror isDecisionType exactly (the ev
