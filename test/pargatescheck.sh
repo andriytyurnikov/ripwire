@@ -950,4 +950,58 @@ if [ "$groupRc" -ne 0 ] || ! grep -q '^DONE 12$' "$TMP/groupstop.out"; then
     no "group: the harness did not finish all 12 scenarios (rc=$groupRc): $( grep -v '^ROW ' "$TMP/groupstop.out" | tail -6 | tr '\n' '|' )"
 fi
 
+# ── (H) A GATE'S STDOUT MUST NOT BE A PIPE ────────────────────────────────────────────────────────────
+# The harness half of the fix in test/gateexitcheck.sh arm (G). A gate writes its verdict lines with
+# printf; whether that printf SUCCEEDS is a property of whatever the harness hands it as stdout.
+#
+# A pipe can refuse a write. This harness used to pass stdout=subprocess.PIPE, and the gate's fd 1 was
+# then a blocking pipe with a ~16 KiB kernel buffer, read by one Python thread per gate. If that reader
+# stalls -- GIL contention at -j 6, or the macOS runner starvation this repo has hit before -- a verbose
+# gate fills the buffer and its next printf BLOCKS inside write(2). bash installs its SIGCHLD handler
+# without SA_RESTART (set_signal_handler: sa_flags gets SA_RESTART only for sig != SIGCHLD), and a gate
+# forks constantly, so that blocked write comes back EINTR. Measured 2026-09-11 on a plain blocking pipe
+# with a deliberately stalled reader: 600 arms produced 600 PASS lines AND 21 spurious FAILs, errno
+# `Interrupted system call` on all 21. Contention alone was not enough -- 1500 arms with the pipe drained
+# one byte at a time produced none -- so it is specifically the BLOCKED write that fails.
+#
+# A regular file cannot do any of that: a write to it never blocks, so it can never be interrupted, and
+# there is no reader whose absence breaks the descriptor. Capturing into one removes the whole errno
+# family for every gate at once, verbose or not, whatever the runner is doing.
+#
+# This arm asserts the property rather than the spelling: run a real gate under the REAL harness and have
+# it report what kind of file its own fd 1 is. On the PIPE version it reports fifo and this arm is red --
+# that is the red this arm was written from. It also pins that stderr still arrives MERGED into the same
+# description, because that ordering is what makes a gate's stderr land beside the FAIL row it explains.
+cat > "$CORPUSROOT/test/probestdoutkindgate.sh" <<'EOF'
+#!/usr/bin/env bash
+# Reports what the harness handed it as stdout, then fails on purpose: pargates prints a gate's
+# transcript only when the gate is red, so a passing probe would report nothing at all.
+python3 -c 'import os, stat
+m = os.fstat( 1 ).st_mode
+print( "STDOUT_KIND=" + ( "fifo" if stat.S_ISFIFO( m ) else "regular" if stat.S_ISREG( m ) else "other" ) )
+print( "STDERR_SHARES_STDOUT=" + str( os.fstat( 2 ) == os.fstat( 1 ) ).lower() )'
+echo "to stderr, in write order" >&2
+echo "probestdoutkindgate: SOME CHECKS FAILED"
+exit 1
+EOF
+chmod +x "$CORPUSROOT/test/probestdoutkindgate.sh"
+
+outH="$( python3 "$PARGATES" "$CORPUSROOT" "$FAKEBIN" --only probestdoutkindgate 2>&1 )"
+if printf '%s\n' "$outH" | grep -q 'STDOUT_KIND=regular'; then
+    ok "stdout: the harness hands a gate a REGULAR FILE — its writes cannot block, so they cannot be interrupted"
+else
+    no "stdout: a gate's fd 1 is $( printf '%s\n' "$outH" | grep -o 'STDOUT_KIND=[a-z]*' | head -1 )
+        — a pipe write can return EINTR/EAGAIN and a gate's printf then reports a failure that never happened"
+fi
+if printf '%s\n' "$outH" | grep -q 'STDERR_SHARES_STDOUT=true'; then
+    ok "stdout: stderr is still the SAME description as stdout — a gate's stderr keeps landing beside the row it explains"
+else
+    no "stdout: stderr is no longer merged into stdout's description — write-order interleaving is lost"
+fi
+if printf '%s\n' "$outH" | grep -q 'to stderr, in write order'; then
+    ok "stdout: what a gate wrote to stderr still reaches the captured transcript"
+else
+    no "stdout: the gate's stderr line is missing from the transcript"
+fi
+
 [ "$fail" -eq 0 ] && echo "pargatescheck: ALL PASS" || { echo "pargatescheck: SOME CHECKS FAILED"; exit 1; }
