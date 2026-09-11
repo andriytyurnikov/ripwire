@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -740,23 +741,25 @@ inline FileHarvest harvestFile( std::string_view bytes, std::string_view path, b
 
 // ── tree walk + resolution ───────────────────────────────────────────────────────────────────────────────
 
-inline bool readWhole( const std::string& path, std::string& out )
+// The whole file, or nullopt when it cannot be opened or grows past kMaxFlagFileBytes. A read error part-way
+// through keeps what was read, and an empty file is an engaged empty string.
+inline std::optional<std::string> readWhole( const std::string& path )
 {
     std::FILE* fp = std::fopen( path.c_str(), "rb" );
     if( !fp )
     {
-        return false;
+        return std::nullopt;
     }
-    out.clear();
+    std::string out;
     char        buf[ 65536 ];
     std::size_t n = 0;
     while( ( n = std::fread( buf, 1, sizeof( buf ), fp ) ) > 0 )
     {
         out.append( buf, n );
-        if( out.size() > kMaxFlagFileBytes ) { out.clear(); std::fclose( fp ); return false; }
+        if( out.size() > kMaxFlagFileBytes ) { std::fclose( fp ); return std::nullopt; }
     }
     std::fclose( fp );
-    return true;
+    return out;
 }
 
 // The CMake files under `root`, sorted. ingest() never collects these (CMake is not one of the indexed
@@ -931,13 +934,13 @@ inline FlagsResult computeFlags( const IngestResult& ing, const std::string& roo
 
     const auto scan = [ & ]( const std::string& full, bool isCMake )
     {
-        std::string bytes;
-        if( !readWhole( full, bytes ) )
+        const std::optional<std::string> bytes = readWhole( full );
+        if( !bytes )
         {
             return;
         }
         std::string rel( relForHash( full, root ) );
-        FileHarvest fh = harvestFile( bytes, full, isCMake );
+        FileHarvest fh = harvestFile( *bytes, full, isCMake );
         harvest.push_back( Harvested{ std::move( rel ), std::move( fh ) } );
     };
 

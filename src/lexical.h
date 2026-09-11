@@ -329,10 +329,10 @@ inline LexHeadIndex buildLexHeadIndex( std::size_t rowCount, TokOfFn&& tokOf )
 }
 
 // THE pass-2 scan text for one file, resolved by ONE rule in ONE place: the docText override when the file
-// has one, else the file's bytes read into `scratch`. An EMPTY string means "skip this file" — what an empty
-// docText override and an unreadable file have always meant. `scratch` is the caller's reusable buffer, so
-// the read allocates once per worker rather than once per file. Extracted 2026-09-06 out of the pass-2
-// worker below, which is the densest branch nest in this function.
+// has one, else the file's bytes moved into `scratch`. An EMPTY string means "skip this file" — what an empty
+// docText override and an unreadable file have always meant. `scratch` owns those bytes for as long as the
+// caller holds the returned pointer. Extracted 2026-09-06 out of the pass-2 worker below, which is the densest
+// branch nest in this function.
 inline const std::string* lexicalScanText( const IngestResult& ing, std::size_t f, std::string& scratch )
 {
     // P1-B: a document file (notebook/html/csv) is indexed by its EXTRACTED text, not its raw bytes, so a
@@ -347,11 +347,10 @@ inline const std::string* lexicalScanText( const IngestResult& ing, std::size_t 
     // `str()`'s copy out of it — on the path that reads every indexed file once per cold query. The
     // canonical whole-file read is docparse::detail::readWholeFile (commentcoherence.h, quality.h,
     // renamemine.h, githarden.h, graph.h and mergescout.h all already reach for it, and mergescout's own
-    // comment records that it used to be a hand-rolled copy): one stat, one resize, one fread into the
-    // caller's buffer, zero intermediate copies. Semantics are identical here by construction — it
-    // CLEARS `out` on any failure, which is exactly the empty-string "skip this file" contract above.
-    scratch.clear();
-    docparse::detail::readWholeFile( diskPath( ing, std::uint32_t( f ) ), scratch );
+    // comment records that it used to be a hand-rolled copy): one open, one size probe, one fread into the
+    // string it returns, which is moved into `scratch` — zero intermediate copies. An unreadable file is
+    // nullopt, and value_or's empty string is exactly the "skip this file" contract above.
+    scratch = docparse::detail::readWholeFile( diskPath( ing, std::uint32_t( f ) ) ).value_or( std::string() );
     return &scratch;
 }
 

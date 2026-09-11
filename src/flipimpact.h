@@ -82,6 +82,7 @@
 #include <climits>
 #include <cstdlib>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -501,15 +502,16 @@ inline void forEachCodeLine( std::string_view bytes, Visit&& visit )
     forEachLine( bytes, [ & ]( std::string_view line, std::uint32_t lineNo ) { if( isCodeLine( darkflags::trimView( line ) ) ) { visit( line, lineNo ); } } );
 }
 
-// The C-family files worth opening for `needles`, as (fileId, display path) — the needles-first screen that
-// keeps both passes off the ~97% of a tree that never mentions the gate family.
-inline bool fileMayHold( const IngestResult& ing, std::uint32_t fileId, std::string& bytesOut )
+// A C-family file's bytes, or nullopt for any other file and for one readWhole refuses (unreadable, or past
+// kMaxFlagFileBytes) — the needles-first screen that keeps both passes off the ~97% of a tree that never
+// mentions the gate family.
+inline std::optional<std::string> fileMayHold( const IngestResult& ing, std::uint32_t fileId )
 {
     if( !isCFamilyPath( ing.files[fileId] ) )
     {
-        return false;
+        return std::nullopt;
     }
-    return darkflags::readWhole( diskPath( ing, fileId ), bytesOut );
+    return darkflags::readWhole( diskPath( ing, fileId ) );
 }
 
 // PASS A — every ordinary-code mention of a family gate, split into value BINDINGS (`constexpr bool kWalls =
@@ -517,17 +519,17 @@ inline bool fileMayHold( const IngestResult& ing, std::uint32_t fileId, std::str
 inline void scanGateMentions( const IngestResult& ing, const std::string& root,
                               const std::vector<std::string>& family, ValueScanResult& out )
 {
-    std::string bytes;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
-        if( !fileMayHold( ing, f, bytes ) )
+        const std::optional<std::string> bytes = fileMayHold( ing, f );
+        if( !bytes )
         {
             continue;
         }
         std::vector<std::string_view> needles;                     // the family names this file actually contains
         for( const std::string& gname : family )
         {
-            if( bytes.find( gname ) != std::string::npos )
+            if( bytes->find( gname ) != std::string::npos )
             {
                 needles.push_back( gname );
             }
@@ -538,7 +540,7 @@ inline void scanGateMentions( const IngestResult& ing, const std::string& root,
         }
 
         const std::string rel( relForHash( ing.files[f], root ) );
-        forEachCodeLine( bytes, [ & ]( std::string_view line, std::uint32_t lineNo )
+        forEachCodeLine( *bytes, [ & ]( std::string_view line, std::uint32_t lineNo )
         {
             for( std::string_view gname : needles )
             {
@@ -578,17 +580,17 @@ inline void scanGateMentions( const IngestResult& ing, const std::string& root,
 // declaration can sit BELOW the use (a class member, a later block), so hits are held and filtered at the end.
 inline void scanBindingUses( const IngestResult& ing, const std::string& root, ValueScanResult& out )
 {
-    std::string bytes;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
-        if( !fileMayHold( ing, f, bytes ) )
+        const std::optional<std::string> bytes = fileMayHold( ing, f );
+        if( !bytes )
         {
             continue;
         }
         std::vector<std::size_t> needles;                          // indices into out.bindings
         for( std::size_t b = 0; b < out.bindings.size(); ++b )
         {
-            if( bytes.find( out.bindings[b].name ) != std::string::npos )
+            if( bytes->find( out.bindings[b].name ) != std::string::npos )
             {
                 needles.push_back( b );
             }
@@ -602,7 +604,7 @@ inline void scanBindingUses( const IngestResult& ing, const std::string& root, V
         std::vector<char>        shadowed( needles.size(), 0 );
         std::vector<LitBranch>   pending;
         std::vector<std::size_t> pendingNeedle;
-        forEachCodeLine( bytes, [ & ]( std::string_view line, std::uint32_t lineNo )
+        forEachCodeLine( *bytes, [ & ]( std::string_view line, std::uint32_t lineNo )
         {
             for( std::size_t k = 0; k < needles.size(); ++k )
             {

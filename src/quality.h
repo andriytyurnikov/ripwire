@@ -392,8 +392,8 @@ inline void appendConfigValueTokens( std::string_view rest, bool isVendor, Regis
 inline RegisterMacrosConfig readRegisterMacrosConfig( std::string_view root )
 {
     RegisterMacrosConfig out;
-    std::string          text;
-    if( !docparse::detail::readWholeFile( configPath( root ), text ) || text.empty() )
+    const std::string    text = docparse::detail::readWholeFile( configPath( root ) ).value_or( std::string() );
+    if( text.empty() )
     {
         return out;   // absent/unreadable/empty — inert, never a refusal
     }
@@ -844,14 +844,14 @@ inline void forEachSymbolBody( const IngestResult& ing, Fn&& visit )
 {
     // per-file def ids with a real body (see errorMaskCountsBySym above on `symbols[i].id == i`).
     const SymbolsByFile byFile = symbolsByFileInIdOrder( ing, []( const Symbol& s ) { return s.endByte > s.sigStartByte; } );
-    std::string         bytes;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
         if( byFile[f].empty() )
         {
             continue;
         }
-        if( !docparse::detail::readWholeFile( ing.files[f], bytes ) || bytes.empty() )
+        const std::string bytes = docparse::detail::readWholeFile( ing.files[f] ).value_or( std::string() );
+        if( bytes.empty() )
         {
             continue;   // unreadable or empty — contributes nothing, silently: a partial read is evidence of nothing
         }
@@ -2834,38 +2834,38 @@ inline bool deserializeSnapshot( const std::string& blob, const std::string& hea
     return true;
 }
 
-// Read a qsnap blob whole. Returns 1 = readable non-empty file (out filled), 0 = absent/empty/unreadable/not-a-regular-file (a
-// CLEAN miss — no alert). A present-but-invalid blob still returns 1 here; deserializeSnapshot then rejects it,
+// Read a qsnap blob whole: its bytes for a readable non-empty file, nullopt for absent/empty/unreadable/not-a-regular-file
+// (a CLEAN miss — no alert). A present-but-invalid blob is still returned here; deserializeSnapshot then rejects it,
 // and the caller alerts. Binary-safe (no getline/text translation).
-inline int readQSnapBlob( const std::string& path, std::string& out )
+inline std::optional<std::string> readQSnapBlob( const std::string& path )
 {
     // L1 (Linux runtime probe): opening a DIRECTORY succeeds on Linux/glibc and fails on macOS, so a
     // non-regular file at a cache-blob path is a platform-split hazard rather than a clean miss — it cost
     // ingest.cpp's loadCache an abort (see isRegularFileAt there). A qsnap blob is always a REGULAR file
     // (atomicWriteFile renames one into place); every other shape is a miss on every platform, which is
-    // exactly what this function's 0 already means, so it stays silent and the caller recomputes.
+    // exactly what this function's nullopt already means, so it stays silent and the caller recomputes.
     {
         struct stat probe;
         if( ::stat( path.c_str(), &probe ) != 0 || !S_ISREG( probe.st_mode ) )
         {
-            return 0;
+            return std::nullopt;
         }
     }
 
     std::ifstream f( path, std::ios::binary | std::ios::ate );
     if( !f )
     {
-        return 0;
+        return std::nullopt;
     }
     const std::streamsize sz = f.tellg();
     if( sz <= 0 )
     {
-        return 0;
+        return std::nullopt;
     }
-    out.resize( static_cast<std::size_t>( sz ) );
+    std::string out( static_cast<std::size_t>( sz ), '\0' );
     f.seekg( 0 );
-    if( !f.read( out.data(), sz ) ) { out.clear(); return 0; }
-    return 1;
+    if( !f.read( out.data(), sz ) ) { return std::nullopt; }
+    return out;
 }
 
 // ─── Phase-M concurrency seam ───────────────────────────────────────────────────────────────────────
@@ -2924,12 +2924,12 @@ inline bool atomicWriteFile( const std::string& path, const std::string& blob )
 // -1 = present but corrupt/mismatched (caller decides whether to alert). Never throws.
 inline int probeSnapshotBlob( const std::string& path, const std::string& sha, Snapshot& out )
 {
-    std::string blob;
-    if( readQSnapBlob( path, blob ) != 1 )
+    const std::optional<std::string> blob = readQSnapBlob( path );
+    if( !blob )
     {
         return 0;
     }
-    return deserializeSnapshot( blob, sha, out ) ? 1 : -1;
+    return deserializeSnapshot( *blob, sha, out ) ? 1 : -1;
 }
 
 // RAII owner of a materialized commit tree — keep alive while reading file bytes through its ingest result.
@@ -3505,9 +3505,9 @@ inline std::vector<std::vector<std::uint32_t>> gitCoChangeAndChurnCached(
     keyMat += "qchurn" + std::to_string( kQChurnCacheScheme );
     const std::string cachePath = shaKeyedCachePath( "qchurn", repoHex, std::string{}, keyMat );
 
-    RawCommitStream raw;
-    std::string      blob;
-    if( readQSnapBlob( cachePath, blob ) == 1 && deserializeRawCommitStream( blob, keyMat, raw ) )
+    RawCommitStream                  raw;
+    const std::optional<std::string> blob = readQSnapBlob( cachePath );
+    if( blob && deserializeRawCommitStream( *blob, keyMat, raw ) )
     {
         return resolveCommitStream( raw, ing, maxFiles, churnCutoff, outChurn, onlyRoot );   // warm hit — no walk
     }

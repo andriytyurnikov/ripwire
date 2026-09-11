@@ -3267,7 +3267,7 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
     return oc;
 }
 
-// quality_delta → JSON. "" ONLY on the non-git/no-sidecar degrade (caller reports the error message).
+// quality_delta → { JSON, error }. The JSON is "" ONLY on the non-git/no-sidecar degrade, and the error then says why.
 //
 // §B6 M5 [MISLEADING] — this payload and the CLI's `--quality-delta --json` were two JSON documents about
 // one computation that disagreed on the two things a consumer reads FIRST:
@@ -3279,10 +3279,10 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
 // facet names, displaySym's root-relative spelling, and the CLI's own was/now omission rule for the
 // zero-magnitude kinds). `regressions_count` is gone rather than kept as an alias: two names for one number
 // is how the next consumer picks the wrong one. Gate: test/mcpclidiffcheck.sh diffs the two key sets.
-inline std::string qualityDeltaJson( const std::string& root, std::string& errOut )
+inline std::pair<std::string, std::string> qualityDeltaJson( const std::string& root )
 {
     const QualityDeltaOutcome oc = computeQualityDelta( root );
-    if( !oc.ok ) { errOut = oc.errMsg; return {}; }
+    if( !oc.ok ) { return { std::string(), oc.errMsg }; }
 
     // r26 ORIGIN SPLIT — the same three counts main.cpp derives, so both surfaces encode one contract.
     std::size_t minorCount = 0, newSymbolCount = 0, gatingCount = 0;
@@ -3377,14 +3377,14 @@ inline std::string qualityDeltaJson( const std::string& root, std::string& errOu
     out += "],";     // L2 — "sa":[...], same taxonomy the CLI's <sa kind= key= why=/> rows carry (shared builder, quality::staleAcksJsonArray)
     out += rw::quality::staleAcksJsonArray( oc.staleAcks );
     out += "}";
-    return out;
+    return { std::move( out ), std::string() };
 }
 
 // quality_baseline → writes `.ripwire_quality_baseline` (side-effect verb) stamped with HEAD, returning a JSON
 // summary of what it wrote. Reuses quality::computeSnapshot + writeBaseline + gitHeadSha — the exact CLI path.
-// The sidecar is written in `root` (same as the CLI, which uses cfg.rootPath). Returns "" + fills errOut when
-// the write fails (unwritable dir). Rebuilds ing/graph from disk so the snapshot keys match the CLI.
-inline std::string qualityBaselineJson( const std::string& root, std::string& errOut )
+// The sidecar is written in `root` (same as the CLI, which uses cfg.rootPath). Returns { JSON, "" }, or { "", error }
+// when the write fails (unwritable dir). Rebuilds ing/graph from disk so the snapshot keys match the CLI.
+inline std::pair<std::string, std::string> qualityBaselineJson( const std::string& root )
 {
     IngestResult ing;                                          // Phase-M: serialize the ingest vs the prefetch worker (§2b)
     {
@@ -3399,13 +3399,13 @@ inline std::string qualityBaselineJson( const std::string& root, std::string& er
                                                     sidecar, headSha );
     if( !wrote )
     {
-        errOut = std::string( "could not write " ) + sidecar + " (unwritable directory?)";
-        return {};
+        return { std::string(), std::string( "could not write " ) + sidecar + " (unwritable directory?)" };
     }
-    return std::string( "{\"wrote\":\"" ) + mcpdetail::jsonEscape( sidecar )
-         + "\",\"symbols\":" + std::to_string( ing.symbols.size() )
-         + ",\"head_sha\":\"" + mcpdetail::jsonEscape( headSha.empty() ? std::string( "(none — not a git repo)" ) : headSha )
-         + "\",\"note\":\"baseline pinned; re-run the quality_delta verb after each edit to see only what got worse\"}";
+    std::string json = std::string( "{\"wrote\":\"" ) + mcpdetail::jsonEscape( sidecar )
+                     + "\",\"symbols\":" + std::to_string( ing.symbols.size() )
+                     + ",\"head_sha\":\"" + mcpdetail::jsonEscape( headSha.empty() ? std::string( "(none — not a git repo)" ) : headSha )
+                     + "\",\"note\":\"baseline pinned; re-run the quality_delta verb after each edit to see only what got worse\"}";
+    return { std::move( json ), std::string() };
 }
 
 // ─── L4: the B11-verb-parity MCP twins — `explore`/`pack_task`,

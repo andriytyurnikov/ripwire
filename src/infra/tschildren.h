@@ -23,6 +23,17 @@
 // a FIXED-INDEX probe (`ts_node_child( n, 0 )`), or a scan of a node whose children a comment cannot reach.
 // If you cannot name that reason in one line, use the cursor.
 //
+// Lane W4 (2026-09-10) then audited the ~25 loops the class-3 table had left across ingest_relations.h,
+// ingest_names.h, ingest_elixir.h, ingest_sidecap.h and pattern.h: twenty-two of them measured 13x..126x
+// their control under the flood and are cursors now (test/childwalkscalecheck.sh, arms B13..B36 — every
+// one proven red on the pre-change binary first); the three that stay indexed each carry the one-line
+// reason at the loop — the markdown grammar has no extras at all (mdWalk), and a string's children come
+// from the external scanner, which owns every byte between the delimiters (stringLiteralText, the Elixir
+// test-title scan). Two lessons from that round: a FLAT measurement proves the fixture missed the list,
+// never that the loop is safe (leading comments belong to the PARENT, not the child that has not started;
+// an uncaptured form never enters the walk); and a control can be quadratic in its own right when the walk
+// under test runs on every ancestor of a def.
+//
 // WHY IT IS ITS OWN HEADER AND NOT A SECTION OF ingest.cpp. It was one, inside ingest_metrics.h's unnamed
 // namespace, and that made it unreachable from the two headers that ALSO walk whole subtrees and are
 // compiled outside that translation unit — src/preprocdead.h (shared with src/slice.h). The result was
@@ -47,6 +58,8 @@
 // also why a scaling gate must flood with comments: a declaration flood of identical width goes green
 // over a live defect.
 
+#include <cstring>
+#include <initializer_list>
 #include <vector>
 
 #include <tree_sitter/api.h>
@@ -133,6 +146,35 @@ inline bool anyChildBelow( TSNode n, int maxDepth, bool namedOnly, const Pred& p
         }
         found = true;
         return false;
+    } );
+    return found;
+}
+
+// FIRST child of n whose node type is one of `kinds` (named children only when `namedOnly`), or a null node
+// when none is — the cursor form of the `for( i ) { if( strcmp( ts_node_type( ts_node_child( n, i ) ), K ) == 0 )
+// return child; }` probe that lane W4 found spelled at six sites (a C# using directive's specifier, an Elixir
+// call's `arguments` and `do_block`, an ObjC method's body, a linkage_specification's string, the C++
+// using-declaration keyword). One spelling, so a converted probe cannot drift back into an indexed one.
+inline TSNode firstChildOfKind( TSNode n, bool namedOnly, std::initializer_list<const char*> kinds )   // A4-F25: NOT noexcept — the cursor allocates
+{
+    TSNode      found = {};
+    ChildCursor cursor( n );
+    forEachChild( n, cursor.cur, [ & ]( TSNode child )
+    {
+        if( namedOnly && !ts_node_is_named( child ) )
+        {
+            return true;
+        }
+        const char* type = ts_node_type( child );
+        for( const char* kind : kinds )
+        {
+            if( std::strcmp( type, kind ) == 0 )
+            {
+                found = child;
+                return false;
+            }
+        }
+        return true;
     } );
     return found;
 }

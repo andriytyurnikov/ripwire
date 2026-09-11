@@ -247,7 +247,9 @@ Edge rules:
 
 ### rank — Personalized PageRank
 
-Power iteration over the in-edge CSR, parallelized over **fixed contiguous row blocks**. Constants
+Power iteration over the in-edge CSR, single-threaded. Every reduction (the dangling mass, the L1 residual)
+folds **fixed contiguous blocks** of `kReductionBlockSize = 1024` in canonical index order, so the summation tree
+is a property of the source, never of thread count or timing. Constants
 live in a named configuration struct, not as literals in the loop: damping `α = 0.85`, L1 residual
 tolerance `τ = 1e-6`, `maxIter = 100`, diff-teleport concentration `β = 0.7`.
 

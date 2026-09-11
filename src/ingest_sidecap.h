@@ -96,6 +96,43 @@ FfiCtx makeFfiCtx( std::uint32_t fileId, Lang lang, std::string_view src, std::v
     return cx;
 }
 
+// `m.def( "alias", &Scope::target )` — the alias string and the `&`-stripped target text of a pybind def
+// call's argument_list, each empty when absent. O(children): the list owns every comment written between
+// its arguments — 13x at 16 000 (test/childwalkscalecheck.sh, arm B31). Its own function so ffiVisitNode's
+// nesting stays where it was: the cursor walk sits one level deeper than the loop it replaced.
+inline std::pair<std::string, std::string> pybindDefParts( TSNode args, std::string_view src )
+{
+    std::string alias, tgt;
+    if( ts_node_is_null( args ) )
+    {
+        return { alias, tgt };
+    }
+    ChildCursor cursor( args );
+    forEachNamedChild( args, cursor.cur, [ & ]( TSNode c )   // named only: skips '(' ',' ')'
+    {
+        const std::string_view ct = ts_node_type( c );
+        if( alias.empty() && ct == "string_literal" )
+        {
+            alias = ffiUnquote( nodeTextOf( c, src ) );
+        }
+        else if( tgt.empty() )
+        {
+            std::string_view txt = nodeTextOf( c, src );               // `&target` / `&Scope::method`
+            if( !txt.empty() && txt.front() == '&' )
+            {
+                txt.remove_prefix( 1 );
+                while( !txt.empty() && ( txt.front() == ' ' || txt.front() == '\t' ) )
+                {
+                    txt.remove_prefix( 1 );
+                }
+                tgt = std::string( txt );
+            }
+        }
+        return true;
+    } );
+    return { alias, tgt };
+}
+
 void ffiVisitNode( FfiCtx& cx, TSNode n, const char* t )
 {
     FUSEPROBE_BUMP( kFfi );
@@ -117,35 +154,7 @@ void ffiVisitNode( FfiCtx& cx, TSNode n, const char* t )
                 const std::string_view meth = nodeSrc( fieldChild( fn, NodeField::Field ) );
                 if( meth == "def" || meth == "def_static" )
                 {
-                    const TSNode args = fieldChild( n, NodeField::Arguments );
-                    std::string alias, tgt;
-                    const std::uint32_t cc = ts_node_is_null( args ) ? 0 : ts_node_child_count( args );
-                    for( std::uint32_t i = 0; i < cc; ++i )
-                    {
-                        const TSNode c = ts_node_child( args, i );
-                        if( !ts_node_is_named( c ) )
-                        {
-                            continue; // skip '(' ',' ')'
-                        }
-                        const std::string_view ct = ts_node_type( c );
-                        if( alias.empty() && ct == "string_literal" )
-                        {
-                            alias = ffiUnquote( nodeSrc( c ) );
-                        }
-                        else if( tgt.empty() )
-                        {
-                            std::string_view txt = nodeSrc( c );               // `&target` / `&Scope::method`
-                            if( !txt.empty() && txt.front() == '&' )
-                            {
-                                txt.remove_prefix( 1 );
-                                while( !txt.empty() && ( txt.front() == ' ' || txt.front() == '\t' ) )
-                                {
-                                    txt.remove_prefix( 1 );
-                                }
-                                tgt = std::string( txt );
-                            }
-                        }
-                    }
+                    auto [ alias, tgt ] = pybindDefParts( fieldChild( n, NodeField::Arguments ), src );
                     if( !alias.empty() && !tgt.empty() )
                     {
                         auto [ scope, name ] = ffiSplitScopeName( tgt );
@@ -161,13 +170,10 @@ void ffiVisitNode( FfiCtx& cx, TSNode n, const char* t )
         else if( cish && kindIs( t, "linkage_specification" ) )
         {
             // confirm the linkage string is "C" (not "C++") before harvesting.
-            bool isC = false;
-            const std::uint32_t lc = ts_node_child_count( n );
-            for( std::uint32_t i = 0; i < lc; ++i )
-            {
-                const TSNode c = ts_node_child( n, i );
-                if( kindIs( ts_node_type( c ), "string_literal" ) ) { isC = ( ffiUnquote( nodeSrc( c ) ) == "C" ); break; }
-            }
+            // O(children): `extern /*…*/ "C"` puts the comments in the linkage_specification itself, before
+            // the string — 13x at 16 000 (childwalkscalecheck B32; ffi/ floods the BODY, arm B4)
+            const TSNode linkage = firstChildOfKind( n, /*namedOnly=*/false, { "string_literal" } );
+            const bool   isC     = !ts_node_is_null( linkage ) && ffiUnquote( nodeSrc( linkage ) ) == "C";
             if( isC )
             {
                 // inner DFS: collect the identifier of every function_declarator in the linkage body.
@@ -332,37 +338,34 @@ inline HttpMethod pyMethodsKeyword( TSNode argsNode, std::string_view src, bool&
     {
         return HttpMethod::Unknown;
     }
-    const std::uint32_t nc = ts_node_named_child_count( argsNode );
-    for( std::uint32_t i = 0; i < nc; ++i )
+    // O(children): `@app.route( "/x", # … methods=[…] )` — 58x at 16 000 (childwalkscalecheck B33)
+    HttpMethod  method = HttpMethod::Unknown;
+    ChildCursor cursor( argsNode );
+    forEachNamedChild( argsNode, cursor.cur, [ & ]( TSNode c )
     {
-        const TSNode c = ts_node_named_child( argsNode, i );
         if( !kindIs( ts_node_type( c ), "keyword_argument" ) )
         {
-            continue;
+            return true;
         }
         const TSNode nameN = fieldChild( c, NodeField::Name );
         if( ts_node_is_null( nameN ) )
         {
-            continue;
+            return true;
         }
         const std::uint32_t na = ts_node_start_byte( nameN ), nb = ts_node_end_byte( nameN );
         if( na > nb || nb > src.size() || src.substr( na, nb - na ) != "methods" )
         {
-            continue;
+            return true;
         }
         hasKeyword = true;
         const TSNode valueN = fieldChild( c, NodeField::Value );
-        if( ts_node_is_null( valueN ) || !kindIs( ts_node_type( valueN ), "list" ) )
+        if( !ts_node_is_null( valueN ) && kindIs( ts_node_type( valueN ), "list" ) && ts_node_named_child_count( valueN ) == 1 )
         {
-            return HttpMethod::Unknown;
+            method = stringNodeToMethod( ts_node_named_child( valueN, 0 ), src );   // else 0 or >1 verbs → ambiguous, path-only match
         }
-        if( ts_node_named_child_count( valueN ) != 1 )
-        {
-            return HttpMethod::Unknown; // 0 or >1 verbs → ambiguous, path-only match
-        }
-        return stringNodeToMethod( ts_node_named_child( valueN, 0 ), src );
-    }
-    return HttpMethod::Unknown;
+        return false;
+    } );
+    return method;
 }
 
 // JS options-object `{ method: 'POST', ... }`: the `method` property's string-literal value, else Unknown
@@ -374,24 +377,25 @@ inline HttpMethod jsMethodProperty( TSNode objNode, std::string_view src )
     {
         return HttpMethod::Unknown;
     }
-    const std::uint32_t nc = ts_node_named_child_count( objNode );
-    for( std::uint32_t i = 0; i < nc; ++i )
+    // O(children): `fetch( '/x', { /*…*/ method: 'POST' } )` — 55x at 16 000 (childwalkscalecheck B34)
+    HttpMethod  method = HttpMethod::Unknown;
+    ChildCursor cursor( objNode );
+    forEachNamedChild( objNode, cursor.cur, [ & ]( TSNode c )
     {
-        const TSNode c = ts_node_named_child( objNode, i );
         if( !kindIs( ts_node_type( c ), "pair" ) )
         {
-            continue;
+            return true;
         }
         const TSNode keyN = fieldChild( c, NodeField::Key );
         if( ts_node_is_null( keyN ) )
         {
-            continue;
+            return true;
         }
         const char* kt = ts_node_type( keyN );
         const std::uint32_t ka = ts_node_start_byte( keyN ), kb = ts_node_end_byte( keyN );
         if( ka > kb || kb > src.size() )
         {
-            continue;
+            return true;
         }
         std::string key;
         if( kindIs( kt, "property_identifier" ) )
@@ -402,17 +406,14 @@ inline HttpMethod jsMethodProperty( TSNode objNode, std::string_view src )
         {
             key = ffiUnquote( src.substr( ka, kb - ka ) );
         }
-        else
-        {
-            continue;
-        }
         if( key != "method" )
         {
-            continue;
+            return true;
         }
-        return stringNodeToMethod( fieldChild( c, NodeField::Value ), src );
-    }
-    return HttpMethod::Unknown;
+        method = stringNodeToMethod( fieldChild( c, NodeField::Value ), src );
+        return false;
+    } );
+    return method;
 }
 
 // One visitor on the shared pre-order stream (streamSideCaptures below). The pass arms only on Python/JS/TS;
@@ -1736,15 +1737,9 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             // and never reach here). See test/langcheck.sh c.m and the byte-identical src/ regression gate.
             if( ts_node_is_null( body ) && le.lang == Lang::ObjC )
             {
-                const std::uint32_t childCount = ts_node_child_count( defNode );
-                for( std::uint32_t ci = 0; ci < childCount; ++ci )
-                {
-                    const TSNode ch = ts_node_child( defNode, ci );
-                    const char*  ct = ts_node_type( ch );
-                    if( kindIs( ct, "compound_statement" )     || kindIs( ct, "function_body" )
-                        || kindIs( ct, "block" )               || kindIs( ct, "implementation_definition" ) )
-                    { body = ch; break; }
-                }
+                // O(children): `- (void) m /*…*/ { }` puts the comments in the method_definition, before its
+                // body — 24x at 16 000 (test/childwalkscalecheck.sh, arm B35)
+                body = firstChildOfKind( defNode, /*namedOnly=*/false, { "compound_statement", "function_body", "block", "implementation_definition" } );
             }
 
             // Dart's body is a SIBLING of the signature, so neither defBodyNodeOf nor the climb above can
