@@ -426,6 +426,27 @@ inline const char* capLegendClause( bool active ) noexcept
     return active ? kNeighbourCapLegend : "";
 }
 
+// ── TIER-3 DECLINES — declined_calls= on the callers, callees and impact answers (test/declinecheck.sh) ────
+// A call whose candidates are two or more same-language definitions, none in the caller's file or directory,
+// and that no qualifier or receiver rule pinned, gets NO edge: the resolver declines to guess. Until this
+// clause the decline was also SILENT, so count="0" read as "no caller exists" about a call the resolver had
+// seen. One sentence for the three answers and their MCP twins, emitted exactly when the attribute is:
+// declinedCallsLegend( bool ) takes the emitter's own attribute-present condition, never a re-derivation. No
+// double hyphen anywhere, because it lands inside an XML comment.
+inline constexpr const char* kDeclinedCallsLegend =
+    "declined_calls=K (absent when 0) counts call SITES the resolver declined to bind: the called name has two or more same-language definitions, none in the caller's file or directory, and no qualifier, receiver type or include chose one, so no edge exists and no count or row here includes them (the map header's declined=). Callers form: declined calls that could have meant this selector's definitions; impact form: that could have reached SYM or a symbol in its radius; callees form: declined calls these definitions make. Each call counts once however many candidates it had; the uses verb on the called name lists the sites. ";
+inline const char* declinedCallsLegend( bool on ) noexcept { return on ? kDeclinedCallsLegend : ""; }
+
+// The attribute and the key, one spelling each, absent at zero like bodyless_defs= and graph_unindexed=.
+inline std::string declinedCallsAttrXml( std::size_t declinedCalls )
+{
+    return declinedCalls > 0 ? " declined_calls=\"" + std::to_string( declinedCalls ) + "\"" : std::string();
+}
+inline std::string declinedCallsKeyJson( std::size_t declinedCalls )
+{
+    return declinedCalls > 0 ? ",\"declined_calls\":" + std::to_string( declinedCalls ) : std::string();
+}
+
 // M12's writeMultiRootTable/multiRootTableLegend (the multi-root roots-table disclosure --callers/--uses
 // reuse from the default map) live in serialize.h, not here: they need escapeXml, and serialize.h includes
 // THIS header (for rootRelPathsLegend) before its own escapeXml definition — putting them here would be

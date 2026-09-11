@@ -437,7 +437,7 @@ inline std::string analyzeToString( const std::string& root, int topK, bool stab
                                     // this one must too — "the clause landed at 3 of its 5 echo sites" is the
                                     // §B4 family, and mcpclidiffcheck is the gate that keeps the two surfaces one.
                                     /*ann=*/rw::MapAnnotations{ .prDisclosure = ix.prDisclosure },
-                                    /*statsFirstScreen=*/true, anRootArg, &ix.g.locPinOut, ix.g.externalCalls ); } );
+                                    /*statsFirstScreen=*/true, anRootArg, &ix.g.locPinOut, ix.g.externalCalls, &ix.g.declinedOut ); } );
 }
 
 // ─── the cross-branch + dark-content MCP twins (`whereis`, `stray_content`, `flags`) ───
@@ -656,6 +656,7 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
          + ",\"count\":" + std::to_string( rowTotal )
          + ",\"hop_tested\":" + std::to_string( chTested.tested )
          + ",\"hop_untested\":" + std::to_string( chTested.untested )
+         + declinedCallsKeyJson( chRows.declinedCalls )   // the CLI root's declined_calls=, for the direction count= describes
          + nextFieldJson( nextFlag( referencingOnly ? "--uses=" : "--expand=", name ) );   // P3 (L7): the CLI root's next= (mcpattrparitycheck)
     if( !referencingOnly && chRows.bodylessDefs > 0 )
     {
@@ -2231,6 +2232,10 @@ inline std::string impactText( const std::string& root, const std::string& symbo
     const std::vector<char> impTestReach   = testSymbolForwardReach( ing, g );
     const std::size_t       radiusTested   = countTestedIn( ing, impTestReach, reach );
     const std::size_t       radiusUntested = reach.size() - radiusTested;
+    // The CLI --impact's declined_calls=, by the same call over the same set (graph.h declinedCallsNaming).
+    std::vector<NodeId>     declineTargets( reach );
+    declineTargets.insert( declineTargets.end(), seeds.begin(), seeds.end() );
+    const std::size_t       declinedCalls  = declinedCallsNaming( g, declineTargets );
 
     std::vector<char> esc;
     const auto ex = [ & ]( std::string_view s ) -> std::string { return std::string( escapeXml( s, esc ) ); };
@@ -2248,9 +2253,10 @@ inline std::string impactText( const std::string& root, const std::string& symbo
     // exactly the §B4 echo-site divergence the shared-constant rule exists to stop.
     // LB-H: the import tier's clause rides here too — the CLI legend and this one are byte-identical by
     // rule, and an attribute the MCP root now carries has to be defined where the caller meets it.
-    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause, kImpactImportTierLegend,
+    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause, kImpactImportTierLegend,
                   kTestedRowLegend, kImpactTestedPartitionLegend,   // A6
                   kTestedLensBlindSpotLegend,                       // F-02: rides with the partition, byte-identical to the CLI twin
+                  declinedCallsLegend( declinedCalls > 0 ),         // exactly when the root carries declined_calls=, as on the CLI
                   graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), renderDisclosure( prD, DiscloseAs::LegendClause ).c_str() );
     // r27-emitters §P2.1: the listing is capped at 40 by rank. Without shown=/capped= a 40-row answer to
     // "is it safe to change X?" reads as the WHOLE blast radius when it can be 3% of it. Same attributes,
@@ -2269,9 +2275,9 @@ inline std::string impactText( const std::string& root, const std::string& symbo
     // LB-H: ONE derivation, shared with the CLI arm (graph.h::impactImportTier) — mcpclidiffcheck compares
     // the two surfaces' attribute sets, and an honesty marker that lands on one of them is the §B4 class.
     const ImportTier imports = impactImportTier( ing, seeds );
-    rw::emitTo( mem, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}>",
+    rw::emitTo( mem, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}{}>",
                   ex( symbol ).c_str(), seeds.size(), reach.size(),
-                  imports.xmlAttrs.c_str(), radiusTested, radiusUntested, imRootAttr.c_str(),
+                  imports.xmlAttrs.c_str(), radiusTested, radiusUntested, declinedCallsAttrXml( declinedCalls ).c_str(), imRootAttr.c_str(),
                   pageDisclosure( ipab, sizeof( ipab ), shownRows, show.size(), ipw.end, page.limit, page.offset, true ),
                   graphCountFloorAttrXml( g ).c_str(), renderDisclosure( prD, DiscloseAs::XmlAttrs ).c_str(),   // M15: gauge + marker
                   nextAttrXml( nextFlag( "--safe-delete=", symbol ) ).c_str()  );   // P3 (L7): the CLI twin's next=, same root attribute set (mcpclidiffcheck)

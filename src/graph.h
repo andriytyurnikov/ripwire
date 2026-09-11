@@ -24,6 +24,7 @@
 #include "infra/profileScope.h"  // PROFILE_SCOPE self-profiling — gated by PROFILE_ENABLED (off unless -DRIPWIRE_PROFILE=ON)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <span>          // std::span — transitiveCallers' seed seam takes any contiguous NodeId range
@@ -110,6 +111,20 @@ struct Graph
                                                      // external import binding, a `super()` whose MRO left the tree). No
                                                      // edge, never counted in ambOut/unresolvedOut. Serialized as the
                                                      // header `external=N` / JSON "external":N, absent when 0.
+    // Tier 3's DECLINES: a call whose candidates are two or more same-language definitions, none in the caller's
+    // file or directory, that no qualifier or receiver rule pinned. Still no edge — the ladder refuses to guess —
+    // but no longer silent. declinedOut is per CALLER, like ambOut: summed it is the header `declined=N` (JSON
+    // "declined":N, absent when 0), and over one selector's definitions it is the callees answer's declined_calls=.
+    // declinedCandOff/declinedCand are a CSR over the declined calls in resolve order — call k's candidates sit in
+    // [off[k], off[k+1]) — which the callers and impact answers read to count the declines that could have meant
+    // THEIR symbols, once per call however many of those symbols one call named.
+    std::vector<std::uint32_t> declinedOut;
+    std::vector<std::uint32_t> declinedCandOff;
+    std::vector<NodeId>        declinedCand;
+    // Every call reference's disposition (pincensus.h CallDisposition), one bucket per reference. Read by buildGraph's
+    // unaccounted alert and copied into pinCensus when a census is armed; its external/unresolved/declined buckets
+    // equal those header gauges by construction.
+    CallDispositionCounts      callDispositions{};
     std::vector<std::string>   localityKey; // per-symbol S6-C SCORING key (resolve.h::localityKeyOf): canonId when scoped,
                                             // `path::name` when not. Read ONLY by the S6-C block; never an identity.
     std::vector<std::string>   canonId;     // per-symbol canonical SCIP-style id `path::scope::name` (S6-C); the
@@ -1422,6 +1437,19 @@ inline JsImportTables buildJsImportTables( const IngestResult& ing, const WsIncl
     return tables;
 }
 
+// Counts one call reference's disposition when its resolve-loop iteration ENDS — on every exit, each `continue`
+// included — so no exit needs a counter of its own, only the assignment naming what happened. A reference that
+// leaves naming nothing is counted Unaccounted, and the conservation line cannot balance silently.
+struct DispositionTally
+{
+    const CallDisposition& disposition;
+    CallDispositionCounts& counts;
+    ~DispositionTally()
+    {
+        ++counts[ std::size_t( disposition ) ];
+    }
+};
+
 // `census` arms the eval-only S6-C silent-pin census (src/pincensus.h): every DECIDED call site records
 // which narrowing stage committed it and to which canonical target. It adds rows to g.pinCensus and
 // changes NOTHING else — no candidate is admitted, dropped or reordered by it, so the emitted map is
@@ -1436,6 +1464,8 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     g.ambOut.assign( N, 0u );   // counted in the resolve loop: calls that stay split across >1 def after narrowing
     g.locPinOut.assign( N, 0u );   // counted in the resolve loop: calls the S6-C locality tie-break alone pinned to one def
     g.unresolvedOut.assign( N, 0u );   // counted in the resolve loop: calls whose in-repo defs were all lang-filtered
+    g.declinedOut.assign( N, 0u );     // counted in the resolve loop: calls tier 3 declined to guess at (no edge)
+    g.declinedCandOff.assign( 1, 0u ); // the declined-call CSR's leading offset: call k's candidates are [off[k], off[k+1])
     if( scip ) { g.scipDocsSeen = scip->documentsSeen; g.scipEdgesPinned = scip->edgesPinned; }
     // #66: carry the crawl's own unindexed-extension roll-up onto the graph, so the verbs that answer off
     // this CSR can disclose the same gap the map header already prints. Summed HERE, from the identical
@@ -1796,13 +1826,14 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // ExternalVeto above buildGraph; `vetoExternal` is the refusal: no edge, one header count, one `C external`
     // census row with no target.
     const ExternalVeto externalVeto{ ing, canonByName, fieldNarrow.localNameSet, extVeto };
-    const auto vetoExternal = [ & ]( const Reference& ref )
+    const auto vetoExternal = [ & ]( const Reference& ref ) -> CallDisposition
     {
         ++g.externalCalls;
         if( census )
         {
             g.pinCensus.addRow( ref.fromSymbol, ref.calleeName, PinMech::External, 0, 0, 0, ref.line );   // no target: a refusal
         }
+        return CallDisposition::External;   // the site's disposition, named by the one function that counts external=
     };
 
     // accumulate per (from,to): summed per-ref confidence + an integer ref count (key = from<<32|to).
@@ -1924,14 +1955,23 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         PROFILE_SCOPE_DESCRIBE( "buildGraph/3: resolve loop (per reference)" );
     for( const Reference& r : ing.references )
     {
-        // file-scope / inheritance / doc-mention / HAS-A → not a call. ABS-3: read/write/import use-sites
-        // are ALSO excluded here — they live only in the use-site index, NEVER in the call graph CSR, so
-        // PageRank and the default ranked map are unchanged by them (G5). Role Macro (the macro-edges
-        // round) IS admitted beside Call: an invocation of an indexed function-like #define is a real
-        // control-flow edge once expanded — the honest difference is its label, not its existence.
-        if( r.fromSymbol == kNoNode || r.isInherit || r.isDocLink || r.isCompose
-            || ( r.role != RefRole::Call && r.role != RefRole::Macro ) )
+        // inheritance / doc-mention / HAS-A → not a call. ABS-3: read/write/import use-sites are ALSO excluded
+        // here — they live only in the use-site index, NEVER in the call graph CSR, so PageRank and the default
+        // ranked map are unchanged by them (G5). Role Macro (the macro-edges round) IS admitted beside Call: an
+        // invocation of an indexed function-like #define is a real control-flow edge once expanded — the honest
+        // difference is its label, not its existence. The predicate lives in pincensus.h because the census
+        // writer re-derives this same population to check the dispositions against.
+        if( !isResolvableCallReference( r ) )
         {
+            continue;
+        }
+        // From here on every exit names its disposition and the tally counts it when the iteration ends,
+        // whichever `continue` ends it. An exit that names nothing is counted Unaccounted (DispositionTally).
+        CallDisposition        disposition = CallDisposition::Unaccounted;
+        const DispositionTally tally{ disposition, g.callDispositions };
+        if( r.fromSymbol == kNoNode )
+        {
+            disposition = CallDisposition::FileScope;   // no caller node for an edge; the use-site index still lists the site
             continue;
         }
         const auto it = byName.find( r.calleeName );
@@ -2081,13 +2121,14 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                 const JsImportTarget& bound = imported->second;
                 if( !shadowed && bound.outcome == JsImportOutcome::External )
                 {
-                    vetoExternal( r );
+                    disposition = vetoExternal( r );
                     continue;
                 }
                 if( shadowed || bound.outcome == JsImportOutcome::Refused
                     || ( bound.outcome == JsImportOutcome::Unlisted && bound.renamed ) )
                 {
                     ++g.unresolvedOut[ r.fromSymbol ];
+                    disposition = CallDisposition::Unresolved;
                     continue;
                 }
                 if( bound.outcome == JsImportOutcome::Pinned )
@@ -2124,6 +2165,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                 if( cand.empty() )
                 {
                     ++g.unresolvedOut[r.fromSymbol];   // a KNOWN-indirect call the tool refuses to guess at
+                    disposition = CallDisposition::Unresolved;
                     continue;
                 }
             }
@@ -2148,7 +2190,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
         if( !scipPinned && !canonical && !narrowed && r.recv == RecvKind::SuperObj && bindingTier.empty() )
         {
-            vetoExternal( r );
+            disposition = vetoExternal( r );
             continue;
         }
         // P2-D Rule 2 (receiver-variable type): a named-receiver call `x.m()` / `x->m()` resolves to the method
@@ -2206,7 +2248,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         if( !scipPinned && !canonical && !narrowed && r.role == RefRole::Call && r.qualifier.empty() && bindingTier.empty()
             && it != byName.end() && externalVeto.isExternalBound( r ) )
         {
-            vetoExternal( r );
+            disposition = vetoExternal( r );
             continue;
         }
         if( !scipPinned && !canonical && !narrowed )
@@ -2222,6 +2264,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             {
                 if( bindingTier.empty() )
                 {
+                    disposition = CallDisposition::Undefined;
                     continue;
                 }
             }
@@ -2286,7 +2329,8 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         const bool alreadyPinned = scipPinned || canonical || narrowed;
         if( !keepRustQualifiedCandidates( ing, chaCones, r, alreadyPinned, cand ) && bindingTier.empty() )
         {
-            continue;                                                           // qualified-external → no edge
+            disposition = CallDisposition::QualifiedExternal;                   // qualified-external → no edge
+            continue;
         }
 
         // ---- tier ladder (the name-based fallback) — SKIPPED when the SCIP overlay pinned this site (tier already holds the
@@ -2308,6 +2352,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                     // language. That is a call the tool would otherwise SILENTLY drop as "external" while a plausibly-
                     // internal (cross-language-filtered / mis-classified) def exists. Count it so `unresolved=N` sees
                     // it. The guard is defensive/self-documenting (it is invariant-true at this site).
+                    disposition = CallDisposition::Undefined;   // `it == end` cannot reach here (site A continued); named anyway
                     if( it != byName.end() )
                     {
                         // multi-root: the per-root semantics of this gauge is "defined in THIS root but
@@ -2324,6 +2369,11 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                         if( anySameRootDef )
                         {
                             ++g.unresolvedOut[r.fromSymbol];
+                            disposition = CallDisposition::Unresolved;
+                        }
+                        else
+                        {
+                            disposition = CallDisposition::OtherRoot;
                         }
                     }
                     continue;
@@ -2362,6 +2412,16 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                 if( cand.size() == 1 || narrowed || canonical ) { tier = cand; tierConf = 0.2f; }
                 else
                 {
+                    // DECLINED. Still no edge and still no guess — that precision rule is the ladder's point. What
+                    // is gone is the silence: the decline counts on the caller (declinedOut → the header's
+                    // declined=, the callees answer's declined_calls=) and records the candidates it could equally
+                    // have meant (declinedCand → the callers and impact answers' declined_calls=), so a count="0"
+                    // there says a call was declined rather than reading as "no caller exists".
+                    // test/declinecheck.sh arms (A) and (B).
+                    ++g.declinedOut[ r.fromSymbol ];
+                    g.declinedCand.insert( g.declinedCand.end(), cand.begin(), cand.end() );
+                    g.declinedCandOff.push_back( std::uint32_t( g.declinedCand.size() ) );
+                    disposition = CallDisposition::Declined;
                     continue;
                 }
             }
@@ -2369,7 +2429,8 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
         if( tier.empty() )
         {
-            continue; // a covered-but-empty SCIP site (all self/out-of-range) yields no edge
+            disposition = CallDisposition::Self;   // a covered-but-empty SCIP site (all self/out-of-range) yields no edge
+            continue;
         }
 
         // ── B2.1 CHA-lite + B2.2 arity filter — two SOUND, deterministic prunes of a STILL-ambiguous tier, run
@@ -2607,6 +2668,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
         if( nReal == 0 )
         {
+            disposition = CallDisposition::Self;   // the tier held only the caller itself: a recursion, not an edge
             continue;
         }
         // ---- the Phase-4 disclosure marker (shipped): the census's `locality` label, by the same predicate ---
@@ -2659,6 +2721,17 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                 importEdges[ekey] = 1;  // remember (from,to) for prov="import"
             }
         }
+        disposition = CallDisposition::Bound;
+    }
+    // A reference that left the loop naming no disposition is a resolver bug behind a correct-looking map: the
+    // edges are right and the census's conservation line is not. Every plain build says so, census or not.
+    if( g.callDispositions[ std::size_t( CallDisposition::Unaccounted ) ] > 0 )
+    {
+        DEGRADED_PATH_ALERT( "buildGraph: a call reference left the resolve loop without a disposition (pincensus.h CallDisposition)" );
+    }
+    if( census )
+    {
+        g.pinCensus.dispositions = g.callDispositions;   // the census writes the conservation line from its own copy
     }
     }
 
@@ -6098,6 +6171,54 @@ inline std::string graphCountFloorAttrXml( const Graph& g )
 inline std::string graphCountFloorAttrJson( const Graph& g )
 {
     return graphGaugeAttrJson( g.ambOut, g.unresolvedOut, g.unindexedFiles ) + kGraphCountFloorAttrJson;
+}
+
+// declined_calls= on the callers and impact answers: how many tier-3 declines named at least one of `targets`
+// among their candidates. The unit is the CALL, never (call, candidate): a bare-name selector unions every
+// same-named definition, and a declined call that could have meant two of them is still ONE call the answer
+// may be missing.
+inline std::size_t declinedCallsNaming( const Graph& g, std::span<const NodeId> targets )
+{
+    if( g.declinedCand.empty() || targets.empty() )
+    {
+        return 0;
+    }
+    std::vector<char> isTarget( g.declinedOut.size(), 0 );
+    for( const NodeId t : targets )
+    {
+        if( t < isTarget.size() )
+        {
+            isTarget[ t ] = 1;
+        }
+    }
+    std::size_t callCount = 0;
+    for( std::size_t callIndex = 0; callIndex + 1 < g.declinedCandOff.size(); ++callIndex )
+    {
+        for( std::uint32_t slot = g.declinedCandOff[ callIndex ]; slot < g.declinedCandOff[ callIndex + 1 ]; ++slot )
+        {
+            if( isTarget[ g.declinedCand[ slot ] ] )
+            {
+                ++callCount;
+                break;
+            }
+        }
+    }
+    return callCount;
+}
+
+// declined_calls= on the callees answer: the declines MADE by `sources`. Every call has exactly one caller, so
+// the per-caller counts add up exactly across a selector with several definitions.
+inline std::size_t declinedCallsMadeBy( const Graph& g, std::span<const NodeId> sources ) noexcept
+{
+    std::size_t callCount = 0;
+    for( const NodeId s : sources )
+    {
+        if( s < g.declinedOut.size() )
+        {
+            callCount += g.declinedOut[ s ];
+        }
+    }
+    return callCount;
 }
 
 }   // namespace rw
