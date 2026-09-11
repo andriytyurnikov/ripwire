@@ -72,8 +72,10 @@ you changed it):
 | openclaw (initial support) | `bash ~/.local/share/ripwire/skills/install.sh --openclaw` | `~/.agents/skills` |
 | Anything else | `bash ~/.local/share/ripwire/skills/install.sh <dir>` | `<dir>` |
 
-Hermes and openclaw support is initial. CI checks what the installers write on disk, but neither has been
-verified against a real Hermes or openclaw install yet. If you use one, the help-wanted issues
+Hermes and openclaw support is initial. CI checks what the installers write on disk. For Hermes, a contributor
+also ran the installer and the MCP registration against a real Hermes install when support landed
+([#51](https://github.com/redhat-et/ripwire/pull/51)), but the maintainers have not re-verified it since. openclaw
+has not been verified against a real install yet. If you use one, the help-wanted issues
 [#69 (Hermes)](https://github.com/redhat-et/ripwire/issues/69) and
 [#68 (openclaw)](https://github.com/redhat-et/ripwire/issues/68) ask for exactly that check.
 
