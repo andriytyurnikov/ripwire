@@ -55,6 +55,9 @@ cmake -S . -B build && cmake --build build -j
 ./build/ripwire --version
 ```
 
+On x86-64 the default build targets x86-64-v3 as well, so on an older CPU add `-DRIPWIRE_NATIVE=ON` to the
+first command to build for that machine's own CPU, or use `./install.sh` below, which does so.
+
 To put a source build on your `PATH`, run `./install.sh` from the checkout. It builds a Release binary tuned
 for this machine's CPU in `build-install/` and installs it under `RIPWIRE_INSTALL_PREFIX`, or under
 `brew --prefix` when Homebrew is present, or else under `~/.local`. Like the prebuilt installer, it stages
