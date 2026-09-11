@@ -1,0 +1,35 @@
+# prompts/help-wanted/ — open problems, each with a prompt to start from
+
+These are detailed prompts a contributor, or their coding agent, can follow to take on one open
+problem in ripwire. Every prompt ends the same way: **it writes a plan and stops**, so a maintainer
+can agree the plan with you before any code is written. Each one arrives with its own pull request,
+labelled `help wanted`; comment there to claim it.
+
+| Slug | What it delivers | Difficulty | Prompt | PR |
+| --- | --- | --- | --- | --- |
+| `struct-layout-doctor` | A `--doctor` row that catches a binary whose translation units were compiled against different struct layouts | good first issue | [`struct-layout-doctor.md`](struct-layout-doctor.md) | #TBD-struct-layout-doctor |
+| `next-uses-bare-name` | The callers answer's `next=` pointer lands on a declined call site for narrowed selectors too | good first issue | [`next-uses-bare-name.md`](next-uses-bare-name.md) | #TBD-next-uses-bare-name |
+| `uses-qualified-selector` | `--uses`, `--safe-delete`, `--verify` and the MCP `uses` verb stop answering 0 for a `::` selector that `--callers` resolves | good first issue | [`uses-qualified-selector.md`](uses-qualified-selector.md) | #TBD-uses-qualified-selector |
+| `cpp-nested-std-namespaces` | Nested `std::` calls such as `std::ranges::move` and `std::chrono::duration_cast` stop binding in-repo definitions | medium | [`cpp-nested-std-namespaces.md`](cpp-nested-std-namespaces.md) | #TBD-cpp-nested-std-namespaces |
+| `ts-literal-receivers` | TS/JS built-in calls on literal receivers, such as `"x".replace()`, stop binding unrelated user functions (#59) | medium | [`ts-literal-receivers.md`](ts-literal-receivers.md) | #TBD-ts-literal-receivers |
+| `nesting-refusals-visible` | A file refused for pathological nesting shows in `--skipped` on cold and warm runs, and `--match` refuses it too | medium | [`nesting-refusals-visible.md`](nesting-refusals-visible.md) | #TBD-nesting-refusals-visible |
+| `kotlin-expect-actual` | Kotlin Multiplatform calls through `expect` declarations get their call edges back (builds on #126) | medium | [`kotlin-expect-actual.md`](kotlin-expect-actual.md) | #TBD-kotlin-expect-actual |
+| `kotlin-scope-functions` | Kotlin scope functions (`run`, `let`, `apply`, `also`, `with`) stop binding unrelated Java methods (builds on #126) | medium | [`kotlin-scope-functions.md`](kotlin-scope-functions.md) | #TBD-kotlin-scope-functions |
+| `correctness-fuzzers` | Fuzzers that check correctness, not just crashes: graph invariants, rank mass, input order, cache round-trips, census conservation | medium | [`correctness-fuzzers.md`](correctness-fuzzers.md) | #TBD-correctness-fuzzers |
+| `graph-unit-tests` | Unit tests for the CSR graph and the PageRank kernel, with hand-checkable expected values, built and run by CI | medium | [`graph-unit-tests.md`](graph-unit-tests.md) | #TBD-graph-unit-tests |
+| `certified-ranking-order` | A derived, measured and disclosed bound on how far down the PageRank order is provably correct | medium | [`certified-ranking-order.md`](certified-ranking-order.md) | #TBD-certified-ranking-order |
+| `agent-integration-verification` | A live report on whether the published wiring works in Cursor, Windsurf, Gemini CLI, opencode or aider, FAILs included | medium | [`agent-integration-verification.md`](agent-integration-verification.md) | #TBD-agent-integration-verification |
+| `simd-more-isas` | An AVX-512 or RISC-V Vector path for the string kernels, proven bit for bit against the scalar twins | medium | [`simd-more-isas.md`](simd-more-isas.md) | #TBD-simd-more-isas |
+| `find-the-next-superlinear` | A scale-rung report on the largest public trees, and a fixture and fix for anything that grows faster than its input | medium | [`find-the-next-superlinear.md`](find-the-next-superlinear.md) | #TBD-find-the-next-superlinear |
+| `conservation-everywhere` | Every inheritance, doc-mention and HAS-A reference accounted for, and `declined_calls=` on `--safe-delete` and `--edit-check` | large | [`conservation-everywhere.md`](conservation-everywhere.md) | #TBD-conservation-everywhere |
+| `member-macro-reparse-beyond-allcaps` | The C/C++ member-macro re-parse carried past ALL-CAPS, with `--match`, `--lint` and `--slice` reading the repaired tree (needs #135) | large | [`member-macro-reparse-beyond-allcaps.md`](member-macro-reparse-beyond-allcaps.md) | #TBD-member-macro-reparse-beyond-allcaps |
+| `scala-jvm-bridge` | Scala indexed as the third JVM language, bridged to Java and Kotlin without moving their edges (builds on #126) | large | [`scala-jvm-bridge.md`](scala-jvm-bridge.md) | #TBD-scala-jvm-bridge |
+| `visual-basic-language` | A VB.NET grammar that clears the parse-rate bar, then first-class indexing | large | [`visual-basic-language.md`](visual-basic-language.md) | #TBD-visual-basic-language |
+| `zig-language` | Zig indexed: a pinned grammar, definitions and tests, and disclosed blind spots | large | [`zig-language.md`](zig-language.md) | #TBD-zig-language |
+| `shader-languages` | One shader language, GLSL, HLSL or WGSL, indexed next to CUDA and Metal | large | [`shader-languages.md`](shader-languages.md) | #TBD-shader-languages |
+
+Where a prompt's own size section gives a range, the difficulty is the size of the change that
+reaches its finish line, not of its first measurement alone. The top-level
+[`../full-audit.md`](../full-audit.md) is open for help too (#TBD-full-audit): run one lens, or all six.
+
+Build the tool before you start, as [`../README.md`](../README.md) shows: a plain build, no build type.
