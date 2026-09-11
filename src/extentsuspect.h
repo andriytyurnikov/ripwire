@@ -44,6 +44,7 @@
 
 #include "model.h"
 #include "infra/Diagnostics.h"
+#include "infra/sortutil.h"   // svLess — R2's class-name table sorts and searches in byte order, never through operator<
 
 #include <algorithm>
 #include <array>
@@ -156,7 +157,7 @@ inline bool scopeContradictsContainer( const ExtentDef& d, const ExtentDef* near
     {
         return false;
     }
-    return nearestClass->name != d.scope && std::binary_search( cppClassNames.begin(), cppClassNames.end(), d.scope );
+    return nearestClass->name != d.scope && std::binary_search( cppClassNames.begin(), cppClassNames.end(), d.scope, rw::sortutil::svLess );
 }
 
 // R4: inside (or itself) a recovered class, or a recovered scopeless member.
@@ -182,7 +183,10 @@ inline void resetExtentScratch( std::span<const ExtentDef> defs, ExtentScratch& 
             scratch.cppClassNames.push_back( d.name );
         }
     }
-    std::sort( scratch.cppClassNames.begin(), scratch.cppClassNames.end() );
+    // svLess, never the default comparator: libstdc++'s string_view compare subtracts the two lengths in size_type, and
+    // G1's integer sanitizer aborts on the wrap the moment two class names prefix one another (Linux leg only; libc++
+    // never subtracts). Same total order as operator<, so the lookup above answers exactly as before.
+    std::sort( scratch.cppClassNames.begin(), scratch.cppClassNames.end(), rw::sortutil::svLess );
 }
 
 // Close every open def that does not strictly hold `d` (it ended before d, crosses it, or duplicates it) and

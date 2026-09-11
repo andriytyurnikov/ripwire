@@ -132,6 +132,19 @@ int main()
                   def( 50, 80, 150, 60, SymKind::Method, Lang::Python, "m", "Target" ),
                   def( 600, 620, 700, 607, SymKind::Class, Lang::Python, "Target", "Target" ) },
                 { 0, 0, 0 } );
+    // Same-file class names that PREFIX one another. Both the sort and the lookup then compare views of unequal
+    // length that agree on the shorter one — the one comparison libstdc++'s string_view operator< answers by
+    // subtracting the lengths in size_type. G1's integer sanitizer aborts on that wrap, so under the Linux ASan
+    // flags extentcheck (U) builds this driver with, this case is the red arm for the default comparator
+    // (CI run 34583440115: `8 - 13` from resetExtentScratch's std::sort). Under any flags it pins the answers.
+    expectBits( "R2 class names that prefix one another (Tree, TreeGuard, TreeGuardScope) sort and resolve by bytes",
+                { def( 0, 20, 500, 7, SymKind::Struct, Lang::Cpp, "TreeGuardScope", "TreeGuardScope" ),
+                  def( 50, 80, 150, 60, SymKind::Method, Lang::Cpp, "misplaced", "Tree" ),
+                  def( 200, 230, 300, 210, SymKind::Method, Lang::Cpp, "fine", "TreeGuardScope" ),
+                  def( 320, 330, 380, 322, SymKind::Method, Lang::Cpp, "prefixOnly", "TreeGuar" ),
+                  def( 600, 620, 700, 607, SymKind::Struct, Lang::Cpp, "TreeGuard", "TreeGuard" ),
+                  def( 800, 820, 900, 807, SymKind::Class, Lang::Cpp, "Tree", "Tree" ) },
+                { 0, kSuspectScope, 0, 0, 0, 0 } );
 
     // ── R4 (error): a recovered container, everything inside it, and scopeless recovered members ─────
     expectBits( "R4 a recovered container taints every definition inside it, nested classes included",
