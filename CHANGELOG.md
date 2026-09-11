@@ -21,8 +21,8 @@ Tier 3 of the name-based resolver refuses a call whose candidates are two or mor
 in the caller's file or directory, and that no qualifier or receiver rule pins. That rule stands: guessing among
 cross-directory same-named definitions is how false edges are born. But the refusal was silent — no edge, no `amb=`,
 and `ambiguous=`/`unresolved=`/`external=` unmoved — so `--callers` on either definition answered `count="0"` about
-a call the resolver had seen. The PR #126 review found it on retrofit, where `Response.body`'s callers fell from 279
-to 5 once same-named Kotlin `body()` methods were indexed, with nothing in any document saying so.
+a call the resolver had seen, and nothing said how often. On the default map it is 22.4% of memgraph's call
+references (66,015 declined calls), 8.6% of retrofit's, 5.4% of ripwire's own and 0.15% of llvm `lib/Support`'s.
 
 The decline is now counted and shown, and no edge moves:
 
@@ -50,8 +50,14 @@ diff is exactly the new `declined=N` plus one legend comment (+245 to +248 B); `
 
 memgraph peak RSS 621 → 630 MB (+1.5%, the candidate index behind `declined_calls=`); wall time unchanged (0.76 s →
 0.75 s). A cache written by the pre-change binary reads back warm to output byte-identical with `--no-cache`, so no
-cache or parser version moves. Gate `test/declinecheck.sh` covers 17 languages and is red on the pre-change binary
-(50 FAIL / 38 PASS); `test/resolverhonestycheck.sh` F5 now requires the decline to be disclosed, not merely edge-free.
+cache or parser version moves. Gate `test/declinecheck.sh` covers 17 languages and was red on the pre-change binary
+(50 FAIL / 38 PASS as first committed); `test/resolverhonestycheck.sh` F5 now requires the decline to be disclosed,
+not merely edge-free.
+
+On main after the `std::`-qualified call guard, which refuses some `std::` sites before they reach tier 3, the same
+`--no-cache` map declines 65,516 of memgraph's 295,086 call references (22.2%) and 6,263 of ripwire's 135,449 (4.6%).
+The `# dispositions` line balances with `unaccounted=0` on both; the guard's refusals count as `external`, and
+`test/declinecheck.sh` runs the guard's own fixture (`test/stdqualfix`) to keep them there.
 
 ### Fixed — the super-linear warm floor under every graph-building verb (`--grep`, `--callers`, the map)
 

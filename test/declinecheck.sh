@@ -10,8 +10,8 @@
 # (`canonical`) nor a receiver/include rule (`narrowed`) pinned, left the resolve loop through `continue`: no edge,
 # no amb=, and no header gauge moved. `--callers` on either definition then answered count="0" beside ambiguous=0
 # unresolved=0 — a zero that read as "none exists" about a call the resolver had SEEN and declined to guess at. On
-# retrofit (the PR #126 review) Response.body's callers fell from 279 to 5 the moment same-named Kotlin body()
-# methods appeared, and no document said so. CLAUDE.md non-negotiable #3: a zero means "none found".
+# the default map that silence covered 22.4% of memgraph's call references, 8.6% of retrofit's and 5.4% of this
+# repo's own (measured at 5c808487). CLAUDE.md non-negotiable #3: a zero means "none found".
 #
 # THE FIX IS DISCLOSURE, NOT RESOLUTION. The precision rule stands (never guess among cross-directory same-named
 # definitions) and the edge set is unchanged — arm (C) pins the pre-change binary's own numbers. What changed is
