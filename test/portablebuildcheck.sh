@@ -130,6 +130,118 @@ else
     ok "#2c aarch64 target stays generic (NEON is baseline there, no flag needed): '$armFlags'"
 fi
 
+# ── #2d-#2g: the TARGET architecture decides the floor, never the HOST ─────────────────────────────────
+# release.yml builds the macOS x86_64 binary ON an arm64 runner: `-DCMAKE_OSX_ARCHITECTURES=x86_64`. CMake
+# derives CMAKE_SYSTEM_PROCESSOR from the RUNNING machine there (arm64 — CMakeDetermineSystem honours only
+# CMAKE_APPLE_SILICON_PROCESSOR, never CMAKE_OSX_ARCHITECTURES), so a floor keyed on it handed every x86_64
+# compile `-mcpu=apple-m1` and no -march at all. Clang >= 17 (AppleClang 16 — the Xcode 16.2 release.yml
+# pins since c7982037) rejects that outright: "unsupported option '-mcpu=' for target". Clang 16 (AppleClang
+# 15, every release through v0.5.0) let it through, so the Intel-Mac binary could only ever have been the
+# x86-64 BASELINE — strkern.h's scalar twins, below the owner's v3 floor, and nothing else in the tree notices.
+# #2b cannot see this: it SETS CMAKE_SYSTEM_PROCESSOR=x86_64, which a real cross configure never does.
+# Darwin-only: CMAKE_OSX_ARCHITECTURES is a no-op everywhere else, and the Linux legs build natively (#2b/#2c).
+cat >"$TMP/ccverdict.py" <<'PY'
+# Reads a real configure's compile_commands.json; prints PASS/FAIL lines, then DONE (absent DONE = no verdict).
+import json, shlex, subprocess, sys
+ccPath, srcPrefix = sys.argv[ 1 ], sys.argv[ 2 ]
+def argv( e ):
+    return list( e[ 'arguments' ] ) if 'arguments' in e else shlex.split( e[ 'command' ] )
+def targetsX86( a ):
+    return any( a[ i ] == '-arch' and i + 1 < len( a ) and a[ i + 1 ] == 'x86_64' for i in range( len( a ) ) )
+try:
+    entries = [ e for e in json.load( open( ccPath ) ) if e.get( 'file', '' ).startswith( srcPrefix ) ]
+except Exception as exc:
+    entries = None
+    print( 'FAIL compile_commands.json unreadable: %s' % exc )
+if entries is not None and not entries:
+    print( 'FAIL compile_commands.json lists no src/ translation unit — nothing was checked' )
+elif entries:
+    n   = len( entries )
+    rel = lambda e: 'src/' + e[ 'file' ][ len( srcPrefix ): ]
+    x86 = [ e for e in entries if targetsX86( argv( e ) ) ]
+    v3  = [ e for e in entries if '-march=x86-64-v3' in argv( e ) ]
+    m1  = [ e for e in entries if '-mcpu=apple-m1' in argv( e ) ]
+    print( '%s %d of %d src/ compile lines target -arch x86_64 (the cross configure reached the compiler)' % ( 'PASS' if len( x86 ) == n else 'FAIL', len( x86 ), n ) )
+    missing = [ rel( e ) for e in entries if '-march=x86-64-v3' not in argv( e ) ]
+    print( '%s %d of %d src/ compile lines carry -march=x86-64-v3%s' % ( 'PASS' if not missing else 'FAIL', len( v3 ), n, ' (first without: %s)' % missing[ 0 ] if missing else '' ) )
+    print( '%s %d of %d src/ compile lines carry -mcpu=apple-m1%s' % ( 'FAIL' if m1 else 'PASS', len( m1 ), n, ' (first: %s)' % rel( m1[ 0 ] ) if m1 else '' ) )
+    # The macros the compiler DEFINES on one shipped TU's exact line (ingest.cpp includes strkern.h): the
+    # flag list proves intent, only the preprocessor proves strkern.h's `#elif defined( __AVX2__ )` is taken.
+    probe = next( ( e for e in entries if e[ 'file' ].endswith( '/src/ingest.cpp' ) ), entries[ 0 ] )
+    line, skipNext = [], False
+    for tok in argv( probe ):
+        if skipNext:
+            skipNext = False
+        elif tok in ( '-o', '-MT', '-MF' ):
+            skipNext = True
+        elif tok not in ( '-c', '-MD', probe[ 'file' ] ):
+            line.append( tok )
+    r = subprocess.run( line + [ '-dM', '-E', '-x', 'c++', '/dev/null' ], cwd=probe.get( 'directory' ), capture_output=True, text=True )
+    defs = { l.split()[ 1 ] for l in r.stdout.splitlines() if l.startswith( '#define ' ) and len( l.split() ) > 1 }
+    if r.returncode != 0:
+        print( 'FAIL the compiler REJECTED %s\'s exact x86_64 command line (rc=%d): %s' % ( rel( probe ), r.returncode, ( r.stderr.strip().splitlines() or [ '(no stderr)' ] )[ 0 ] ) )
+    elif '__x86_64__' in defs and '__AVX2__' in defs:
+        print( 'PASS %s\'s exact command line defines __x86_64__ and __AVX2__ — strkern.h compiles its AVX2 path' % rel( probe ) )
+    else:
+        print( 'FAIL %s\'s exact command line: __x86_64__=%s __AVX2__=%s — the shipped x86_64 binary would carry the SCALAR twins' % ( rel( probe ), '__x86_64__' in defs, '__AVX2__' in defs ) )
+print( 'DONE' )
+PY
+if [ "$( uname -s )" = "Darwin" ]; then
+    hostCpu="$( uname -m )"
+    # #2d: module level, the host's own CMAKE_SYSTEM_PROCESSOR left alone — only the TARGET is named
+    osxX86Flags="$( run_probe "$TMP/osx-x86" -DCMAKE_OSX_ARCHITECTURES=x86_64 )"
+    if [ "$osxX86Flags" = "CONFIGURE_FAILED" ]; then
+        no "#2d CMAKE_OSX_ARCHITECTURES=x86_64 probe configure failed outright: $(tail -5 "$TMP/osx-x86/configure.log" 2>/dev/null)"
+    elif printf '%s' "$osxX86Flags" | grep -q -- '-mcpu=apple-m1'; then
+        no "#2d an x86_64 target on a $hostCpu host was handed -mcpu=apple-m1 — the HOST chose the flags, not the target: '$osxX86Flags'"
+    elif ! printf '%s' "$osxX86Flags" | grep -q -- '-march=x86-64-v3'; then
+        no "#2d an x86_64 target on a $hostCpu host did NOT get the -march=x86-64-v3 floor: '$osxX86Flags'"
+    else
+        ok "#2d CMAKE_OSX_ARCHITECTURES=x86_64 on a $hostCpu host carries the v3 floor and nothing Apple-specific: '$osxX86Flags'"
+    fi
+    # #2e: the other direction — an arm64 target keeps its Apple Silicon tuning whatever the host is
+    osxArmFlags="$( run_probe "$TMP/osx-arm" -DCMAKE_OSX_ARCHITECTURES=arm64 )"
+    if [ "$osxArmFlags" = "CONFIGURE_FAILED" ]; then
+        no "#2e CMAKE_OSX_ARCHITECTURES=arm64 probe configure failed outright: $(tail -5 "$TMP/osx-arm/configure.log" 2>/dev/null)"
+    elif printf '%s' "$osxArmFlags" | grep -q -- '-march=x86'; then
+        no "#2e an arm64 target on a $hostCpu host was handed an x86 architecture flag: '$osxArmFlags'"
+    elif ! printf '%s' "$osxArmFlags" | grep -q -- '-mcpu=apple-m1'; then
+        no "#2e an arm64 target on a $hostCpu host lost its Apple Silicon tuning: '$osxArmFlags'"
+    else
+        ok "#2e CMAKE_OSX_ARCHITECTURES=arm64 on a $hostCpu host keeps -mcpu=apple-m1: '$osxArmFlags'"
+    fi
+    # #2f: a universal tree cannot give one slice -march=x86-64-v3 and the other -mcpu=apple-m1 through one
+    # add_compile_options(), and release.yml never builds one — the module must REFUSE it by name rather than
+    # hand both slices one arch's flags (this same defect, on half the binary)
+    fatFlags="$( run_probe "$TMP/osx-fat" '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' )"
+    if [ "$fatFlags" = "CONFIGURE_FAILED" ] && grep -q 'one architecture per build tree' "$TMP/osx-fat/configure.log"; then
+        ok "#2f a universal CMAKE_OSX_ARCHITECTURES=x86_64;arm64 configure is refused by name, not given one slice's flags"
+    elif [ "$fatFlags" = "CONFIGURE_FAILED" ]; then
+        no "#2f the universal configure failed, but not with the refusal: $(tail -5 "$TMP/osx-fat/configure.log" 2>/dev/null)"
+    else
+        no "#2f a universal CMAKE_OSX_ARCHITECTURES=x86_64;arm64 configure was ACCEPTED with one flag set for both slices: '$fatFlags'"
+    fi
+    # #2g: the REAL project, exactly as release.yml configures its macos-x64 leg — every src/ compile line, and
+    # the macros the compiler defines on one of them
+    if ! cmake -S "$ROOT" -B "$TMP/real-x86" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >"$TMP/real-x86.log" 2>&1; then
+        no "#2g the real project's x86_64-target configure failed: $(tail -5 "$TMP/real-x86.log" 2>/dev/null)"
+    else
+        realVerdict="$( python3 "$TMP/ccverdict.py" "$TMP/real-x86/compile_commands.json" "$ROOT/src/" 2>&1 )"
+        # a here-string, not a pipe: rows read in a pipeline subshell would print FAIL and leave fail=0
+        while IFS= read -r row; do
+            case "$row" in
+                PASS\ *) ok "#2g ${row#PASS }" ;;
+                FAIL\ *) no "#2g ${row#FAIL }" ;;
+            esac
+        done <<<"$realVerdict"
+        printf '%s\n' "$realVerdict" | grep -q '^DONE$' \
+            || no "#2g the compile_commands verdict never finished — no evidence either way: $( printf '%s' "$realVerdict" | tail -3 )"
+    fi
+else
+    printf '  SKIP  #2d-#2g host is %s: CMAKE_OSX_ARCHITECTURES is Darwin-only (a no-op here); native Linux targets are #2b/#2c and the ubuntu CI legs\n' "$( uname -s )"
+fi
+
 # ── #3: RIPWIRE_NATIVE=ON stays opt-in and unaffected by the pretend-Linux hook ─────────────────────────
 nativeFlags="$( run_probe "$TMP/native" -DRIPWIRE_NATIVE=ON -DRIPWIRE_PRETEND_LINUX=ON )"
 if printf '%s' "$nativeFlags" | grep -q -- '-march=native'; then
