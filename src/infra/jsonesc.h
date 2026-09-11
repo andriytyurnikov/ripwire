@@ -36,7 +36,7 @@
 // this header is a pure internal refactor: verified byte-identical against the pre-unification
 // implementations.
 
-#include "strkern_find.h"   // S5: findBytesetRun — the run-copy skip that replaces escapeInto's per-byte switch.
+#include "strkern.h"        // S5: appendCleanRun — the run-copy skip that replaces escapeInto's per-byte switch.
                         // Still zero includes ABOVE src/infra (strkern.h itself pulls only <cstddef>/<cstdint>/
                         // <cstring>/<string_view> plus the ISA intrinsic header), so the no-cycle property this
                         // header was factored out for is intact.

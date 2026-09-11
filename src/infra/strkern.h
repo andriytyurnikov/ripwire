@@ -735,4 +735,63 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
     return tail == n - k ? n : k + tail;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+//  4. appendCleanRun — the run-copy step the emit escapers are built out of
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Lane M's shape, folded into this header on 2026-09-10 the moment the tail above stopped being the
+// oracle. It lived in a sibling `src/infra/strkern_find.h` for exactly as long as that defect did, and
+// that header's own closing note named this as the fold-back: "if strkern.h grows a shipped tail beside
+// its oracle, this file collapses into a call to it and the SIMD path comes along for free". It has, so
+// it did. (Owner, 2026-09-10: ALL SIMD string kernels live in ONE header.)
+//
+// Appends the bytes from d[i] up to (not including) the next byte that is IN `set` — the run the caller's
+// per-byte switch has no opinion about — and returns the index of that byte, or n when the rest is clean.
+// A zero-length run appends nothing, so the caller needs no emptiness test.
+//
+// Written to sit in a `for`'s INIT and INCREMENT slots:
+//     for( std::size_t i = appendCleanRun( d, 0, n, set, out ); i < n; i = appendCleanRun( d, i, n, set, out ) )
+// which is why it takes the index rather than a pointer and returns the next one. That placement is not
+// cosmetic: the increment expression also runs on `continue`, so an escaper whose switch arms end in
+// `continue` (jsonesc::escapeInto) keeps every one of them, and the loop keeps the SINGLE branch it had
+// before the rewrite — the run-copy costs the escapers no measured complexity, which is the difference
+// between a gated --quality-delta row and none.
+//
+// It scans with `findByteset`, i.e. with the block loop, not with the scalar twin — measured, on the REAL
+// inputs a warm `--top-k=100000` map hands rw::escapeXml (44k-341k calls per corpus, captured with a
+// scratch trace build, replayed end to end through escapeXml, best of 9, four independent process runs,
+// box load 24-33). Milliseconds for the whole trace, lower is better:
+//
+//   corpus     per-byte switch   run-copy + scalar scan   run-copy + findByteset
+//   ripwire      1.60-2.00              0.81-1.01               0.71-0.96   −15% vs scalar
+//   go           6.85-7.62              4.57-4.85               4.74-5.08    +1% (median len 8: 82% of
+//                                                                                calls never reach a block)
+//   django       8.00-9.12              3.80-4.30               2.97-3.11   −23% vs scalar
+//
+// Two corpora win, one ties, none loses outside the noise band — so the block loop ships and no caller
+// has to choose. The verb-level number is deliberately NOT claimed: escapeXml is ~1% of a warm map here
+// (0.82-1.18% by `sample`), so a 15-23% cut in it is ~0.2% of the run and an interleaved whole-verb A/B
+// at this box load resolves nothing (it did not: 12 runs a side, medians identical to 0.01 s).
+//
+// ONE template, not two overloads — a second body differing only in how it spells "append k bytes" is a
+// 48-token clone of the first, and --quality-delta says so out loud. The spelling is picked by
+// `if constexpr`: std::string (jsonesc's sink) has the (pointer, count) append and it is measurably the
+// faster of the two, std::vector<char> (serialize's sink) has only the iterator-pair insert. Both take a
+// contiguous-range memcpy underneath; the difference is the length arithmetic libc++ has to redo when it
+// is handed iterators instead of a count, and on strings this short that arithmetic is not free.
+template< typename Sink >
+inline std::size_t appendCleanRun( const char* d, std::size_t i, std::size_t n, const Byteset256& set, Sink& out )
+{
+    const std::size_t clean = findByteset( d + i, n - i, set );
+    if constexpr( requires { out.append( d + i, clean ); } )
+    {
+        out.append( d + i, clean );
+    }
+    else
+    {
+        out.insert( out.end(), d + i, d + i + clean );
+    }
+    return i + clean;
+}
+
 }   // namespace rw::strkern
