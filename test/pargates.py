@@ -402,13 +402,16 @@ def failure_report(out, logpath):
 #
 # So every gate starts in a session of its own, which makes it the leader of a process group holding each descendant
 # that does not move itself out (one that calls setsid is out of reach), and a stop signals that group: TERM first, so
-# the gate's EXIT trap still removes its temp dir -- a private checkout there is a whole tree of the repository -- then,
-# KILL_GRACE_SEC later, KILL for anything that ignored TERM. What the gate printed before and during the stop is kept.
+# the gate's EXIT trap still removes its temp dir -- a private checkout there is a whole tree of the repository -- then
+# KILL for whatever is still in the group KILL_GRACE_SEC later. The grace belongs to the whole group, not to the gate's
+# bash or its output pipe: a child whose output goes elsewhere can still be cleaning up after both are gone, and the
+# first version KILLed it right then (CodeRabbit on #129). A group seen empty is never signalled again. What the gate
+# printed before and during the stop is kept.
 #
 # A session of its own also takes the gate out of the terminal's foreground group, so Ctrl-C would no longer reach it at
 # all. pargates therefore catches SIGINT, SIGTERM and SIGHUP -- unless it inherited one ignored -- stops every running
 # gate the same way within STOP_POLL_SEC, starts none after, and exits 128+signal with no summary. A second signal
-# changes nothing: the stop is bounded by STOP_POLL_SEC + 2 x KILL_GRACE_SEC. A SIGKILL to pargates itself reaches no
+# changes nothing: the stop is bounded by 2 x (STOP_POLL_SEC + KILL_GRACE_SEC). A SIGKILL to pargates itself reaches no
 # gate. test/pargatescheck.sh runs both paths on a probe gate, beside mutants of each that must go red.
 KILL_GRACE_SEC = 10
 STOP_POLL_SEC = 0.5
@@ -431,20 +434,53 @@ for _sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(_sig, _on_stop_signal)
 
 
+def _group_alive(p):
+    """Whether the gate's process group still has a member. An exited leader is reaped first, so it does not count."""
+    p.poll()
+    try:
+        os.killpg(p.pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass                        # EPERM: a member exists that this process may not signal
+    return True
+
+
+def _read_for(p, out, secs):
+    """Read the gate's output for up to `secs` -> (everything read so far, done). done means the pipe is closed and the
+    leader reaped. `out` is what the caller already had, kept when a timeout yields nothing newer; communicate() keeps
+    what it read across calls, so retrying after a timeout loses nothing."""
+    try:
+        return p.communicate(timeout=secs)[0], True
+    except subprocess.TimeoutExpired as e:
+        return (e.stdout if e.stdout is not None else out), False
+
+
+def _await_group(p, out, secs):
+    """Keep reading the gate's output until its process group is empty or `secs` pass -> everything read so far."""
+    end = time.monotonic() + secs
+    while _group_alive(p) and time.monotonic() < end:
+        left = max(0.0, min(STOP_POLL_SEC, end - time.monotonic()))
+        out, done = _read_for(p, out, left)
+        if done:
+            time.sleep(left)        # the pipe is closed and the leader reaped: what is left to wait on is the group itself
+    return out
+
+
 def _stop_group(p, out):
-    """TERM the gate's process group, give it KILL_GRACE_SEC, then KILL whatever is left. Returns every byte the gate
-    wrote; `out` is what the caller had read so far, kept when the pipe yields nothing newer. A process that left the
-    group can hold the pipe open past the KILL: reading stops then, rather than waiting on it."""
+    """TERM the gate's process group and give the WHOLE group KILL_GRACE_SEC to exit -- not only its bash, and not only
+    what holds its output pipe -- then KILL whatever is still in it and give that the same. A group seen empty is not
+    signalled again. Returns every byte the gate wrote; `out` is what the caller had read so far. A process that left
+    the group can hold the pipe open past the KILL: reading stops then."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not _group_alive(p):
+            break
         try:
             os.killpg(p.pid, sig)
         except OSError:
-            pass                    # ESRCH: nothing is left in the group
-        try:
-            out = p.communicate(timeout=KILL_GRACE_SEC)[0]
-        except subprocess.TimeoutExpired as e:
-            out = e.stdout if e.stdout is not None else out
-    return out or b""
+            pass
+        out = _await_group(p, out, KILL_GRACE_SEC)
+    return _read_for(p, out, STOP_POLL_SEC)[0] or b""      # plus what the last members wrote on their way out
 
 
 def run_gate(argv, env, limit):
@@ -454,14 +490,13 @@ def run_gate(argv, env, limit):
     with subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           start_new_session=True) as p:
         while True:
-            try:
-                out = p.communicate(timeout=max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))[0]
+            out, done = _read_for(p, None, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
+            if done:
                 return p.returncode, out, "exited"
-            except subprocess.TimeoutExpired as e:
-                if stop_signal is not None:
-                    return 128 + stop_signal, _stop_group(p, e.stdout), "stopped"
-                if time.monotonic() >= deadline:
-                    return 124, _stop_group(p, e.stdout), "timeout"
+            if stop_signal is not None:
+                return 128 + stop_signal, _stop_group(p, out), "stopped"
+            if time.monotonic() >= deadline:
+                return 124, _stop_group(p, out), "timeout"
 
 
 def run(g):
