@@ -54,6 +54,10 @@ and cut answers now say so, instead of returning a quiet zero.
 **[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
 contributors named there; this release is largely theirs.
 
+*The first commit, on 2026-06-19, was 34 files: a tree-sitter ingest, a symbol graph, Personalized PageRank, a
+minified XML map, and a gate that demanded two runs be byte-identical. It shipped three MCP verbs that day —
+`analyze`, `find_symbol`, `find_referencing_symbols` — and all three are still here, among 31.*
+
 ---
 
 > **Want to help?** ripwire is twelve weeks old — first commit 2026-06-19, public since 2026-07-31 — and there is a
