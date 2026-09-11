@@ -60,7 +60,7 @@ Two limits apply to nearly everything here and are not repeated in every section
 
 **Answers:** keep only the N highest-ranked symbols (default 200) keep the N highest-ranked symbols (default 200) — applies to the default map, plain --query, and --format=candidates (incl.
 
-with --for). --for's OWN signature/lego/compose bundle self-limits via --pack-top-n instead — --top-k is INERT there (documented, not fixed — a real fix is a behavior change). --pack-task/--from-trace/--run-trace/--situ self-budget via --token-budget, not --top-k. --top-k=0 emits NO ranked map at all — ONLY the payload you asked for (--expand/--outline/--pack-signatures/--pack-top-n). Use it when you want the body and not the ~200-symbol map that otherwise rides along with it; the <ctx> root then carries est_tokens= (the payload's price, the number --token-budget gates on), since no map header is there to carry it.
+with --for). --for's OWN signature/lego/compose bundle self-limits via --pack-top-n instead — --top-k is INERT there (documented, not fixed — a real fix is a behavior change). --pack-task/--from-trace/--run-trace self-budget via --token-budget, not --top-k. --top-k=0 emits NO ranked map at all — ONLY the payload you asked for (--expand/--outline/--pack-signatures/--pack-top-n). Use it when you want the body and not the ~200-symbol map that otherwise rides along with it; the <ctx> root then carries est_tokens= (the payload's price, the number --token-budget gates on), since no map header is there to carry it.
 
 **Try it**
 
@@ -1089,7 +1089,7 @@ at: 9d2a809dd
   (0 changed files — working tree is clean, nothing to analyze)
 ```
 
-**Shaped by:** `--top-k`, `--mentions`, `--affected`, `--test-gate`, `--legend`, `--limit`
+**Shaped by:** `--mentions`, `--affected`, `--test-gate`, `--legend`, `--limit`
 
 ### `--handoff`
 
