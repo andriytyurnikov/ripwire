@@ -1197,6 +1197,36 @@ inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
     return errorMaskBlockIsBareBraces( collapsed ) || errorMaskBlockIsCommentOnly( collapsed );
 }
 
+// THE CONFIRM (CodeRabbit #127 / 3985249701), as its own step so findErrorMasking stays under the bars.
+// The flattened prefilter cannot see where a `//` comment ends, because astQuery scrubbed the newline
+// that ended it — so a block admitted through its COMMENT half is re-asked of the file's own bytes. A
+// bare `{}` never reaches here: there is no comment there to mis-read, and skipping it keeps the cost at
+// "one read per file that has a comment-shaped candidate", a handful of files rather than the corpus.
+//
+// `m.text.size()` IS the cut length makeAstMatch used (the scrub is byte-for-byte), so the raw slice is
+// the same span — the 120-byte floor §Q-DIAL-6 discloses is preserved exactly. `memoFileId`/`memoBytes`
+// are the caller's ONE-ENTRY memo: astQuery already sorts (file, startByte, tag), so one slot holds a
+// whole file's candidates. An UNREADABLE or MOVED file answers false — a finding that cannot be
+// substantiated is not reported. Never throws.
+inline bool errorMaskConfirmOnDisk( const IngestResult& ing, const AstMatch& m,
+                                    std::uint32_t& memoFileId, std::string& memoBytes )
+{
+    if( m.fileId != memoFileId )
+    {
+        memoFileId = m.fileId;
+        memoBytes.clear();
+        if( !docparse::detail::readWholeFile( diskPath( ing, m.fileId ), memoBytes ) )
+        {
+            DEGRADED_PATH_ALERT( "lintrules: error-mask confirm cannot re-read the block's file" );
+        }
+    }
+    if( std::size_t( m.startByte ) + m.text.size() > memoBytes.size() )
+    {
+        return false;
+    }
+    return errorMaskCommentConsumesBlock( std::string_view( memoBytes ).substr( m.startByte, m.text.size() ) );
+}
+
 // One error-masking hit: the suppressing block's file + start byte (so a caller can attribute it to the
 // enclosing symbol by span containment), the 1-based line, and the rule id. Shaped for span attribution,
 // not for direct emission — quality.h owns the delta accounting.
@@ -1261,34 +1291,10 @@ inline std::vector<ErrorMaskHit> findErrorMasking( const IngestResult& ing )
         {
             continue; // the @p identifier capture is dropped here too (never "{}")
         }
-        // THE CONFIRM (CodeRabbit #127 / 3985249701). The prefilter above cannot see where a `//` comment
-        // ends, because astQuery scrubbed the newline that ended it — so a block admitted through its
-        // COMMENT half is re-asked of the file's own bytes. A bare `{}` needs no confirm: there is no
-        // comment there to mis-read, and skipping it keeps the cost at "one read per file that has a
-        // comment-shaped candidate", which on this repo's history is a handful of files, not the corpus.
-        //
-        // `m.text.size()` IS the cut length makeAstMatch used (the scrub is byte-for-byte), so the raw
-        // slice is the same span — the 120-byte floor §Q-DIAL-6 discloses is preserved exactly. An
-        // UNREADABLE file degrades to dropping the row: a finding we cannot substantiate is not reported.
-        if( rule.emptyOnly && !errorMaskBlockIsBareBraces( m.text ) )
+        if( rule.emptyOnly && !errorMaskBlockIsBareBraces( m.text )
+            && !errorMaskConfirmOnDisk( ing, m, rawFileId, rawBytes ) )
         {
-            if( m.fileId != rawFileId )
-            {
-                rawFileId = m.fileId;
-                rawBytes.clear();
-                if( !docparse::detail::readWholeFile( diskPath( ing, m.fileId ), rawBytes ) )
-                {
-                    DEGRADED_PATH_ALERT( "lintrules: error-mask confirm cannot re-read the block's file" );
-                }
-            }
-            if( std::size_t( m.startByte ) + m.text.size() > rawBytes.size() )
-            {
-                continue;   // the file moved under us, or could not be read — do not assert a swallow
-            }
-            if( !errorMaskCommentConsumesBlock( std::string_view( rawBytes ).substr( m.startByte, m.text.size() ) ) )
-            {
-                continue;   // a comment OPENS the block but code follows it — that is a handler
-            }
+            continue;       // a comment OPENS the block but code follows it — that is a handler
         }
         out.push_back( { m.fileId, m.startByte, m.line, std::string( rule.id ) } );
     }

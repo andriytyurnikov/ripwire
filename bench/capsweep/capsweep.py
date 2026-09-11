@@ -457,12 +457,13 @@ def assert_no_git_above(corpus):
 FINGERPRINT = 'corpus.filelist'          # lives in --scratch, never in the corpus
 
 def file_digest(path):
-    """sha256 of one file's bytes, read in chunks so a large fixture costs no memory."""
-    h = hashlib.sha256()
+    """sha256 of one file's bytes. hashlib's own chunked reader where the interpreter has it (3.11+),
+    so this is NOT a third hand-rolled copy of the chunk loop bench/svectorab.py::sha already spells —
+    --quality-delta flagged exactly that clone when this function first landed as one."""
     with open(path, 'rb') as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b''):
-            h.update(chunk)
-    return h.hexdigest()
+        if hasattr(hashlib, 'file_digest'):
+            return hashlib.file_digest(fh, 'sha256').hexdigest()
+        return hashlib.sha256(fh.read()).hexdigest()
 
 def fingerprint_corpus(corpus):
     """The corpus's file list WITH each entry's type and content digest, `.git/` excluded.
@@ -683,6 +684,30 @@ def census(corpus, sizes, states):
     zero = [c for c in corpus if states.get(c) == kStateOk and (sizes.get(c) or 0) == 0]
     return ok, unp, unx, to, ref, zero
 
+def classify_split(corpus, base, bstate, allb, gstate, ok):
+    """The four ways a row can differ between the two arms, by EXECUTION STATE rather than raw value.
+
+    CodeRabbit #127 / 3985249659. `base.get(c)` is None for every non-answer — a timeout, a refusal, an
+    unparseable row — and 0 for an exit-0 run that printed nothing, which `answered()` already defines as
+    NO answer. Comparing those values directly counted two things that are not byte sensitivity:
+      * 100 bytes at the default, TIMEOUT when bumped: base=100, allb=None, "different" -> counted as
+        cap-sensitive. It is a regression the bump introduced, and it inflated the numerator.
+      * refused at the default, exit 0 with ZERO bytes when bumped: base=None, allb=0, "different" ->
+        counted as "answers only when a cap is bumped", about a row that still answers nothing.
+
+    So: hot compares BYTES only where BOTH arms answered; late is a bumped-only answer by answered()'s
+    own definition; lost answered at the default and stopped; moved never answered in either arm yet the
+    records differ. Only hot is the numerator; the other three are reported, never counted.
+    """
+    answBase = set(ok)
+    answBump = set(c for c in corpus if answered(allb, gstate, c))
+    hot   = sorted(c for c in corpus if c in answBase and c in answBump and base.get(c) != allb.get(c))
+    late  = sorted(answBump - answBase)
+    lost  = sorted(answBase - answBump)
+    moved = sorted(c for c in corpus if c not in answBase and c not in answBump
+                   and (bstate.get(c) != gstate.get(c) or base.get(c) != allb.get(c)))
+    return hot, late, lost, moved
+
 def screen_core(binary, croot, corpus, bump, out_path, measured_at, before):
     """Both arms, the executability census, the refusal, and the split — over the ANSWERING rows.
 
@@ -716,24 +741,8 @@ def screen_core(binary, croot, corpus, bump, out_path, measured_at, before):
                  '          split. A ratio over a population that measured nothing is not a result.'
                  % len(corpus))
 
-    # THE SPLIT IS OVER EXECUTION STATES, NOT RAW VALUES (CodeRabbit #127 / 3985249659). `base.get(c)`
-    # is None for every non-answer — a timeout, a refusal, an unparseable row — and 0 for an exit-0 run
-    # that printed nothing, which `answered()` already defines as NO answer. Comparing those values
-    # directly counted two things that are not byte sensitivity:
-    #   * 100 bytes at the default, TIMEOUT when bumped: base=100, allb=None, "different" → counted as
-    #     cap-sensitive. It is a regression the bump introduced, and it inflated the numerator.
-    #   * refused at the default, exit 0 with ZERO bytes when bumped: base=None, allb=0, "different" →
-    #     counted as "answers only when a cap is bumped", about a row that still answers nothing.
-    # So: compare BYTES only where BOTH arms answered, classify a bumped-only answer with answered()
-    # over the bumped arm, and report every other transition as what it is.
-    answBase = set(ok)
-    answBump = set(c for c in corpus if answered(allb, gstate, c))
-    hot   = sorted(c for c in corpus if c in answBase and c in answBump and base.get(c) != allb.get(c))
-    late  = sorted(answBump - answBase)          # answered ONLY under the bumped arm — real signal
-    lost  = sorted(answBase - answBump)          # answered at the DEFAULT and stopped: a bump regression
-    moved = sorted(c for c in corpus if c not in answBase and c not in answBump
-                   and (bstate.get(c) != gstate.get(c) or base.get(c) != allb.get(c)))
-    sens  = sorted(set(hot) | set(late))         # the rows cmd_sweep will probe cap by cap
+    hot, late, lost, moved = classify_split(corpus, base, bstate, allb, gstate, ok)
+    sens = sorted(set(hot) | set(late))          # the rows cmd_sweep will probe cap by cap
     recipe = ('split recipe: DENOMINATOR = rows that answered under the BASELINE arm (state=ok, >0 bytes).',
               'A row that emits nothing cannot respond to a cap; %d row(s) of %d never answer and are'
               % (len(corpus) - len(ok), len(corpus)),
