@@ -16,10 +16,10 @@ it once, marked `×N`.
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 208 | 83 | 100 | **108** |
+| 207 | 83 | 116 | **91** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 208 + 7 is the 215 constants this generator parses out of `src/`.
+are not counted as caps, and 207 + 7 is the 214 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -37,8 +37,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **109 of 208 caps are classified
-(37 INDEXING, 37 OUTPUT, 35 BOUNDARY); the remaining 99 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **111 of 207 caps are classified
+(37 INDEXING, 39 OUTPUT, 35 BOUNDARY); the remaining 96 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -186,13 +186,13 @@ Discloses: **none**
 
 ### `src/darkflags.h`
 
-Discloses: **none**
+Discloses: `reads_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kMaxAliasDepth` | `8` | INDEXING | — |
 | `kMaxEnvNameLen` | `128` | BOUNDARY | longest plausible environment-variable name |
-| `kMaxSitesShown` | `8` | OUTPUT | per gate, per list; the rest are counted in a <more/> |
+| `kMaxSitesShown` | `8` | OUTPUT | <read> sites per gate; a DEFAULT, raisable by --limit=N (effectiveRowCap), lifted by --detail |
 
 ### `src/didyoumean.h`
 
@@ -215,11 +215,11 @@ Discloses: **none**
 
 ### `src/docdrift.h`
 
-Discloses: **none**
+Discloses: `failed_capped`, `importers_capped`, `weak_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
-| `kMaxAnchorsShown` | `12` | OUTPUT | drifted anchors printed per doc; detail lifts the cap |
+| `kMaxAnchorsShown` | `12` | OUTPUT | failed anchors per doc; a SECONDARY listing (pageview.h rule 6) — --detail lifts it, --limit does not |
 | `kMaxClaimedLine` | `200000` | BOUNDARY | past this a "line number" is a hostile-input example, not a claim |
 | `kMaxDecDigits` | `10` | BOUNDARY | overflow guard on a doc/code integer literal |
 | `kMaxExtLen` | `6` | BOUNDARY | "cpp", "swift", "metal" — longer is not an extension |
@@ -296,15 +296,15 @@ Discloses: **none**
 
 ### `src/flipimpact.h`
 
-Discloses: **none**
+Discloses: `hosts_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kMaxBindings` | `32` | INDEXING | value-style constants tracked — bounds pass B's needle count |
 | `kMaxChainDepth` | `8` | INDEXING | alias-chain depth cap (mirrors darkflags::kMaxAliasDepth) |
 | `kMaxFamily` | `64` | INDEXING | gates one flip may light — an alias fan-out past this is a table, not a switch |
-| `kMaxFlipRows` | `25` | OUTPUT | per emitted list; --detail lifts every cap |
-| `kMaxNearMisses` | `5` | OUTPUT | "did you mean" suggestions on an unknown gate name |
+| `kMaxFlipRows` | `25` | OUTPUT | per emitted list; a DEFAULT --limit=N raises and --detail lifts |
+| `kMaxNearMisses` | `5` | OUTPUT | "did you mean" suggestions on an unknown gate name; --limit=N raises it |
 
 ### `src/gitmine.h`
 
@@ -782,10 +782,9 @@ Discloses: `tests_capped`, `untested_capped`
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kMaxUntestedRows` | `25` | — | — |
-| `kSituBlastFilesShown` | `8` | OUTPUT | section [1] — blast-radius file rows |
-| `kSituPartnerFileRowsShown` | `4` | — | section [1] — decl/def partner rows |
-| `kSituPartnerRowsShown` | `8` | — | section [3] — co-change partner rows |
-| `kSituTestRowsShown` | `25` | — | section [2] — tests-to-run rows |
+| `kSituBlastFilesShown` | `8` | OUTPUT | section [1] — blast-radius file rows; a raisable DEFAULT |
+| `kSituPartnerFileRowsShown` | `4` | OUTPUT | section [1] — decl/def partner rows |
+| `kSituPartnerRowsShown` | `8` | OUTPUT | section [3] — co-change partner rows; a raisable DEFAULT |
 
 ### `src/skillscan.h`
 

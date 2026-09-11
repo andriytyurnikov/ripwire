@@ -720,7 +720,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                    // while the CLI --recall began honoring --top-k in this round's Wave 1.
                    "{\"name\":\"memory_recall\",\"description\":\"Most relevant memory notes / docs for a task, full text — the few that matter, not the whole corpus. path = docs/memory dir; task = what you're working on; top_k = docs to return, 1..1000 (default 8), refused outside that band, never clamped; budget_tokens = the body ceiling in tokens (default 8000) — it SHAPES to fit, the CLI --recall's --max-tokens, not --token-budget's refuse-if-over GATE, and the header discloses max_tokens= and every cut.\","
                    + mcprefuse::toolMetadataFor( "memory_recall", pathIsRequired ) + "},"
-                   "{\"name\":\"situational_awareness\",\"description\":\"The 5 things to know about a diff, as JSON: blast_radius, tests_to_run, forgotten (usual co-change partners missing from this diff), hotspot_alert, modules_touched. forgotten = the Shotgun Surgery check. diff/files optional — defaults to 'git diff HEAD'. files is a STRING of comma-separated paths (files=\\\"src/a.cpp,src/b.h\\\"), not an array; an array is refused rather than read as absent, which would answer about the working tree instead of the files you named.\","
+                   "{\"name\":\"situational_awareness\",\"description\":\"The 5 things to know about a diff, as JSON: blast_radius, tests_to_run, forgotten (usual co-change partners missing from this diff), hotspot_alert, modules_touched. forgotten = the Shotgun Surgery check. diff/files optional — defaults to 'git diff HEAD'. files is a STRING of comma-separated paths (files=\\\"src/a.cpp,src/b.h\\\"), not an array; an array is refused rather than read as absent, which would answer about the working tree instead of the files you named. limit/offset page blast_radius and forgotten only; with no limit every row is served, as always.\","
                    + mcprefuse::toolMetadataFor( "situational_awareness", pathIsRequired ) + "},"
                    "{\"name\":\"mentions\",\"description\":\"Docs (markdown plans/designs) that name a code symbol in a backtick. symbol = the code symbol name; limit/offset page the files. " + std::string( kAtSeedRebindClause ) + "\","
                    + mcprefuse::toolMetadataFor( "mentions", pathIsRequired ) + "},"
@@ -776,7 +776,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                    + mcprefuse::toolMetadataFor( "whereis", pathIsRequired ) + "}," ) +
                    mcprefuse::gitOnlyStanza( omitGitVerbs, "{\"name\":\"stray_content\",\"description\":\"Per branch: the lines its own divergent work AUTHORED (vs its merge-base with HEAD) that the live line does NOT have. Four verdicts (unmerged+superseded+merged+unknown=refs): v=unmerged is genuinely absent; v=superseded means the live line re-implemented the work — the case `git cherry` structurally cannot see; merged branches are omitted and counted; v=unknown is a branch this scan could NOT analyse at all (no merge-base, unrelated history), not a fourth kind of divergence. Every file row carries its raw del/redone/sim evidence. Line-granular, not semantic. kind = optional ref-name substring filter, echoed as filter=; limit/offset page the refs. Single-root; read-only.\","
                    + mcprefuse::toolMetadataFor( "stray_content", pathIsRequired ) + "}," ) +
-                   "{\"name\":\"flags\",\"description\":\"WHAT IS BUILT BUT DARK here — the answer to 'why don't I see feature X?'. Harvests all three gate patterns (ifndef/define header gates, CMake option(), getenv reads) with each gate's kind, DEFAULT, the size of the code it guards, and its read sites. When a name is both a header gate and a CMake option the CMake default wins and the header shows as an also row. Lexical, not preprocessed: it reports the in-repo default, never the value your build used. kind = optional gate-name substring filter, echoed as filter=. symbol = optional GATE NAME, switching to the FLIP lens for that one gate: what becomes live, who holds it, what it reaches, which tests cover it. An unknown gate name is refused with near-misses, never answered empty.\","
+                   "{\"name\":\"flags\",\"description\":\"WHAT IS BUILT BUT DARK here — the answer to 'why don't I see feature X?'. Harvests all three gate patterns (ifndef/define header gates, CMake option(), getenv reads) with each gate's kind, DEFAULT, the size of the code it guards, and its read sites. When a name is both a header gate and a CMake option the CMake default wins and the header shows as an also row. Lexical, not preprocessed: it reports the in-repo default, never the value your build used. kind = optional gate-name substring filter, echoed as filter=. symbol = optional GATE NAME, switching to the FLIP lens for that one gate: what becomes live, who holds it, what it reaches, which tests cover it. An unknown gate name is refused with near-misses, never answered empty. limit/offset page the read sites under a gate (first 8), and the flip lens's context rows (first 25); never the gate rows, which are the answer.\","
                    + mcprefuse::toolMetadataFor( "flags", pathIsRequired ) + "},"
                    "{\"name\":\"doc_drift\",\"description\":\"WHICH OF THIS REPO'S DOC CLAIMS ARE NOW FALSE. Verifies the CHECKABLE anchors in every markdown file against the live index and returns ONLY the ones that no longer hold: file:line refs (missing-file / past-eof / line-moved), backticked symbol mentions (undefined), `= N` constants and `[N]` array extents. Read this BEFORE trusting a design doc, plan or audit you did not just write. Every lane deliberately under-reports; checked + unchecked = anchors, each declined check named. A failed anchor the AUTHOR DATED is kind=dated-record, counted in dated= rather than drift=, so drift= is the LIVE rot. Prose, Status lines and dates are not checked. kind = optional doc-path filter, echoed as filter=; limit/offset page the docs.\","
                    + mcprefuse::toolMetadataFor( "doc_drift", pathIsRequired ) + "},"
@@ -1450,10 +1450,13 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     // built — the pre-fix arm answered it with all-empty arrays and a green _fresh, which a
                     // caller checking only for an `error` key reads as "your edit has no blast radius".
                     const std::string listRefusal = situationFileListRefusal( path, src );
-                    const std::string j           = listRefusal.empty() ? situationDiffJson( path, src ) : std::string();
-                    resp = !listRefusal.empty() ? errResultMsg( -32602, listRefusal )
-                         : j.empty()            ? errResult( -32602, "no changed files given and no git diff" )
-                                                : textResult( j );
+                    resp = pagedResult( [ & ]( McpPageArgs pg )   // C1 F-10: blast_radius + forgotten window
+                    {
+                        const std::string j = listRefusal.empty() ? situationDiffJson( path, src, pg ) : std::string();
+                        return !listRefusal.empty() ? errResultMsg( -32602, listRefusal )
+                             : j.empty()            ? errResult( -32602, "no changed files given and no git diff" )
+                                                    : textResult( j );
+                    } );
                 }
                 else if( name == "mentions" && !path.empty() && !symbol.empty() )
                 {
@@ -1523,8 +1526,14 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     if( !symbol.empty() )
                     {
                         std::vector<std::string> nearMisses;
-                        const std::string        t = flipText( path, symbol, flipimpact::kMaxFlipRows, nearMisses );
-                        if( t.empty() )
+                        const McpPageParse       flipPage = mcpPageArgs( args );   // C1 F-07: the flip listings window
+                        const std::string        t = flipPage.refusal.empty()
+                            ? flipText( path, symbol, flipimpact::kMaxFlipRows, nearMisses, flipPage.page ) : std::string();
+                        if( !flipPage.refusal.empty() )
+                        {
+                            resp = errResultMsg( -32602, flipPage.refusal );
+                        }
+                        else if( t.empty() )
                         {
                             std::string msg = "no gate named '" + symbol + "' — call flags without `symbol` for the gate table";
                             if( !nearMisses.empty() )
@@ -1542,8 +1551,11 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     }
                     else
                     {
-                        const std::string t = flagsText( path, kind, darkflags::kMaxSitesShown );
-                        resp = t.empty() ? errResult( -32603, "internal error" ) : textResult( t );
+                        resp = pagedResult( [ & ]( McpPageArgs pg )   // C1 F-07: the per-gate <read> listing windows
+                        {
+                            const std::string t = flagsText( path, kind, darkflags::kMaxSitesShown, pg );
+                            return t.empty() ? errResult( -32603, "internal error" ) : textResult( t );
+                        } );
                     }
                 }
                 else if( name == "doc_drift" && !path.empty() )

@@ -110,6 +110,24 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # in the tool description that says WHAT they page, without which a router reads a paging verb whose page is
 # undefined. Same rule as the two re-anchors above (a DECLARED argument, its bytes attributed here, in the
 # commit that lands it, never prose) and the same posture: 171 B of headroom, less than one more argument.
+# RE-ANCHORED 2026-09-10 (C1 F-07/F-10, the listing-paging round): 41,300 -> 42,000, measured 41,830 (from
+# 41,220). TWO declared optional arguments, `limit` and `offset`, on TWO verbs — `flags` and
+# `situational_awareness`, which joined cli.h's honorsPaging set in the same commit (--flags windows the read
+# SITES under a gate and --flip its six context listings; --situ windows its blast-radius and co-change
+# sections — in both, the answer rows, the gate rows and tests_to_run, are never paged). Attributed tool by
+# tool against a build of the parent commit (6afaa457), by this gate's own metric:
+#   flags                  +329 = +184 B schema (92 for the `limit` property entry, 92 for `offset`: the
+#                                 envelope plus the description arm (A/M12) obliges every declared property
+#                                 to carry) +145 B of description, the clause saying WHAT they page — this
+#                                 verb has TWO lenses (the gate table and --flip), and a router that cannot
+#                                 tell which rows page from which rows are the answer has an undefined page
+#   situational_awareness  +281 = +184 B schema, same two entries, +97 B of description — shorter because
+#                                 the clause has one lens to describe, and it has to say the DEFAULT differs
+#                                 from the CLI's (unbounded here; the payload always served every row, so
+#                                 limit is relief for a caller who wants less, never a new cut)
+#   nothing else moved.
+# Same rule as the three re-anchors above (a DECLARED argument, its bytes attributed here, in the commit
+# that lands it, never prose) and the same posture: 170 B of headroom, less than one more argument entry.
 #
 # RE-ANCHORED 2026-09-10 (MCP no_route, audit F-R1-07): 41,300 → 41,650, measured 41,474 (from 41,220).
 # ONE declared optional argument, `no_route`, on the TWO verbs that ROUTE — `for` and `explore` (and its
@@ -174,7 +192,7 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 #   TOTAL        40,986 -> 40,902 B; nothing else moved. Raw wire bytes (this gate measures json.dumps
 #                      with ensure_ascii, which spends 6 for each em dash instead of 3): 40,901 -> 40,811.
 # Headroom goes back UP, 14 B -> 98 B. That is item 5 below working, not a new allowance.
-CEILING = 41650
+CEILING = 42000
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )
