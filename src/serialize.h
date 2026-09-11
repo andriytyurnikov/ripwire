@@ -686,26 +686,41 @@ struct CeilingLadderNotes { std::string_view echoDropped, echoAndRouteDropped, o
 //       hit the wall is owed the complete bundle and an honest label, not a mutilated bundle.
 // Every candidate is measured WITH its own disclosure bytes included. Pure function of its inputs — no clock,
 // no map order — so the chosen shape is deterministic.
-template<typename BuildFn>
-inline std::string climbCeilingLadder( BuildFn&& build, std::string_view builtHeader, std::size_t payloadBytes,
-                                       std::size_t byteCeiling, bool hasRouteAttr, const CeilingLadderNotes& notes )
+//
+// THE FIT TEST IS THE CALLER'S when what rides a header depends on the header. --for prices its root AFTER the
+// ladder picks a shape: est_tokens=, plus over_ceiling="1" and the legend clause defining it whenever that price
+// exceeds budget_tokens. Those bytes change with the shape, so no fixed payload can stand in for them, and pricing
+// the BUILT header let a bundle ship 70 B past the allowance with no rung fired (PR #135, estchargecheck #11 A7).
+// climbCeilingLadderBy climbs the same rungs against `fits( candidateHeader )`. climbCeilingLadder is its
+// fixed-payload form, so the two cannot climb different ladders.
+template<typename BuildFn, typename FitsFn>
+inline std::string climbCeilingLadderBy( BuildFn&& build, std::string_view builtHeader, FitsFn&& fits, bool hasRouteAttr,
+                                         const CeilingLadderNotes& notes )
 {
-    const auto fits = [ & ]( std::size_t headerBytes ) { return headerBytes + payloadBytes <= byteCeiling; };
-    if( fits( builtHeader.size() ) )
+    if( fits( builtHeader ) )
     {
         return std::string( builtHeader );
     }
 
     std::string candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/false, notes.echoDropped );
-    if( !fits( candidate.size() ) && hasRouteAttr )
+    if( !fits( std::string_view( candidate ) ) && hasRouteAttr )
     {
         candidate = build( /*withRouteAttr=*/false, /*withTaskEcho=*/false, notes.echoAndRouteDropped );
     }
-    if( !fits( candidate.size() ) )
+    if( !fits( std::string_view( candidate ) ) )
     {
         candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/true, notes.overCeiling );
     }
     return candidate;
+}
+
+template<typename BuildFn>
+inline std::string climbCeilingLadder( BuildFn&& build, std::string_view builtHeader, std::size_t payloadBytes,
+                                       std::size_t byteCeiling, bool hasRouteAttr, const CeilingLadderNotes& notes )
+{
+    return climbCeilingLadderBy( build, builtHeader,
+                                 [ & ]( std::string_view header ) { return header.size() + payloadBytes <= byteCeiling; },
+                                 hasRouteAttr, notes );
 }
 
 // ── B0.3 rank-adaptive --for payload budget (R1 hypothesis #4) ────────────────────────────────────────
