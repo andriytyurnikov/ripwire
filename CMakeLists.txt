@@ -50,8 +50,8 @@ if(RIPWIRE_FUZZ)
 endif()
 
 # ---- optimization profile (portable by default) ----
-# default: arch-neutral on anything that isn't Apple Silicon; auto-detected apple-m1 tuning (safe generic
-# tuning, not a native-host bake-in) on real Apple Silicon. -DRIPWIRE_NATIVE=ON: dev-machine-only opt-in
+# default: the TARGET architecture decides — -march=x86-64-v3 for x86-64 (the owner's floor), generic apple-m1
+# tuning (not a native-host bake-in) for Apple Silicon, arch-neutral otherwise. -DRIPWIRE_NATIVE=ON: dev-machine-only opt-in
 # (-march=native bakes in host CPU extensions — never for a binary that ships or runs elsewhere).
 # See cmake/PortableFlags.cmake for the full rationale and the RIPWIRE_PRETEND_LINUX test-only hook.
 # DECLARED here, beside the other five options, rather than left to be conjured by a bare -D on the
