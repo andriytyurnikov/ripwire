@@ -242,37 +242,66 @@ else
     printf '  SKIP  #2d-#2g host is %s: CMAKE_OSX_ARCHITECTURES is Darwin-only (a no-op here); native Linux targets are #2b/#2c and the ubuntu CI legs\n' "$( uname -s )"
 fi
 
-# ── #2h: the release leg that CROSS-BUILDS x86_64 must run where Rosetta 2 executes the v3 floor ────────
+# ── #2h: the release leg that CROSS-BUILDS x86_64 runs on the exact tuple it was verified on ──────────────────────
 # #2d-#2g make the macos-x64 binary an x86-64-v3 binary, and release.yml then EXECUTES it on its arm64 runner
 # under Rosetta 2: scripts/pgobuild.sh's nine instrumented training runs, the determinism diff, --version and
-# the smoke test. Sonoma's Rosetta cannot — macos-14 runners SIGILL a -march=x86-64-v3 slice at its first
-# vector instruction (test/strkerncheck.sh, PR #127 run 4, rc 132); Rosetta gained AVX2 in macOS 15. And a
-# newer runner raises the binary's minimum macOS with it: with no deployment target clang takes the lower of
-# the runner's macOS and the SDK default (14.x on macos-14, 15.2 on macos-15 with Xcode 16.2), so the
-# deployment target must be PINNED, a decision rather than a side effect of the runner. Text-level; any host.
+# the smoke test. So the runner's Rosetta must execute the v3 extensions the binary carries (AVX2, BMI1/2, FMA,
+# LZCNT, MOVBE). Sonoma's cannot — macos-14 runners SIGILL a -march=x86-64-v3 slice at its first vector
+# instruction (test/strkerncheck.sh, PR #127 run 4, rc 132); macOS 15's gained AVX2, but its LZCNT/MOVBE coverage
+# was never verified; macos-26 with Xcode 26.6 ran the leg green. And a newer runner raises the binary's minimum
+# macOS with it: with no deployment target clang takes the lower of the runner's macOS and the SDK default (14.x
+# on macos-14, 26.0 on macos-26), so the target is PINNED at 14.0, a decision rather than a side effect of the
+# runner. A bound is not enough — "macos-N with N >= 15" plus "any numeric target" passed a macos-15 leg pinned
+# at 26.0 — so the verdict holds the exact tuple. Text-level; any host.
 cat >"$TMP/relverdict.py" <<'PY'
 import re, sys
 text = open( sys.argv[ 1 ] ).read()
 matrix = text.split( 'include:', 1 )[ 1 ].split( '\n    runs-on:', 1 )[ 0 ] if 'include:' in text else ''
 cross = [ leg for leg in re.split( r'\n\s*- name: ', matrix ) if 'CMAKE_OSX_ARCHITECTURES=x86_64' in leg ]
+# The tuple the leg was VERIFIED on, held exactly. Changing the runner or the Xcode is a deliberate edit to release.yml AND
+# to this tuple, made together with fresh evidence: the runner's Rosetta 2 decides which x86-64-v3 instructions the PGO
+# training, determinism and smoke runs can execute, and the Xcode is the compiler that ran them green. The minimum macOS
+# stays "14.0" (the std::print floor src/infra/emit.h names), or macOS 14/15 Intel users are dropped without a word —
+# quoted, because a bare 14.0 is a YAML number, not the string the release's otool minos check matches.
+RUNNER, XCODE, MINOS = 'macos-26', '/Applications/Xcode_26.6.app/Contents/Developer', '14.0'
+EXPECT = ( ( 'os',                RUNNER, False, 'the runner whose Rosetta 2 ran this leg\'s x86-64-v3 PGO training and smoke green' ),
+           ( 'developer_dir',     XCODE,  False, 'the Xcode the leg was verified with' ),
+           ( 'deployment_target', MINOS,  True,  'the minimum macOS the release keeps' ) )
+def scalar( leg, key ):
+    m = re.search( r"""^[ \t]*%s:[ \t]*("[^"\n]*"|'[^'\n]*'|[^\s#]+)""" % key, leg, re.M )
+    if not m:
+        return None, False
+    raw    = m.group( 1 )
+    quoted = len( raw ) >= 2 and raw[ 0 ] == raw[ -1 ] and raw[ 0 ] in '"\''
+    return ( raw[ 1:-1 ] if quoted else raw ), quoted
+def shown( value, quoted ):
+    return '(absent)' if value is None else ( '"%s"' % value if quoted else value )
 if len( cross ) != 1:
     print( 'FAIL expected exactly one release leg with CMAKE_OSX_ARCHITECTURES=x86_64, found %d — nothing was checked' % len( cross ) )
 else:
     leg  = cross[ 0 ]
     name = leg.split( '\n', 1 )[ 0 ].strip()
-    m    = re.search( r'^\s*os:\s*macos-(\d+)\b', leg, re.M )
-    if not m:
-        print( 'FAIL leg %s names no macos-N runner' % name )
-    elif int( m.group( 1 ) ) < 15:
-        print( 'FAIL leg %s runs on macos-%s, whose Rosetta 2 cannot execute the x86-64-v3 binary the leg builds and then runs (PGO training, determinism diff, smoke)' % ( name, m.group( 1 ) ) )
+    for key, want, mustQuote, why in EXPECT:
+        got, quoted = scalar( leg, key )
+        if got == want and ( quoted or not mustQuote ):
+            print( 'PASS leg %s %s: %s, %s' % ( name, key, shown( want, mustQuote ), why ) )
+        else:
+            print( 'FAIL leg %s %s: %s%s, but the verified tuple is %s — %s; moving it edits release.yml and #2h\'s tuple together, deliberately'
+                   % ( name, key, shown( got, quoted ), ' (a bare YAML number)' if got == want else '', shown( want, mustQuote ), why ) )
+    # Each pin must also REACH the build. The deployment target through the step's export, with no -D on the leg that
+    # disagrees (CMake reads MACOSX_DEPLOYMENT_TARGET only when CMAKE_OSX_DEPLOYMENT_TARGET is not given); the Xcode
+    # through the job env's DEVELOPER_DIR, without which the image's default Xcode builds the release.
+    exported = 'MACOSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}' in text
+    override = [ v for v in re.findall( r'CMAKE_OSX_DEPLOYMENT_TARGET=(\S+)', leg ) if v != MINOS ]
+    if not exported:
+        print( 'FAIL leg %s: no step exports matrix.deployment_target as MACOSX_DEPLOYMENT_TARGET — the key pins nothing; the runner\'s macOS sets the minimum' % name )
+    elif override:
+        print( 'FAIL leg %s: -DCMAKE_OSX_DEPLOYMENT_TARGET=%s on the leg overrides the exported %s — the pinned minimum is not what ships' % ( name, override[ 0 ], MINOS ) )
     else:
-        print( 'PASS leg %s runs on macos-%s, where Rosetta 2 executes AVX2' % ( name, m.group( 1 ) ) )
-    # three spellings of a pin: a -D on the leg; the leg's `deployment_target:` exported by a step; a job-level env
-    pinned = ( re.search( r'CMAKE_OSX_DEPLOYMENT_TARGET=\d', leg )
-               or ( re.search( r'^\s*deployment_target:\s*"?\d', leg, re.M ) and 'MACOSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}' in text )
-               or re.search( r'^\s*MACOSX_DEPLOYMENT_TARGET:\s*\S', text, re.M ) )
-    print( 'PASS leg %s pins its macOS deployment target' % name if pinned else
-           'FAIL leg %s does not pin its macOS deployment target — the runner\'s macOS, not a decision, sets the binary\'s minimum' % name )
+        print( 'PASS leg %s: a step exports deployment_target as MACOSX_DEPLOYMENT_TARGET and no -D on the leg overrides it' % name )
+    wired = re.search( r'^[ \t]*DEVELOPER_DIR:[ \t]*\$\{\{[ \t]*matrix\.developer_dir\b', text, re.M )
+    print( 'PASS leg %s: the job env hands developer_dir to the toolchain as DEVELOPER_DIR' % name if wired else
+           'FAIL leg %s: nothing exports matrix.developer_dir as DEVELOPER_DIR — the image\'s default Xcode, not the pinned one, builds the release' % name )
 print( 'DONE' )
 PY
 relVerdict="$( python3 "$TMP/relverdict.py" "$ROOT/.github/workflows/release.yml" 2>&1 )"
