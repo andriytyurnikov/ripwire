@@ -1711,6 +1711,14 @@ inline constexpr const char* kIgnoredLegend =
     "<!-- hdr:ignored_files=files-git's-own-ignore-rules-covered(exact;would-otherwise-be-indexed;the-no-ignore-flag-restores-them)"
     " hdr:ignored_dirs=SUBTREES-those-rules-pruned(walk-stopped-there:contents-UNKNOWN-not-zero;the-skipped-verb-rows-both) -->";
 
+// Tier 3's declines: the header's declined= and the answers' declined_calls=. Charged to the map that carries
+// declined= (kIgnoredLegend's rule), because an always-on entry measured +177 B and +70 est_tokens on
+// test/fixture, a map that cannot carry the attribute. No '>' anywhere: gates read these comments with a
+// [^>]* pattern, and one '>' inside the text silently empties what they read (lpincheck arm F found it).
+inline constexpr const char* kDeclinedMapLegend =
+    "<!-- hdr:declined=calls-tier-3-declined(two-or-more-same-language-defs,none-in-the-callers-file-or-dir,"
+    "none-pinned-by-a-qualifier/receiver/include;no-edge,no-guess;absent-if-0;callers/callees/impact-answers-carry-declined_calls=) -->";
+
 // §L10: sibs=/inc=/<calls> on an --expand <b> body (withFileContext=true — --expand's own two call sites,
 // never packBodies' other callers) had NO in-band definition anywhere — only in --help prose, which a
 // reader of the XML never sees. Printed once, right inside <bodies ...>, before the first <b> child, on
@@ -2001,7 +2009,10 @@ inline void serialize( std::FILE* out, const IngestResult& ing, const std::vecto
                        const std::vector<std::uint32_t>* locPinOut = nullptr,
                        // Phase 5: the external-name veto's refusal count (graph.h g.externalCalls) → header external=N,
                        // absent when zero, so a veto-free corpus is byte-identical.
-                       std::size_t externalCalls = 0 )
+                       std::size_t externalCalls = 0,
+                       // Tier 3's per-caller declines (graph.h g.declinedOut) → header declined=N, absent when zero, so a
+                       // corpus where no call reached tier 3 undecided stays byte-identical.
+                       const std::vector<std::uint32_t>* declinedOut = nullptr )
 {
     const std::size_t* changedCount = ann.changedCount;
     const std::string* mapAtStamp   = ann.atStamp;
@@ -2172,6 +2183,8 @@ inline void serialize( std::FILE* out, const IngestResult& ing, const std::vecto
     const std::size_t ambTotal        = counterTotal( ambOut );          // calls the resolver could not pin to one target
     const std::size_t unresolvedTotal = counterTotal( unresolvedOut );   // calls to an in-repo name, all defs lang-filtered
     const std::size_t locPinTotal     = counterTotal( locPinOut );       // Phase 4: calls the locality prior ALONE pinned
+    const std::size_t declinedTotal   = counterTotal( declinedOut );     // calls tier 3 declined: no edge, and no guess
+    legend += declinedTotal > 0 ? kDeclinedMapLegend : "";               // charged to the map that carries declined=
     // C1 DRIFT FIX (Round C lane B, found by re-reading this header's own output). `precise=` means "how many
     // out-edges a SCIP index PINNED", and the emitter's own comment below says it is "emitted ONLY under
     // --scip". Both were true when outProv held only {0, 1}. A4-R5 then added value 2 (an FFI binding edge)
@@ -2275,6 +2288,12 @@ inline void serialize( std::FILE* out, const IngestResult& ing, const std::vecto
         {
             stats += " external=";  stats += std::to_string( externalCalls );
         }
+        if( declinedTotal > 0 )                                // tier-3 declines: same rule, after external= so no adjacency moves
+        {
+            stats += " declined=";  stats += std::to_string( declinedTotal );
+        }
+        // The two parse-honesty gauges follow the call-resolution family (ambiguous= .. declined=), in this order,
+        // so declined= stays adjacent to external= and the resolver's gauges read as one contiguous run.
         if( extentSuspectTotal > 0 )                           // extent honesty: same absent-when-0 rule
         {
             stats += " extent_suspect_syms=";  stats += std::to_string( extentSuspectTotal );
@@ -6679,6 +6698,7 @@ struct JsonMapHeader
                                                     // names every root) or a caller that never passes one.
     std::size_t                      localityPinnedCount = 0;   // Phase 4: Σ lpin — "locality_pinned":N, absent when 0
     std::size_t                      externalCount = 0;         // Phase 5: the veto's refusals — "external":N, absent when 0
+    std::size_t                      declinedCount = 0;         // tier 3's declines — "declined":N, absent when 0
     std::size_t                      extentSuspectCount = 0;    // extent honesty: "extent_suspect_syms":N, absent when 0
     std::size_t                      macroBlankedCount  = 0;    // member-macro re-parse: "macro_blanked_files":N, absent when 0
 };
@@ -6818,7 +6838,14 @@ inline void writeJsonMapHeader( JsonWriter& w, std::string& esc, const JsonMapHe
         rw::formatTo( hdr, sizeof( hdr ), "\"external\":{},", h.externalCount );
         w.write( hdr );
     }
-    // extent honesty: the JSON twin of the XML header's extent_suspect_syms=, same absent-when-zero rule.
+    // tier 3's declines — the JSON twin of the XML `declined=`, same absent-when-zero rule.
+    if( h.declinedCount > 0 )
+    {
+        rw::formatTo( hdr, sizeof( hdr ), "\"declined\":{},", h.declinedCount );
+        w.write( hdr );
+    }
+    // extent honesty: the JSON twin of the XML header's extent_suspect_syms=, same absent-when-zero rule and the
+    // XML header's order (after the call-resolution family, declined included).
     if( h.extentSuspectCount > 0 )
     {
         w.write( "\"extent_suspect_syms\":" + std::to_string( h.extentSuspectCount ) + "," );   // composed, not a fixed buffer
@@ -6940,7 +6967,8 @@ inline void serializeJson( std::FILE* out, const IngestResult& ing, const std::v
                            std::string_view rootArg = {},      // R-E: same single-root-only root argument the
                                                                  // XML serialize() takes (see its own comment)
                            const std::vector<std::uint32_t>* locPinOut = nullptr,   // Phase 4: same as serialize()'s
-                           std::size_t externalCalls = 0 )                          // Phase 5: same as serialize()'s
+                           std::size_t externalCalls = 0,                           // Phase 5: same as serialize()'s
+                           const std::vector<std::uint32_t>* declinedOut = nullptr ) // tier-3 declines: same as serialize()'s
 {
     const std::size_t S = ing.symbols.size();
     const std::string rootPrefix = rootArg.empty() ? std::string() : rw::sarif::rootPrefixOf( rootArg );
@@ -7000,6 +7028,7 @@ inline void serializeJson( std::FILE* out, const IngestResult& ing, const std::v
     const std::size_t ambTotal        = counterTotal( ambOut );
     const std::size_t unresolvedTotal = counterTotal( unresolvedOut );
     const std::size_t locPinTotal     = counterTotal( locPinOut );   // Phase 4: Σ lpin, the JSON twin of locality_pinned=
+    const std::size_t declinedTotal   = counterTotal( declinedOut ); // Σ declinedOut, the JSON twin of declined=
     std::size_t       extentSuspectTotal = 0;                          // extent honesty: the JSON twin of extent_suspect_syms=
     for( const Symbol& sym : ing.symbols )
     {
@@ -7028,7 +7057,7 @@ inline void serializeJson( std::FILE* out, const IngestResult& ing, const std::v
     {
         JsonWriter hw( dst );
         writeJsonMapHeader( hw, esc, JsonMapHeader{ ing, S, outTargets.size(), keep, estTokens, ambTotal,
-                                                    unresolvedTotal, orderAttr, outProv, &ann, rootArg, locPinTotal, externalCalls,
+                                                    unresolvedTotal, orderAttr, outProv, &ann, rootArg, locPinTotal, externalCalls, declinedTotal,
                                                     extentSuspectTotal, macroBlankedFileCount( ing ) } );
         hw.write( ",\"r\":[" );
     };

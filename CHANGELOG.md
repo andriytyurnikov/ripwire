@@ -15,6 +15,50 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Fixed — a call the resolver declined to guess at no longer reads as "no caller exists" (`declined=`, `declined_calls=`)
+
+Tier 3 of the name-based resolver refuses a call whose candidates are two or more same-language definitions, none
+in the caller's file or directory, and that no qualifier or receiver rule pins. That rule stands: guessing among
+cross-directory same-named definitions is how false edges are born. But the refusal was silent — no edge, no `amb=`,
+and `ambiguous=`/`unresolved=`/`external=` unmoved — so `--callers` on either definition answered `count="0"` about
+a call the resolver had seen, and nothing said how often. On the default map it is 22.4% of memgraph's call
+references (66,015 declined calls), 8.6% of retrofit's, 5.4% of ripwire's own and 0.15% of llvm `lib/Support`'s.
+
+The decline is now counted and shown, and no edge moves:
+
+- The map header carries `declined=N` (JSON `"declined":N`), absent at zero; its legend entry appears only on a map
+  that carries the attribute.
+- `--callers`, `--callees` and `--impact` carry `declined_calls="K"` in XML, `--json` and `--format=columnar`, as do
+  their MCP twins `find_referencing_symbols`, `find_symbol` and `impact`: declined calls that could have meant the
+  selector's definitions (callers), that those definitions make (callees), or that could reach SYM or its radius
+  (impact), counted once per call. Absent at zero, defined in the legend when present.
+- `--pin-census` ends with a conservation line, `# dispositions calls=N …`: every call reference lands in exactly one
+  of bound, self, external, unresolved, undefined, other_root, qualified_external, declined, file_scope or
+  unaccounted, and `calls=` is re-derived from the references. A resolver exit that names no bucket lands in
+  `unaccounted` and raises a degrade alert on plain builds, so the next silent `continue` is caught, not shipped.
+
+Measured with the pre-change binary (5c808487) against this change on the `--no-cache` default map. Each map's byte
+diff is exactly the new `declined=N` plus one legend comment (+245 to +248 B); `edges=`, `ambiguous=`, `unresolved=`,
+`locality_pinned=` and `external=` are identical on every corpus.
+
+| corpus | call references | `declined=` | share |
+| --- | ---: | ---: | ---: |
+| memgraph | 295,086 | 66,015 | 22.4% |
+| retrofit | 29,983 | 2,587 | 8.6% |
+| ripwire (the 5c808487 source tree) | 134,739 | 7,279 | 5.4% |
+| llvm `lib/Support` | 20,425 | 30 | 0.15% |
+
+memgraph peak RSS 621 → 630 MB (+1.5%, the candidate index behind `declined_calls=`); wall time unchanged (0.76 s →
+0.75 s). A cache written by the pre-change binary reads back warm to output byte-identical with `--no-cache`, so no
+cache or parser version moves. Gate `test/declinecheck.sh` covers 17 languages and was red on the pre-change binary
+(50 FAIL / 38 PASS as first committed); `test/resolverhonestycheck.sh` F5 now requires the decline to be disclosed,
+not merely edge-free.
+
+On main after the `std::`-qualified call guard, which refuses some `std::` sites before they reach tier 3, the same
+`--no-cache` map declines 65,516 of memgraph's 295,086 call references (22.2%) and 6,263 of ripwire's 135,449 (4.6%).
+The `# dispositions` line balances with `unaccounted=0` on both; the guard's refusals count as `external`, and
+`test/declinecheck.sh` runs the guard's own fixture (`test/stdqualfix`) to keep them there.
+
 ### Fixed — the super-linear warm floor under every graph-building verb (`--grep`, `--callers`, the map)
 
 On llvm-project (182,555 files, warm cache) a `--grep` for an absent literal took ~157 s, `--callers=main`
