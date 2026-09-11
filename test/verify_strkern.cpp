@@ -246,6 +246,15 @@ std::string classMasksSweep( const std::string& text )
 // Kept byte-for-byte as they stood at 05f4b892 (src/lexindex.h:130 and :201) so this arm compares the new
 // mask-driven walkers against the OLD code, not against a paraphrase of it. Do not "clean these up".
 
+// lexUpperOpensToken left shipped code with the state machines (the mask algebra
+// `U & (A<<1) & ( ~(U<<1) | (L>>1) )` states the same rule); kept HERE, verbatim from 05f4b892, because a
+// reference walker that borrowed the shipped rule would move with it and prove nothing.
+static bool refLexUpperOpensToken( std::string_view text, std::size_t k, bool prevUpper ) noexcept
+{
+    const unsigned char next = ( k + 1 < text.size() ) ? static_cast< unsigned char >( text[ k + 1 ] ) : 0u;
+    return !prevUpper || ( next >= 'a' && next <= 'z' );
+}
+
 template< class EmitFn >
 void refForEachLexSubtoken( std::string_view text, EmitFn&& emit )
 {
@@ -264,7 +273,7 @@ void refForEachLexSubtoken( std::string_view text, EmitFn&& emit )
             prevUpper = false;
             continue;
         }
-        if( upper && tokStartByte != kNoTokenByte && rw::lexUpperOpensToken( text, k, prevUpper ) )
+        if( upper && tokStartByte != kNoTokenByte && refLexUpperOpensToken( text, k, prevUpper ) )
         {
             emit( tokStartByte, k );
             tokStartByte = k;
@@ -308,7 +317,7 @@ void refForEachLexSubtokenHashed( std::string_view text, EmitFn&& emit )
             prevUpper = false;
             continue;
         }
-        if( upper && tokStartByte != kNoTokenByte && rw::lexUpperOpensToken( text, k, prevUpper ) )
+        if( upper && tokStartByte != kNoTokenByte && refLexUpperOpensToken( text, k, prevUpper ) )
         {
             emit( tokStartByte, k, h );
             beginToken( c, k );
