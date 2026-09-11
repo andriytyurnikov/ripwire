@@ -1669,7 +1669,10 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             //     `enum class Status { READY, DONE }` → `(class_declaration (type_identifier)
             //     (enum_class_body (enum_entry …) (enum_entry …)))`.
             // A bodyLESS declaration (@interface method / @interface class) has none of these children →
-            // bodyByte stays 0 → it stays a decl (the discriminant the collapse needs). GATED to ObjC and
+            // bodyByte stays 0 → it stays a decl (the discriminant the collapse needs). A bodyless KOTLIN TYPE
+            // (`data class User(val name: String)`, `class Token`) keeps bodyByte 0 too — its span honestly is all
+            // signature — and is still a DEFINITION: the collapse reads model.h's isDefinitionNotDeclaration, not
+            // bodyByte, because Kotlin has no forward declarations (test/kotlincheck.sh §11, §13). GATED to ObjC and
             // Kotlin so C++/Python/Rust/Go/TS/Swift bodyByte — and therefore their sigEndByte, spans, and
             // node/edge output — are BYTE-for-byte unchanged (a .mm's C++ functions take the C "body"-field
             // path above and never reach here). See test/langcheck.sh c.m and the byte-identical src/

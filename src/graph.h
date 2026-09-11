@@ -798,6 +798,64 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
     return keepCount != 0;
 }
 
+// THE DECL/DEF COLLAPSE, one name at a time (buildGraph step 1e; adversarial-review #1). A C++ header declaration and its
+// .cpp definition are two same-named symbols. Left alone they make tier 3 see two candidates and DROP every cross-directory
+// call to the function, and let a bodyless prototype shadow its own body in the same-file and same-directory tiers. So once
+// a name has a DEFINITION (model.h isDefinitionNotDeclaration), its declarations stop being resolution targets; a name with
+// no definition anywhere (extern, pure-virtual only) keeps its declarations as the best available target.
+//
+// A declaration is evicted only by a definition of its own COLLAPSE KEY:
+//   * its ROOT, in a multi-root workspace — root A's body must not evict root B's decl-only best-available target, so each
+//     root resolves exactly as it does alone;
+//   * its FAMILY — Kotlin rows with Kotlin rows, and every other language together, which is what the whole collapse always
+//     was (the C-family bridge's header/.c pairing lives inside that one family). Kotlin shares CANDIDATES with Java through
+//     langCompatible's JVM bridge, but never a declaration: no Java interface method is a prototype of a Kotlin function,
+//     or the reverse. Collapsed together, a Kotlin body evicted a Java interface-only declaration — so ADDING a .kt file
+//     moved a Java call's edge onto Kotlin code — and a Java body evicted a Kotlin interface member. A tree without a .kt
+//     file has one family and collapses byte-identically. Gate: test/kotlincheck.sh §13.
+// One pass marks which keys hold a definition and one keeps — O(K) per name, where the per-root version it replaces
+// rescanned the name's ids once per declaration. `ids` keeps its order, and is untouched when nothing is evicted.
+inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot, rw::SmallVec<NodeId, 2>& ids )
+{
+    std::array<bool, 2u * kMaxWorkspaceRoots> keyHasDefinition {};
+    const auto keyOf = [ & ]( NodeId id ) noexcept -> std::size_t
+    {
+        const Symbol&     s    = ing.symbols[ id ];
+        const std::size_t root = multiRoot ? std::min<std::size_t>( ing.fileRoot[ s.fileId ], kMaxWorkspaceRoots - 1u ) : 0u;
+        return 2u * root + ( s.lang == Lang::Kotlin ? 1u : 0u );
+    };
+    bool anyDefinition = false;
+    for( NodeId id : ids )
+    {
+        if( isDefinitionNotDeclaration( ing.symbols[ id ] ) )
+        {
+            keyHasDefinition[ keyOf( id ) ] = true;
+            anyDefinition                   = true;
+        }
+    }
+    if( !anyDefinition )
+    {
+        return;
+    }
+    rw::SmallVec<NodeId, 2> kept;
+    bool                    anyEvicted = false;
+    for( NodeId id : ids )
+    {
+        if( isDefinitionNotDeclaration( ing.symbols[ id ] ) || !keyHasDefinition[ keyOf( id ) ] )
+        {
+            kept.push_back( id );
+        }
+        else
+        {
+            anyEvicted = true;
+        }
+    }
+    if( anyEvicted )
+    {
+        ids = std::move( kept );
+    }
+}
+
 
 // THE TIER-3 CANONICAL RESCUE (H4 V3 M-3) — why `canonical` sits beside `narrowed` in buildGraph's tier-3
 // gate. Tier 3 is "a UNIQUE global, else DROP". A Rule-1 narrowed call has always been exempt, because it is
@@ -1616,90 +1674,13 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
     }
 
-    // decl/def collapse (adversarial-review #1): a C++ header decl + its .cpp def are TWO same-named
-    // symbols. Left alone, that (a) makes tier-3 see cand.size()==2 and DROP every cross-dir call to the
-    // function (the most common C++ layout → a disconnected graph), and (b) lets a bodyless local prototype
-    // shadow the real def in the same-file/dir tiers, so rank flows to an empty decl. Fix once, here: if a
-    // name has ≥1 real DEFINITION (body present: endByte > sigEndByte), keep only the definitions as
-    // resolution targets — forward declarations of one function aren't an ambiguity and must not shadow or
-    // block it. Names with no def anywhere (extern / pure-virtual only) keep their decls (best available).
-    //
-    // Kotlin has no forward-declaration syntax for types: a bodyless `interface Foo` / `class Foo` IS the
-    // type's sole, complete definition (unlike a C header prototype, or a bodyless Kotlin FUNCTION — an
-    // interface member signature / `expect fun` — which really is a declaration). ingest_sidecap.h's
-    // positional-body fallback can only find bodyByte when a class/interface HAS braces; a genuinely
-    // bodyless one leaves bodyByte==0 like a real decl, so without this clause a same-named Java definition
-    // anywhere in the JVM bridge's candidate pool silently evicts the Kotlin type from the graph entirely
-    // (not merely mis-scored — GONE, along with every call edge into it). GATED to SymKind::Class so
-    // Kotlin functions/methods keep the ordinary bodyless-is-a-decl rule. test/kotlincheck.sh.
-    const auto hasBody = [ & ]( NodeId id ) noexcept
-    {
-        const Symbol& sym = ing.symbols[id];
-        return sym.endByte > sym.sigEndByte || ( sym.lang == Lang::Kotlin && sym.kind == SymKind::Class );
-    };
+    // decl/def collapse (adversarial-review #1) — collapseDeclarationsOfName carries the rule, its per-root and per-family
+    // keys, and why a Kotlin body never evicts a Java declaration (or the reverse).
     {
         PROFILE_SCOPE_DESCRIBE( "buildGraph/1e: decl/def collapse" );
         for( auto& [ name, ids ] : byName )
         {
-            if( !multiRoot )
-            {
-                bool anyDef = false;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) )
-                    {
-                        anyDef = true;
-                        break;
-                    }
-                }
-                if( !anyDef )
-                {
-                    continue;
-                }
-                rw::SmallVec<NodeId, 2> defs;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) )
-                    {
-                        defs.push_back( id );
-                    }
-                }
-                ids = std::move( defs );
-            }
-            else
-            {
-                // multi-root: collapse PER ROOT — root A's def must not evict root B's decl-only best-available
-                // target (each root's solo resolution behavior is preserved exactly; lookups are root-filtered).
-                bool anyRootCollapses = false;
-                const auto rootHasDef = [ & ]( std::uint32_t r ) noexcept
-                {
-                    for( NodeId id : ids )
-                    {
-                        if( ing.fileRoot[ing.symbols[id].fileId] == r && hasBody( id ) )
-                        {
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-                for( NodeId id : ids )
-                {
-                    if( !hasBody( id ) && rootHasDef( ing.fileRoot[ ing.symbols[id].fileId ] ) ) { anyRootCollapses = true; break; }
-                }
-                if( !anyRootCollapses )
-                {
-                    continue;
-                }
-                rw::SmallVec<NodeId, 2> kept;
-                for( NodeId id : ids )
-                {
-                    if( hasBody( id ) || !rootHasDef( ing.fileRoot[ing.symbols[id].fileId] ) )
-                    {
-                        kept.push_back( id );
-                    }
-                }
-                ids = std::move( kept );
-            }
+            collapseDeclarationsOfName( ing, multiRoot, ids );
         }
     }
 
@@ -1714,7 +1695,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         PROFILE_SCOPE_DESCRIBE( "buildGraph/1f: canonByName (scope::name -> def ids)" );
         for( const Symbol& s : ing.symbols )
         {
-            if( s.scope.empty() || !hasBody( s.id ) )
+            if( s.scope.empty() || !isDefinitionNotDeclaration( s ) )
             {
                 continue;
             }
@@ -3984,8 +3965,8 @@ inline std::size_t definitionCountOfName( const IngestResult& ing, NodeId focus 
 //     every free `size` in the repository — an over-count inside an honesty fix, which is strictly worse
 //     than the silence it replaces. A method's scope is its class, so this is exactly as specific as the
 //     `Scope::name` tier the reporter showed already working.
-//   * Bodied only, via the house predicate (`endByte > sigEndByte` — shared verbatim with the decl/def
-//     collapse and arch.h's pure-interface detection), and langCompatible with the declaration, so a
+//   * Bodied only, via the predicate the decl/def collapse reads (model.h isDefinitionNotDeclaration: the
+//     span test, and a Kotlin type), and langCompatible with the declaration, so a
 //     Python `putObject` never answers for a C++ header.
 //   * The declarations are KEPT alongside the definitions, not replaced. `--uses` counts reference sites
 //     against the decl too (a `Type::method` mention in another header), and dropping them would trade
@@ -4007,13 +3988,9 @@ inline void declToDefFollowThrough( const IngestResult& ing, std::string_view fi
     {
         return;
     }
-    // Kept identical to buildGraph's decl/def collapse (§1e, above) on purpose — see that clause's comment
-    // for why a bodyless Kotlin class/interface counts as a definition here too, not a decl to widen past.
-    const auto hasBody = [ & ]( NodeId id ) noexcept
-    {
-        const Symbol& sym = ing.symbols[id];
-        return sym.endByte > sym.sigEndByte || ( sym.lang == Lang::Kotlin && sym.kind == SymKind::Class );
-    };
+    // The decl/def collapse's own predicate (model.h isDefinitionNotDeclaration), on purpose: a bodyless Kotlin
+    // class/interface counts as a definition here too, not a declaration to widen past.
+    const auto hasBody = [ & ]( NodeId id ) noexcept { return isDefinitionNotDeclaration( ing.symbols[ id ] ); };
 
     for( NodeId id : sel )
     {

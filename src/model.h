@@ -396,6 +396,25 @@ struct Symbol
 static_assert( sizeof( Symbol ) == 64 + 2 * sizeof( std::string ),
                "Symbol size changed — verify the new field uses the smallest type + is grouped (SoA); see model.h" );
 
+// Is this symbol a DEFINITION rather than a forward DECLARATION? The house test is `endByte > sigEndByte` — a span that
+// runs past its signature owns a body — and every consumer that must tell the two apart routes through here: graph.h's
+// decl/def collapse, canonByName and declToDefFollowThrough; lexical.h's def-over-decl tiebreak; situ.h's decl/def
+// partner pass. Kotlin breaks the house test for TYPES, which PR #126 found and fixed in graph.h's collapse (a
+// CodeRabbit review finding): the language has no forward declarations, so `data class User(val name: String)`,
+// `class Token`, `interface Marker` and `object Empty` are complete definitions that simply own no class_body, and read
+// as declarations each was collapsed away whenever a same-named type with a body existed (a Java `User` in another
+// directory included). queries/kotlin/tags.scm tags every Kotlin type @definition.class, so SymKind::Class is the kind
+// that fires today; Struct and Interface are listed so a finer tag cannot quietly reopen the collapse. A bodyless Kotlin
+// FUNCTION stays a declaration: an interface member or an `abstract fun` really is a contract whose body lives in an
+// override. Consumers that MEASURE or SERVE a body (clones, complexity, --readability units, lexical.h's route anchor)
+// keep the plain span test: a class with no body is a definition, but it has no volume. Gate: test/kotlincheck.sh §11
+// (the PR's bodyless interface) and §13.
+inline bool isDefinitionNotDeclaration( const Symbol& s ) noexcept
+{
+    const bool kotlinType = s.lang == Lang::Kotlin && ( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface );
+    return s.endByte > s.sigEndByte || kotlinType;
+}
+
 // local-variable-indexing plan Phase 1 MVP scope (docs/LOCALS_INDEXING.md): C/C++ only — highest
 // locals/function ratio in the survey (5-15/fn vs 3:1 Python, 0.2-0.8 Go/Rust) and `locals` is threaded
 // through ingest.cpp's ALREADY C-family-only large-function/deep-nesting complexity walk, so this extends

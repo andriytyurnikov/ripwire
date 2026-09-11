@@ -320,7 +320,7 @@ echo "=== 11. TRULY BODYLESS: a Kotlin interface with NO braces at all is still 
 # not even an empty `{}`) has NO such child for that fallback to find AT ALL, because Kotlin has no
 # forward-declaration syntax for types: this bodyless spelling is the type's sole, complete
 # definition, same as `Labeled`/`Mode` are once bodied. Before graph.h's decl/def collapse gained the
-# Kotlin-class exception (its `hasBody` lambda: `... || (lang==Kotlin && kind==Class)`), a bodyless
+# Kotlin-class exception (since read through model.h isDefinitionNotDeclaration; §13 pins the wider shapes), a bodyless
 # type read exactly like a forward declaration and was silently deleted whenever a same-name Java
 # class existed (JavaBridge.java's Taggable, below) — the same silent-drop shape §5/§8 exist to catch,
 # but for a definition that was never going to grow a body-fallback child to find. Found in review,
@@ -573,6 +573,140 @@ if [ "$( nestOpeners "$TMP/nestmut/OverCeiling.kt" )" = 127 ]; then
 else
     no "mutation 12: OverCeiling.kt did not lose exactly one level — the arm would have been inert"
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+echo
+echo "=== 13. BODYLESS KOTLIN TYPES ARE DEFINITIONS, and the decl/def collapse never crosses the Kotlin/Java line ==="
+# ═══════════════════════════════════════════════════════════════════════════
+# graph.h's decl/def collapse deletes a name's bodyless rows whenever one bodied row exists, reading a bodyless row as the
+# prototype of that body. Kotlin has no forward declarations, so `data class User(val name: String)`, `class Token` and
+# `interface Marker` are complete definitions that own no class_body — and on the first Kotlin binary each was deleted
+# the moment a same-named Java type existed ANYWHERE: makeUser's `User("a")` bound java/User.java at ambiguous=0, and
+# --lego=Models.kt:Marker answered with the Java interface (split tree) or with no implementor at all (flat tree). PR #126's
+# own Kotlin-class clause (§11) closed that half before this section merged, so those arms are pins. The
+# collapse also ran ACROSS the language line: Kotlin's KPong.pong() body evicted Java's interface-only JSvc.pong()
+# declaration, so a Java call sitting in the declaration's own file bound Kotlin code. What must NOT change is the one
+# bodyless shape that really is a declaration: a Kotlin interface member still collapses into its Kotlin override.
+# Every arm reads the bound TARGET (--callees p=, --lego's <iface p=>). Not --uses defs=, which counts every same-named
+# symbol before the collapse and reads 2 with or without the bug, and not a --callers selector, which widens a bodyless
+# selection to same-scope bodies and lists the Java caller under both Users. The layout control runs every arm in a split
+# tree (kt/ beside zjava/, named so the Kotlin files sort first — see the interface arm) and a flat one: the collapse is
+# layout-blind, so a fix that only holds when the tier ladder happens to prefer a directory fails one of the two.
+BL="$TMP/bodyless"; mkdir -p "$BL/split/kt" "$BL/split/zjava" "$BL/flat"
+cat > "$BL/split/kt/Models.kt" <<'KT'
+package com.example.kt
+
+data class User(val name: String)
+
+class Token
+
+interface Marker
+
+object Empty
+
+fun makeUser(): User = User("a")
+
+fun makeToken(): Token = Token()
+
+class Tagged : Marker
+KT
+cat > "$BL/split/kt/Pinger.kt" <<'KT'
+package com.example.kt
+
+interface Pinger {
+    fun ping(): String
+}
+KT
+cat > "$BL/split/kt/KPinger.kt" <<'KT'
+package com.example.kt
+
+class KPinger : Pinger {
+    override fun ping(): String = "k"
+}
+
+fun usePinger(p: Pinger): String = p.ping()
+KT
+cat > "$BL/split/kt/Pong.kt" <<'KT'
+package com.example.kt
+
+class KPong {
+    fun pong(): String = "kp"
+}
+KT
+cat > "$BL/split/zjava/User.java" <<'JAVA'
+package com.example.java;
+
+public class User {
+    private String name;
+    public String getName() { return name; }
+}
+
+class Token {
+    void spin() { }
+}
+
+interface Marker {
+    void mark();
+}
+
+class Empty {
+    void nothing() { }
+}
+JAVA
+cat > "$BL/split/zjava/JSvc.java" <<'JAVA'
+package com.example.java;
+
+interface JSvc {
+    String pong();
+}
+
+class JCaller {
+    String call(JSvc s) { return s.pong(); }
+}
+JAVA
+cp "$BL"/split/kt/*.kt "$BL"/split/zjava/*.java "$BL/flat/"
+# calleeFiles ROOT CALLER CALLEE — the file(s) CALLER's call to CALLEE is bound to, as --callees reports them (p=, no :line)
+calleeFiles(){ "$BIN" "$1" --callees="$2" --no-cache 2>/dev/null | grep -o "<s t=\"[a-z]*\" n=\"$3\" p=\"[^\"]*\"" | sed -E 's/.* p="([^":]*).*/\1/' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+for L in split flat; do
+    if [ "$L" = split ]; then K="kt/"; J="zjava/"; else K=""; J=""; fi
+    [ -f "$BL/$L/${K}Models.kt" ] && [ -f "$BL/$L/${J}User.java" ] && grep -q '^data class User(val name: String)$' "$BL/$L/${K}Models.kt" \
+        && ok "$L: presence — a bodyless Kotlin data class, class and interface beside same-named Java types" \
+        || no "$L: presence — the bodyless-type fixture is missing or no longer spells a bodyless data class"
+    got="$( calleeFiles "$BL/$L" Models.kt:makeUser User )"
+    [ "$got" = "${K}Models.kt" ] && ok "$L: makeUser's User(\"a\") binds the bodyless Kotlin data class, not java User" \
+        || no "$L: makeUser's User(\"a\") binds [${got:-nothing}], expected ${K}Models.kt — the Kotlin type was collapsed as a declaration"
+    got="$( calleeFiles "$BL/$L" Models.kt:makeToken Token )"
+    [ "$got" = "${K}Models.kt" ] && ok "$L: makeToken's Token() binds the bodyless Kotlin class, not java Token" \
+        || no "$L: makeToken's Token() binds [${got:-nothing}], expected ${K}Models.kt"
+    # The interface arm reads --lego, the one verb that reports which base an `extends` bound, and --lego answers with the
+    # LOWEST-id definition of a name: the Kotlin grammar tags `interface` as a class, so lego's interface selector cannot
+    # address it by file and falls back to the name. kt/ sorts before zjava/ (and Models.kt before User.java), so the Kotlin
+    # interface IS the lowest id in both trees — asserted FIRST, so a reordered fixture fails loudly instead of quietly
+    # reading the Java interface. Implementors of that definition are the read: collapsed as a declaration, it had none.
+    LEGO="$( "$BIN" "$BL/$L" --lego=Marker --no-cache 2>/dev/null )"
+    if echo "$LEGO" | grep -q "<iface n=\"Marker\" p=\"${K}Models.kt\""; then
+        echo "$LEGO" | grep -q "<impl n=\"Tagged\" p=\"${K}Models.kt\"" \
+            && ok "$L: the bodyless Kotlin interface Marker survives the collapse, and Tagged implements it" \
+            || no "$L: the bodyless Kotlin interface Marker has no Tagged implementor — it was collapsed as a declaration: $( echo "$LEGO" | grep -oE '<(iface|impl) [^>]*>' | tr '\n' ' ' )"
+    else
+        no "$L: presence — --lego=Marker no longer answers with the Kotlin interface (${K}Models.kt), so the implementor arm would read the Java one: $( echo "$LEGO" | grep -oE '<iface [^>]*>' )"
+    fi
+    got="$( calleeFiles "$BL/$L" JSvc.java:call pong )"
+    [ "$got" = "${J}JSvc.java" ] && ok "$L: Java's s.pong() keeps its own interface declaration — Kotlin's KPong.pong body does not evict it" \
+        || no "$L: Java's s.pong() binds [${got:-nothing}], expected ${J}JSvc.java — the collapse crossed the Kotlin/Java line"
+    got="$( calleeFiles "$BL/$L" KPinger.kt:usePinger ping )"
+    [ "$got" = "${K}KPinger.kt" ] && ok "$L: a bodyless Kotlin FUNCTION is still a declaration — p.ping() binds KPinger's override, not Pinger's member" \
+        || no "$L: p.ping() binds [${got:-nothing}], expected ${K}KPinger.kt — the interface member stopped collapsing into its Kotlin body"
+done
+
+# Mutation: delete the Kotlin data class. With no Kotlin User left, the same extraction must bind makeUser's call to
+# zjava/User.java — the JVM bridge doing exactly its job — so the arm above tracks the Kotlin row, not a pinned file name.
+rm -rf "$BL/mut"; cp -R "$BL/split" "$BL/mut"
+pyedit "$BL/mut/kt/Models.kt" 'data class User(val name: String)' '// data class User removed by mutation 13' \
+    && { got="$( calleeFiles "$BL/mut" Models.kt:makeUser User )"
+         [ "$got" = "zjava/User.java" ] && ok "mutation: Kotlin User deleted -> makeUser's User(\"a\") binds zjava/User.java (the bridge, once Kotlin has none)" \
+             || no "mutation 13: expected zjava/User.java once the Kotlin User is gone, got [${got:-nothing}]"; } \
+    || no "mutation 13: the data-class deletion did not apply — the arm would have been inert"
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo
