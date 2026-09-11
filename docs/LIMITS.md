@@ -200,7 +200,7 @@ Discloses: **none**
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
-| `kMaxEditDistance` | `3` | BOUNDARY | bandwidth cutoff (§P12.1): beyond this a "hint" is noise, not help |
+| `kMaxEditDistance` | `3` | BOUNDARY | bandwidth cutoff: beyond this edit distance a "hint" is noise, not help |
 | `kMaxEditDistance` | `3` | BOUNDARY | same bandwidth cutoff as didYouMean |
 
 ### `src/dmm.h`
