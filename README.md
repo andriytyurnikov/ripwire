@@ -56,9 +56,10 @@ contributors named there; this release is largely theirs.
 
 ---
 
-> **Want to help?** ripwire is six weeks old and there is a lot worth doing. Some of what we know needs doing is
-> written up as a starter kit: the research is done, the file and line pointers are in the prompt, and the prompt
-> writes a plan and stops, so we can agree the approach before you write any code.
+> **Want to help?** ripwire is twelve weeks old — first commit 2026-06-19, public since 2026-07-31 — and there is a
+> lot worth doing. Some of what we know needs doing is written up as a starter kit: the research is done, the file
+> and line pointers are in the prompt, and the prompt writes a plan and stops, so we can agree the approach before
+> you write any code.
 >
 > Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
 > further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a
