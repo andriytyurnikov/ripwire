@@ -486,10 +486,7 @@ inline constexpr const char* kQdLegendCore =
     "preexisting by construction. preexisting-worse= and new-symbol= partition regressions=. stale= is a "
     "FOURTH axis, never gating and never counted in regressions=: rows in the .ripwire_quality_acks ledger "
     "whose target no longer applies. "
-    "api-new-surface= is a COUNT, not a finding: how many symbols this change adds to the PUBLIC surface. "
-    "Never gates, never counted in regressions=, printed even at zero. It used to be one row per new export, "
-    "which the legend itself said could never gate; a count says the same thing without asking a reader to "
-    "page past it, and nothing narrows what the CONTRACT-CHANGE rows below still report. "
+    "api-new-surface= COUNTS the new PUBLIC symbols (never gates, not in regressions=, printed even at zero). "
     "register-macro-excluded= is a FLOOR, not a finding: symbols this run excluded from the dead-code kind "
     "because their own definition is a registered self-registering test/benchmark macro call. Never gates, "
     "never counted in regressions=, printed even at zero (zero means none excluded, not that the check did "
@@ -623,9 +620,8 @@ inline constexpr const char* kQdRowLegend =
     "the numeric kinds; p=\"path:line\" is the locator (root-relative; the first-sorting member for the "
     "clone kinds; omitted, never faked, when none resolves). churn= and surface= are per-kind "
     "classification facets (short-horizon-churn's self/ambient split; api-surface's new-symbol/"
-    "contract-change tier). BOTH churn facets are informational: what gates that kind is a symbol whose "
-    "edited lines were rewritten by 2 or more COMMITTED commits inside the window, the working edit never "
-    "counted, so churn=\"self\" alone reports that this edit touches hot content and stops there. "
+    "contract-change tier). churn= facets never gate alone: the kind gates only on 2+ COMMITTED in-window "
+    "rewrites of the edited lines. "
     "Every row the header's gating= counter counts also carries a gating attribute "
     "set to 1 — marked positively, never by the ABSENCE of sev or origin. ";
 

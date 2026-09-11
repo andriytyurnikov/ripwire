@@ -172,10 +172,19 @@ expect "C3" "$C3N" "$(( ${C3A:-0} - ${C1L:-0} ))" "#not-match? is the exact comp
 expect "C4" "$( hits 'match-malformed' )" "$C3A" "a MALFORMED pattern filters NOTHING (the constructor's throw leaves ok = true)"
 
 # ── D. capture-typed argument: no constant to precompile, so it must still be evaluated ──────────────
-if section 'match-capture-arg' | grep -q '<match '; then
-    ok "D: a Capture-typed #match? argument still runs (its pattern is per-match text, never precompiled)"
-else
+# NON-VACUITY, not just presence (CodeRabbit #127 / 3985249714 asked for it; the review's premise — that
+# no fixture call satisfies the relation — is wrong, see below, but `grep -q '<match '` WAS too weak: a
+# root with hits="0" would have passed it, and that is the shape a dead dynamic-predicate path produces).
+# The fixture's `strcpy( d, s )` / `strcat( d, s )` satisfy `(#match? @f @a)` — regex_search("strcpy", "s")
+# is TRUE — so the probe emits 4 captures, and the golden has pinned all 4 since it was recorded.
+D_HITS="$( hits 'match-capture-arg' )"
+if [ -z "$D_HITS" ]; then
     no "D: the Capture-typed #match? probe emitted no match root at all"
+elif [ "$D_HITS" -lt 1 ]; then
+    no "D: the Capture-typed #match? probe emitted hits=\"$D_HITS\" — the dynamic predicate matched nothing,"
+    no "   so arm A would be pinning a golden of a predicate that never fires"
+else
+    ok "D: a Capture-typed #match? argument still runs and MATCHES (hits=$D_HITS; per-match text, never precompiled)"
 fi
 
 # ── E. mutation control for arm C: each expectation, inverted, must FAIL ─────────────────────────────

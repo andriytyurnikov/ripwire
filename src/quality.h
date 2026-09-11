@@ -2111,20 +2111,29 @@ inline std::string cacheBlobRootKey( std::string_view blobName ) noexcept
         return std::string{};   // content- or file-addressed, root-independent by design — see above
     }
 
+    // A field ends at the next '-' OR at the '.' that opens the suffix. The dash-only scan this replaces
+    // could not read `ripwire-mcp-<rootKey>.cache` (mcpindex.h::mcpCachePath): its last field came out as
+    // `<rootKey>.cache`, 22 bytes, not hex16, so the function returned an EMPTY key for the one family
+    // whose name is nothing but a root key. The consequence is in evictBySizeBudget — an empty key pins
+    // nothing, so the byte-budget sweep would evict the MCP index blob of the very root it was serving
+    // while pinning that root's lean and rich blobs, and the MCP server paid a full re-parse for it.
+    // (CodeRabbit #127 / 3985249706. test/evictioncheck.sh's shell mirror `blobrootkey` already stripped
+    // `\.(bin|cache)$` before splitting, so the gate's reading and the binary's had silently diverged —
+    // arm (k) never primed an MCP blob, which is why nothing caught it.)
     std::size_t at = 0;
     while( at < blobName.size() )
     {
-        const std::size_t      dash  = blobName.find( '-', at );
-        const std::string_view field = blobName.substr( at, dash == std::string_view::npos ? std::string_view::npos : dash - at );
+        const std::size_t      sep   = blobName.find_first_of( "-.", at );
+        const std::string_view field = blobName.substr( at, sep == std::string_view::npos ? std::string_view::npos : sep - at );
         if( isHex16( field ) )
         {
             return std::string( field );
         }
-        if( dash == std::string_view::npos )
+        if( sep == std::string_view::npos )
         {
             break;
         }
-        at = dash + 1;
+        at = sep + 1;
     }
     return std::string{};
 }

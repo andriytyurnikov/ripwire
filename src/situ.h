@@ -395,7 +395,27 @@ struct SituPageArgs
 // it pastes back verbatim (bare --situ reads the git diff; --situ=F1,F2 named its own files).
 inline std::string situNextInvocation( std::string_view selector, std::size_t needed )
 {
-    const std::string verb = selector.empty() ? std::string( "--situ" ) : ( "--situ=" + std::string( selector ) );
+    // Echo the selector with each item's `:line` locator STRIPPED — the same normalization the verb applies
+    // before resolving (stripLineLocator, §P8 seam 2) — so `--situ=F:1148` and `--situ=F` produce byte-identical
+    // reports (selectorchaincheck arm d2) and the pasted follow-up is the canonical spelling, not the caller's.
+    std::string verb = "--situ";
+    if( !selector.empty() )
+    {
+        verb += "=";
+        std::size_t start = 0;
+        while( start <= selector.size() )
+        {
+            const std::size_t comma = selector.find( ',', start );
+            const std::string_view item = selector.substr( start, comma == std::string_view::npos ? std::string_view::npos : comma - start );
+            verb += std::string( stripLineLocator( item ) );
+            if( comma == std::string_view::npos )
+            {
+                break;
+            }
+            verb += ",";
+            start = comma + 1;
+        }
+    }
     return verb + " --limit=" + std::to_string( needed );
 }
 

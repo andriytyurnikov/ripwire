@@ -2,7 +2,7 @@
 
 // strkern.h — THE byte-parallel string kernels. One header, three mirrored paths, no other home.
 //
-// House rule (owner, 2026-09-10): every SIMD string kernel ripwire owns lives HERE, as inline functions
+// House rule (owner, 2026-09-10): every SIMD string kernel the host project owns lives HERE, as inline functions
 // with the NEON, the AVX2 and the scalar/SWAR reference written side by side in one place, so a reader
 // can diff the three by eye and a reviewer can see immediately when one path drifted. No SIMD intrinsic
 // for string work exists outside this header. (The pre-existing vector code in fixedStr.h, radixSort.h,
@@ -46,11 +46,19 @@
 // else — a cross build, a hand-configured toolchain that overrides the arch flags — compiles the scalar
 // twins, which are the same functions with the same contracts and no ISA requirement at all.
 //
+// The scalar twins are ALWAYS compiled, so nothing in them may be a GCC/Clang extension: the trailing-zero
+// count is `std::countr_zero` (<bit>, C++20) and not `__builtin_ctzll`, which MSVC — a supported compiler,
+// and the one the pending Windows port builds with — does not provide. It is the same instruction on every
+// toolchain that has one, and it is DEFINED at zero (width) where the builtin is undefined, so the change
+// can only remove a footgun. The vector paths use the same spelling for the same reason: MSVC compiles them
+// too under /arch:AVX2.
+//
 // Determinism (docs/ARCHITECTURE.md §3): every kernel here is INTEGER and EXACT. Its result is a bit
 // pattern, not a rounded sum, so no path can reassociate its way to a different answer; the NEON, AVX2
 // and scalar paths return identical values for identical input, which is precisely what
 // test/strkerncheck.sh asserts on 100k random buffers and on every byte of src/ and docs/.
 
+#include <bit>            // std::countr_zero — the portable spelling of ctz; the scalar twins must compile on MSVC too
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -254,7 +262,7 @@ inline void classMasks( const char* p, std::size_t n, Masks& out ) noexcept
 //  2. lowerFoldAscii / lowerFoldedEquals — the A-Z-only fold
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// A-Z ONLY, on purpose: this is the fold ripwire's lexical layer means by "lowercase" (lexindex.h
+// A-Z ONLY, on purpose: this is the fold the host's lexical layer means by "lowercase" (lexindex.h
 // lexLowerByte), and it is the only one that is locale-free, byte-exact and reversible enough to hash
 // with. Bytes >= 0x80 are left alone — a UTF-8 continuation byte is not a letter to fold.
 //
@@ -433,7 +441,7 @@ inline std::size_t findByte_scalar( const char* p, std::size_t n, char needle ) 
         const std::uint64_t m = swarZeroByteMask( x ^ splat );
         if( m != 0 )
         {
-            return k + ( std::size_t( __builtin_ctzll( m ) ) >> 3 );   // the mask is EXACT: no verify pass
+            return k + ( std::size_t( std::countr_zero( m ) ) >> 3 );   // the mask is EXACT: no verify pass
         }
     }
     for( ; k < n; ++k )
@@ -457,7 +465,7 @@ inline std::size_t findByte( const char* p, std::size_t n, char needle ) noexcep
         const std::uint64_t m = neonNibbleMask( vceqq_u8( v, splat ) );
         if( m != 0 )
         {
-            return k + ( std::size_t( __builtin_ctzll( m ) ) >> 2 );   // four mask bits per input byte
+            return k + ( std::size_t( std::countr_zero( m ) ) >> 2 );   // four mask bits per input byte
         }
     }
 #elif defined( __AVX2__ )
@@ -468,7 +476,7 @@ inline std::size_t findByte( const char* p, std::size_t n, char needle ) noexcep
         const std::uint32_t m = std::uint32_t( _mm256_movemask_epi8( _mm256_cmpeq_epi8( v, splat ) ) );
         if( m != 0 )
         {
-            return k + std::size_t( __builtin_ctz( m ) );
+            return k + std::size_t( std::countr_zero( m ) );
         }
     }
 #endif
@@ -500,7 +508,7 @@ inline std::size_t find3_scalar( const char* p, std::size_t n, const char* needl
         std::uint64_t m = swarZeroByteMask( a ^ n0 ) & swarZeroByteMask( b ^ n2 );
         while( m != 0 )
         {
-            const std::size_t at = k + ( std::size_t( __builtin_ctzll( m ) ) >> 3 );
+            const std::size_t at = k + ( std::size_t( std::countr_zero( m ) ) >> 3 );
             if( p[ at + 1 ] == needle[ 1 ] )
             {
                 return at;
@@ -539,7 +547,7 @@ inline std::size_t find3( const char* p, std::size_t n, const char* needle ) noe
             // one NIBBLE per input byte, so the lowest set bit sits at 4 * byteIndex and clearing the
             // candidate means clearing its whole nibble — `m &= m - 1` (the bit-per-byte idiom) would
             // spin on the other three bits of the same byte.
-            const int lowBit = __builtin_ctzll( m );
+            const int lowBit = std::countr_zero( m );
             const std::size_t at = k + ( std::size_t( lowBit ) >> 2 );
             if( p[ at + 1 ] == needle[ 1 ] )
             {
@@ -560,7 +568,7 @@ inline std::size_t find3( const char* p, std::size_t n, const char* needle ) noe
                                _mm256_and_si256( _mm256_cmpeq_epi8( v0, s0 ), _mm256_cmpeq_epi8( v2, s2 ) ) ) );
         while( m != 0 )
         {
-            const std::size_t at = k + std::size_t( __builtin_ctz( m ) );
+            const std::size_t at = k + std::size_t( std::countr_zero( m ) );
             if( p[ at + 1 ] == needle[ 1 ] )
             {
                 return at;
@@ -699,7 +707,7 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
         const std::uint64_t m = neonNibbleMask( vtstq_u8( row, bit ) );
         if( m != 0 )
         {
-            return k + ( std::size_t( __builtin_ctzll( m ) ) >> 2 );
+            return k + ( std::size_t( std::countr_zero( m ) ) >> 2 );
         }
     }
 #elif defined( __AVX2__ )
@@ -725,7 +733,7 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
         const std::uint32_t m = std::uint32_t( _mm256_movemask_epi8( hit ) );
         if( m != 0 )
         {
-            return k + std::size_t( __builtin_ctz( m ) );
+            return k + std::size_t( std::countr_zero( m ) );
         }
     }
 #endif
@@ -763,7 +771,7 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
 // box load 24-33). Milliseconds for the whole trace, lower is better:
 //
 //   corpus     per-byte switch   run-copy + scalar scan   run-copy + findByteset
-//   ripwire      1.60-2.00              0.81-1.01               0.71-0.96   −15% vs scalar
+//   host tree    1.60-2.00              0.81-1.01               0.71-0.96   −15% vs scalar
 //   go           6.85-7.62              4.57-4.85               4.74-5.08    +1% (median len 8: 82% of
 //                                                                                calls never reach a block)
 //   django       8.00-9.12              3.80-4.30               2.97-3.11   −23% vs scalar

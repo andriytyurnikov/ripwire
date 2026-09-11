@@ -183,8 +183,13 @@ inline void forEachLexTokenSpan( std::string_view text, EmitSpanFn&& emitSpan )
         const unsigned char after        = ( base + width < n ) ? static_cast<unsigned char>( p[ base + width ] ) : 0u;
         const std::uint32_t nextLowerBit = ( after >= 'a' && after <= 'z' ) ? ( std::uint32_t( 1 ) << ( width - 1 ) ) : 0u;
 
-        const std::uint32_t alnumShift = ( m.alnum << 1 ) | ( prevAlnum ? 1u : 0u );   // bit k = A[k-1]
-        const std::uint32_t upperShift = ( m.upper << 1 ) | ( prevUpper ? 1u : 0u );   // bit k = U[k-1]
+        // The block's LAST bit is the next block's carry (prevAlnum/prevUpper below), so it is dropped from
+        // the shift on purpose — masked out first, because on the 32-byte AVX2 block every bit of the mask
+        // is live and `x << 1` losing a set bit is what -fsanitize=integer's unsigned-shift-base rejects
+        // (a 16-byte NEON mask never had a bit there to lose, which is why arm64 never saw it).
+        constexpr std::uint32_t kBelowTop = ~std::uint32_t( 0 ) >> 1;
+        const std::uint32_t alnumShift = ( ( m.alnum & kBelowTop ) << 1 ) | ( prevAlnum ? 1u : 0u );   // bit k = A[k-1]
+        const std::uint32_t upperShift = ( ( m.upper & kBelowTop ) << 1 ) | ( prevUpper ? 1u : 0u );   // bit k = U[k-1]
         const std::uint32_t lowerAhead = ( m.lower >> 1 ) | nextLowerBit;              // bit k = L[k+1]
 
         const std::uint32_t split  = m.upper & alnumShift & ( ~upperShift | lowerAhead ) & valid;

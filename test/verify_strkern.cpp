@@ -65,6 +65,7 @@
 #include "infra/strkern.h"
 #include "infra/jsonesc.h"
 #include "lexindex.h"
+#include "lexical.h"            // LexHeadIndex — the empty-bucket arm below is this header's
 #include "serialize.h"
 #include "harnesscommon.h"      // DeterministicRng — the sanitizer-clean generator the SIMD harnesses share
 
@@ -74,6 +75,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>          // std::move — `keep` is the one place a first-wins message is retained
 #include <vector>
 
 #if !defined( RIPWIRE_TEST_ROOT )
@@ -437,8 +439,14 @@ const Sets& sets()
 
 struct Sweep
 {
-    std::size_t bufferCount = 0;
-    std::string classFail, foldFail, eqFail, findFail, tokFail;
+    std::size_t   bufferCount = 0;
+    // The generator's state after the whole sweep — a pure function of HOW MANY draws the loop made, and
+    // therefore the fingerprint of the corpus every arm saw. It is printed and gated (strkerncheck.sh)
+    // because the sweep contract is that the corpus does NOT move when an arm fails: a build whose
+    // kernels are all broken must still have swept exactly the buffers the green build swept, or the
+    // failure it reports describes a different experiment. Pure observation — no extra draw.
+    std::uint64_t rngState    = 0;
+    std::string   classFail, foldFail, eqFail, findFail, tokFail;
 };
 
 // ── one probe per kernel ──────────────────────────────────────────────────────────────────────────────
@@ -602,25 +610,40 @@ const Sweep& sweep()
             drawBuffer( gen, alpha, n, buf );
             ++r.bufferCount;
 
-            // Each probe is skipped once its arm has already failed — the arms report the FIRST
-            // divergence, and a kernel that is broken is broken 100k times over.
-            if( r.classFail.empty() ) { r.classFail = probeClassMasks( gen, buf, iter, alpha ); }
-            if( r.foldFail.empty() )  { r.foldFail  = probeFold( buf, iter, alpha ); }
-            if( r.eqFail.empty() && n > 0 ) { r.eqFail = probeFoldedEquals( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFindByte( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFind3( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFindByteset( gen, buf, iter ); }
-            if( r.tokFail.empty() )
+            // EVERY probe runs on EVERY iteration; only the MESSAGE is first-wins. The arms report the
+            // first divergence, but the draw order is the contract: probeClassMasks, probeFoldedEquals,
+            // probeFindByte, probeFind3 and probeFindByteset each pull from `gen`, so skipping one after
+            // another arm had already failed moved every later buffer and every later probe input off the
+            // corpus the green run swept. The failing report then described a DIFFERENT sweep from the one
+            // that passed, and a second, independent divergence could be shifted out of existence by the
+            // first. `keep` is the one place first-wins lives (CodeRabbit #127 / 3985249745).
+            //
+            // On a GREEN run this is byte-for-byte the old behaviour: no arm ever holds a message, so every
+            // probe ran under the old spelling too, in this same order, off this same stream.
+            const auto keep = []( std::string& slot, std::string&& msg )
+            {
+                if( slot.empty() ) { slot = std::move( msg ); }
+            };
+            keep( r.classFail, probeClassMasks( gen, buf, iter, alpha ) );
+            keep( r.foldFail,  probeFold( buf, iter, alpha ) );
+            if( n > 0 )                                  // a PRECONDITION of the probe, not a skip-on-failure
+            {
+                keep( r.eqFail, probeFoldedEquals( gen, buf, iter ) );
+            }
+            keep( r.findFail, probeFindByte( gen, buf, iter ) );
+            keep( r.findFail, probeFind3( gen, buf, iter ) );
+            keep( r.findFail, probeFindByteset( gen, buf, iter ) );
             {
                 const std::string d = tokenizerDiff( buf );
                 if( !d.empty() )
                 {
                     char msg[ 512 ];
                     std::snprintf( msg, sizeof( msg ), "iter=%d alpha=%d %s", iter, int( alpha ), d.c_str() );
-                    r.tokFail = msg;
+                    keep( r.tokFail, msg );
                 }
             }
         }
+        r.rngState = gen.state;
         return r;
     }();
     return s;
@@ -1078,7 +1101,53 @@ TEST_CASE( "strkern: the compiled path is the one this target claims" )
     // oracle to itself and prove nothing.
     std::printf( "strkern: path=%s block=%zu root=%s\n", sk::kPathName, sk::kBlockBytes, repoRoot() );
     std::printf( "strkern path: %s\n", sk::kPathName );
+    // The sweep's draw fingerprint, on its own grep-able line. strkerncheck.sh asserts the GREEN build and
+    // the -DSTRKERN_MUTATE=1 build print the SAME value: every probe runs on every iteration, so a failing
+    // arm cannot shorten the RNG stream and move the corpus out from under the arms that come after it.
+    std::printf( "strkern sweep-rng: %016llx buffers=%zu\n",
+                 static_cast< unsigned long long >( sweep().rngState ), sweep().bufferCount );
     CHECK( sk::kBlockBytes <= sk::kMaxBlockBytes );
+}
+
+// ── LexHeadIndex: the EMPTY bucket and the EMPTY longRows (CodeRabbit #127 / 3985249670) ─────────────
+// matchRow picks its scan range as `bucketIdx.data() + bucketOff[len]` for a token of at most kMaxLen
+// bytes and as `longRows.data() … + longRows.size()` above it. On the ordinary table NO row is longer
+// than 64 bytes, so `longRows` is EMPTY and `data()` may be null — and a 65+ byte corpus token whose
+// lowercased head is in the head set reaches exactly that expression. A length bucket that holds no row
+// is the same shape one level down.
+//
+// `null + 0` is a null pointer value, not undefined behaviour ([expr.add]/4, C++17 onward; this project
+// is C++23), and `first != last` is then false, so the loop body never runs. This arm is that claim in
+// executable form, under the same -fsanitize=address,undefined,integer,-fno-sanitize-recover=all build
+// arm 1 runs: it drives BOTH empty ranges and asserts the answer is kNoRow. It also drives the NON-empty
+// long path, so it is not a test of two early returns.
+TEST_CASE( "strkern: LexHeadIndex empty length bucket and empty longRows" )
+{
+    using rw::LexHeadIndex;
+
+    // A table whose every row is short: longRows is empty, and most length buckets are empty too.
+    const std::vector< std::string > shortTable{ "alpha", "beta", "gamma" };
+    const auto                        shortTokOf = [ & ]( std::size_t m ) -> const std::string& { return shortTable[ m ]; };
+    const LexHeadIndex                shortIx    = rw::buildLexHeadIndex( shortTable.size(), shortTokOf );
+    REQUIRE( shortIx.longRows.empty() );
+    CHECK( shortIx.longRows.data() + shortIx.longRows.size() == shortIx.longRows.data() );
+
+    // a 70-byte token whose head 'a' IS in the head set — the length bucket does not exist, so the
+    // kMaxLen branch is not taken and the empty longRows range is what decides the answer.
+    const std::string longTok( 70, 'a' );
+    CHECK( shortIx.matchRow( longTok.data(), longTok.size(), shortTokOf ) == LexHeadIndex::kNoRow );
+    // an in-range length whose bucket is empty (no 4-byte row starts with 'a'), head still in the set
+    const std::string fourA = "aaaa";
+    CHECK( shortIx.matchRow( fourA.data(), fourA.size(), shortTokOf ) == LexHeadIndex::kNoRow );
+    // the rows that DO exist still resolve — the arm is not passing because everything returns kNoRow
+    CHECK( shortIx.matchRow( shortTable[ 1 ].data(), shortTable[ 1 ].size(), shortTokOf ) == 1u );
+
+    // NON-EMPTY longRows: one 70-byte row, so the long branch has something to scan and hits.
+    const std::vector< std::string > longTable{ "alpha", std::string( 70, 'a' ) };
+    const auto                        longTokOf = [ & ]( std::size_t m ) -> const std::string& { return longTable[ m ]; };
+    const LexHeadIndex                longIx    = rw::buildLexHeadIndex( longTable.size(), longTokOf );
+    REQUIRE( longIx.longRows.size() == 1u );
+    CHECK( longIx.matchRow( longTok.data(), longTok.size(), longTokOf ) == 1u );
 }
 
 TEST_CASE( "strkern: A1 classMasks over all 256 byte values, every offset and length" )
