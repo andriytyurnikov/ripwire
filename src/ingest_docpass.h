@@ -36,14 +36,13 @@ inline std::string docTextViaBridgeCache( const std::string& path, const std::st
     std::string bridgeBlobPath;
     if( cacheEnabled && docparse::docKindOf( ext ) == docparse::DocKind::Markitdown )
     {
-        std::string docBytes;
-        if( docparse::detail::readWholeFile( path, docBytes ) )
+        if( const std::optional<std::string> docBytes = docparse::detail::readWholeFile( path ) )
         {
             char blobName[ 64 ];
             rw::formatTo( blobName, sizeof( blobName ), "ripwire-docmd-{:016x}.bin",
-                           static_cast<unsigned long long>( fnv1a64( docBytes ) ) );
+                           static_cast<unsigned long long>( fnv1a64( *docBytes ) ) );
             bridgeBlobPath = quality::resolveCacheBlobPath( quality::cacheDirLadder(), blobName );
-            docparse::detail::readWholeFile( bridgeBlobPath, text );   // miss ⇒ text stays empty
+            text = docparse::detail::readWholeFile( bridgeBlobPath ).value_or( std::string() );   // miss ⇒ text stays empty
         }
     }
     if( text.empty() )

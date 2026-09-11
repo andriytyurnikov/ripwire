@@ -27,6 +27,7 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -176,43 +177,44 @@ inline bool isProseExtension( std::string_view extLower ) noexcept
 namespace detail
 {
 
-inline bool readWholeFile( const std::string& path, std::string& out )
+// The whole file, or nullopt when it cannot be opened, sized or read in full. An EMPTY file is an engaged empty
+// string, not a failure — a caller for which empty and unreadable mean the same thing says so with value_or.
+inline std::optional<std::string> readWholeFile( const std::string& path )
 {
     std::FILE* fp = std::fopen( path.c_str(), "rb" );
     if( fp == nullptr )
     {
-        return false;
+        return std::nullopt;
     }
 
     if( std::fseek( fp, 0, SEEK_END ) != 0 )
     {
         std::fclose( fp );
-        return false;
+        return std::nullopt;
     }
     const long len = std::ftell( fp );
     if( len < 0 )
     {
         std::fclose( fp );
-        return false;
+        return std::nullopt;
     }
     if( std::fseek( fp, 0, SEEK_SET ) != 0 )
     {
         std::fclose( fp );
-        return false;
+        return std::nullopt;
     }
 
-    out.resize( std::size_t( len ) );
+    std::string       out( std::size_t( len ), '\0' );
     const std::size_t want = out.size();
     const std::size_t got  = want == 0 ? 0 : std::fread( out.data(), 1, want, fp );
     // fclose unconditionally: `( got == want ) && ( std::fclose( fp ) == 0 )` short-circuited past it and leaked the
     // FILE on every short read (clang-analyzer-unix.Stream) — githarden's git-config probe and the notebook reader share this.
     const bool closedOk = std::fclose( fp ) == 0;
-    const bool ok       = got == want && closedOk;
-    if( !ok )
+    if( got != want || !closedOk )
     {
-        out.clear();
+        return std::nullopt;
     }
-    return ok;
+    return out;
 }
 
 // Decode the JSON string starting at s[i]=='"' into `out`, advancing i past the closing quote. Handles the
@@ -576,8 +578,8 @@ inline std::string parseDocFile( const std::string& path, std::string_view extLo
         case DocKind::Html:
         case DocKind::Csv:
         {
-            std::string bytes;
-            if( !detail::readWholeFile( path, bytes ) )
+            const std::optional<std::string> bytes = detail::readWholeFile( path );
+            if( !bytes )
             {
                 DEGRADED_PATH_ALERT( "docparse: cannot read document file" );
                 rw::emitTo( stderr, "ripwire: doc {}: cannot read — omitted from the index (the skipped verb counts it as unmeasured)\n", path.c_str() );   // 2026-09-06
@@ -585,9 +587,9 @@ inline std::string parseDocFile( const std::string& path, std::string_view extLo
             }
             switch( docKindOf( extLower ) )
             {
-                case DocKind::Ipynb: return extractIpynb( bytes );
-                case DocKind::Html:  return extractHtml( bytes );
-                case DocKind::Csv:   return extractCsv( bytes );
+                case DocKind::Ipynb: return extractIpynb( *bytes );
+                case DocKind::Html:  return extractHtml( *bytes );
+                case DocKind::Csv:   return extractCsv( *bytes );
                 default:             return {};
             }
         }

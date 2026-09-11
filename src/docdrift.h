@@ -2096,12 +2096,12 @@ inline DocScan scanDocAnchors( const IngestResult& ing, const std::string& root,
     // SLOT-DISJOINT: doc d writes out.*[d] and nothing else; `defined` is read-only here.
     forEachIndexParallel( docCount, "doc scan", [ & ]( std::size_t d )
     {
-        std::string bytes;
-        if( !darkflags::readWhole( diskPath( ing, docFileIds[d] ), bytes ) )
+        const std::optional<std::string> bytes = darkflags::readWhole( diskPath( ing, docFileIds[d] ) );
+        if( !bytes )
         {
             return; // isDocRead stays 0
         }
-        out.perDoc[d]    = collectDocAnchors( out.docRel[d], bytes, defined, out.perDocResolving[d] );
+        out.perDoc[d]    = collectDocAnchors( out.docRel[d], *bytes, defined, out.perDocResolving[d] );
         out.isDocRead[d] = 1;
     } );
     return out;
@@ -2149,8 +2149,8 @@ inline std::size_t scanCorpusFacts( const IngestResult& ing, const std::string& 
         const std::string& readPath  = isIndexed ? diskPath( ing, std::uint32_t( k ) ) : repo.auxFull[ k - indexedCount ];
         const std::string& identPath = isIndexed ? ing.files[k]                        : repo.auxFull[ k - indexedCount ];
 
-        std::string bytes;
-        if( !darkflags::readWhole( readPath, bytes ) )
+        const std::optional<std::string> bytes = darkflags::readWhole( readPath );
+        if( !bytes )
         {
             return; // oversized/unreadable: counts stay 0
         }
@@ -2160,12 +2160,12 @@ inline std::size_t scanCorpusFacts( const IngestResult& ing, const std::string& 
         {
             // A doc never vouches for its own mentions — line counts only, so a `README.md:900` anchor can
             // still be bounds-checked without the doc's own prose making every name it names "present".
-            lineCounts[k] = forEachLine( bytes, []( std::string_view, std::uint32_t ) {} );
+            lineCounts[k] = forEachLine( *bytes, []( std::string_view, std::uint32_t ) {} );
             return;
         }
         const std::string rel( relForHash( identPath, root ) );
         std::string       uncommented;
-        const std::string_view corpusBytes = codeFactText( identPath, bytes, uncommented );
+        const std::string_view corpusBytes = codeFactText( identPath, *bytes, uncommented );
         const std::uint32_t lineCount = forEachLine( corpusBytes, [ & ]( std::string_view line, std::uint32_t lineIndex )
                                                      { harvestCodeLine( line, rel, lineIndex, wantsFirstByte, facts, into ); } );
         if( isIndexed )

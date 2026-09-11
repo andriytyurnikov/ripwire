@@ -605,10 +605,11 @@ std::optional<int> runChangeViews( const MainDispatch& d )
 // from_trace verb (mcpverbs.h's fromTraceText()). Only readTraceText (stdin/file reading — a CLI-only
 // concern; the MCP verb takes the trace text as a request argument) stays here.
 
-// read the --from-trace source into `text` — a FILE, or '-' for stdin (the --batch precedent). Returns false
-// (after printing the reason) only when a NAMED file cannot be opened; '-' and an empty file are fine.
-bool readTraceText( const std::string& src, std::string& text )
+// read the --from-trace source — a FILE, or '-' for stdin (the --batch precedent). nullopt (after printing the
+// reason) only when a NAMED file cannot be opened; '-' and an empty file are fine.
+std::optional<std::string> readTraceText( const std::string& src )
 {
+    std::string text;
     if( src == "-" )
     {
         // R4: the same byte-safe reader the --mcp loop runs on. A stack trace / sanitizer report carries
@@ -616,17 +617,17 @@ bool readTraceText( const std::string& src, std::string& text )
         // aborted the sanitizer build on the first such byte — see stdinline.h. Parity is exact.
         std::string l;
         while( rw::readByteSafeLine( stdin, l ) ) { text += l; text += '\n'; }
-        return true;
+        return text;
     }
     std::FILE* f = std::fopen( src.c_str(), "rb" );
-    if( !f ) { rw::emitTo( stderr, "ripwire: --from-trace: cannot open '{}'\n", src.c_str() ); return false; }
+    if( !f ) { rw::emitTo( stderr, "ripwire: --from-trace: cannot open '{}'\n", src.c_str() ); return std::nullopt; }
     char buf[ 4096 ]; std::size_t n;
     while( ( n = std::fread( buf, 1, sizeof buf, f ) ) > 0 )
     {
         text.append( buf, n );
     }
     std::fclose( f );
-    return true;
+    return text;
 }
 
 // L2 — --from-trace=FILE ('-'=stdin): trace-to-locus. Reads a stack trace /
@@ -646,9 +647,9 @@ std::optional<int> runFromTrace( const MainDispatch& d )
         return std::nullopt;
     }
 
-    const std::string src( cfg.fromTrace );
-    std::string       text;
-    if( !readTraceText( src, text ) )
+    const std::string                src( cfg.fromTrace );
+    const std::optional<std::string> text = readTraceText( src );
+    if( !text )
     {
         return 1;
     }
@@ -671,7 +672,7 @@ std::optional<int> runFromTrace( const MainDispatch& d )
     in.rootArg  = ( ing.realPaths.empty() && cfg.roots.size() == 1 ) ? std::string_view( cfg.roots[0] )
                                                                     : std::string_view();   // R-R
 
-    const FromTraceResult res = fromTraceBundleText( ing, g, text, src == "-" ? "<stdin>" : src, in );
+    const FromTraceResult res = fromTraceBundleText( ing, g, *text, src == "-" ? "<stdin>" : src, in );
     if( !res.ok )
     {
         rw::emitTo( stderr, "ripwire: --from-trace: no stack-trace / sanitizer / compiler frames found in '{}' — nothing to map\n",
