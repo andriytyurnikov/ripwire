@@ -5,6 +5,11 @@ public class JavaBridge {
         return n + 1;
     }
 
+    // A name only Java defines — the Kotlin -> Java bridge's positive case (kotlincheck §3).
+    public static int javaOnly(int n) {
+        return n * 3;
+    }
+
     public int callGreeter() {
         Greeter g = Greeter.of("java");
         return g.greet().length();

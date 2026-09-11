@@ -6,9 +6,10 @@ class Formatter {
     fun format(n: Int): String = "n=$n"
 }
 
-// Same-name-as-Java-method object, deliberately UNRELATED to JavaBridge.helper below — the
-// negative-collision fixture for the langCompatible JVM bridge (graph.h). A bare unqualified call
-// to `helper(...)` from Greeter.kt must not silently pick one of these two.
+// Same-name-as-Java-method object, deliberately UNRELATED to JavaBridge.helper — the collision fixture
+// for the JVM bridge (graph.h langCompatible + keepOwnJvmLanguageCandidates). A Kotlin call to
+// `helper(...)` binds THIS one, because its own language defines a candidate; a Java call would bind
+// JavaBridge's for the same reason.
 object Extra {
     fun helper(n: Int): Int = n - 1
 }

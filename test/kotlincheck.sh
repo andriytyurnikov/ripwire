@@ -12,11 +12,10 @@
 # things a naive port gets wrong silently, not loudly: (a) whether a class/object/companion-object
 # member gets its ENCLOSING SCOPE in its canonical id= (kotlinEnclosingScopeOf, ingest_names.h) — a
 # scope-less id is exactly what makes a same-name collision across classes invisible — and (b) the
-# JVM bridge itself (graph.h langCompatible), in BOTH directions, plus the collision it cannot narrow:
-# a same-name Kotlin/Java pair with no other evidence must surface as ambiguous= with BOTH candidates
-# getting the edge (§5) — never silently resolve to one side, which is exactly what a definition read
-# as bodyless does (graph.h's decl/def collapse deletes it as a forward declaration), so §5 is really
-# guarding ingest_sidecap.h's positional body fallback.
+# JVM bridge itself (graph.h langCompatible + keepOwnJvmLanguageCandidates), in BOTH directions, plus the
+# collision it resolves by rule: a same-name Kotlin/Java pair binds the caller's OWN language (§5), in a
+# one-directory tree and a split one alike (§14) — never both (an ambiguity that only a flat fixture could
+# show) and never neither (what a split tree silently did before the rule).
 #
 # ── FIXTURE (test/kotlinfix/) ─────────────────────────────────────────────────────────────────────
 #   Util.kt        fun square(n: Int): Int                  -- top-level function, cross-file callee
@@ -32,45 +31,43 @@
 #                     fun greet(): String -> square(2)          -- member function, CROSS-FILE call
 #                   }
 #                   fun Int.doubled(): Int                    -- extension function
-#                   fun useJavaHelper(): Int -> JavaBridge.helper(5)  -- Kotlin -> Java, qualified
+#                   fun useJavaHelper(): Int -> JavaBridge.helper(5)  -- Kotlin -> ???, QUALIFIED on a name both define (§5 trade-off)
+#                   fun useJavaOnly(): Int -> JavaBridge.javaOnly(3)  -- Kotlin -> Java, qualified, a name only Java defines (§3)
 #                   fun ambiguousCall(): Int -> helper(5)      -- Kotlin -> ???, BARE (the collision probe)
-#                   fun runAll(): Int -> of, greet, doubled, useJavaHelper, ambiguousCall
+#                   fun runAll(): Int -> of, greet, doubled, useJavaHelper, useJavaOnly, ambiguousCall
 #   JavaBridge.java class JavaBridge {
 #                     static int helper(int n)                 -- the OTHER half of the collision pair
+#                     static int javaOnly(int n)               -- the Java-only bridge target (§3)
 #                     int callGreeter() -> Greeter.of(...), .greet()  -- Java -> Kotlin, BOTH bridge uses
 #                   }
 #                   class Mode { void run() }                 -- the OTHER half of the §8 collision pair
 #
 # ── FINDINGS from running `ripwire test/kotlinfix` and reading the raw output ───────────────────────
-#   - files=3 symbols=29 edges=14 ambiguous=2 unresolved=0, clean stderr (no ABI/degrade line).
+#   - files=3 symbols=31 edges=14 ambiguous=0 unresolved=0, clean stderr (no ABI/degrade line).
 #   - id="Greeter.kt::Greeter::of" / id="Greeter.kt::Greeter::greet" / id="Util.kt::Formatter::format"
 #     / id="Util.kt::Extra::helper" — every class/object/companion-object member carries its enclosing
 #     scope; a top-level function (square, doubled, useJavaHelper, runAll, ambiguousCall) carries none
 #     (scope-less, by contract — id= is absent, not empty, at file scope).
-#   - JVM BRIDGE, Java -> Kotlin (the clean direction): --callers=Greeter.kt:of and
-#     --callers=Greeter.kt:greet BOTH report count=2 — runAll (same-language) AND
-#     JavaBridge.java's callGreeter (cross-language), unambiguous, graph_ambiguous=0 on THIS pair
-#     (helper's collision is what carries the file's ambiguous=2 total).
-#   - JVM BRIDGE, Kotlin -> Java, qualified (useJavaHelper -> JavaBridge.helper(5)): resolves cleanly
-#     to JavaBridge's helper specifically... but see the collision arm below — the qualification is
-#     NOT what disambiguates it (Kotlin navigation-expression receivers do not narrow candidates yet,
-#     a separate, still-open gap); it resolves correctly here only because the SAME collision the bare
-#     call hits also admits both candidates, and both genuinely get the edge (§5).
-#   - THE COLLISION, FIXED (was silently wrong; now honestly ambiguous — see graph.h's langCompatible
-#     comment for the full history): ambiguousCall's BARE `helper(5)` — no receiver, no import
-#     evidence — has TWO real candidates (Util.kt's Extra.helper and JavaBridge.java's helper). Both
-#     useJavaHelper's qualified call AND ambiguousCall's bare call now correctly show BOTH candidates
-#     as callers (count=2 each) and graph_ambiguous="2" — the tool used to silently pick JavaBridge's
-#     helper for both with zero signal in the header; the root cause was defBodyNodeOf reading every
-#     Kotlin definition as bodyless (positional function_body/class_body, not a body: field) and
-#     graph.h's decl/def collapse deleting the "bodyless" Kotlin candidate whenever a same-named Java
-#     definition existed. Fixed by extending ingest_sidecap.h's positional body fallback (previously
-#     ObjC-only) to Kotlin (kParserVer 84).
+#   - JVM BRIDGE, Java -> Kotlin: --callers=Greeter.kt:of and --callers=Greeter.kt:greet BOTH report
+#     count=2 — runAll (same-language) AND JavaBridge.java's callGreeter (cross-language), in the flat
+#     fixture and split across three directories alike (§14a).
+#   - JVM BRIDGE, Kotlin -> Java: useJavaOnly's `JavaBridge.javaOnly(3)` reaches the Java method — a
+#     name only Java defines, which is the case the bridge exists for (§3).
+#   - THE COLLISION, by rule: `helper` is defined in both languages, so both Kotlin sites — the BARE
+#     ambiguousCall() and the QUALIFIED useJavaHelper() — bind Kotlin's Extra.helper: the bridge admits
+#     the other JVM language only when the caller's own defines no candidate (graph.h
+#     keepOwnJvmLanguageCandidates). The qualified site is the disclosed trade-off: Kotlin receivers do
+#     not narrow candidates yet (ingest_binds.h). What this replaced reported both helpers at
+#     ambiguous=2 in this flat fixture — and silently bound NEITHER once the files sat in different
+#     directories, the same tier-3 drop that deleted Java edges on square/retrofit (§14).
+#   - A same-name Kotlin/Java pair of TYPES is kept as two definitions even when one side has no body
+#     (model.h isDefinitionNotDeclaration, §11 and §13); the positional body fallback in ingest_sidecap.h is what
+#     gives a bodied Kotlin definition its body span.
 #   - --deps: one Include record (`com.example.util.square`, Greeter.kt's import) — Kotlin's
 #     IncludeLang is Other/deferred (resolve.h, same posture as Java), so it is captured for
 #     disclosure but never file-resolved; dep_langs= names "kt" in the capable set regardless
 #     (dependencyCapable() is about the language, not about how far the resolver currently reaches).
-#   - --skipped: <lang n="kt" files="2" symbols="22"/> and <lang n="java" files="1" symbols="7"/>.
+#   - --skipped: <lang n="kt" files="2" symbols="23"/> and <lang n="java" files="1" symbols="8"/>.
 #   - CAPTUREBASES DELEGATION_SPECIFIER (§9, a review-round coverage gap, not part of the original
 #     port): no prior fixture had a Kotlin class with a base clause at all, so captureBases's Kotlin
 #     arm (src/ingest_relations.h) — both the WRAPPED shape (`Shape()`, delegation_specifier ->
@@ -132,6 +129,8 @@ presence Greeter.kt     '= helper(5)'                  'the BARE Kotlin -> ??? c
 presence JavaBridge.java 'static int helper(int n)'    'the Java half of the collision pair'
 presence JavaBridge.java 'Greeter.of('                 'a Java -> Kotlin companion-object call'
 presence JavaBridge.java 'g.greet()'                   'a Java -> Kotlin member call'
+presence Greeter.kt     'JavaBridge.javaOnly(3)'       'a qualified Kotlin -> Java call on a name only Java defines'
+presence JavaBridge.java 'static int javaOnly(int n)'  'the Java-only bridge target'
 
 MAP_OUT="$TMP/map.xml"
 "$BIN" "$FIX" --no-cache >"$MAP_OUT" 2>"$TMP/map.err"
@@ -142,20 +141,18 @@ command -v xmllint >/dev/null 2>&1 && { xmllint --noout "$MAP_OUT" && ok "defaul
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
-echo "=== 1. STRUCTURE: 3 files / 29 symbols / 14 edges, the collision correctly ambiguous ==="
+echo "=== 1. STRUCTURE: 3 files / 31 symbols / 14 edges, and no ambiguity left ==="
 # ═══════════════════════════════════════════════════════════════════════════
-# edges=14/ambiguous=2, not 11/0: the two collision call sites (useJavaHelper, ambiguousCall) each
-# admit BOTH same-name candidates as real edges (RefRole::Call is deliberately un-narrowed — graph.h's
-# own doctrine), which is what "correctly ambiguous" costs in edge count. See §5. symbols=29, not 15:
-# §8's enum_class_body collision pair (Mode/Mode) adds 3 definitions but no call edges (neither is
-# ever constructed); §9's Labeled/Shape/Square/describe fixture adds 8 more definitions and Square's
-# `Shape()` delegation adds the one extra edge (edges=14, not 13) — a constructor-delegation call is
-# also a real call (tags.scm's constructor_invocation capture); §11's TRULY-bodyless Taggable/Taggable
-# collision pair adds the final 3 definitions (Kotlin's bodyless interface, Java's class, its one
-# method) and, like §8/§9's Labeled, no call edges (neither is ever constructed or invoked).
-grep -q 'files=3 symbols=29' "$MAP_OUT" && ok "header: files=3 symbols=29" || no "header: expected files=3 symbols=29: $( grep -o 'files=[0-9]* symbols=[0-9]*' "$MAP_OUT" )"
-grep -q 'edges=14' "$MAP_OUT" && ok "header: edges=14" || no "header: expected edges=14: $( grep -o 'edges=[0-9]*' "$MAP_OUT" )"
-grep -q 'ambiguous=2' "$MAP_OUT" && ok "header: ambiguous=2" || no "header: expected ambiguous=2: $( grep -o 'ambiguous=[0-9]*' "$MAP_OUT" )"
+# symbols=31: the original port's 26, §11's bodyless Taggable collision pair (Kotlin's interface, Java's class and its one
+# method: 3, and no call edges, since neither is constructed or invoked), and §3's Java-only bridge pair (useJavaOnly, javaOnly). edges=14: the helper
+# collision now costs ONE edge per call site instead of two — both bind Kotlin's Extra.helper (§5), which is -2 — and §3's
+# pair adds two (runAll -> useJavaOnly, useJavaOnly -> javaOnly). ambiguous=0: helper's two sites were the only ambiguous
+# calls in the fixture. The rest is the original port's accounting: §8's enum_class_body pair (Mode/Mode) adds 3
+# definitions and no call edges; §9's Labeled/Shape/Square/describe adds 8 definitions, and Square's `Shape()` delegation
+# is one real call edge (tags.scm's constructor_invocation capture), like any other call expression.
+grep -q 'files=3 symbols=31 ' "$MAP_OUT" && ok "header: files=3 symbols=31" || no "header: expected files=3 symbols=31: $( grep -o 'files=[0-9]* symbols=[0-9]*' "$MAP_OUT" )"
+grep -q ' edges=14 ' "$MAP_OUT" && ok "header: edges=14" || no "header: expected edges=14: $( grep -o 'edges=[0-9]*' "$MAP_OUT" )"
+grep -q ' ambiguous=0 ' "$MAP_OUT" && ok "header: ambiguous=0" || no "header: expected ambiguous=0: $( grep -o 'ambiguous=[0-9]*' "$MAP_OUT" )"
 grep -q 'unresolved=0' "$MAP_OUT" && ok "header: unresolved=0" || no "header: expected unresolved=0: $( grep -o 'unresolved=[0-9]*' "$MAP_OUT" )"
 
 grep -q 'id="Greeter.kt::Greeter::of"' "$MAP_OUT" && ok 'scope: companion-object factory carries id=Greeter.kt::Greeter::of' \
@@ -197,11 +194,14 @@ echo "$GREET_CALLERS" | grep -q 'count="2"' && ok "--callers=Greeter.kt:greet ->
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
-echo "=== 3. JVM BRIDGE, Kotlin -> Java, QUALIFIED (useJavaHelper -> JavaBridge.helper) ==="
+echo "=== 3. JVM BRIDGE, Kotlin -> Java, QUALIFIED, on a name only Java defines (useJavaOnly -> JavaBridge.javaOnly) ==="
 # ═══════════════════════════════════════════════════════════════════════════
-HELPER_CALLERS="$( "$BIN" "$FIX" --callers="JavaBridge.java:helper" --no-cache 2>/dev/null )"
-echo "$HELPER_CALLERS" | grep -q 'n="useJavaHelper"' && ok "--callers=JavaBridge.java:helper lists useJavaHelper (Kotlin -> Java, qualified)" \
-    || no "--callers=JavaBridge.java:helper did not list useJavaHelper: $HELPER_CALLERS"
+# The bridge's own job: a Kotlin call into a name its own language does not define. useJavaHelper's `JavaBridge.helper(5)`
+# used to stand in for this arm, but `helper` is defined in BOTH languages, so it never isolated the bridge — it measured
+# the collision (§5), and with the files split across directories it bound nothing at all (§14a).
+JAVAONLY_CALLERS="$( "$BIN" "$FIX" --callers="JavaBridge.java:javaOnly" --no-cache 2>/dev/null )"
+echo "$JAVAONLY_CALLERS" | grep -q 'n="useJavaOnly"' && ok "--callers=JavaBridge.java:javaOnly lists useJavaOnly (Kotlin -> Java, qualified)" \
+    || no "--callers=JavaBridge.java:javaOnly did not list useJavaOnly: $JAVAONLY_CALLERS"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
@@ -220,30 +220,31 @@ echo "$DEPS" | grep -qE 'dep_langs="[^"]*,kt[,"]' && ok '--deps health: dep_lang
 SK="$( "$BIN" "$FIX" --skipped --no-cache 2>/dev/null )"
 echo "$SK" | grep -q 'unsupported_ext="0"' && ok '--skipped: unsupported_ext=0 (no .kt/.java falls out of the index)' \
     || no "--skipped: expected unsupported_ext=0: $( echo "$SK" | grep -o 'unsupported_ext="[0-9]*"' )"
-echo "$SK" | grep -q '<lang n="kt" files="2" symbols="22"/>' && ok '--skipped: <lang n="kt" files="2" symbols="22"/> census row' \
+echo "$SK" | grep -q '<lang n="kt" files="2" symbols="23"/>' && ok '--skipped: <lang n="kt" files="2" symbols="23"/> census row' \
     || no "--skipped: kotlin census row missing/wrong: $( echo "$SK" | grep -o '<lang n="kt"[^/]*/>' )"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
-echo "=== 5. THE COLLISION: a bare same-name Kotlin/Java call is now HONESTLY ambiguous ==="
+echo "=== 5. THE COLLISION: a same-name Kotlin/Java pair binds the caller's OWN language — and the trade-off that costs ==="
 # ═══════════════════════════════════════════════════════════════════════════
-# Both the bare call (ambiguousCall) and the qualified one (useJavaHelper) must show BOTH same-name
-# candidates as real edges. A definition read as bodyless is deleted from the candidate pool as a
-# forward declaration before ambiguous= is consulted (graph.h's decl/def collapse), so a regression in
-# ingest_sidecap.h's positional body fallback shows up here as one side silently winning.
+# helper is defined in both languages (Util.kt's Extra.helper, JavaBridge.java's helper). The bridge admits the other JVM
+# language only when the caller's own defines no candidate of the name (graph.h keepOwnJvmLanguageCandidates), so BOTH
+# Kotlin call sites — the bare ambiguousCall() and the QUALIFIED useJavaHelper()'s `JavaBridge.helper(5)` — bind Kotlin's
+# Extra.helper. The qualified one is the disclosed trade-off, pinned so it cannot move silently: Kotlin receivers do not
+# narrow candidates yet (ingest_binds.h), so `JavaBridge.` is evidence this resolver cannot read. What this replaced: both
+# sites bound BOTH helpers at ambiguous=2 — but only because this fixture is one directory; split across three they
+# reached NEITHER, with no amb= and no unresolved= (§14a runs that split layout).
 USES_HELPER="$( "$BIN" "$FIX" --uses=helper --no-cache 2>/dev/null )"
-echo "$USES_HELPER" | grep -q 'defs="2"' && ok '--uses=helper: defs="2" — BOTH candidates are visible (Extra.helper, JavaBridge.helper)' \
+echo "$USES_HELPER" | grep -q 'defs="2"' && ok '--uses=helper: defs="2" — both definitions are still indexed (Extra.helper, JavaBridge.helper)' \
     || no "--uses=helper: expected defs=2: $( echo "$USES_HELPER" | grep -o '<uses [^>]*>' )"
-echo "$USES_HELPER" | grep -q 'graph_ambiguous="2"' \
-    && ok '--uses=helper: graph_ambiguous="2" — the collision correctly surfaces (both call sites, both candidates)' \
-    || no "--uses=helper: graph_ambiguous is no longer 2 — a regression to the old silent-pick, or a narrowing change: $( echo "$USES_HELPER" | grep -o '<uses [^>]*>' )"
-# Both candidates must get the edge from BOTH call sites — a regression to the old body-detection bug
-# would drop Extra.helper from one or both.
-# $HELPER_CALLERS is §3's run of the same query — reused, not re-run.
 UTIL_HELPER_CALLERS="$( "$BIN" "$FIX" --callers="Util.kt:helper" --no-cache 2>/dev/null )"
-echo "$HELPER_CALLERS" | grep -q 'count="2"' && echo "$UTIL_HELPER_CALLERS" | grep -q 'count="2"' \
-    && ok 'both helper() definitions get BOTH call sites as callers (count=2 each) — the collision is real, not one-sided' \
-    || no "collision asymmetric — JavaBridge=$( echo "$HELPER_CALLERS" | grep -o 'count="[0-9]*"' ) Util=$( echo "$UTIL_HELPER_CALLERS" | grep -o 'count="[0-9]*"' ) (the positional body fallback may have regressed)"
+HELPER_CALLERS="$( "$BIN" "$FIX" --callers="JavaBridge.java:helper" --no-cache 2>/dev/null )"
+echo "$UTIL_HELPER_CALLERS" | grep -q 'count="2"' && echo "$UTIL_HELPER_CALLERS" | grep -q 'n="useJavaHelper"' && echo "$UTIL_HELPER_CALLERS" | grep -q 'n="ambiguousCall"' \
+    && ok "--callers=Util.kt:helper: count=2 — the bare ambiguousCall AND the qualified useJavaHelper both bind Kotlin's Extra.helper" \
+    || no "--callers=Util.kt:helper: expected both Kotlin call sites: $( echo "$UTIL_HELPER_CALLERS" | grep -o '<callers [^>]*>' )"
+echo "$HELPER_CALLERS" | grep -q 'count="0"' \
+    && ok "--callers=JavaBridge.java:helper: count=0 — no Kotlin site reaches Java's helper while Kotlin defines one (the trade-off)" \
+    || no "--callers=JavaBridge.java:helper: expected count=0 — a Kotlin site reached Java's helper although Kotlin defines one: $( echo "$HELPER_CALLERS" | grep -o '<callers [^>]*>' )"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
@@ -258,9 +259,10 @@ echo "=== 8. ENUM CLASS BODY: enum_class_body is a DIFFERENT positional child th
 USES_MODE="$( "$BIN" "$FIX" --uses=Mode --no-cache 2>/dev/null )"
 echo "$USES_MODE" | grep -q 'defs="2"' && ok '--uses=Mode: defs="2" — BOTH candidates are visible (Kotlin enum class, Java class)' \
     || no "--uses=Mode: expected defs=2: $( echo "$USES_MODE" | grep -o '<uses [^>]*>' )"
-echo "$USES_MODE" | grep -q 'graph_ambiguous="2"' \
-    && ok '--uses=Mode: graph_ambiguous="2" — the enum class was not silently dropped as bodyless' \
-    || no "--uses=Mode: graph_ambiguous is no longer 2: $( echo "$USES_MODE" | grep -o '<uses [^>]*>' )"
+# What this arm can and cannot see, stated rather than implied: --uses defs= counts every same-named definition BEFORE the
+# decl/def collapse, and no call reaches Mode, so "2" would print even if the enum class were collapsed away. The
+# graph_ambiguous="2" this section used to pin beside it was helper's collision (§5) — a whole-graph gauge, never Mode's.
+# The arm that reads the collapse's OUTPUT for a Kotlin type is §13, through --callees target files.
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
@@ -329,9 +331,9 @@ USES_TAGGABLE="$( "$BIN" "$FIX" --uses=Taggable --no-cache 2>/dev/null )"
 echo "$USES_TAGGABLE" | grep -q 'defs="2"' \
     && ok '--uses=Taggable: defs="2" — the bodyless Kotlin interface survives alongside the Java class' \
     || no "--uses=Taggable: expected defs=2: $USES_TAGGABLE"
-echo "$USES_TAGGABLE" | grep -q 'graph_ambiguous="2"' \
-    && ok '--uses=Taggable: graph_ambiguous="2" — the collision correctly surfaces' \
-    || no "--uses=Taggable: expected graph_ambiguous=2: $USES_TAGGABLE"
+# The graph_ambiguous="2" this section first pinned beside defs= was helper's collision (§5): graph_ambiguous= is the WHOLE
+# GRAPH's gauge, not Taggable's own, and Taggable is never called, so it can make nothing ambiguous. §14's own-language
+# rule took helper's ambiguity to 0 (the same reason §8 dropped its copy). defs="2" above and mutation 7g pin this pair.
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
@@ -383,17 +385,20 @@ pyedit "$TMP/mut/JavaBridge.java" 'Greeter g = Greeter.of("java");' 'Greeter g =
              || no "mutation: expected count=1 after renaming the bridge call, got: $( echo "$OF_CALLERS_MUT" | grep -o '<callers [^>]*>' )"; } \
     || no "mutation 7b: the bridge call-site rename did not apply — the arm would have been inert"
 
-# 7c. rename the Kotlin -> Java qualified bridge call (JavaBridge.helper -> a nonexistent name) — the
-#     bridge edge must vanish, proving §3's assertion is not a tautology.
+# 7c. rename the Kotlin -> Java qualified bridge call (JavaBridge.javaOnly -> a nonexistent name) — the bridge edge must
+#     vanish, proving §3's assertion is not a tautology. (This renamed the helper call while helper was §3's target; once
+#     the bridge prefers Kotlin, useJavaHelper is never a caller of Java's helper, so that rename would prove nothing.)
 mutate
-pyedit "$TMP/mut/Greeter.kt" 'fun useJavaHelper(): Int = JavaBridge.helper(5)' 'fun useJavaHelper(): Int = JavaBridge.helperX(5)' \
-    && { HELPER_CALLERS_MUT="$( "$BIN" "$TMP/mut" --callers="JavaBridge.java:helper" --no-cache 2>/dev/null )"; MUT_RC=$?
+pyedit "$TMP/mut/Greeter.kt" 'fun useJavaOnly(): Int = JavaBridge.javaOnly(3)' 'fun useJavaOnly(): Int = JavaBridge.javaOnlyX(3)' \
+    && { JAVAONLY_CALLERS_MUT="$( "$BIN" "$TMP/mut" --callers="JavaBridge.java:javaOnly" --no-cache 2>/dev/null )"; MUT_RC=$?
          if [ "$MUT_RC" -ne 0 ]; then
-             no "mutation 7c: binary exited $MUT_RC on the mutated fixture — absent output means a crash, not proof useJavaHelper dropped out"
-         elif echo "$HELPER_CALLERS_MUT" | grep -q 'n="useJavaHelper"'; then
-             no "mutation: useJavaHelper survived as a caller of helper() after its call site was renamed (tautology)"
+             no "mutation 7c: binary exited $MUT_RC on the mutated fixture — absent output means a crash, not proof useJavaOnly dropped out"
+         elif ! echo "$JAVAONLY_CALLERS_MUT" | grep -q '<callers '; then
+             no "mutation 7c: --callers printed no <callers> report on the mutated fixture — nothing was asserted"
+         elif echo "$JAVAONLY_CALLERS_MUT" | grep -q 'n="useJavaOnly"'; then
+             no "mutation: useJavaOnly survived as a caller of javaOnly() after its call site was renamed (tautology)"
          else
-             ok "mutation: renamed Kotlin -> Java qualified call -> useJavaHelper no longer a caller of helper()"
+             ok "mutation: renamed Kotlin -> Java qualified call -> useJavaOnly no longer a caller of javaOnly()"
          fi; } \
     || no "mutation 7c: the qualified bridge call-site rename did not apply — the arm would have been inert"
 
@@ -707,6 +712,232 @@ pyedit "$BL/mut/kt/Models.kt" 'data class User(val name: String)' '// data class
          [ "$got" = "zjava/User.java" ] && ok "mutation: Kotlin User deleted -> makeUser's User(\"a\") binds zjava/User.java (the bridge, once Kotlin has none)" \
              || no "mutation 13: expected zjava/User.java once the Kotlin User is gone, got [${got:-nothing}]"; } \
     || no "mutation 13: the data-class deletion did not apply — the arm would have been inert"
+
+# ═══════════════════════════════════════════════════════════════════════════
+echo
+echo "=== 14. JVM BRIDGE, OWN LANGUAGE FIRST: Kotlin files never move a Java edge, in any directory layout ==="
+# ═══════════════════════════════════════════════════════════════════════════
+# langCompatible admits a Kotlin/Java pair by bare NAME, and the tier ladder DROPS a bare call whose candidates sit in two
+# or more directories other than the caller's — no edge, no amb=, no unresolved=. So the first bridge deleted Java edges
+# wherever an unrelated same-named Kotlin definition existed: on square/retrofit the test-only Kotlin body() functions (five
+# spelled in two test directories, three with bodies) took Response.java's body from 279 callers to 5. §5's "honestly ambiguous" helper collision only ever held because
+# test/kotlinfix is ONE directory; split across three, the same two calls reached neither helper. The rule now (graph.h
+# keepOwnJvmLanguageCandidates): a Java or Kotlin reference reaches the other JVM language only when its own offers no
+# candidate of that name — for call edges, and for base classes in the inheritance overlay.
+callersCount(){ "$BIN" "$1" --callers="$2" --no-cache 2>/dev/null | grep -o '<callers [^>]*>' | grep -o 'count="[0-9]*"' | head -1; }
+callerRows(){ "$BIN" "$1" --callers="$2" --no-cache 2>/dev/null | grep -oE '<s t="[a-z]*" n="[^"]*" p="[^"]*"' | LC_ALL=C sort | tr '\n' ' '; }
+
+# 14a. test/kotlinfix split across three directories must give the flat layout's answers.
+SPLIT="$TMP/kotlinsplit"; mkdir -p "$SPLIT/a" "$SPLIT/b" "$SPLIT/c"
+cp "$FIX/Util.kt" "$SPLIT/a/"; cp "$FIX/Greeter.kt" "$SPLIT/b/"; cp "$FIX/JavaBridge.java" "$SPLIT/c/"
+for L in flat split; do
+    ROOTL="$FIX"; [ "$L" = split ] && ROOTL="$SPLIT"
+    [ "$( callersCount "$ROOTL" Greeter.kt:of )" = 'count="2"' ] && [ "$( callersCount "$ROOTL" Greeter.kt:greet )" = 'count="2"' ] \
+        && ok "$L: Java -> Kotlin — Greeter.of and greet each keep both callers (runAll, and Java's callGreeter)" \
+        || no "$L: Java -> Kotlin bridge lost a caller: of $( callersCount "$ROOTL" Greeter.kt:of ), greet $( callersCount "$ROOTL" Greeter.kt:greet )"
+    callerRows "$ROOTL" JavaBridge.java:javaOnly | grep -q 'n="useJavaOnly"' \
+        && ok "$L: Kotlin -> Java — useJavaOnly reaches JavaBridge.javaOnly, a name only Java defines" \
+        || no "$L: Kotlin -> Java — useJavaOnly does not reach JavaBridge.javaOnly"
+    [ "$( callersCount "$ROOTL" Util.kt:helper )" = 'count="2"' ] && [ "$( callersCount "$ROOTL" JavaBridge.java:helper )" = 'count="0"' ] \
+        && ok "$L: both Kotlin helper(5) calls bind Kotlin's Extra.helper and none reaches Java's (own language first)" \
+        || no "$L: helper — Util.kt:helper $( callersCount "$ROOTL" Util.kt:helper ), JavaBridge.java:helper $( callersCount "$ROOTL" JavaBridge.java:helper ); expected count=2 and count=0"
+done
+
+# 14b. Response.body beside an unrelated Kotlin body() in another directory. The Java callers must equal the same tree's
+#      callers with the .kt files removed — computed, not pinned — and that baseline must really hold both callers.
+RB="$TMP/respbody"; mkdir -p "$RB/lib/src/main/java/r" "$RB/lib/src/test/java/r" "$RB/kt/src/test/java/r"
+cat > "$RB/lib/src/main/java/r/Response.java" <<'JAVA'
+package r;
+
+public final class Response<T> {
+    private final T body;
+    Response(T body) { this.body = body; }
+    public T body() { return body; }
+    public int code() { return 200; }
+}
+JAVA
+cat > "$RB/lib/src/test/java/r/CallTest.java" <<'JAVA'
+package r;
+
+public class CallTest {
+    public void bodySuccess() {
+        Response<String> response = new Response<>("x");
+        String b = response.body();
+    }
+    public void bodyFailure() {
+        Response<String> response = new Response<>(null);
+        Object o = response.body();
+    }
+}
+JAVA
+cat > "$RB/kt/src/test/java/r/KotlinTest.kt" <<'KT'
+package r
+
+class KotlinTest {
+    fun body() {
+        val x = 1
+    }
+}
+KT
+cat > "$RB/kt/src/test/java/r/Service.kt" <<'KT'
+package r
+
+interface Service {
+    suspend fun body(): String
+}
+KT
+rm -rf "$TMP/respbody_nokt"; cp -R "$RB" "$TMP/respbody_nokt"; rm -rf "$TMP/respbody_nokt/kt"
+withKt="$( callerRows "$RB" Response.java:body )"; noKt="$( callerRows "$TMP/respbody_nokt" Response.java:body )"
+if echo "$noKt" | grep -q 'n="bodySuccess"' && echo "$noKt" | grep -q 'n="bodyFailure"'; then
+    [ "$withKt" = "$noKt" ] && ok "Response.body keeps exactly its Java-only callers with an unrelated Kotlin body() two directories away" \
+        || no "Response.body's callers moved when .kt files were added — without: [$noKt] with: [${withKt:-none}]"
+else
+    no "presence: without the .kt files Response.body has no bodySuccess/bodyFailure callers — the comparison would be empty against empty"
+fi
+# Mutation: rename Java's body() DEFINITION only; the calls stay body(). Java now defines no candidate of that name, so the
+# identical extraction must bridge both calls to Kotlin's KotlinTest.body — the filter defers to its own language only when
+# that language has a candidate; it does not switch the bridge off.
+rm -rf "$TMP/respbody_mut"; cp -R "$RB" "$TMP/respbody_mut"
+pyedit "$TMP/respbody_mut/lib/src/main/java/r/Response.java" 'public T body() { return body; }' 'public T bodyJ() { return body; }' \
+    && { rows="$( callerRows "$TMP/respbody_mut" KotlinTest.kt:body )"
+         echo "$rows" | grep -q 'n="bodySuccess"' && echo "$rows" | grep -q 'n="bodyFailure"' \
+             && ok "mutation: Java's body() definition renamed -> both Java calls bridge to Kotlin's KotlinTest.body" \
+             || no "mutation 14b: with no Java body left, the Java calls did not bridge to KotlinTest.body: [${rows:-none}]"; } \
+    || no "mutation 14b: the Response.body rename did not apply — the arm would have been inert"
+
+# 14c. THE INVARIANT, over several shapes at once: a Java-only tree, then the same tree plus a k/ directory of Kotlin
+#      definitions spelling the SAME names (bodied and bodyless types, a free function, a class hierarchy, an interface
+#      with an implementor). For six Java definitions the --callers rows, and the Java interface's --lego implementors,
+#      must be exactly what the Java-only tree produced, and every Java symbol's call edges, prov= and amb= in the full
+#      map must be unchanged. The shapes: a unique cross-directory global reached through a typed receiver
+#      (Response.body/code), an interface-only declaration (Svc.pong), a same-file inherited call (Base.run), a Java-Java
+#      collision the ladder already drops (dup, defined in two other directories — it must STAY dropped, not turn into a
+#      Kotlin edge), and an interface implemented from the other language (Marker).
+INV="$TMP/jvminv"; rm -rf "$INV"; mkdir -p "$INV/a" "$INV/b" "$INV/c" "$INV/d" "$INV/e"
+cat > "$INV/a/Response.java" <<'JAVA'
+package a;
+
+public class Response {
+    public String body() { return "b"; }
+    public int code() { return 1; }
+}
+JAVA
+cat > "$INV/b/Caller.java" <<'JAVA'
+package b;
+
+class Caller {
+    String go(a.Response r) {
+        r.code();
+        return r.body();
+    }
+    int twice() { return dup() + dup(); }
+}
+JAVA
+cat > "$INV/c/Svc.java" <<'JAVA'
+package c;
+
+interface Svc {
+    String pong();
+}
+
+interface Marker {
+    void mark();
+}
+
+class SvcUser implements Marker {
+    String use(Svc s) { return s.pong(); }
+    public void mark() { }
+}
+JAVA
+cat > "$INV/d/Base.java" <<'JAVA'
+package d;
+
+class Base {
+    void run() { }
+    static int dup() { return 1; }
+}
+
+class Derived extends Base {
+    void go() { run(); }
+}
+JAVA
+cat > "$INV/e/Dup.java" <<'JAVA'
+package e;
+
+class Dup {
+    static int dup() { return 2; }
+}
+JAVA
+rm -rf "$TMP/jvminv_kt"; cp -R "$INV" "$TMP/jvminv_kt"; mkdir -p "$TMP/jvminv_kt/k"
+cat > "$TMP/jvminv_kt/k/Kt.kt" <<'KT'
+package k
+
+class Response {
+    fun body(): String = "k"
+    fun code(): Int = 2
+}
+
+interface Svc {
+    fun pong(): String
+}
+
+class KPong {
+    fun pong(): String = "kp"
+}
+
+open class Base {
+    open fun run() { }
+}
+
+fun dup(): Int = 3
+
+interface Marker
+
+class Tagged : Marker
+KT
+markerImpls(){ "$BIN" "$1" --lego=Svc.java:Marker --no-cache 2>/dev/null | grep -oE '<impl [^>]*>' | LC_ALL=C sort | tr '\n' ' '; }
+if [ -n "$( callerRows "$INV" Response.java:body )" ] && [ -n "$( callerRows "$INV" Svc.java:pong )" ] \
+   && [ -n "$( callerRows "$INV" Base.java:run )" ] && [ -n "$( markerImpls "$INV" )" ]; then
+    invDiff=""
+    for target in Response.java:body Response.java:code Svc.java:pong Base.java:run Base.java:dup Dup.java:dup; do
+        [ "$( callerRows "$INV" "$target" )" = "$( callerRows "$TMP/jvminv_kt" "$target" )" ] || invDiff="$invDiff $target"
+    done
+    [ "$( markerImpls "$INV" )" = "$( markerImpls "$TMP/jvminv_kt" )" ] || invDiff="$invDiff lego:Marker"
+    "$BIN" "$INV" --top-k=100000 --no-cache > "$TMP/inv_j.xml" 2>/dev/null
+    "$BIN" "$TMP/jvminv_kt" --top-k=100000 --no-cache > "$TMP/inv_jk.xml" 2>/dev/null
+    read -r javaRows javaMoved <<< "$( python3 - "$TMP/inv_j.xml" "$TMP/inv_jk.xml" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+def java_rows(path):
+    raw = open(path, encoding="utf-8", errors="replace").read()
+    root = ET.fromstring(raw[raw.find("<r "):])
+    rows = set()
+    for f in root.iter("f"):
+        if not f.get("p", "").endswith(".java"):
+            continue
+        for s in f.iter("s"):
+            key = (f.get("p"), s.get("t"), s.get("n"), s.get("id") or "")
+            rows.add(key + ("amb", s.get("amb") or ""))
+            for c in s.iter("c"):
+                rows.add(key + ("c", c.get("n"), c.get("prov") or ""))
+    return rows
+a, b = java_rows(sys.argv[1]), java_rows(sys.argv[2])
+print(len(a), len(a ^ b))
+PYEOF
+)"
+    [ "${javaRows:-0}" -gt 0 ] && [ "${javaMoved:-x}" = 0 ] || invDiff="$invDiff map(${javaMoved:-?} of ${javaRows:-?} Java rows)"
+    [ -z "$invDiff" ] && ok "invariant: adding k/Kt.kt moved NO Java edge — --callers of 6 Java definitions, the Java Marker's implementors, and $javaRows Java map rows (edges, prov=, amb=) are identical" \
+        || no "invariant: adding k/Kt.kt moved Java edges at:$invDiff"
+else
+    no "invariant presence: the Java-only tree has no callers for body/pong/run, or no Marker implementor — the comparison would be empty against empty"
+fi
+# Mutation: delete the Kotlin interface Marker. Kotlin now defines no Marker, so the identical extraction must hand Tagged to
+# the Java interface — the inheritance overlay, like the call filter, defers to its own language only when it has a candidate.
+rm -rf "$TMP/jvminv_mut"; cp -R "$TMP/jvminv_kt" "$TMP/jvminv_mut"
+pyedit "$TMP/jvminv_mut/k/Kt.kt" 'interface Marker' '// interface Marker removed by mutation 14c' \
+    && { markerImpls "$TMP/jvminv_mut" | grep -q '<impl n="Tagged"' \
+             && ok "mutation: Kotlin Marker deleted -> Tagged implements the Java Marker (the bridge, once Kotlin has none)" \
+             || no "mutation 14c: with no Kotlin Marker, Tagged did not become the Java Marker's implementor: [$( markerImpls "$TMP/jvminv_mut" )]"; } \
+    || no "mutation 14c: the Marker deletion did not apply — the arm would have been inert"
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo

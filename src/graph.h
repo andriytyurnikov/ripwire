@@ -169,17 +169,17 @@ inline const char* provLabel( std::uint8_t prov ) noexcept
 // Kotlin/Java share a SECOND, independent bridge for the same reason: a mixed Android/JVM module's
 // Kotlin call sites and Java definitions (and vice versa) live in one JVM classpath, exactly as
 // C++/ObjC/C live in one link unit — without this a Nanidroid-shaped module (61 .kt + 16 .java in one
-// app/) would resolve zero cross-language calls, not just the ones that happen to be ambiguous.
+// app/) would resolve zero cross-language calls.
 //
-// Disclosed limitation, not fixed here: this predicate is BARE-NAME admission — same mechanism the
-// C-family bridge above already uses in production — so an unrelated same-named Kotlin `Builder` and
-// Java `Builder` become indistinguishable CANDIDATES at this gate; the graph reports such a pair as
-// ambiguous= with BOTH getting the edge (test/kotlincheck.sh §5) rather than guessing, and --uses=<name>
-// shows both (defs="2"). Narrowing further by import/type evidence is a resolver feature, not a
-// language-support one, and is out of scope for this port. NB that honesty depends on the decl/def
-// collapse below SEEING a Kotlin definition's body: it is a positional child, not a `body:` field, and a
-// definition read as bodyless is deleted from the candidate pool as a forward declaration before
-// ambiguous= is ever consulted — ingest_sidecap.h's positional body fallback is what keeps it in.
+// This predicate is BARE-NAME admission, and on its own that DELETES edges rather than disclosing a
+// collision: an unrelated same-named Kotlin definition joins a Java call's candidate set, and the tier
+// ladder drops a bare call whose candidates sit in several other directories without counting it anywhere
+// (so the "honestly ambiguous" pair this comment once promised only held in a one-directory fixture). The
+// bridge is therefore this predicate PLUS keepOwnJvmLanguageCandidates, which lets a Java or Kotlin
+// reference reach the other language only when its own defines no candidate of that name. That filter's
+// comment carries the measurement (square/retrofit's Response.body: 279 callers -> 5 -> 279) and the
+// trade-off it accepts (a qualified Kotlin `JavaBridge.helper()` binds a same-named Kotlin `helper`).
+// Narrowing by import or receiver type is still a resolver feature this port does not add.
 inline bool langCompatible( Lang a, Lang b ) noexcept
 {
     if( a == b )
@@ -812,7 +812,7 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
 //     langCompatible's JVM bridge, but never a declaration: no Java interface method is a prototype of a Kotlin function,
 //     or the reverse. Collapsed together, a Kotlin body evicted a Java interface-only declaration — so ADDING a .kt file
 //     moved a Java call's edge onto Kotlin code — and a Java body evicted a Kotlin interface member. A tree without a .kt
-//     file has one family and collapses byte-identically. Gate: test/kotlincheck.sh §13.
+//     file has one family and collapses byte-identically. Gate: test/kotlincheck.sh §13, and §14c's invariant.
 // One pass marks which keys hold a definition and one keeps — O(K) per name, where the per-root version it replaces
 // rescanned the name's ids once per declaration. `ids` keeps its order, and is untouched when nothing is evicted.
 inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot, rw::SmallVec<NodeId, 2>& ids )
@@ -854,6 +854,68 @@ inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot,
     {
         ids = std::move( kept );
     }
+}
+
+// JVM OWN-LANGUAGE-FIRST — the candidate filter that keeps the Kotlin<->Java bridge from deleting edges.
+//
+// langCompatible admits a Kotlin/Java pair by bare NAME. Past it, the tier ladder resolves a bare call to the same file,
+// else the same directory, else a UNIQUE global — and drops the call, with no edge, no amb= and no unresolved=, when the
+// survivors sit in two or more other directories (tier 3 in buildGraph). Before the bridge, a Java call to a name only Java
+// defines once WAS that unique global. The bridge added every same-named Kotlin definition to the set, the global stopped
+// being unique, and the call vanished: on square/retrofit the test-only Kotlin `body()` functions (five spelled in two test
+// directories, three of them with bodies) took Response.java's `body` from 279 callers to 5 — 253 Java (caller, callee)
+// pairs deleted by files that Java code never references, with every gauge unmoved.
+//
+// THE RULE: a Java or Kotlin reference admits the OTHER JVM language's candidates only when its OWN language offers none.
+// Every name the caller's language defines then resolves exactly as it did before the bridge existed — so adding .kt files
+// never moves a Java-only edge — and the bridge keeps the job it exists for: a Kotlin call into a name only Java defines,
+// and the reverse. Applied to call candidates (buildGraph, right after the namespace gate) and to base candidates in the
+// inheritance overlay, so a Kotlin `class Tagged : Marker` stops implementing a same-named Java interface too.
+//
+// THE TRADE-OFFS, stated here rather than discovered. (1) An explicitly QUALIFIED Kotlin call `JavaBridge.helper()` binds a
+// same-named KOTLIN `helper` when one exists, not the Java class its receiver names, because Kotlin receivers do not narrow
+// candidates yet (the navigation_expression gap disclosed at ingest_binds.h isMemberAccessNode). Without this filter that
+// call reached BOTH definitions in a one-directory layout — and NEITHER once the two files sat in different directories.
+// (2) The filter runs BEFORE the locality tiers, so a Kotlin call whose Java target sits in its own directory loses it to
+// same-named Kotlin definitions elsewhere, which tier 3 may then drop: retrofit's KotlinExtensions.kt `response.body()`,
+// beside Response.java, now meets three Kotlin test `body()` functions in two other directories and gets no edge. Measured
+// over retrofit, ktor and nowinandroid, that is the whole cost: one Kotlin (caller, callee) pair. A Java caller cannot be
+// given the same locality exception — a nearer Kotlin candidate would move a Java-only edge the moment a .kt file
+// appeared, which is the invariant this filter exists to keep. Gate: test/kotlincheck.sh §5 and §14.
+//
+// `cand` is narrowed in place with its order kept, and is untouched unless the reference is Java or Kotlin AND the set
+// holds both its own language and the other one.
+inline void keepOwnJvmLanguageCandidates( const IngestResult& ing, const Reference& r, std::vector<NodeId>& cand ) noexcept
+{
+    if( r.lang != Lang::Java && r.lang != Lang::Kotlin )
+    {
+        return;
+    }
+    const auto isOtherJvm = [ & ]( NodeId id ) noexcept
+    {
+        const Lang candLang = ing.symbols[ id ].lang;
+        return ( candLang == Lang::Java || candLang == Lang::Kotlin ) && candLang != r.lang;
+    };
+    bool anyOwn   = false;
+    bool anyOther = false;
+    for( NodeId c : cand )
+    {
+        anyOwn   = anyOwn || ing.symbols[ c ].lang == r.lang;
+        anyOther = anyOther || isOtherJvm( c );
+    }
+    if( !anyOwn || !anyOther )
+    {
+        return;
+    }
+    std::size_t keepCount = 0;
+    for( std::size_t ci = 0; ci < cand.size(); ++ci )
+    {
+        if( !isOtherJvm( cand[ ci ] ) )
+        {
+            cand[ keepCount++ ] = cand[ ci ];
+        }
+    }
+    cand.resize( keepCount );
 }
 
 
@@ -2372,6 +2434,12 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             cand.resize( keepCount );
         }
 
+        // ---- JVM own-language-first — see keepOwnJvmLanguageCandidates (no-op unless a Java/Kotlin set holds both) --
+        if( !scipPinned )
+        {
+            keepOwnJvmLanguageCandidates( ing, r, cand );
+        }
+
         // ---- H4 W3: RUST qualified-call scope guard — see keepRustQualifiedCandidates ------------------
         const bool alreadyPinned = scipPinned || canonical || narrowed;
         if( !keepRustQualifiedCandidates( ing, chaCones, r, alreadyPinned, cand ) && bindingTier.empty() )
@@ -2858,6 +2926,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // than restated, because a second copy of one rule is how the two copies end up disagreeing.
     const auto isClassLike = []( SymKind k ) noexcept
     { return namespaceCompatible( RefRole::Extends, k ); };
+    std::vector<NodeId> baseCand;   // one inheritance reference's base candidates, reused across references
     {
         PROFILE_SCOPE_DESCRIBE( "buildGraph/5: inheritance edges" );
     for( const Reference& r : ing.references )
@@ -2900,6 +2969,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         {
             continue;
         }
+        baseCand.clear();
         for( NodeId baseId : it->second )
         {
             if( !isClassLike( ing.symbols[baseId].kind ) )
@@ -2921,6 +2991,13 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             {
                 continue;
             }
+            baseCand.push_back( baseId );
+        }
+        // the call edges' JVM rule, applied to bases: a Kotlin class implements a same-named Java interface only when
+        // Kotlin defines no candidate of that name, and the reverse (keepOwnJvmLanguageCandidates; kotlincheck §14c).
+        keepOwnJvmLanguageCandidates( ing, r, baseCand );
+        for( NodeId baseId : baseCand )
+        {
             g.implementors[ baseId ].push_back( derived );
         }
     }
