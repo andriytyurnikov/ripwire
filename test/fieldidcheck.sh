@@ -45,7 +45,7 @@
 #      fit is correct but silently un-warmed, so the arm is the alarm for the day a 65th grammar lands.
 #
 # Usage:  bash test/fieldidcheck.sh   [ CXX=clang++ ]  [ RIPWIRE_BIN=build/ripwire ]
-# RIPWIRE_BIN is used ONLY to locate the build directory holding the compiled grammar objects (the vendored
+# RIPWIRE_BIN is used ONLY to locate the build directory whose grammar OBJECT LIST names the sources to compile (the vendored
 # grammars and the tree-sitter core the harness links against) — this gate never EXECUTES the ripwire
 # binary. It still needs no pin in test/binoverridecheck.sh's EXEMPT dict: a sentinel RIPWIRE_BIN points at
 # a directory with no grammar objects in it, so the gate goes red rather than silently green.
@@ -82,6 +82,35 @@ if [ -z "$GRAMMAR_OBJS" ]; then
     echo "  no compiled grammar objects under $BUILDDIR/CMakeFiles — build first (cmake --build build -j)"; exit 2
 fi
 echo "fieldidcheck: CXX=$CXX  header=src/infra/fieldid.h  build=$BUILDDIR"
+
+# ── the harness's own grammar objects, compiled here from the vendored sources ─────────────────────────
+# The build's grammar objects and libtree-sitter.a are NOT linkable from a plain command on every flavour:
+# a Release build (RIPWIRE_LTO implied ON) leaves them as LTO bitcode/GIMPLE, and both ubuntu Release legs
+# of PR #127 (gcc AND clang) failed the plain link while every plain leg and every macOS leg (whose linker
+# reads bitcode transparently) passed; a `-flto` retry did not close it either. So the gate compiles what
+# it links: the SAME sources the build compiled — discovered from the build's own object list, so the
+# grammar set cannot drift from CMake's — plus the core's lib.c, at -O1, into $TMP/gobj. ~20 s, once.
+CC="${CC:-cc}"
+mkdir -p "$TMP/gobj"
+TSCORE="$ROOT/third_party/deps/tree_sitter"
+"$CC" -O1 -c "$TSCORE/lib/src/lib.c" -I "$TSCORE/lib/include" -I "$TSCORE/lib/src" -o "$TMP/gobj/ts_core.o" 2>"$TMP/gobj/core.log" \
+    || { echo "  no self-built tree-sitter core: $( head -3 "$TMP/gobj/core.log" )"; exit 2; }
+n_g=0
+for obj in $GRAMMAR_OBJS; do
+    rel="${obj#*/CMakeFiles/}"; rel="${rel#*.dir/}"; rel="${rel%.o}"     # ts_cpp.dir/third_party/deps/cpp/src/parser.c.o → third_party/deps/cpp/src/parser.c
+    src="$ROOT/$rel"; [ -f "$src" ] || { echo "  grammar source missing for $obj: $src"; exit 2; }
+    name="$( printf '%s' "$rel" | tr '/' '_' )"
+    case "$src" in
+        *.cc|*.cpp) "$CXX" "$CXXSTD" -O1 -c "$src" -I "$TSCORE/lib/include" -I "$( dirname "$src" )" -o "$TMP/gobj/$name.o" 2>"$TMP/gobj/$name.log" & ;;
+        *)          "$CC"           -O1 -c "$src" -I "$TSCORE/lib/include" -I "$( dirname "$src" )" -o "$TMP/gobj/$name.o" 2>"$TMP/gobj/$name.log" & ;;
+    esac
+    n_g=$(( n_g + 1 ))
+    [ $(( n_g % 6 )) -eq 0 ] && wait
+done
+wait
+n_o="$( ls "$TMP"/gobj/*.o 2>/dev/null | wc -l | tr -d ' ' )"
+[ "$n_o" -eq $(( n_g + 1 )) ] || { echo "  self-built grammar objects: $n_o of $(( n_g + 1 )) — $( cat "$TMP"/gobj/*.log | head -5 )"; exit 2; }
+echo "  INFO  $n_g grammar source(s) + the core compiled once for the harness ($n_o objects, flavour-independent)"
 
 # ── harvest the field spellings FROM A PRISTINE HEADER ───────────────────────────────────────────────
 # Enumerator order and the { "spelling", len } rows, read as TEXT. The harness's reference side uses
@@ -360,20 +389,9 @@ int main( int argc, char** argv )
 }
 """ )
 PYHARNESS
-    # A Release build (RIPWIRE_LTO implied ON) leaves the grammar objects and libtree-sitter.a as LTO
-    # bitcode/GIMPLE, which a plain link cannot read on Linux ("plugin needed to handle lto object" /
-    # undefined tree_sitter_* references); macOS's linker reads them transparently, which is why this gate
-    # was green on every macOS leg and red on both ubuntu Release legs of PR #127's first run. Link plainly
-    # first (the plain build's objects), and retry the same command with -flto when that fails.
-    if "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra \
+    "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra \
         -I "$incdir" -I "$ROOT/third_party/deps/tree_sitter/lib/include" \
-        "$TMP/harness.cpp" $GRAMMAR_OBJS "$TSLIB" -o "$out" 2>"$log"; then
-        return 0
-    fi
-    cp "$log" "$log.plain"
-    "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra -flto \
-        -I "$incdir" -I "$ROOT/third_party/deps/tree_sitter/lib/include" \
-        "$TMP/harness.cpp" $GRAMMAR_OBJS "$TSLIB" -o "$out" 2>"$log"
+        "$TMP/harness.cpp" "$TMP"/gobj/*.o -o "$out" 2>"$log"
 }
 
 # ── A0/A/B/C against the real header ─────────────────────────────────────────────────────────────────
