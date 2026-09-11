@@ -558,6 +558,45 @@ echo "$SKM" | grep -q '<f p="nest/Deep.kt" why="nest-refused"' && echo "$SKM" | 
     && ok "multi-root: the refusal row keeps its <label>/<rel> spelling (nest/Deep.kt) and nest_refused merges to 2" \
     || no "multi-root: expected <f p=\"nest/Deep.kt\" why=\"nest-refused\" and nest_refused=\"2\": $( echo "$SKM" | grep -o '<f p="[^"]*" why="nest-refused"[^/]*/>' )"
 
+# multi-root row cap: does a merge put a cut list under rows_capped="0"? Each root caps its own nest-refused rows at
+# kMaxSkipRowsPerClass, and mergeCrawlDisclosures concatenates them exactly as it concatenates every sibling row class
+# (excluded, unsupported-ext, ignored, ignored-dir): none of them takes a second, workspace-level cut. rows_capped= compares
+# the MERGED rows to the merged exact count, so it is absent only when every refused file has its row. Pinned from both sides,
+# with unsupported-ext twins in the same roots so this class keeps its siblings' merge shape: two roots of 501 cut the rows
+# and say rows_capped="1"; two roots of 300 give 600 rows, past one root's ceiling with none missing, and no rows_capped.
+# The real open tag is matched as `<skipped indexed=`, because the legend's own prose spells rows_capped="1".
+CAPT="$TMP/nestcap"; mkdir -p "$CAPT"
+python3 - "$CAPT" <<'PYEOF'
+import os, sys
+top = sys.argv[1]
+hostile = 'package cap\n\nval v = ' + '"a${' * 128 + '"leaf"' + '}"' * 128 + '\n'   # 129 open strings: refused
+for root, n in (("capA", 501), ("capB", 501), ("fullA", 300), ("fullB", 300)):
+    d = os.path.join(top, root); os.makedirs(d)
+    for k in range(n):
+        open(os.path.join(d, "N%04d.kt" % k), "w").write(hostile)
+        open(os.path.join(d, "U%04d.xyz" % k), "w").write("x\n")
+PYEOF
+capTag(){ grep -o '<skipped indexed=[^>]*>' "$1"; }
+capRows(){ grep -o "<f p=\"[^\"]*\" why=\"$2\"" "$1" | wc -l | tr -d ' '; }
+capAttr(){ capTag "$1" | grep -oE " $2=\"[0-9]*\"" | grep -oE '[0-9]+'; }
+( cd "$CAPT" && "$BIN" capA capB --skipped --no-cache >"$TMP/nestcap_over.xml" 2>/dev/null ) \
+    && ( cd "$CAPT" && "$BIN" fullA fullB --skipped --no-cache >"$TMP/nestcap_full.xml" 2>/dev/null ); CAP_RC=$?
+if [ "$CAP_RC" -eq 0 ] && [ "$( ls "$CAPT/capA" | wc -l | tr -d ' ' )" = 1002 ] && [ "$( ls "$CAPT/fullB" | wc -l | tr -d ' ' )" = 600 ]; then
+    oN="$( capRows "$TMP/nestcap_over.xml" nest-refused )"; oU="$( capRows "$TMP/nestcap_over.xml" unsupported-ext )"
+    oNC="$( capAttr "$TMP/nestcap_over.xml" nest_refused )"; oUC="$( capAttr "$TMP/nestcap_over.xml" unsupported_ext )"
+    [ "${oNC:-}" = 1002 ] && [ "${oUC:-}" = 1002 ] && [ "$oN" -lt 1002 ] && capTag "$TMP/nestcap_over.xml" | grep -q ' rows_capped="1"' \
+        && ok "multi-root cap: two roots of 501 -> $oN nest-refused rows beside nest_refused=\"1002\", rows_capped=\"1\" (a disclosed sample)" \
+        || no "multi-root cap: two roots of 501 want counts 1002/1002, rows short of them and rows_capped=\"1\"; got rows=$oN/$oU counts=${oNC:-?}/${oUC:-?} tag: $( capTag "$TMP/nestcap_over.xml" | grep -oE 'rows_capped="[0-9]*"' )"
+    [ "$oN" = "$oU" ] && ok "multi-root cap: nest-refused merges in its siblings' shape ($oN rows beside unsupported-ext's $oU, same two roots)" \
+        || no "multi-root cap: nest-refused rows ($oN) and unsupported-ext rows ($oU) merged differently over the same two roots"
+    fN="$( capRows "$TMP/nestcap_full.xml" nest-refused )"; fU="$( capRows "$TMP/nestcap_full.xml" unsupported-ext )"
+    [ "$( capAttr "$TMP/nestcap_full.xml" nest_refused )" = 600 ] && [ "$fN" = 600 ] && [ "$fU" = 600 ] && ! capTag "$TMP/nestcap_full.xml" | grep -q 'rows_capped=' \
+        && ok "multi-root cap: two roots of 300 -> all 600 rows of each class and no rows_capped (past one root's ceiling, nothing missing)" \
+        || no "multi-root cap: two roots of 300 want 600 rows of each class and no rows_capped; got nest=$fN unsupported=$fU tag: $( capTag "$TMP/nestcap_full.xml" | grep -oE '(nest_refused|rows_capped)="[0-9]*"' | tr '\n' ' ' )"
+else
+    no "multi-root cap: the two --skipped runs (rc=$CAP_RC) or the generated roots (want 1002 and 600 entries) failed — its arms were NOT evaluated"
+fi
+
 # Mutation: take ONE level off OverCeiling.kt (129 -> 128). The identical extraction must now index it and the count must
 # drop to 1 — so the ceiling arms above track DEPTH, not a file name or a size.
 rm -rf "$TMP/nestmut"; cp -R "$NEST" "$TMP/nestmut"
