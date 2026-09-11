@@ -161,8 +161,16 @@ using rw::quality::isHeaderPath;           // quality.h — the --dead-code elig
 using rw::quality::sourceHasStaticToken;
 using rw::quality::deadCodeEligibleKind;
 
-// Warm-by-default cache location: a per-root file keyed by the root's ABSOLUTE path (FNV-1a 64), under
-// the hardened cacheDirLadder(), so repeated invocations on the same tree re-parse only changed files.
+// Warm-by-default cache location: a per-root file keyed by the root's ABSOLUTE path, under the hardened
+// cacheDirLadder(), so repeated invocations on the same tree re-parse only changed files.
+//
+// The 16-hex root field comes from quality.h's `cacheRootKeyHex` — the ONE canonical spelling every cache
+// family now shares (lean/rich here, `ripwire-mcp-<key>.cache`, and shaKeyedCachePath's qheadsnap/qsnap/
+// qbody/qhist/qms/qchurn/stier). This function used to open-code the hash with a TRUNCATED FNV-1a offset
+// basis while quality.h used the real one, so one root minted two key families and the byte-budget pin
+// (evictBySizeBudget) could only ever see half of them. The seed that survived is this function's, because
+// it is the one that keeps the 1.76 GB llvm parse cache warm; the full argument lives beside
+// `kCacheRootKeySeed`.
 // Absolute path so two different dirs both invoked as "." don't collide (a collision would only ever
 // cost a cold re-parse — the cache is keyed per-file-path internally — but absolute keeps each tree's
 // cache distinct and warm). Cache content is content-hashed + parserVer-gated, so a stale/foreign cache
@@ -194,14 +202,7 @@ using rw::quality::deadCodeEligibleKind;
 // and can no longer truncate the shared blob. Gate: test/cacheoffsetcheck.sh.
 std::string defaultCachePath( const std::string& root, bool captureValueUses )
 {
-    char        absbuf[ PATH_MAX ];
-    const char* abs = realpath( root.c_str(), absbuf ) ? absbuf : root.c_str();
-    std::uint64_t h = 1469598103934665603ull;
-    for( const char* c = abs; *c; ++c ) { h ^= static_cast<unsigned char>( *c ); h = rw::hashutil::fnv1aMultiply( h ); }
-    char tail[ 48 ];
-    rw::formatTo( tail, sizeof( tail ), "ripwire-{:016x}-{}.bin",
-                   static_cast<unsigned long long>( h ), captureValueUses ? "rich" : "lean" );
-    return resolveCacheBlobPath( cacheDirLadder(), tail );
+    return rw::quality::rootKeyedCachePath( root, "ripwire-", captureValueUses ? "-rich.bin" : "-lean.bin" );
 }
 
 // computeHeadSnapshot / gitHeadSha / gitRepoHasHistory / cacheDirLadder now live in quality.h (the

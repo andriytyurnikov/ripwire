@@ -547,10 +547,7 @@ private:
         texts_.resize( runners_.size() );
         for( std::size_t i = 0; i < runners_.size(); ++i )
         {
-            if( !docparse::detail::readWholeFile( diskPath( *ing_, runners_[i] ), texts_[i] ) )
-            {
-                texts_[i].clear(); // unreadable ⇒ no evidence, never a guess
-            }
+            texts_[i] = docparse::detail::readWholeFile( diskPath( *ing_, runners_[i] ) ).value_or( std::string() ); // unreadable ⇒ no evidence, never a guess
         }
     }
 
@@ -929,7 +926,7 @@ inline std::vector<std::string> registeredShellTokens( const IngestResult& ing )
     {
         if( mention_detail::baseNameOf( ing.files[f] ) == "regression.sh" && isTestPath( ing.files[f] ) )
         {
-            docparse::detail::readWholeFile( diskPath( ing, f ), manifest );
+            manifest = docparse::detail::readWholeFile( diskPath( ing, f ) ).value_or( std::string() );
             break;
         }
     }
@@ -943,10 +940,10 @@ inline std::vector<std::string> registeredShellTokens( const IngestResult& ing )
 inline void addRegisteredShellGate( const IngestResult& ing, const std::vector<char>& changedFiles, std::uint32_t fileId, ShellGateIndex& index )
 {
     ++index.registered;
-    std::string source;
-    if( !docparse::detail::readWholeFile( diskPath( ing, fileId ), source ) ) { return; }
-    const std::vector<std::string> manifestDeps = manifestDependencies( source );
-    const std::vector<std::string> literalDeps  = shellPathTokens( executableShellText( source ) );
+    const std::optional<std::string> source = docparse::detail::readWholeFile( diskPath( ing, fileId ) );
+    if( !source ) { return; }
+    const std::vector<std::string> manifestDeps = manifestDependencies( *source );
+    const std::vector<std::string> literalDeps  = shellPathTokens( executableShellText( *source ) );
     const bool manifestMapped = dependenciesMapCorpus( ing, manifestDeps );
     const bool literalMapped  = dependenciesMapCorpus( ing, literalDeps );
     if( manifestMapped || literalMapped ) { ++index.mapped; }

@@ -241,7 +241,7 @@ inline std::string oracleExclHex()
 
 inline std::string oracleCachePath( const std::string& root, const std::string& headSha )
 {
-    return quality::shaKeyedCachePath( "qhist", quality::headSnapRepoHex( root ), oracleExclHex(), headSha );
+    return quality::shaKeyedCachePath( "qhist", quality::cacheRootKeyHex( root ), oracleExclHex(), headSha );
 }
 
 // The fixed-width fields go through quality.h's own POD pair — quality::qsnapPut / quality::qsnapGet, the

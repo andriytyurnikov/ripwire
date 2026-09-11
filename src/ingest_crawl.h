@@ -492,6 +492,7 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
     }
 
     std::vector<TSNode> stack;
+    ChildCursor         cursor( root );   // reused across nodes — this walk never recurses
     stack.push_back( root );
     while( !stack.empty() )
     {
@@ -510,15 +511,19 @@ FileHealth measureFileHealth( TSNode root, std::string_view bytes )
             ++h.errNodes;
             continue;
         }
-        const std::uint32_t kids = ts_node_child_count( n );
-        for( std::uint32_t i = 0; i < kids; ++i )
+        // O(children), not O(children²). The root of a RECOVERED file is exactly where the width is
+        // largest and least controlled — one comment flood plus one unparseable token measured 56× the
+        // identical flood with no error in it before this became a cursor (test/childwalkscalecheck.sh,
+        // arm B4; the rule is on src/infra/tschildren.h). Filtered in place: `stack` is the work list,
+        // and only the children that carry an error belong on it.
+        forEachChild( n, cursor.cur, [ &stack ]( TSNode c )
         {
-            const TSNode c = ts_node_child( n, i );
             if( ts_node_has_error( c ) || ts_node_is_missing( c ) )
             {
                 stack.push_back( c );
             }
-        }
+            return true;
+        } );
     }
     return h;
 }
@@ -1334,7 +1339,9 @@ CrawlResult collectSources( const char* rootDir, const std::vector<std::string>&
     return { std::move( out ), std::move( skipped ), std::move( skips ) };
 }
 
-// ---- read a file's bytes (returns false on open failure) ----
+// ---- read a file's bytes (false when it cannot be opened, sized or read in full) ----
+// Deliberately an out-parameter, unlike docparse::detail::readWholeFile: the parse pool and the AST-query pass
+// each hand in one worker-local buffer and reuse it for every file they read, so its capacity carries over.
 bool readFile( const std::string& path, std::string& out )
 {
     PROFILE_SCOPE_DESCRIBE( "ingest/readFile: fopen+read whole file" );
@@ -1373,6 +1380,8 @@ bool readFile( const std::string& path, std::string& out )
     return ok;
 }
 
+// The first `maxBytes` of a file, into `out` for the same reason as readFile: each prewarm hash worker reuses one
+// header-prefix buffer for every file it probes.
 bool readFilePrefix( const std::string& path, std::string& out, std::size_t maxBytes )
 {
     PROFILE_SCOPE_DESCRIBE( "ingest/readFilePrefix: fopen+read prefix" );
@@ -1587,6 +1596,39 @@ TSQuery* compileQueryStandalone( const LangEntry& le )
                       std::string( le.querySub ).c_str(), errOff, (int)errType );
     }
     return q;
+}
+
+// ---- the [grammar][field] TSFieldId table, filled ONCE per grammar (src/infra/fieldid.h) ----
+// Same shape and same invariant as the compiled-query cache above: written single-threaded before any
+// parse worker exists, read lock-free per AST node afterwards. It warms EVERY grammar the table can
+// name rather than the crawl's miss set, for two reasons. First, the miss set is empty on a fully-warm
+// run, and the AST walks that read this table are not: --slice, --lint and the preprocessor reader parse
+// outside the tags prewarm entirely. Second, the cost is a fixed few hundred microseconds — 23 grammars
+// x 41 field names, each one linear-scan resolved ONCE — against a per-AST-node saving, so paying it for
+// a grammar the run never uses is cheaper than reasoning about which runs need which.
+//
+// The function-local static is what makes it idempotent and thread-safe at the seam (ingest() can be
+// re-entered in a long-lived MCP server); rw::warmFieldIds itself is neither, which is why nothing else
+// may call it. Gate: test/fieldidcheck.sh arm E-warm.
+// A 65th extension row must be a compile error, not a run that silently keeps the by-name path: the row
+// count bounds the DISTINCT grammar count the loop below registers, so this assert bounds the registry.
+static_assert( kLangTable.size() <= kFieldIdCapacity,
+               "kLangTable has more rows than rw::kFieldIdCapacity — raise the capacity in src/infra/fieldid.h" );
+
+inline void warmFieldIdTable()
+{
+    static const bool warmed = []()
+    {
+        for( const LangEntry& le : kLangTable )
+        {
+            if( le.grammar != nullptr )
+            {
+                warmFieldIds( le.grammar() );      // nullptr-safe and idempotent; markdown rows have no grammar
+            }
+        }
+        return true;
+    }();
+    (void) warmed;
 }
 
 TSQuery* compiledQueryFor( const LangEntry& le )

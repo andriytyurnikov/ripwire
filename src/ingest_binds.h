@@ -38,16 +38,16 @@ inline bool isMemberAccessNode( const char* t, Lang lang ) noexcept
 
 inline TSNode memberAccessReceiver( TSNode access, Lang lang ) noexcept
 {
-    if( lang == Lang::Python ) { return ts_node_child_by_field_name( access, "object",   6 ); }
-    if( lang == Lang::Ruby )   { return ts_node_child_by_field_name( access, "receiver", 8 ); }
-    return ts_node_child_by_field_name( access, "argument", 8 );
+    if( lang == Lang::Python ) { return fieldChild( access, NodeField::Object ); }
+    if( lang == Lang::Ruby )   { return fieldChild( access, NodeField::Receiver ); }
+    return fieldChild( access, NodeField::Argument );
 }
 
 inline TSNode memberAccessField( TSNode access, Lang lang ) noexcept
 {
-    if( lang == Lang::Python ) { return ts_node_child_by_field_name( access, "attribute", 9 ); }
-    if( lang == Lang::Ruby )   { return ts_node_child_by_field_name( access, "method",    6 ); }
-    return ts_node_child_by_field_name( access, "field", 5 );
+    if( lang == Lang::Python ) { return fieldChild( access, NodeField::Attribute ); }
+    if( lang == Lang::Ruby )   { return fieldChild( access, NodeField::Method ); }
+    return fieldChild( access, NodeField::Field );
 }
 
 // The classified receiver of one call site. `var` is set for NamedVar / FieldOfVar, `field` for
@@ -90,7 +90,7 @@ inline RecvShape classifyReceiver( TSNode node, Lang lang, std::string_view src,
     }
     if( lang == Lang::Python && kindIs( rt, "call" ) )
     { // Phase 5: `super().m()` / `super(C, self).m()` — the receiver is a CALL of the identifier `super`
-        const TSNode fn = ts_node_child_by_field_name( node, "function", 8 );
+        const TSNode fn = fieldChild( node, NodeField::Function );
         if( !ts_node_is_null( fn ) && kindIs( ts_node_type( fn ), "identifier" ) && pattern::nodeText( fn, src ) == "super" )
         {
             return { RecvKind::SuperObj, {}, {} };
@@ -207,7 +207,7 @@ inline std::string_view declaratorVarName( TSNode decl, std::string_view src )
             return ( a <= b && b <= src.size() ) ? src.substr( a, b - a ) : std::string_view{};
         }
         // unwrap a pointer/reference/parenthesized declarator to its inner `declarator` child
-        const TSNode inner = ts_node_child_by_field_name( decl, "declarator", 10 );
+        const TSNode inner = fieldChild( decl, NodeField::Declarator );
         if( ts_node_is_null( inner ) )
         {
             return {};
@@ -225,7 +225,7 @@ inline std::string_view declaratorVarName( TSNode decl, std::string_view src )
 inline std::string_view paramDeclaratorVarName( TSNode decl, std::string_view src )
 {
     if( !ts_node_is_null( decl ) && kindIs( ts_node_type( decl ), "reference_declarator" )
-        && ts_node_is_null( ts_node_child_by_field_name( decl, "declarator", 10 ) ) && ts_node_named_child_count( decl ) > 0 )
+        && ts_node_is_null( fieldChild( decl, NodeField::Declarator ) ) && ts_node_named_child_count( decl ) > 0 )
     {
         decl = ts_node_named_child( decl, 0 );
     }
@@ -246,11 +246,11 @@ inline std::string ctorTypeOf( TSNode value, std::string_view src )
     TSNode      idn {};
     if( kindIs( vt, "call_expression" ) )
     { // C++/TS `Foo()`
-        idn = ts_node_child_by_field_name( value, "function", 8 );
+        idn = fieldChild( value, NodeField::Function );
     }
     else if( kindIs( vt, "new_expression" ) )
     { // C++/TS `new Foo()`
-        idn = ts_node_child_by_field_name( value, "constructor", 11 );
+        idn = fieldChild( value, NodeField::Constructor );
     }
     if( ts_node_is_null( idn ) )
     {
@@ -313,7 +313,7 @@ inline std::string fnBindTargetOf( TSNode value, std::string_view src, bool& was
         {
             return {};
         }
-        idn = ts_node_child_by_field_name( value, "argument", 8 );
+        idn = fieldChild( value, NodeField::Argument );
         if( ts_node_is_null( idn ) )
         {
             return {};
@@ -373,7 +373,7 @@ inline FnBindDeclShape fnDeclaratorShape( TSNode decl, std::string_view src )
         shape.sawFn  = shape.sawFn  || kindIs( dt, "function_declarator" );
         shape.sawPtr = shape.sawPtr || kindIs( dt, "pointer_declarator" );
         shape.sawRef = shape.sawRef || isRef;
-        TSNode inner = ts_node_child_by_field_name( decl, "declarator", 10 );
+        TSNode inner = fieldChild( decl, NodeField::Declarator );
         if( ts_node_is_null( inner ) && ( isRef || kindIs( dt, "parenthesized_declarator" ) ) )
         {
             // the parenthesized/reference inner declarator is an UNNAMED child — take the first named one
@@ -405,17 +405,17 @@ inline std::string_view misparsedFnPtrDeclVar( TSNode lhs, std::string_view src 
     {
         return {};
     }
-    const TSNode inner = ts_node_child_by_field_name( lhs, "function", 8 );
+    const TSNode inner = fieldChild( lhs, NodeField::Function );
     if( ts_node_is_null( inner ) || !kindIs( ts_node_type( inner ), "call_expression" ) )
     {
         return {};
     }
-    const TSNode ty = ts_node_child_by_field_name( inner, "function", 8 );
+    const TSNode ty = fieldChild( inner, NodeField::Function );
     if( ts_node_is_null( ty ) || !kindIs( ts_node_type( ty ), "primitive_type" ) )
     {
         return {};
     }
-    const TSNode args = ts_node_child_by_field_name( inner, "arguments", 9 );
+    const TSNode args = fieldChild( inner, NodeField::Arguments );
     if( ts_node_is_null( args ) || ts_node_named_child_count( args ) != 1 )
     {
         return {};
@@ -430,7 +430,7 @@ inline std::string_view misparsedFnPtrDeclVar( TSNode lhs, std::string_view src 
     {
         return {};
     }
-    const TSNode idn = ts_node_child_by_field_name( pe, "argument", 8 );
+    const TSNode idn = fieldChild( pe, NodeField::Argument );
     if( ts_node_is_null( idn ) || !kindIs( ts_node_type( idn ), "identifier" ) )
     {
         return {};
@@ -559,53 +559,60 @@ inline std::string_view fnPtrAliasName( TSNode n, const char* t, std::string_vie
 {
     if( kindIs( t, "alias_declaration" ) )
     {
-        const TSNode desc = ts_node_child_by_field_name( n, "type", 4 );
+        const TSNode desc = fieldChild( n, NodeField::Type );
         if( ts_node_is_null( desc ) )
         {
             return {};
         }
-        const TSNode abst = ts_node_child_by_field_name( desc, "declarator", 10 );
+        const TSNode abst = fieldChild( desc, NodeField::Declarator );
         if( ts_node_is_null( abst ) || !kindIs( ts_node_type( abst ), "abstract_function_declarator" ) )
         {
             return {};
         }
-        const TSNode nm = ts_node_child_by_field_name( n, "name", 4 );
+        const TSNode nm = fieldChild( n, NodeField::Name );
         return ts_node_is_null( nm ) ? std::string_view{} : nodeTextOf( nm, src );
     }
     if( !kindIs( t, "type_definition" ) )
     {
         return {};
     }
-    const std::uint32_t cc = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < cc; ++i )
+    // O(children): the declarator-field scan rides the cursor's own O(1) field name instead of
+    // `ts_node_field_name_for_child( n, i )`, which restarts the child iterator (src/infra/tschildren.h).
+    // A typedef's width is input-controlled — a comment sits between `typedef` and the declarator as a
+    // direct child like any other extra (test/childwalkscalecheck.sh, arm B7).
+    std::string_view found;
+    ChildCursor      cursor( n );
+    forEachChild( n, cursor.cur, [ & ]( TSNode c )
     {
-        const char* fname = ts_node_field_name_for_child( n, i );
+        const char* fname = ts_tree_cursor_current_field_name( &cursor.cur );
         if( fname == nullptr || !kindIs( fname, "declarator" ) )
         {
-            continue;
+            return true;
         }
-        TSNode d       = ts_node_child( n, i );
+        TSNode d       = c;
         bool   crossed = false;
         for( int guard = 0; guard < 10 && !ts_node_is_null( d ); ++guard )
         {
             const char* dt = ts_node_type( d );
             if( kindIs( dt, "type_identifier" ) )
             {
-                return crossed ? nodeTextOf( d, src ) : std::string_view{};
+                found = crossed ? nodeTextOf( d, src ) : std::string_view{};
+                return false;   // the indexed loop returned from here
             }
             if( kindIs( dt, "function_declarator" ) )
             {
                 crossed = true;
             }
-            TSNode inner = ts_node_child_by_field_name( d, "declarator", 10 );
+            TSNode inner = fieldChild( d, NodeField::Declarator );
             if( ts_node_is_null( inner ) && ts_node_named_child_count( d ) > 0 )
             {
                 inner = ts_node_named_child( d, 0 );
             }
             d = inner;
         }
-    }
-    return {};
+        return true;
+    } );
+    return found;
 }
 
 // the byte span of the DEFINITION a node sits inside — a function body or a lambda, whichever encloses it
@@ -637,28 +644,30 @@ inline void collectFnBindTypeFacts( TSNode n, const char* t, std::string_view sr
         return;
     }
     std::string typeName;
-    const bool  concrete           = concreteWrittenType( ts_node_child_by_field_name( n, "type", 4 ), src, typeName );
+    const bool  concrete           = concreteWrittenType( fieldChild( n, NodeField::Type ), src, typeName );
     const auto [ scopeStart, scopeEnd ] = enclosingDefSpan( n );
-    const std::uint32_t cc = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < cc; ++i )
+    // O(children), on the cursor's O(1) field name — see fnPtrAliasName above and arm B7.
+    ChildCursor cursor( n );
+    forEachChild( n, cursor.cur, [ & ]( TSNode c )
     {
-        const char* fname = ts_node_field_name_for_child( n, i );
+        const char* fname = ts_tree_cursor_current_field_name( &cursor.cur );
         if( fname == nullptr || !kindIs( fname, "declarator" ) )
         {
-            continue;
+            return true;
         }
-        TSNode d = ts_node_child( n, i );
+        TSNode d = c;
         if( kindIs( ts_node_type( d ), "init_declarator" ) )
         {
-            d = ts_node_child_by_field_name( d, "declarator", 10 );
+            d = fieldChild( d, NodeField::Declarator );
         }
         const FnBindDeclShape shape = fnDeclaratorShape( d, src );
         if( shape.name.empty() || ( shape.sawFn && !shape.sawPtr ) )
         {
-            continue;   // nameless, an array of pointers, or a plain function DECLARATION — no variable here
+            return true;   // nameless, an array of pointers, or a plain function DECLARATION — no variable here
         }
         facts.push_back( { std::string( shape.name ), typeName, scopeStart, scopeEnd, concrete, shape.sawFn && shape.sawPtr } );
-    }
+        return true;
+    } );
 }
 
 // the gate's whole per-node collection: a declaration's variable type facts AND, from the same node, any
@@ -852,7 +861,7 @@ inline void emitShadowVarDecls( std::uint32_t fileId, Lang lang, TSNode decl, st
             }
             return;
         }
-        TSNode inner = ts_node_child_by_field_name( decl, "declarator", 10 );
+        TSNode inner = fieldChild( decl, NodeField::Declarator );
         if( ts_node_is_null( inner )
             && ( kindIs( dt, "reference_declarator" ) || kindIs( dt, "parenthesized_declarator" ) )
             && ts_node_named_child_count( decl ) > 0 )
@@ -909,12 +918,12 @@ inline void emitShadowParamDecls( TSNode params, std::uint32_t fileId, Lang lang
             continue;   // commas, `...`, attribute nodes — nothing declared
         }
         bodySite.startByte = ts_node_start_byte( p );
-        const TSNode declarator = ts_node_child_by_field_name( p, "declarator", 10 );
+        const TSNode declarator = fieldChild( p, NodeField::Declarator );
         emitShadowVarDecls( fileId, lang, declarator, src, bodySite, binds );
         // member-variable round (card A3): the parameter's WRITTEN type as a ParamType record (`Counter& c` →
         // c:Counter), read by the field use-site index alone — see LocalBindKind::ParamType. `auto`, templated
         // and decltype types write nothing (writtenTypeOf's own refusal), and pushRawBind drops the record.
-        pushRawBind( fileId, lang, paramDeclaratorVarName( declarator, src ), writtenTypeOf( ts_node_child_by_field_name( p, "type", 4 ), src ),
+        pushRawBind( fileId, lang, paramDeclaratorVarName( declarator, src ), writtenTypeOf( fieldChild( p, NodeField::Type ), src ),
                      BindSite{ ts_node_start_byte( p ), 0u, 0u }, LocalBindKind::ParamType, binds );
     }
 }
@@ -928,22 +937,28 @@ inline void emitShadowParamDecls( TSNode params, std::uint32_t fileId, Lang lang
 inline void captureLambdaShadowDecls( TSNode n, std::uint32_t fileId, Lang lang, std::string_view src,
                                       BindSite bodySite, std::vector<RawBind>& binds )
 {
-    const TSNode d = ts_node_child_by_field_name( n, "declarator", 10 );   // abstract_function_declarator
+    const TSNode d = fieldChild( n, NodeField::Declarator );   // abstract_function_declarator
     if( !ts_node_is_null( d ) )
     {
-        const TSNode params = ts_node_child_by_field_name( d, "parameters", 10 );
+        const TSNode params = fieldChild( d, NodeField::Parameters );
         if( !ts_node_is_null( params ) )
         {
             emitShadowParamDecls( params, fileId, lang, src, bodySite, binds );
         }
     }
-    const TSNode caps = ts_node_child_by_field_name( n, "captures", 8 );   // lambda_capture_specifier
-    const std::uint32_t cc = ts_node_is_null( caps ) ? 0u : ts_node_named_child_count( caps );
-    for( std::uint32_t i = 0; i < cc; ++i )
+    const TSNode caps = fieldChild( n, NodeField::Captures );   // lambda_capture_specifier
+    if( ts_node_is_null( caps ) )
     {
-        const TSNode c  = ts_node_named_child( caps, i );
-        const char*  ct = ts_node_type( c );
-        TSNode ident {};
+        return;
+    }
+    // O(captures): a capture list's width is input-set like every other list — a comment run between two
+    // captures is spliced into its child array (src/infra/tschildren.h), and 16 000 of them measured
+    // 1.25 s of plain map on a one-line file before this became a cursor (arm B12).
+    ChildCursor capsCursor( caps );
+    forEachNamedChild( caps, capsCursor.cur, [ & ]( TSNode c )
+    {
+        const char* ct = ts_node_type( c );
+        TSNode      ident {};
         if( kindIs( ct, "identifier" ) )
         {
             ident = c;   // simple capture `[run]` / `[&run]` (the `&` is an anonymous sibling)
@@ -961,7 +976,8 @@ inline void captureLambdaShadowDecls( TSNode n, std::uint32_t fileId, Lang lang,
             bodySite.startByte = ts_node_start_byte( c );
             pushRawBind( fileId, lang, nodeTextOf( ident, src ), std::string{}, bodySite, LocalBindKind::VarDecl, binds );
         }
-    }
+        return true;
+    } );
 }
 
 // a function DEFINITION's parameter_list, reached through its own declarator chain (`char* f(...)` /
@@ -970,16 +986,16 @@ inline void captureLambdaShadowDecls( TSNode n, std::uint32_t fileId, Lang lang,
 // parameters and a fn-pointer TYPE's parameter list out of shadow evidence.
 inline TSNode fnDefParameterList( TSNode fnDef )
 {
-    TSNode decl = ts_node_child_by_field_name( fnDef, "declarator", 10 );
+    TSNode decl = fieldChild( fnDef, NodeField::Declarator );
     for( int guard = 0; guard < 8 && !ts_node_is_null( decl ) && !kindIs( ts_node_type( decl ), "function_declarator" ); ++guard )
     {
-        decl = ts_node_child_by_field_name( decl, "declarator", 10 );
+        decl = fieldChild( decl, NodeField::Declarator );
     }
     if( ts_node_is_null( decl ) || !kindIs( ts_node_type( decl ), "function_declarator" ) )
     {
         return TSNode{};
     }
-    return ts_node_child_by_field_name( decl, "parameters", 10 );
+    return fieldChild( decl, NodeField::Parameters );
 }
 
 // r9 shadow suppression (A5 fix round): the local-declaring shapes that live OUTSIDE `declaration` nodes
@@ -1004,7 +1020,7 @@ inline TSNode fnDefParameterList( TSNode fnDef )
 // second rule to keep in step). Plain, typed, defaulted and splat parameters; tuple patterns bind nothing.
 inline void capturePythonParamShadowDecls( TSNode n, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawBind>& binds )
 {
-    const TSNode params = ts_node_child_by_field_name( n, "parameters", 10 );
+    const TSNode params = fieldChild( n, NodeField::Parameters );
     if( ts_node_is_null( params ) )
     {
         return;
@@ -1021,7 +1037,7 @@ inline void capturePythonParamShadowDecls( TSNode n, std::uint32_t fileId, Lang 
         }
         else if( kindIs( pt, "default_parameter" ) || kindIs( pt, "typed_default_parameter" ) )
         {
-            ident = ts_node_child_by_field_name( p, "name", 4 );
+            ident = fieldChild( p, NodeField::Name );
         }
         else if( kindIs( pt, "typed_parameter" ) || kindIs( pt, "list_splat_pattern" ) || kindIs( pt, "dictionary_splat_pattern" ) )
         {
@@ -1057,7 +1073,7 @@ inline void captureShadowScopeDecls( TSNode n, const char* t, std::uint32_t file
     {
         return;   // every other node type declares nothing this capture owns
     }
-    const TSNode body = ts_node_child_by_field_name( n, "body", 4 );
+    const TSNode body = fieldChild( n, NodeField::Body );
     if( ts_node_is_null( body ) )
     {
         return;   // a body-less shape scopes nothing (declaration-only lambda/definition never parses so)
@@ -1068,12 +1084,12 @@ inline void captureShadowScopeDecls( TSNode n, const char* t, std::uint32_t file
         // iteration 3, unified with enclosingShadowScope's control-statement rule: the loop variable scopes
         // to the WHOLE for_range_loop statement (its own span), not merely the body.
         const BindSite loopSite{ ts_node_start_byte( n ), ts_node_start_byte( n ), ts_node_end_byte( n ) };
-        const TSNode   loopDeclarator = ts_node_child_by_field_name( n, "declarator", 10 );
+        const TSNode   loopDeclarator = fieldChild( n, NodeField::Declarator );
         emitShadowVarDecls( fileId, lang, loopDeclarator, src, loopSite, binds );
         // member-variable round (card A3): the loop variable's WRITTEN type (`for( const Symbol& s : v )` →
         // s:Symbol) as a ParamType record for the field use-site index — the single most common typed
         // receiver shape in this repo's own source (`s.name`), and `auto` writes nothing, as for parameters.
-        pushRawBind( fileId, lang, paramDeclaratorVarName( loopDeclarator, src ), writtenTypeOf( ts_node_child_by_field_name( n, "type", 4 ), src ),
+        pushRawBind( fileId, lang, paramDeclaratorVarName( loopDeclarator, src ), writtenTypeOf( fieldChild( n, NodeField::Type ), src ),
                      BindSite{ ts_node_start_byte( n ), 0u, 0u }, LocalBindKind::ParamType, binds );
         return;
     }
@@ -1085,7 +1101,7 @@ inline void captureShadowScopeDecls( TSNode n, const char* t, std::uint32_t file
     // a catch parameter is a local of its HANDLER block (iteration 3, the noted 3b gap) — its
     // parameter_list is a direct field; a definition's sits behind the declarator chain
     // (fnDefParameterList above), which is what keeps prototypes and fn-pointer TYPE params out.
-    const TSNode params = isCatch ? ts_node_child_by_field_name( n, "parameters", 10 ) : fnDefParameterList( n );
+    const TSNode params = isCatch ? fieldChild( n, NodeField::Parameters ) : fnDefParameterList( n );
     if( !ts_node_is_null( params ) )
     {
         emitShadowParamDecls( params, fileId, lang, src, bodySite, binds );
@@ -1115,24 +1131,24 @@ inline void captureFnBindDecl( TSNode n, std::uint32_t fileId, Lang lang, std::s
                                std::vector<RawBind>& fnPos, std::vector<FnBindClobber>& fnUnk,
                                std::vector<PendingFnBindDecl>& pending )
 {
-    const TSNode typeNode = ts_node_child_by_field_name( n, "type", 4 );
+    const TSNode typeNode = fieldChild( n, NodeField::Type );
     std::string  writtenType;
     const bool   concrete = concreteWrittenType( typeNode, src, writtenType );
-    const std::uint32_t cc = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < cc; ++i )
+    // O(children), on the cursor's O(1) field name — see fnPtrAliasName above and arm B7.
+    ChildCursor cursor( n );
+    forEachChild( n, cursor.cur, [ & ]( TSNode c )
     {
-        const char* fname = ts_node_field_name_for_child( n, i );
+        const char* fname = ts_tree_cursor_current_field_name( &cursor.cur );
         if( fname == nullptr || !kindIs( fname, "declarator" ) )
         {
-            continue;
+            return true;
         }
-        const TSNode c = ts_node_child( n, i );
         if( !kindIs( ts_node_type( c ), "init_declarator" ) )
         {
-            continue;   // no initializer → no binding fact here (a later assignment carries its own)
+            return true;   // no initializer → no binding fact here (a later assignment carries its own)
         }
-        const auto [ var, sawFnDecl, sawPtrDecl, sawRef ] = fnDeclaratorShape( ts_node_child_by_field_name( c, "declarator", 10 ), src );
-        const TSNode valueNode = ts_node_child_by_field_name( c, "value", 5 );
+        const auto [ var, sawFnDecl, sawPtrDecl, sawRef ] = fnDeclaratorShape( fieldChild( c, NodeField::Declarator ), src );
+        const TSNode valueNode = fieldChild( c, NodeField::Value );
         if( sawRef )
         {
             // A5 escape guard: `H& r = fn;` / `auto& r = fn;` ALIASES fn — a write through r retargets fn
@@ -1146,7 +1162,7 @@ inline void captureFnBindDecl( TSNode n, std::uint32_t fileId, Lang lang, std::s
                     fnUnk.push_back( { std::string( aliased ), ts_node_start_byte( n ) } );
                 }
             }
-            continue;
+            return true;
         }
         bool bareIdent = false;
         std::string target = fnBindTargetOf( valueNode, src, bareIdent );
@@ -1155,10 +1171,11 @@ inline void captureFnBindDecl( TSNode n, std::uint32_t fileId, Lang lang, std::s
             // the declarator does not itself spell a fn pointer, so only the WRITTEN TYPE can tell a bind
             // from a copy — and that answer needs the file's complete alias table. Hold it.
             pending.push_back( { std::string( var ), std::move( target ), writtenType, ts_node_start_byte( n ), concrete } );
-            continue;
+            return true;
         }
         emitFnBind( fileId, lang, var, std::move( target ), ts_node_start_byte( n ), LocalBindKind::FnDecl, fnPos );
-    }
+        return true;
+    } );
 }
 
 // A5 escape guard over one `pointer_expression`: `&fn` ANYWHERE makes the variable mutable through the
@@ -1175,7 +1192,7 @@ inline void captureFnBindEscape( TSNode n, std::string_view src, std::vector<FnB
     {
         return;
     }
-    const TSNode idn = ts_node_child_by_field_name( n, "argument", 8 );
+    const TSNode idn = fieldChild( n, NodeField::Argument );
     if( ts_node_is_null( idn ) || !kindIs( ts_node_type( idn ), "identifier" ) )
     {
         return;
@@ -1200,8 +1217,8 @@ inline void captureFnBindAssign( TSNode n, std::uint32_t fileId, Lang lang, std:
                                  std::vector<RawBind>& fnPos, std::vector<FnBindClobber>& fnUnk,
                                  std::vector<PendingFnBindAssign>& pending )
 {
-    const TSNode lhs = ts_node_child_by_field_name( n, "left",  4 );
-    const TSNode rhs = ts_node_child_by_field_name( n, "right", 5 );
+    const TSNode lhs = fieldChild( n, NodeField::Left );
+    const TSNode rhs = fieldChild( n, NodeField::Right );
     if( !ts_node_is_null( lhs ) && kindIs( ts_node_type( lhs ), "identifier" ) )
     {
         const std::uint32_t a = ts_node_start_byte( lhs ), b = ts_node_end_byte( lhs );
@@ -1329,7 +1346,7 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
     // C++/ObjC: `Foo x;` · `Foo* x;` · `Foo x = Foo();` · `auto x = Foo();`
     if( ( lang == Lang::Cpp || lang == Lang::ObjC ) && kindIs( t, "declaration" ) )
     {
-        const TSNode typeNode = ts_node_child_by_field_name( n, "type", 4 );
+        const TSNode typeNode = fieldChild( n, NodeField::Type );
         std::string  written  = writtenTypeOf( typeNode, src );
         // A5 fix round: the declared names shadow within their enclosing block (or, for a control-statement
         // header declaration, that whole statement) — one parent walk per declaration node, shared by every
@@ -1337,18 +1354,17 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
         // start (shadowSpanStart).
         const ShadowScope scope = enclosingShadowScope( n );
         // a `declaration` can declare several variables (`Foo a, b;`) → one binding per declarator child.
-        const std::uint32_t cc = ts_node_child_count( n );
-        for( std::uint32_t i = 0; i < cc; ++i )
+        // O(children), not O(children³): this loop used to ask for `ts_node_child( n, i )` AND
+        // `ts_node_field_name_for_child( n, i )` twice, and all three restart tree-sitter's child iterator at
+        // the first child (src/infra/tschildren.h). A declaration's width is input-set — every comment between
+        // the type and the declarator is a direct child — and 16 000 of them measured 77x the identical flood
+        // beside the declaration (test/childwalkscalecheck.sh, arm B7, which also records why the cursor's
+        // O(1) `ts_tree_cursor_current_field_name` is the same answer: node.c:689 vs tree_cursor.c:657).
+        ChildCursor cursor( n );
+        forEachChild( n, cursor.cur, [ & ]( TSNode c )
         {
-            const TSNode c  = ts_node_child( n, i );
-            if( ts_node_field_name_for_child( n, i ) == nullptr )
-            {
-                continue;
-            }
-            if( !kindIs( ts_node_field_name_for_child( n, i ), "declarator" ) )
-            {
-                continue;
-            }
+            const char* field = ts_tree_cursor_current_field_name( &cursor.cur );
+            if( field == nullptr || !kindIs( field, "declarator" ) ) { return true; }
             const char* ct = ts_node_type( c );
             // `init_declarator`: name lives in its `declarator`, the RHS in its `value` (for auto inference).
             // emitDeclBinds also records the r9 VarDecl shadow fact for the declared NAME regardless of type
@@ -1356,8 +1372,8 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
             // exists and shadows).
             if( kindIs( ct, "init_declarator" ) )
             {
-                const TSNode declarator = ts_node_child_by_field_name( c, "declarator", 10 );
-                std::string  type       = written.empty() ? ctorTypeOf( ts_node_child_by_field_name( c, "value", 5 ), src ) : written;
+                const TSNode declarator = fieldChild( c, NodeField::Declarator );
+                std::string  type       = written.empty() ? ctorTypeOf( fieldChild( c, NodeField::Value ), src ) : written;
                 emitDeclBinds( fileId, lang, declarator, src, std::move( type ),
                                BindSite{ ts_node_start_byte( n ), shadowSpanStart( scope, declarator ), scope.end }, binds );
             }
@@ -1366,13 +1382,14 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
                 emitDeclBinds( fileId, lang, c, src, std::string( written ),
                                BindSite{ ts_node_start_byte( n ), shadowSpanStart( scope, c ), scope.end }, binds );
             }
-        }
+            return true;
+        } );
     }
     // C++ `x = Foo();` (re-assignment to a constructor) — assignment_expression inside an expression_statement.
     else if( ( lang == Lang::Cpp || lang == Lang::ObjC ) && kindIs( t, "assignment_expression" ) )
     {
-        const TSNode lhs = ts_node_child_by_field_name( n, "left",  4 );
-        const TSNode rhs = ts_node_child_by_field_name( n, "right", 5 );
+        const TSNode lhs = fieldChild( n, NodeField::Left );
+        const TSNode rhs = fieldChild( n, NodeField::Right );
         if( !ts_node_is_null( lhs ) && kindIs( ts_node_type( lhs ), "identifier" ) )
         {
             const std::uint32_t a = ts_node_start_byte( lhs ), b = ts_node_end_byte( lhs );
@@ -1385,8 +1402,8 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
     // Python `x = Foo()` — assignment with a bare-identifier LHS and a constructor-call RHS.
     else if( lang == Lang::Python && kindIs( t, "assignment" ) )
     {
-        const TSNode lhs = ts_node_child_by_field_name( n, "left",  4 );
-        const TSNode rhs = ts_node_child_by_field_name( n, "right", 5 );
+        const TSNode lhs = fieldChild( n, NodeField::Left );
+        const TSNode rhs = fieldChild( n, NodeField::Right );
         if( !ts_node_is_null( lhs ) && kindIs( ts_node_type( lhs ), "identifier" ) )
         {
             const std::uint32_t a = ts_node_start_byte( lhs ), b = ts_node_end_byte( lhs );
@@ -1396,7 +1413,7 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
                 std::string type;
                 if( !ts_node_is_null( rhs ) && kindIs( ts_node_type( rhs ), "call" ) )
                 {
-                    const TSNode fn = ts_node_child_by_field_name( rhs, "function", 8 );
+                    const TSNode fn = fieldChild( rhs, NodeField::Function );
                     if( !ts_node_is_null( fn ) && kindIs( ts_node_type( fn ), "identifier" ) )
                     {
                         const std::uint32_t fa = ts_node_start_byte( fn ), fb = ts_node_end_byte( fn );
@@ -1413,7 +1430,7 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
     // TypeScript `const x = new Foo();` · `let y: Bar = ...;` — variable_declarator.
     else if( lang == Lang::TypeScript && kindIs( t, "variable_declarator" ) )
     {
-        const TSNode nameNode = ts_node_child_by_field_name( n, "name", 4 );
+        const TSNode nameNode = fieldChild( n, NodeField::Name );
         if( !ts_node_is_null( nameNode ) && kindIs( ts_node_type( nameNode ), "identifier" ) )
         {
             const std::uint32_t a = ts_node_start_byte( nameNode ), b = ts_node_end_byte( nameNode );
@@ -1421,21 +1438,21 @@ void bindsVisitNode( BindCtx& cx, TSNode n, const char* t )
             {
                 // prefer the `: Type` annotation; else infer from a `new Foo()` / `Foo()` initializer.
                 std::string type;
-                const TSNode ann = ts_node_child_by_field_name( n, "type", 4 );   // type_annotation
+                const TSNode ann = fieldChild( n, NodeField::Type );   // type_annotation
                 if( !ts_node_is_null( ann ) )
                 {
-                    const std::uint32_t cc = ts_node_child_count( ann );
-                    for( std::uint32_t i = 0; i < cc; ++i )
-                    {
-                        const TSNode c = ts_node_child( ann, i );
-                        if( kindIs( ts_node_type( c ), "type_identifier" ) )
-                        { const std::uint32_t ta = ts_node_start_byte( c ), tb = ts_node_end_byte( c );
-                          if( ta <= tb && tb <= src.size() ) { type = finalSegment( src.substr( ta, tb - ta ) ); } break; }
-                    }
+                    // O(children): the scan stops at the first type_identifier, but nothing bounds how many
+                    // comments precede one — `let x: /* … */ Foo` splices each into the annotation's child list.
+                    ChildCursor annCursor( ann );
+                    forEachChild( ann, annCursor.cur, [ & ]( TSNode c )
+                    {   if( !kindIs( ts_node_type( c ), "type_identifier" ) ) { return true; }
+                        const std::uint32_t ta = ts_node_start_byte( c ), tb = ts_node_end_byte( c );
+                        if( ta <= tb && tb <= src.size() ) { type = finalSegment( src.substr( ta, tb - ta ) ); }
+                        return false; } );   // the indexed loop's `break`: the FIRST type_identifier wins
                 }
                 if( type.empty() )
                 {
-                    type = ctorTypeOf( ts_node_child_by_field_name( n, "value", 5 ), src );
+                    type = ctorTypeOf( fieldChild( n, NodeField::Value ), src );
                 }
                 emitBind( fileId, lang, src.substr( a, b - a ), std::move( type ), ts_node_start_byte( n ), binds );
             }

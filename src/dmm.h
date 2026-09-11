@@ -271,7 +271,7 @@ inline bool ingestCommitTree( const std::string& root, const std::string& sha, c
     std::string cachePath;
     if( sha == quality::gitHeadSha( root ) )
     {
-        const std::string repoHex = quality::headSnapRepoHex( root );
+        const std::string repoHex = quality::cacheRootKeyHex( root );
         const std::string exclHex = quality::headSnapExclHex( excludes, maxFileBytes );
         cachePath                 = quality::headSnapCachePath( repoHex, exclHex, sha );
     }
