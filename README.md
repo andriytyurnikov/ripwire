@@ -14,7 +14,7 @@
 Point it at any repository and your agent gets a ranked, deterministic call graph — what to touch,
 what it breaks, which tests to run — instead of grepping around and reading whole files.
 
-<p align="center"><img src="docs/assets/paddle-out.svg" alt="Paddle out with a map. See the rip before you’re in it." width="470"> <a href="https://trendshift.io/repositories/217924?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-217924"><img align="middle" src="https://trendshift.io/api/badge/trendshift/repositories/217924/daily?language=C%2B%2B" alt="Trendshift: C++ Repository of the Day badge for redhat-et/ripwire" width="250" height="55"></a></p>
+<p align="center"><a href="https://trendshift.io/repositories/217924?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-217924"><img src="https://trendshift.io/api/badge/trendshift/repositories/217924/daily?language=C%2B%2B" alt="Trendshift: C++ Repository of the Day badge for redhat-et/ripwire" width="250" height="55"></a></p>
 
 <details>
 <summary><b>Fifty years of software-engineering results, and research from last month.</b> 49 repositories and 70 papers folded — McCabe (1976) through to <b>seven published in the last two months</b> — each row in <a href="docs/LINEAGE.md"><b>docs/LINEAGE.md</b></a> naming the lesson taken and the file it lives in</summary>
