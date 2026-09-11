@@ -56,23 +56,39 @@ function row(s, y, h, cols, opts={}){
 
 /* ── S1 · title ─────────────────────────────────────────────────────────── */
 {
+  // The cover echoes the README hero (docs/assets/banner.svg): a terminal card, the two-tone name, and the
+  // wave (present/assets/paddle-out.png: docs/assets/paddle-out.svg rendered at 4x on the card colour with Arial,
+  // so it blends into the card in every viewer — a PNG because pptxgenjs writes an SVG's bytes into the PNG
+  // fallback slot, which older viewers cannot draw). Below
+  // it the two halves, weighted on purpose: speed is the hook, honesty is the half that earns the trust.
   const s = p.addSlide(); bg(s);
-  s.addText("ripwire", { x: MX, y: 1.55, w: 8.4, h: 1.35, fontFace: MONO, fontSize: 76, bold: true, color: TEXT, margin: 0 });
-  s.addText("The ripgrep of AI context.", { x: MX, y: 2.95, w: 9.5, h: 0.6, fontFace: SANS, fontSize: 27, bold: true, color: TEXT, margin: 0 });
-  s.addText("A zero-runtime-dependency C++23 CLI that maps any codebase into a ranked, deterministic\ncall graph for coding agents — and puts a tripwire on every claim it emits.",
-    { x: MX, y: 3.6, w: 10.6, h: 0.95, fontFace: SANS, fontSize: 16, color: MUTED, margin: 0 });
+  const cw = W - 2*MX;
+  s.addShape("roundRect", { x: MX, y: 0.55, w: cw, h: 3.75, fill: { color: CARD }, rectRadius: 0.12, line: { color: "232D3D", width: 0.75 } });
+  for (const dx of [0.28, 0.52, 0.76]){
+    s.addShape("ellipse", { x: MX+dx, y: 0.74, w: 0.14, h: 0.14, fill: { color: "2A3547" }, line: { color: "2A3547", width: 0 } });
+  }
+  // Left column: the name, the one-line claim, and the wave under it. Right column: what it is, in one sentence.
+  s.addText([{ text: "rip", options: { color: CYAN } }, { text: "wire", options: { color: AMBER } }],
+    { x: MX+0.4, y: 0.95, w: 6.0, h: 1.3, fontFace: MONO, fontSize: 72, bold: true, margin: 0 });
+  s.addText("The ripgrep of AI context.", { x: MX+0.42, y: 2.25, w: 6.0, h: 0.55, fontFace: SANS, fontSize: 26, bold: true, color: TEXT, margin: 0 });
+  s.addImage({ path: require("path").join(__dirname, "assets", "paddle-out.png"), x: MX+0.36, y: 2.98, w: 4.6, h: 0.94 });
+  s.addText("A zero-runtime-dependency C++23 CLI that maps any codebase into a ranked, deterministic call graph for coding agents — and puts a tripwire on every claim it emits.",
+    { x: MX+6.7, y: 1.2, w: 5.0, h: 2.6, fontFace: SANS, fontSize: 18, color: MUTED, valign: "middle", margin: 0 });
 
-  card(s, MX, 4.85, 5.9, 1.35);
+  const ripW = 4.3, gapH = 0.3, wireX = MX + ripW + gapH, wireW = cw - ripW - gapH;
+  card(s, MX, 4.6, ripW, 1.95);
   s.addText([{ text: "rip", options: { color: CYAN, bold: true } }, { text: " — the speed half", options: { color: TEXT, bold: true } }],
-    { x: MX+0.25, y: 5.0, w: 5.4, h: 0.4, fontFace: SANS, fontSize: 16, margin: 0 });
+    { x: MX+0.25, y: 4.8, w: ripW-0.5, h: 0.4, fontFace: SANS, fontSize: 15, margin: 0 });
   s.addText("Structural answers in tens of milliseconds, from a call graph it built itself.",
-    { x: MX+0.25, y: 5.42, w: 5.4, h: 0.65, fontFace: SANS, fontSize: 12.5, color: MUTED, margin: 0 });
-  card(s, MX+6.2, 4.85, 5.9, 1.35);
-  s.addText([{ text: "wire", options: { color: AMBER, bold: true } }, { text: " — the honesty half", options: { color: TEXT, bold: true } }],
-    { x: MX+6.45, y: 5.0, w: 5.4, h: 0.4, fontFace: SANS, fontSize: 16, margin: 0 });
+    { x: MX+0.25, y: 5.3, w: ripW-0.5, h: 0.95, fontFace: SANS, fontSize: 12.5, color: MUTED, valign: "top", margin: 0 });
+  s.addShape("roundRect", { x: wireX, y: 4.6, w: wireW, h: 1.95, fill: { color: "1F1B13" }, rectRadius: 0.09, line: { color: AMBER, width: 1.5 } });
+  s.addText([{ text: "wire", options: { color: AMBER, bold: true } }, { text: " — the other half: honesty", options: { color: TEXT, bold: true } }],
+    { x: wireX+0.3, y: 4.76, w: wireW-0.6, h: 0.5, fontFace: SANS, fontSize: 20, margin: 0 });
   s.addText("Unprovable totals ship labelled as floors. A zero means none found — never none exists.",
-    { x: MX+6.45, y: 5.42, w: 5.4, h: 0.65, fontFace: SANS, fontSize: 12.5, color: MUTED, margin: 0 });
-  foot(s, "Apache-2.0  ·  single binary  ·  hermetic build (proven with the network off)  ·  21 vendored tree-sitter grammars");
+    { x: wireX+0.3, y: 5.3, w: wireW-0.6, h: 0.62, fontFace: SANS, fontSize: 15, color: TEXT, valign: "top", margin: 0 });
+  s.addText("Every truncation is disclosed, and every guess says how many it chose from.",
+    { x: wireX+0.3, y: 5.98, w: wireW-0.6, h: 0.42, fontFace: SANS, fontSize: 12.5, color: MUTED, valign: "top", margin: 0 });
+  foot(s, "Apache-2.0  ·  single binary  ·  hermetic build (proven with the network off)  ·  23 vendored tree-sitter grammars");
 }
 
 /* ── S2 · the problem ───────────────────────────────────────────────────── */
@@ -101,7 +117,7 @@ function row(s, y, h, cols, opts={}){
   title(s, "Crawl → parse → resolve → rank → emit. Deterministic, end to end.");
   const stages = [
     ["crawl",   "the tree, no VCS needed"],
-    ["parse",   "tree-sitter, 21 vendored grammars"],
+    ["parse",   "tree-sitter, 23 vendored grammars"],
     ["resolve", "references → call graph"],
     ["rank",    "Personalized PageRank"],
     ["emit",    "minified XML, one line"],
@@ -117,7 +133,7 @@ function row(s, y, h, cols, opts={}){
   const props = [
     ["byte-identical", "two runs, same bytes — a gate on every push, not a tendency; warm equals cold"],
     ["zero runtime deps", "CMake + a C++23 compiler; builds with the network off — vendored everything"],
-    ["the languages", "Rust · C++ · ObjC/C++ · C · Metal · CUDA · Python · Go · Swift · TypeScript · JavaScript · Java · Ruby · PHP · Lua · Bash · C# · JSON · TOML · YAML · Markdown — 21 vendored grammars; markdown headings are real symbols"],
+    ["the languages", "Rust · C++ · ObjC/C++ · C · Metal · CUDA · Python · Go · Swift · TypeScript · JavaScript · Java · Ruby · PHP · Lua · Elixir · Dart · Bash · C# · JSON · TOML · YAML · Markdown — 23 vendored grammars; markdown headings are real symbols"],
     ["agent-native", "an MCP server and 179 long flags behind one `--help` that is always the authority"],
   ];
   // Row height carries the LONGEST body (the language line, which wraps to three at this width),
@@ -950,7 +966,7 @@ function row(s, y, h, cols, opts={}){
     ["What-to-Retrieve · arXiv 2503.20589", "retrieval selection beats retrieval volume for coding agents → the selection-over-dumping thesis"],
     ["LocAgent / Loc-Bench (2025)", "the localization metric (strict Acc@k) and the frozen 560-instance dataset every accuracy number here is scored on"],
     ["scip-clang · Serena / clangd", "the compiler-grade oracle round 9 graded both tools against — an outside referee, not a rival"],
-    ["tree-sitter", "the incremental GLR parsing substrate — 21 grammars vendored, one parser per thread"],
+    ["tree-sitter", "the incremental GLR parsing substrate — 23 grammars vendored, one parser per thread"],
   ];
   y = 2.05;
   for (const [t, d] of modern){
