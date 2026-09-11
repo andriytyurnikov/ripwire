@@ -1356,10 +1356,7 @@ inline bool ensureFileLoaded( ModelCtx& ctx, std::uint32_t fileId )
     if( !ctx.bytesLoaded[ fileId ] )
     {
         ctx.bytesLoaded[ fileId ] = 1;
-        if( !darkflags::readWhole( diskPath( ctx.ing, fileId ), ctx.bytes[fileId] ) )
-        {
-            ctx.bytes[fileId].clear();
-        }
+        ctx.bytes[fileId] = darkflags::readWhole( diskPath( ctx.ing, fileId ) ).value_or( std::string() );
         ctx.stripped[ fileId ] = withoutComments( ctx.bytes[ fileId ] );
         ctx.consts[ fileId ]   = harvestConstants( ctx.stripped[ fileId ] );
     }
@@ -2201,23 +2198,23 @@ inline void scanFileForAsserts( std::string_view src, const std::string& path, s
 inline std::vector<AssertRow> collectAsserts( const IngestResult& ing, std::string_view name, std::size_t& filesScanned )
 {
     std::vector<AssertRow> rows;
-    std::string            bytes;
     for( std::uint32_t fileId = 0; fileId < ing.files.size(); ++fileId )
     {
         if( !isCFamilyPath( ing.files[fileId] ) )
         {
             continue;
         }
-        if( !darkflags::readWhole( diskPath( ing, fileId ), bytes ) )
+        const std::optional<std::string> bytes = darkflags::readWhole( diskPath( ing, fileId ) );
+        if( !bytes )
         {
             continue;
         }
         ++filesScanned;
-        if( bytes.find( name ) == std::string::npos )
+        if( bytes->find( name ) == std::string::npos )
         {
             continue; // cheap reject before the keyword walk
         }
-        scanFileForAsserts( bytes, ing.files[ fileId ], name, rows );
+        scanFileForAsserts( *bytes, ing.files[ fileId ], name, rows );
     }
 
     std::sort( rows.begin(), rows.end(), []( const AssertRow& a, const AssertRow& b )

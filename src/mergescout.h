@@ -157,7 +157,6 @@ struct SymTreeIndex
 // bodyHashesBySym already skipped — no file is ever double-counted between the two lanes.
 inline void injectFileLevelFallback( SymTreeIndex& out, const IngestResult& ing, std::string_view root, const SymbolsByFile& realBodySyms )
 {
-    std::string bytes;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
         if( f < realBodySyms.size() && !realBodySyms[f].empty() )
@@ -169,7 +168,8 @@ inline void injectFileLevelFallback( SymTreeIndex& out, const IngestResult& ing,
         // --quality-delta reported the two as a 320-token clone the moment the quality-side copy was
         // extracted. Unreadable or empty degrades the same way in both: contributes nothing, never crashes,
         // and nothing is hidden because there is no content to hide.
-        if( !docparse::detail::readWholeFile( ing.files[f], bytes ) || bytes.empty() )
+        const std::string bytes = docparse::detail::readWholeFile( ing.files[f] ).value_or( std::string() );
+        if( bytes.empty() )
         {
             continue;
         }

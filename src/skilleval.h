@@ -47,6 +47,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace rw
@@ -106,7 +108,7 @@ inline std::vector<std::string> splitTextLines( const std::string& text )
 // parse ONE SKILL.md into {description, body}. The frontmatter is the block between the first two `---`
 // lines; `description:` is a YAML block scalar (`description: >` + indented continuation lines) or a
 // single inline value. Continuation ends at the next unindented `key:` line or the closing `---`.
-inline void parseSkillMd( const std::string& text, std::string& descOut, std::string& bodyOut )
+inline std::pair<std::string, std::string> parseSkillMd( const std::string& text )
 {
     const std::vector<std::string> lines = splitTextLines( text );
 
@@ -121,7 +123,8 @@ inline void parseSkillMd( const std::string& text, std::string& descOut, std::st
     }
 
     // description: value + indented continuations
-    bool inDesc = false;
+    std::string descText;
+    bool        inDesc = false;
     for( int i = 1; i < frontEndLineIndex; ++i )
     {
         const std::string& line = lines[i];
@@ -137,7 +140,7 @@ inline void parseSkillMd( const std::string& text, std::string& descOut, std::st
                 rest.remove_prefix( 1 );
             }
             if( rest != ">" && rest != ">-" && rest != "|" && rest != "|-" && !rest.empty() )
-            { descOut.append( rest ); descOut.push_back( ' ' ); }
+            { descText.append( rest ); descText.push_back( ' ' ); }
             inDesc = true;
             continue;
         }
@@ -151,13 +154,15 @@ inline void parseSkillMd( const std::string& text, std::string& descOut, std::st
         {
             body.remove_prefix( 1 );
         }
-        descOut.append( body );
-        descOut.push_back( ' ' );
+        descText.append( body );
+        descText.push_back( ' ' );
     }
 
     // body = everything after the closing fence
+    std::string bodyText;
     for( int i = frontEndLineIndex + 1; i < int( lines.size() ); ++i )
-    { bodyOut.append( lines[i] ); bodyOut.push_back( '\n' ); }
+    { bodyText.append( lines[i] ); bodyText.push_back( '\n' ); }
+    return { std::move( descText ), std::move( bodyText ) };
 }
 
 struct SkillSet
@@ -189,7 +194,7 @@ inline SkillSet discoverSkills( const std::string& root )
 
         SkillDoc doc;
         doc.dirName = entry.path().filename().string();
-        parseSkillMd( readWholeFileText( md ), doc.descText, doc.bodyText );
+        std::tie( doc.descText, doc.bodyText ) = parseSkillMd( readWholeFileText( md ) );
 
         if( doc.dirName == "ripwire-router" ) { set.router = std::move( doc ); set.hasRouter = true; }
         else

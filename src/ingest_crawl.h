@@ -1339,7 +1339,9 @@ CrawlResult collectSources( const char* rootDir, const std::vector<std::string>&
     return { std::move( out ), std::move( skipped ), std::move( skips ) };
 }
 
-// ---- read a file's bytes (returns false on open failure) ----
+// ---- read a file's bytes (false when it cannot be opened, sized or read in full) ----
+// Deliberately an out-parameter, unlike docparse::detail::readWholeFile: the parse pool and the AST-query pass
+// each hand in one worker-local buffer and reuse it for every file they read, so its capacity carries over.
 bool readFile( const std::string& path, std::string& out )
 {
     PROFILE_SCOPE_DESCRIBE( "ingest/readFile: fopen+read whole file" );
@@ -1378,6 +1380,8 @@ bool readFile( const std::string& path, std::string& out )
     return ok;
 }
 
+// The first `maxBytes` of a file, into `out` for the same reason as readFile: each prewarm hash worker reuses one
+// header-prefix buffer for every file it probes.
 bool readFilePrefix( const std::string& path, std::string& out, std::size_t maxBytes )
 {
     PROFILE_SCOPE_DESCRIBE( "ingest/readFilePrefix: fopen+read prefix" );
