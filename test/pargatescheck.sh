@@ -277,6 +277,80 @@ printf '%s\n' "$outN" | grep -q 'tree tripwire: DISARMED' \
     && ok "functional(tree): UNWATCHED -- the run says the tripwire is disarmed rather than implying a clean tree" \
     || no "functional(tree): UNWATCHED -- no DISARMED disclosure on a corpus git cannot see"
 
+# ── A WRITE THE TRIPWIRE CANNOT SEE: PYTHON'S BYTECODE CACHE (2026-09-10, CI runs 34534320580, 34536435376) ──
+# The tripwire reads `git status`, so it sees what git sees and nothing else. A gate that imports a module
+# straight out of the checkout makes Python write __pycache__/ beside it -- agentlooplockcheck into
+# bench/agentloop/ and bench/locbench/, aiderbytescheck into bench/headtohead/r4-2026-08-06/. That name is
+# gitignored, so the run reports tree_writes=0; it is also on the crawl's built-in denylist, so every crawl of
+# the live repo counts it (grep's corpus_pruned_dirs= goes 3 -> 4 on a fresh checkout). #118 moved both
+# importers into pagingsweepcheck's shard 1/4, and its cold grep (G) pair -- two full re-crawls seconds apart --
+# went red twice on main with "paged page NOT deterministic" on a tree clean by every measure the harness had.
+# run() now gives every gate PYTHONDONTWRITEBYTECODE=1. Two functional arms on one corpus shape:
+#   BYTECODE  the REAL script: a git corpus (__pycache__/ gitignored, as in this repo) whose one gate imports a
+#             committed module -> the gate passes, tree_writes=0, rc 0, and no __pycache__ exists afterwards.
+#   MUTANT    a copy with ONLY that variable removed from run()'s env -> the same gate leaves __pycache__ behind
+#             and the run STILL reports tree_writes=0. That proves the probe really caches bytecode (so BYTECODE
+#             is not vacuous on a Python that never does), and it pins the blind spot the variable closes.
+grep -qE '^    env = dict\(os\.environ, RIPWIRE_BIN=binp, PYTHONDONTWRITEBYTECODE="1"\)$' "$PARGATES" \
+    && ok "static: run() gives every gate PYTHONDONTWRITEBYTECODE=1" \
+    || no "static: run() no longer sets PYTHONDONTWRITEBYTECODE=1 -- a gate importing from the checkout leaves a __pycache__/ the crawl counts and git cannot see"
+
+mkPycCorpus(){   # mkPycCorpus <dir>
+    local d="$1"
+    mkdir -p "$d/test/pyprobe"
+    printf '__pycache__/\n' > "$d/.gitignore"
+    printf 'VALUE = 1\n' > "$d/test/pyprobe/pycprobemod.py"
+    cat > "$d/test/pycprobecheck.sh" <<'EOF'
+#!/usr/bin/env bash
+ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
+if python3 - "$ROOT" <<'PY'
+import sys
+sys.path.insert( 0, sys.argv[1] + "/test/pyprobe" )
+import pycprobemod
+sys.exit( 0 if pycprobemod.VALUE == 1 else 1 )
+PY
+then printf '  PASS  %s\n' "imported a committed module out of the checkout"; echo "ALL PASS"; exit 0
+else printf '  FAIL  %s\n' "could not import test/pyprobe/pycprobemod.py"; echo "FAILURES ABOVE"; exit 1
+fi
+EOF
+    chmod +x "$d/test/pycprobecheck.sh"
+    ( cd "$d" && git init -q . && git config user.email t@t && git config user.name t \
+      && git add -A && git commit -qm base ) >/dev/null 2>&1 \
+      || { no "functional(bytecode): could not init the synthetic git corpus at $d"; return 1; }
+}
+pycDirs(){ find "$1" -name __pycache__ -type d 2>/dev/null | wc -l | tr -d ' '; }
+
+PYC="$TMP/pyc";       mkPycCorpus "$PYC"
+PYCMUT="$TMP/pycmut"; mkPycCorpus "$PYCMUT"
+NOPYC="$TMP/pargates_nopyc.py"
+python3 - "$PARGATES" "$NOPYC" 2>/dev/null <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = 'env = dict(os.environ, RIPWIRE_BIN=binp, PYTHONDONTWRITEBYTECODE="1")'
+assert needle in text, "run()'s env line not found verbatim -- the static arm above should already have failed"
+open(dst, "w").write(text.replace(needle, 'env = dict(os.environ, RIPWIRE_BIN=binp)', 1))
+PYEOF
+
+# `env -u`: an outer PYTHONDONTWRITEBYTECODE (a developer's shell, a CI image) would make both arms pass for the
+# wrong reason -- the variable under test must come from pargates.py or from nowhere.
+outP="$( env -u PYTHONDONTWRITEBYTECODE python3 "$PARGATES" "$PYC" "$FAKEBIN" --only pycprobecheck 2>&1 )"; rcP=$?
+printf '%s\n' "$outP" | grep -qE '^gates=1 pass=1 .* tree_writes=0$' && [ "$rcP" -eq 0 ] && [ "$( pycDirs "$PYC" )" = 0 ] \
+    && ok "functional(bytecode): BYTECODE -- a gate importing from the checkout passes and leaves no __pycache__ (tree_writes=0, rc 0)" \
+    || { no "functional(bytecode): BYTECODE -- expected pass, tree_writes=0, rc 0, 0 __pycache__ dirs; got rc=$rcP, $( pycDirs "$PYC" ) dir(s): $( printf '%s\n' "$outP" | grep -E '^gates=' )"; printf '%s\n' "$outP" | sed 's/^/    /' | head -20; }
+
+if [ ! -s "$NOPYC" ]; then
+    no "functional(bytecode): MUTANT -- could not build the mutant: run()'s env line is not verbatim (the static arm above says why)"
+else
+    outM="$( env -u PYTHONDONTWRITEBYTECODE python3 "$NOPYC" "$PYCMUT" "$FAKEBIN" --only pycprobecheck 2>&1 )"; rcM=$?
+    [ "$( pycDirs "$PYCMUT" )" != 0 ] \
+        && ok "functional(bytecode): MUTANT -- without the variable the same gate leaves __pycache__ behind (the probe is live)" \
+        || no "functional(bytecode): MUTANT -- without the variable the probe still wrote no __pycache__: this Python never caches bytecode, so BYTECODE proves nothing"
+    printf '%s\n' "$outM" | grep -qE '^gates=1 pass=1 .* tree_writes=0$' \
+        && ok "functional(bytecode): MUTANT -- and the run still reports tree_writes=0: git cannot see this write, only the variable prevents it" \
+        || no "functional(bytecode): MUTANT -- expected tree_writes=0 for a gitignored write the tripwire cannot see; got rc=$rcM: $( printf '%s\n' "$outM" | grep -E '^gates=' )"
+fi
+
 # ── THE DECLARED BUDGET IS A FLOOR, NOT A CEILING (2026-09-10, CI run 34479806177) ───────────────────────
 # GATE_BUDGET_SEC entries were originally exempt from --budget-scale, on the reasoning that each was derived
 # from a CI measurement and should stand as declared. Under CI's --budget-scale 4 that inverted the table's

@@ -262,7 +262,7 @@ inline NumstatDiff numstatChangedPaths( const std::string& root, const std::stri
 // `--output=FILE`, which TRUNCATES and rewrites FILE. A ref beginning with `-` fails merge-base first,
 // which is *exactly* what routed it into that fallback: `--pr-context=--output=/etc/x` clobbered a file
 // outside the repo and exited 0. So: resolve through `rev-parse --verify ...^{commit}` FIRST (the same
-// probe mergescout.h:resolveCommittish uses) and diff the resulting 40-hex sha, which can never begin
+// probe quality::gitResolveCommitSha runs) and diff the resulting 40-hex sha, which can never begin
 // with `-`. An unresolvable ref is a REFUSAL (`badRef`), never a fallback — the caller exits 1 (P2.8).
 struct DiffAnchor
 {
@@ -297,8 +297,9 @@ inline bool isCommitSha( std::string_view s )
     return true;
 }
 
-// Resolve REF to a commit sha. `^{commit}` peels — so a blob/tree hash or a malformed ref answers "" — and
-// mirrors mergescout.h:resolveCommittish verbatim rather than growing a second dialect of the same probe.
+// Resolve REF to a commit sha. `^{commit}` peels — so a blob/tree hash or a malformed ref answers "". The probe is
+// quality::gitResolveCommitSha's; that shared resolver also refuses a ref beginning with '-' before git is asked,
+// which this copy still leaves to git's own rev-parse.
 inline std::string resolveBaseRefSha( const std::string& root, std::string_view ref )
 {
     const std::string sha = quality::gitOneLine( root, "rev-parse --verify --quiet "

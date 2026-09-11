@@ -182,9 +182,9 @@ Discloses: `coboost_commits_capped`, `coboost_partners_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kCoBoostMaxFilesPerCommit` | `30` | 2836 | INDEXING | same bulk-commit cap as the other co-change miners here |
-| `kCoBoostMaxPartnerFiles` | `8` | 2839 | INDEXING | strongest partners only, by (deg desc, path asc) |
-| `kCoBoostMaxSymbolsPerFile` | `3` | 2840 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
+| `kCoBoostMaxFilesPerCommit` | `30` | 2901 | INDEXING | same bulk-commit cap as the other co-change miners here |
+| `kCoBoostMaxPartnerFiles` | `8` | 2904 | INDEXING | strongest partners only, by (deg desc, path asc) |
+| `kCoBoostMaxSymbolsPerFile` | `3` | 2905 | INDEXING | per partner file: its top-3 symbols by (lens score desc, id asc) |
 
 ### `src/graph.h`
 
@@ -247,7 +247,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxAnchorDefs` | `3` | 1787 | — | — |
+| `kMaxAnchorDefs` | `3` | 1829 | — | — |
 
 ### `src/lintrules.h`
 
@@ -295,7 +295,7 @@ Discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4218 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4217 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
 
@@ -403,7 +403,7 @@ Discloses: **none**
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kPrDefaultBudgetTokens` | `8000` | 452 | — | — |
+| `kPrDefaultBudgetTokens` | `8000` | 453 | — | — |
 
 ### `src/qualitypanel.h`
 
@@ -482,7 +482,7 @@ Discloses: `tests_capped`, `untested_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxUntestedRows` | `25` | 939 | — | — |
+| `kMaxUntestedRows` | `25` | 938 | — | — |
 | `kSituPartnerFileRowsShown` | `4` | 351 | — | section [1] — decl/def partner rows |
 | `kSituPartnerRowsShown` | `8` | 350 | — | section [3] — co-change partner rows |
 | `kSituTestRowsShown` | `25` | 349 | — | section [2] — tests-to-run rows |

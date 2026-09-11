@@ -518,7 +518,7 @@ std::optional<int> runUses( const MainDispatch& d )
         // spellings; a member selector on an unserved language refuses by language name. One arm, one branch.
         if( const std::optional<int> memberExit = memberUsesArm( ing, g, defs, sym, usSingleRoot, cfg.roots[ 0 ], cfg.pageLimit, cfg.pageOffset ); memberExit )
         {
-            return *memberExit;
+            return memberExit;
         }
 
         // §A6b(iii): external="1" is the claim "this name has NO definition in the indexed tree" — it may only
@@ -1130,7 +1130,7 @@ std::optional<int> runSlice( const MainDispatch& d )
         seed = resolveAtSeed( ing, cfg.atSpec );
         if( std::optional<int> refused = sliceApplyAtSeed( ing, cfg, seed, matches, selector, varName ) )
         {
-            return *refused;
+            return refused;
         }
     }
 
@@ -1297,7 +1297,7 @@ std::optional<int> runSlice( const MainDispatch& d )
     if( std::optional<int> refused = sliceSincePrepare( d, selector, varName, path, sym, fam, grammar, scan, src,
                                                         sinceLegend, sinceBody, emit ) )
     {
-        return *refused;
+        return refused;
     }
     const std::string xml = slicev::sliceBundleText( ing, d.root, focus, varName, scan, src, d.redactPtr, emit );
     std::fwrite( xml.data(), 1, xml.size(), stdout );
