@@ -491,4 +491,350 @@ else
     printf '%s\n' "$mutOut" | sed 's/^/    /' | head -8
 fi
 
+# ── A STOPPED GATE IS STOPPED WHOLE: ITS PROCESS GROUP (2026-09-10) ──────────────────────────────────────────────
+# A gate's work runs in its children -- ripwire over whole trees, and on the unstaged path headbinlib.sh's parallel
+# `cmake --build`. The budget used to be subprocess.run(timeout=), which expires into Popen.kill(): SIGKILL to the gate's
+# bash and to nothing else, and SIGKILL runs no trap. Measured the day it was fixed, on a probe gate under a copy of the
+# script with a 2 s budget: its background child and the child it waited on inside $( ) were both alive, reparented to
+# pid 1, after pargates had printed TIMEOUT -- still running beside the next gates, on a runner whose contention the
+# budget table above calls super-linear. pargates.py now starts every gate in a session of its own and stops it by
+# signalling that group: TERM, then KILL after KILL_GRACE_SEC. A session of its own also takes the gate out of reach of
+# the terminal's Ctrl-C, so pargates forwards SIGINT/SIGTERM/SIGHUP to every running gate the same way.
+#
+# One probe gate, under copies of the REAL script with only numbers patched (budget, grace), starts five processes in the
+# shapes a gate waits in -- a background child, one that ignores TERM and holds the output pipe, one with a grandchild of
+# its own, and the $( ) it waits inside -- records every pid, and has an EXIT trap that prints and records.
+#   (T) TIMEOUT    killed at a 6 s budget: the TIMEOUT line and the pre-stop output are kept, the gate led its own group,
+#                  TERM came first (its EXIT trap ran, and what the trap printed is in the transcript), and after the grace
+#                  nothing it started is alive and its process group is empty.
+#   (I) INTERRUPT  a 120 s budget, and pargates itself signalled mid-gate -- Ctrl-C (SIGINT to pargates' process group) and
+#                  SIGTERM to its pid: pargates exits 128+signal within 15 s, the trap ran, nothing the gate started survives.
+# Controls, each a copy with ONE mutation, each required to show the defect its arm exists for:
+#   pre-fix     run_gate() put back to the subprocess.run(timeout=) call it replaced -> processes survive the TIMEOUT
+#   TERM only   the stop sends no KILL -> the child ignoring TERM survives
+#   KILL only   the stop sends no TERM -> the gate's EXIT trap never runs
+#   no handler  pargates installs no signal handler -> after Ctrl-C or SIGTERM the gate's processes are still running
+# Liveness is read from the process table with zombies counted as dead (a container's pid 1 may never reap them).
+grep -q 'start_new_session=True' "$PARGATES" \
+    && ok "static(group): a gate starts in a session of its own (start_new_session=True)" \
+    || no "static(group): no start_new_session=True in pargates.py -- a gate shares pargates' process group and a stop cannot reach its children as one group"
+grep -qE '^KILL_GRACE_SEC = 10$' "$PARGATES" \
+    && ok "static(group): KILL_GRACE_SEC is the declared 10 s between a stop's TERM and its KILL (the arms below patch it to 1 s)" \
+    || no "static(group): KILL_GRACE_SEC is not the declared 10 -- the stop's TERM-to-KILL grace moved"
+grep -qE '^STOP_POLL_SEC = 0\.5$' "$PARGATES" \
+    && ok "static(group): STOP_POLL_SEC is the declared 0.5 s a running gate takes to notice pargates was signalled" \
+    || no "static(group): STOP_POLL_SEC is not the declared 0.5 -- the (I) arms' 15 s bound assumes it"
+
+GROUPPY="$TMP/groupstop.py"
+cat > "$GROUPPY" <<'PYEOF'
+# groupstop.py PARGATES WORK FAKEBIN -> ROW PASS|FAIL text ...; DONE n
+import ast, io, os, re, signal, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
+
+PARGATES, WORK, FAKEBIN = sys.argv[1], sys.argv[2], sys.argv[3]
+LABELS = ("gate", "bg", "noterm", "mid", "grandchild", "fg")
+BUDGET_T, BUDGET_I, GRACE = 6, 120, 1
+REACH_SEC, FINISH_SEC, STOP_BOUND_SEC, CONTROL_WAIT_SEC, SETTLE_SEC = 20, 30, 15, 6, 3
+TIMEOUT_LINE = "TIMEOUT after %ds (declared budget=%ds)" % (BUDGET_T, BUDGET_T)
+
+GATE = r'''#!/usr/bin/env bash
+# pargatescheck's process-group probe: every process it starts records "LABEL pid" in pids, then it waits past any budget
+D="$( cd "$( dirname "$0" )/.." && pwd )"; P="$D/pids"; C="$D/bin/probechild.sh"
+trap 'echo "PROBE-EXIT-TRAP-5e1d the EXIT trap ran"; echo "exittrap $$" >> "$P"' EXIT
+echo "gate $$" >> "$P"
+echo "PROBE-PRESTOP-7b3c printed before any stop"
+sh "$C" bg "$P" &
+sh "$C" noterm "$P" &
+sh "$C" mid "$P" &
+out="$( sh "$C" fg "$P" )"
+echo "never reached: $out"
+'''
+
+CHILD = r'''#!/bin/sh
+# probechild.sh LABEL PIDS: records "LABEL pid", then waits the way LABEL says. noterm ignores TERM (and so does the
+# sleep it execs) while holding the gate's output pipe; mid waits on a grandchild of its own.
+label="$1"; pids="$2"
+case "$label" in
+    noterm) trap '' TERM ;;
+    mid)    sh "$0" grandchild "$pids" & ;;
+esac
+echo "$label $$" >> "$pids"
+if [ "$label" = mid ]; then wait; exit 0; fi
+exec sleep 30
+'''
+
+# the call run_gate() replaced, as it stood in run() before 2026-09-10 -- the control the (T) arm must be able to see
+PREFIX = '''def run_gate(argv, env, limit):
+    try:
+        p = subprocess.run(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=limit)
+        return p.returncode, p.stdout, "exited"
+    except subprocess.TimeoutExpired as e:
+        return 124, e.stdout or b"", "timeout"
+'''
+
+MUTATIONS = {
+    "termonly":  ("(signal.SIGTERM, signal.SIGKILL)", "(signal.SIGTERM,)"),
+    "killonly":  ("(signal.SIGTERM, signal.SIGKILL)", "(signal.SIGKILL,)"),
+    "nohandler": ("signal.signal(_sig, _on_stop_signal)", "pass"),
+}
+SCENARIOS = (
+    dict(name="t-fix",            mode="timeout", mutation=None),
+    dict(name="t-prefix",         mode="timeout", mutation="prefix"),
+    dict(name="t-termonly",       mode="timeout", mutation="termonly"),
+    dict(name="t-killonly",       mode="timeout", mutation="killonly"),
+    dict(name="i-int-fix",        mode="SIGINT",  mutation=None),
+    dict(name="i-term-fix",       mode="SIGTERM", mutation=None),
+    dict(name="i-int-nohandler",  mode="SIGINT",  mutation="nohandler"),
+    dict(name="i-term-nohandler", mode="SIGTERM", mutation="nohandler"),
+)
+TRACK = []          # (pargates copy, corpus) for every copy started: cleanup must reach all of them
+
+
+def read(path):
+    return io.open(path, encoding="utf-8", errors="replace").read()
+
+
+def tail(text):
+    return " | ".join([l for l in text.split("\n") if l.strip()][-3:])
+
+
+def build(sc):
+    text = read(PARGATES)
+    budget = BUDGET_T if sc["mode"] == "timeout" else BUDGET_I
+    for old, new in (("DEFAULT_TIMEOUT_SEC = 300", "DEFAULT_TIMEOUT_SEC = %d" % budget), ("KILL_GRACE_SEC = 10", "KILL_GRACE_SEC = %d" % GRACE)):
+        if text.count(old) != 1:
+            raise ValueError("'%s' occurs %d times in pargates.py, not once -- the numbers patch has nothing to patch" % (old, text.count(old)))
+        text = text.replace(old, new)
+    m = sc["mutation"]
+    if m == "prefix":
+        fn = next((n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "run_gate"), None)
+        if fn is None:
+            raise ValueError("pargates.py defines no run_gate() to put the pre-fix call back into")
+        lines = text.split("\n")
+        text = "\n".join(lines[:fn.lineno - 1] + PREFIX.rstrip("\n").split("\n") + lines[fn.end_lineno:])
+    elif m:
+        old, new = MUTATIONS[m]
+        if text.count(old) != 1:
+            raise ValueError("the %s mutation's target '%s' occurs %d times in pargates.py, not once" % (m, old, text.count(old)))
+        text = text.replace(old, new)
+    dst = os.path.join(WORK, sc["name"] + ".pargates.py")
+    compile(text, dst, "exec")
+    io.open(dst, "w", encoding="utf-8").write(text)
+    return dst
+
+
+def recorded(corpus):
+    rec = {}
+    path = os.path.join(corpus, "pids")
+    for line in (read(path).split("\n") if os.path.isfile(path) else []):
+        f = line.split()
+        if len(f) == 2 and f[1].isdigit():
+            rec.setdefault(f[0], int(f[1]))
+    return rec
+
+
+def procs():
+    """pid -> (pgid, state) for every process on the machine."""
+    table = {}
+    if os.path.isdir("/proc/self"):
+        for name in os.listdir("/proc"):
+            if name.isdigit():
+                try:
+                    stat = read("/proc/%s/stat" % name)
+                except OSError:
+                    continue
+                f = stat[stat.rfind(")") + 2:].split()
+                if len(f) > 2:
+                    table[int(name)] = (int(f[2]), f[0])
+        return table
+    ps = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], stdout=subprocess.PIPE, universal_newlines=True).stdout
+    for line in ps.split("\n"):
+        f = line.split()
+        if len(f) >= 3 and f[0].isdigit() and f[1].isdigit():
+            table[int(f[0])] = (int(f[1]), f[2])
+    return table
+
+
+def alive(table, pid):
+    e = table.get(pid)
+    return e is not None and not e[1].startswith("Z")
+
+
+def cleanup(p, corpus):
+    rec = recorded(corpus)
+    for leader in (p.pid if p is not None else None, rec.get("gate")):
+        if leader:
+            try:
+                os.killpg(leader, signal.SIGKILL)
+            except OSError:
+                pass
+    for label in LABELS:
+        if label in rec:
+            try:
+                os.kill(rec[label], signal.SIGKILL)
+            except OSError:
+                pass
+    if p is not None:
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def run_scenario(sc):
+    r = dict(sc, err=None, reached=False, exited=False, rc=None, secs=None, pgid=None, own=False, rec={}, survivors=[], members=[], text="", full="")
+    d = os.path.join(WORK, sc["name"])
+    corpus = os.path.join(d, "corpus")
+    p = None
+    try:
+        script = build(sc)
+        for sub in (os.path.join(corpus, "test"), os.path.join(corpus, "bin"), os.path.join(d, "tmp")):
+            os.makedirs(sub)
+        for rel, body in (("test/probegroupgate.sh", GATE), ("bin/probechild.sh", CHILD)):
+            io.open(os.path.join(corpus, rel), "w").write(body)
+            os.chmod(os.path.join(corpus, rel), 0o755)
+        log = os.path.join(d, "pargates.out")
+        with open(log, "wb") as fh:
+            p = subprocess.Popen([sys.executable, script, corpus, FAKEBIN, "--only", "probegroupgate"], stdout=fh, stderr=subprocess.STDOUT,
+                                 env=dict(os.environ, TMPDIR=os.path.join(d, "tmp")), start_new_session=True)
+        TRACK.append((p, corpus))
+        t0 = time.time()
+        while time.time() - t0 < REACH_SEC and p.poll() is None:
+            rec = recorded(corpus)
+            if r["pgid"] is None and "gate" in rec:
+                try:
+                    r["pgid"] = os.getpgid(rec["gate"])
+                except OSError:
+                    pass
+            if all(label in rec for label in LABELS):
+                r["reached"] = True
+                break
+            time.sleep(0.05)
+        wait, ts = 0, None
+        if sc["mode"] == "timeout":
+            wait = FINISH_SEC
+        elif r["reached"]:
+            sig = getattr(signal, sc["mode"])
+            ts = time.time()
+            if sig == signal.SIGINT:
+                os.killpg(p.pid, sig)       # Ctrl-C: the terminal signals pargates' whole foreground group
+            else:
+                os.kill(p.pid, sig)
+            wait = STOP_BOUND_SEC if sc["mutation"] is None else CONTROL_WAIT_SEC
+        try:
+            r["rc"] = p.wait(timeout=wait)
+            r["exited"] = True
+            if ts is not None:
+                r["secs"] = time.time() - ts
+        except subprocess.TimeoutExpired:
+            pass
+        rec = recorded(corpus)
+        r["rec"] = rec
+        r["own"] = r["pgid"] is not None and r["pgid"] == rec.get("gate")
+        end = time.time() + SETTLE_SEC      # a killed process takes a moment to leave the table
+        while True:
+            table = procs()
+            r["survivors"] = [label for label in LABELS if label in rec and alive(table, rec[label])]
+            r["members"] = sorted(pid for pid, (pg, st) in table.items() if r["own"] and pg == rec["gate"] and not st.startswith("Z"))
+            if (not r["survivors"] and not r["members"]) or time.time() >= end:
+                break
+            time.sleep(0.1)
+        r["text"] = read(log)
+        m = re.search(r"full output: (.*)", r["text"])
+        if m and os.path.isfile(m.group(1).strip()):
+            r["full"] = read(m.group(1).strip())
+    except Exception as e:
+        r["err"] = "%s: %s" % (type(e).__name__, e)
+    finally:
+        cleanup(p, corpus)
+    return r
+
+
+def rows(r):
+    what = {"timeout": "killed at its %d s budget" % BUDGET_T, "SIGINT": "Ctrl-C to pargates' process group mid-gate",
+            "SIGTERM": "SIGTERM to pargates mid-gate"}[r["mode"]]
+    mut = {None: "", "prefix": ", run_gate() put back to the pre-fix subprocess.run(timeout=)", "termonly": ", the stop sending TERM only",
+           "killonly": ", the stop sending KILL only", "nohandler": ", no signal handler installed"}[r["mutation"]]
+    head = "(%s%s) probe gate %s%s" % ("T" if r["mode"] == "timeout" else "I", "" if r["mutation"] is None else " control", what, mut)
+    if r["err"]:
+        return [("FAIL", "%s: the harness itself failed: %s" % (head, r["err"]))]
+    if not r["reached"]:
+        return [("FAIL", "%s: the probe never had all %d processes running (recorded: %s) -- nothing was stopped mid-flight, so nothing is proven; last output: %s"
+                 % (head, len(LABELS), " ".join(sorted(r["rec"])) or "none", tail(r["text"])))]
+    gone = "none of the %d processes the gate started survives" % len(LABELS)
+    left = "%d of %d alive (%s)" % (len(r["survivors"]), len(LABELS), ", ".join(r["survivors"]))
+    trap = "exittrap" in r["rec"]
+    if r["mode"] == "timeout" and not (r["exited"] and TIMEOUT_LINE in r["text"]):
+        return [("FAIL", "%s: pargates did not report '%s' within %d s (exited=%s rc=%s): %s" % (head, TIMEOUT_LINE, FINISH_SEC, r["exited"], r["rc"], tail(r["text"])))]
+    if r["mutation"] is None and r["mode"] == "timeout":
+        return [
+            ("PASS" if r["rc"] != 0 and "PROBE-PRESTOP-7b3c" in r["full"] else "FAIL",
+             "%s: '%s', and the line the gate printed before the stop is in its full output (rc=%s)" % (head, TIMEOUT_LINE, r["rc"])),
+            ("PASS" if r["own"] else "FAIL",
+             "%s: the gate led its own process group (pgid %s, gate pid %s) -- a stop can reach its children as one group" % (head, r["pgid"], r["rec"].get("gate"))),
+            ("PASS" if trap and "PROBE-EXIT-TRAP-5e1d" in r["full"] else "FAIL",
+             "%s: TERM came first -- the gate's EXIT trap ran (recorded=%s) and what it printed during the stop is in the transcript (%s)"
+             % (head, trap, "PROBE-EXIT-TRAP-5e1d" in r["full"])),
+            ("PASS" if r["own"] and not r["survivors"] and not r["members"] else "FAIL",
+             "%s: after the grace %s, and %s" % (head, gone + " (the one ignoring TERM included)" if not r["survivors"] else left,
+             ("its process group is empty" if not r["members"] else "its process group still holds %s" % " ".join(map(str, r["members"])))
+             if r["own"] else "its process group is not its own, so nothing can be said about it")),
+        ]
+    if r["mutation"] is None:
+        want = 128 + getattr(signal, r["mode"])
+        good = r["exited"] and r["rc"] == want and trap and not r["survivors"] and not r["members"] and ("stopped by " + r["mode"]) in r["text"]
+        return [("PASS" if good else "FAIL",
+                 "%s: pargates exited %s (want %d) %s s after the signal (bound %d s), said it stopped by %s (%s), the gate's EXIT trap ran (%s), and %s; group members left: %s"
+                 % (head, r["rc"], want, "%.1f" % r["secs"] if r["secs"] is not None else "never", STOP_BOUND_SEC, r["mode"],
+                    ("stopped by " + r["mode"]) in r["text"], trap, gone if not r["survivors"] else left, " ".join(map(str, r["members"])) or "none"))]
+    if r["mutation"] == "prefix":
+        return [("PASS" if r["survivors"] else "FAIL",
+                 "%s: %s after pargates reported the TIMEOUT -- %s" % (head, left if r["survivors"] else gone,
+                 "this section sees the defect it exists for" if r["survivors"] else "the (T) arm cannot tell the fix from its absence"))]
+    if r["mutation"] == "termonly":
+        return [("PASS" if "noterm" in r["survivors"] else "FAIL",
+                 "%s: %s -- %s" % (head, left if r["survivors"] else gone,
+                 "the KILL after the grace is what stops a child that ignores TERM" if "noterm" in r["survivors"] else "the probe's TERM-ignoring child proves nothing about the KILL"))]
+    if r["mutation"] == "killonly":
+        return [("PASS" if not trap else "FAIL",
+                 "%s: the gate's EXIT trap %s -- %s" % (head, "never ran" if not trap else "still ran",
+                 "TERM first is what lets it clean up" if not trap else "the trap arm cannot tell TERM-first from KILL alone"))]
+    return [("PASS" if r["survivors"] else "FAIL",
+             "%s: %s %d s after the signal (pargates %s) -- %s" % (head, left if r["survivors"] else gone, CONTROL_WAIT_SEC,
+             "exited rc=%s" % r["rc"] if r["exited"] else "still running",
+             "without the handler a signal to pargates stops no gate" if r["survivors"] else "the (I) arm cannot tell the handler from its absence"))]
+
+
+def on_term(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+signal.signal(signal.SIGTERM, on_term)
+signal.signal(signal.SIGINT, signal.default_int_handler)    # a copy must not inherit an ignored SIGINT: its Ctrl-C arm needs a live one
+os.makedirs(WORK)
+results = []
+ex = ThreadPoolExecutor(max_workers=len(SCENARIOS))
+try:
+    results = list(ex.map(run_scenario, SCENARIOS))
+finally:
+    for p, corpus in list(TRACK):
+        cleanup(p, corpus)
+    ex.shutdown(wait=True)
+for r in results:
+    for verdict, text in rows(r):
+        print("ROW %s %s" % (verdict, text))
+print("DONE %d" % len(results))
+PYEOF
+
+python3 "$GROUPPY" "$PARGATES" "$TMP/groupstop" "$FAKEBIN" >"$TMP/groupstop.out" 2>&1; groupRc=$?
+while IFS= read -r line; do
+    case "$line" in
+        "ROW PASS "*) ok "group: ${line#ROW PASS }" ;;
+        "ROW FAIL "*) no "group: ${line#ROW FAIL }" ;;
+    esac
+done < "$TMP/groupstop.out"
+if [ "$groupRc" -ne 0 ] || ! grep -q '^DONE 8$' "$TMP/groupstop.out"; then
+    no "group: the harness did not finish all 8 scenarios (rc=$groupRc): $( grep -v '^ROW ' "$TMP/groupstop.out" | tail -6 | tr '\n' '|' )"
+fi
+
 [ "$fail" -eq 0 ] && echo "pargatescheck: ALL PASS" || { echo "pargatescheck: SOME CHECKS FAILED"; exit 1; }
