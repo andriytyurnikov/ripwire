@@ -170,7 +170,7 @@ TABLE = {
     ( "src/serialize.h", "fitAttr" ):  ( 1, "safe",       "fitAttr[96]: two %zu plus the literal ' over_ceiling=1'." ),
     ( "src/serialize.h", "attr" ):     ( 2, "safe",       "attr[352] x2: the per-symbol metric attrs. Widest 26 lit + 4x10 digits + 11 role + qbuf(<=95) + ambs(<=35: amb= + lpin=) + kbuf(<=23) = 230 B." ),
     ( "src/serialize.h", "tail" ):     ( 2, "safe",       "tail[192] x2: the <d> row tail. Widest 34 lit+digits + inAttr(<=23) + lens(qbuf, <=79) + pure(9) = 145 B." ),
-    ( "src/serialize.h", "hdr" ): ( 13, "safe",       "hdr[64] x2 (packBodies/packOutline): '<b t=\"%s\" l=\"%u\" p=\"' — symTag's fixed vocabulary + a line number. THE ESCAPED PATH IS APPENDED AFTER, on std::string. snprintf-then-append: textbook safe." ),
+    ( "src/serialize.h", "hdr" ): ( 14, "safe",       "hdr[64] x2 (packBodies/packOutline): '<b t=\"%s\" l=\"%u\" p=\"' — symTag's fixed vocabulary + a line number. THE ESCAPED PATH IS APPENDED AFTER, on std::string. snprintf-then-append: textbook safe." ),
     ( "src/serialize.h", "db" ):       ( 1, "safe",       "db[64 + kPageDisclosureCap]: <deps files=...> plus pageDisclosure's own capped buffer, sized against that cap by construction." ),
     ( "src/serialize.h", "hb" ): ( 3, "latent",     "hb[176]: <health .../>; shape= is a fixed vocabulary but acd/nccd are %.1f/%.2f on DOUBLES, formally unbounded. Realistic worst case 66 lit + 60 digits + 24 float + 10 shape = 160 B, ~16 B of margin. Truncation drops the '/>' and orphans the element." ),
     ( "src/serialize.h", "fit" ):      ( 1, "safe",       "fit[160]: the JSON max_tokens/fit_bytes twin; the %s is the literal ',\"over_ceiling\":true'." ),
@@ -402,7 +402,13 @@ if not bad:
 #            sites 212 -> 214, rows 88 -> 90 — re-read, not re-counted. Both new calls are in verbs_report.h and both
 #            are TABLE rows above: `nestAttr[48]` takes one integer count, and `clause[1024]` takes the compile-time
 #            kMaxKotlinStringNestDepth into a fixed legend literal. Neither interpolates a path or a name.
-EXPECTED = { "mentions": 317, "calls": 214, "sites": 214, "rows": 90, "widthforms": 0 }
+#            2026-09-11 (tier-3 decline disclosure): +1 call/+1 mention/+1 site, rows/widthforms unmoved — re-read, not
+#            re-counted: writeJsonMapHeader's `"declined":{},` formatTo into the EXISTING hdr[256], one size_t and no
+#            string argument (11 literal + 20 digits + ',' + NUL = 33 B), the `"external":{},` twin beside it; nothing
+#            escaped. It is serialize.h's fourteenth hdr site, so that TABLE row moves 13 -> 14.
+#            2026-09-11 (main d752d953 merged into PR #126): the two entries above touch disjoint buffers and add over
+#            their shared 766913d0 base (315/212/212/88) — +2 and +1 calls/mentions/sites, rows +2 — re-derived by (S6).
+EXPECTED = { "mentions": 318, "calls": 215, "sites": 215, "rows": 90, "widthforms": 0 }
 #            2026-09-04 (capture-audit L6, H9): +1 call/+1 mention, sites/rows UNCHANGED — re-read, not
 #            re-counted. packConnect gained ONE snprintf into a new `char connectCeiling[32]` for the
 #            H9 ` max_tokens="%d"` ceiling disclosure: a single %d of a caller-supplied INTEGER, no %s,

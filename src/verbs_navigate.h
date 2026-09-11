@@ -138,9 +138,10 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         {
             // M12: under multi-root this verb carries no root= at all (correctly — no single root exists)
             // and, before this, disclosed nothing about the `<label>/` prefix every p= below carries.
-            rw::emitTo( stdout, "{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers ).c_str(),
+            rw::emitTo( stdout, "{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers ).c_str(),
                          rw::capLegendClause( rw::computePageDisclosure( pw.end - pw.begin, result.size(), pw.end,
                                                                         cfg.pageLimit, cfg.pageOffset, chDiscloseCap ).active ),
+                         rw::declinedCallsLegend( chRows.declinedCalls > 0 ),   // exactly when the root carries declined_calls=
                          rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::rootRelPathsLegend( chSingleRoot ),
                          rw::multiRootTableLegend( ing.rootLabels.size() >= 2 ) );
         }
@@ -149,6 +150,8 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         // call SITES; the @FILE:LINE spelling the caller typed is mirrored, so the paste resolves the same
         // definition); callees → --expand=SELECTOR (the body whose callees these are, with their signatures inline).
         const std::string chNextAttr = rw::nextAttrXml( rw::nextFlag( wantCallers ? "--uses=" : "--expand=", sym ) );
+        // The tier-3 declines count= does not include (callhierarchy.h), on every dialect; absent at zero.
+        const std::string chDeclinedAttr = rw::declinedCallsAttrXml( chRows.declinedCalls );
 
         // --format=columnar (RESEARCH lever 1): the same page window, re-encoded as a path-table + parallel
         // arrays (dedups the repeated per-row markup + paths). Default --format=xml is byte-identical below.
@@ -166,6 +169,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
                                    + "\" count=\"" + std::to_string( result.size() ) + "\""
                                    + ( !wantCallers && bodylessDefsCount > 0 ? " bodyless_defs=\"" + std::to_string( bodylessDefsCount ) + "\"" : "" )
                                    + chTested.xmlAttr   // A6: hop_tested=/hop_untested=, the same partition on every dialect
+                                   + chDeclinedAttr     // the tier-3 declines, beside the count they are not in
                                    + chRootAttr   // R-E: same root= the XML/JSON branches carry
                                    + pageDisclosure( pab, sizeof( pab ), pw.end - pw.begin, result.size(), pw.end,
                                                      cfg.pageLimit, cfg.pageOffset, chDiscloseCap )
@@ -188,7 +192,8 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
             }
             // R-E: the JSON twin of the XML root= below — right after the leading identifying fields.
             if( chSingleRoot ) { rw::emitTo( stdout, ",\"root\":\"{}\"", jsonStr( cfg.roots[0] ).c_str() ); }
-            rw::emitTo( stdout, ",\"hop_tested\":{},\"hop_untested\":{}", chTested.tested, chTested.untested );   // A6
+            rw::emitTo( stdout, ",\"hop_tested\":{},\"hop_untested\":{}{}", chTested.tested, chTested.untested,
+                         rw::declinedCallsKeyJson( chRows.declinedCalls ) );   // A6; then the XML root's declined_calls=
             rw::emitTo( stdout, "{}{}", pageDisclosure( pab, sizeof( pab ), pw.end - pw.begin, result.size(), pw.end,
                                         cfg.pageLimit, cfg.pageOffset, chDiscloseCap, kJsonPageSyntax ),
                          rw::graphCountFloorAttrJson( g ).c_str() );   // §H4 §3.4 — the JSON dialect's spelling of the same marker
@@ -205,7 +210,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         {
             rw::emitTo( stdout, " bodyless_defs=\"{}\"", bodylessDefsCount );
         }
-        rw::emitTo( stdout, "{}", chTested.xmlAttr.c_str() );   // A6: hop_tested=/hop_untested=
+        rw::emitTo( stdout, "{}{}", chTested.xmlAttr.c_str(), chDeclinedAttr.c_str() );   // A6: hop_tested=/hop_untested=, then the declines
         rw::emitTo( stdout, "{}{}{}>", pageDisclosure( pab, sizeof( pab ), pw.end - pw.begin, result.size(), pw.end,
                                     cfg.pageLimit, cfg.pageOffset, chDiscloseCap ),
                      rw::graphCountFloorAttrXml( g ).c_str(),
@@ -2003,6 +2008,7 @@ struct ImpactView
     const std::vector<char>*       testReach;      // A6: testSymbolForwardReach — never null (runImpact always computes it)
     std::size_t                    radiusTested;    // A6: |reach ∩ tested|, over the FULL (un-windowed) reach set
     std::size_t                    radiusUntested;  // A6: reaches - radiusTested
+    std::size_t                    declinedCalls;   // tier-3 declines naming SYM or a radius symbol (graph.h declinedCallsNaming)
     const rw::Graph&               g;               // M15: the gauge pair (graphCountFloorAttrXml) reads ambOut/unresolvedOut
 };
 
@@ -2026,6 +2032,7 @@ int emitImpactColumnar( const ImpactView& v )
                                  + " importers=\"" + std::to_string( v.imports.files.size() ) + "\""
                                  + " radius_tested=\"" + std::to_string( v.radiusTested )       // A6
                                  + "\" radius_untested=\"" + std::to_string( v.radiusUntested ) + "\""
+                                 + rw::declinedCallsAttrXml( v.declinedCalls )                    // tier-3 declines into the radius
                                  + std::string( v.rootAttr )
                                  + pageDisclosure( ipab, sizeof( ipab ), shownRows, v.show.size(), v.page.end,
                                                    v.pageLimit, v.pageOffset, true )
@@ -2059,7 +2066,8 @@ int emitImpactJson( const ImpactView& v )
     rw::emitTo( stdout, "{{\"of\":\"{}\",\"defs\":{},\"reaches\":{}", jsonStr( v.sym ).c_str(), v.defs, v.reaches );
     rw::emitTo( stdout, ",\"importers\":{},\"shown_importers\":{},\"importers_capped\":{}",
                  v.imports.files.size(), v.imports.shown, v.imports.capped ? "true" : "false" );
-    rw::emitTo( stdout, ",\"radius_tested\":{},\"radius_untested\":{}", v.radiusTested, v.radiusUntested );   // A6
+    rw::emitTo( stdout, ",\"radius_tested\":{},\"radius_untested\":{}{}", v.radiusTested, v.radiusUntested,
+                 rw::declinedCallsKeyJson( v.declinedCalls ) );   // A6; then the XML root's declined_calls=
     if( v.singleRoot ) { rw::emitTo( stdout, ",\"root\":\"{}\"", jsonStr( v.rootRaw ).c_str() ); }   // R-E
     rw::emitTo( stdout, "{}{}{},\"impact\":[",
                  pageDisclosure( ipab, sizeof( ipab ), shownRows, v.show.size(), v.page.end,
@@ -2084,8 +2092,9 @@ int emitImpactXml( const ImpactView& v )
     const auto        ex        = [ & ]( std::string_view t ) -> std::string { return std::string( escapeXml( t, esc ) ); };
     char              ipab[ kPageDisclosureCap ];
     const std::size_t shownRows = v.page.end - v.page.begin;
-    rw::emitTo( stdout, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}>",
+    rw::emitTo( stdout, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}{}>",
                  ex( v.sym ).c_str(), v.defs, v.reaches, v.imports.xmlAttrs.c_str(), v.radiusTested, v.radiusUntested,
+                 rw::declinedCallsAttrXml( v.declinedCalls ).c_str(),   // tier-3 declines into the radius
                  std::string( v.rootAttr ).c_str(),
                  pageDisclosure( ipab, sizeof( ipab ), shownRows, v.show.size(), v.page.end,
                                  v.pageLimit, v.pageOffset, true ),
@@ -2140,6 +2149,11 @@ std::optional<int> runImpact( const MainDispatch& d )
         const std::vector<char> imTestReach     = rw::testSymbolForwardReach( ing, g );
         const std::size_t       imRadiusTested   = rw::countTestedIn( ing, imTestReach, reach );
         const std::size_t       imRadiusUntested = reach.size() - imRadiusTested;
+        // The tier-3 declines that could have reached SYM or a symbol already in the radius: each is a branch
+        // reaches= may be missing. One count per call (graph.h declinedCallsNaming), shared with the MCP twin.
+        std::vector<NodeId>     imDeclineTargets( reach );
+        imDeclineTargets.insert( imDeclineTargets.end(), seeds.begin(), seeds.end() );
+        const std::size_t       imDeclinedCalls  = rw::declinedCallsNaming( g, imDeclineTargets );
         // ── LB-H (r10 §5): the IMPORT tier — every file that directly imports a file defining SYM. ONE
         // measurement (graph.h::impactImportTier) feeds all three dialects AND the MCP twin, so the two
         // surfaces cannot drift. The two reaches stay separate all the way to the bytes: a separate count
@@ -2157,10 +2171,11 @@ std::optional<int> runImpact( const MainDispatch& d )
             // twin cannot drift from this wording (the §B4 echo-site class).
             // LB-H: the import-tier clause is the columnar variant under --format=columnar, because that
             // form carries the count without the rows and a reader must be told which shape they hold.
-            rw::emitTo( stdout, "{}{}. {}{}{}{}{}{}-->", rw::kImpactLegendOpen, rw::kPageRaiseCapClause,
+            rw::emitTo( stdout, "{}{}. {}{}{}{}{}{}{}-->", rw::kImpactLegendOpen, rw::kPageRaiseCapClause,
                          cfg.columnar ? rw::kImpactImportTierColumnarLegend : rw::kImpactImportTierLegend,
                          rw::kTestedRowLegend, rw::kImpactTestedPartitionLegend,   // A6
                          rw::kTestedLensBlindSpotLegend,                           // F-02: rides with the partition
+                         rw::declinedCallsLegend( imDeclinedCalls > 0 ),           // exactly when the root carries declined_calls=
                          rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::renderDisclosure( prD, rw::DiscloseAs::LegendClause ).c_str() );
         }
         // P2.1 + §P8 G1: the rank-ordered listing's 40 is a DEFAULT now, not a ceiling — see the §P10.3 note
@@ -2171,7 +2186,7 @@ std::optional<int> runImpact( const MainDispatch& d )
                                pageWindow( show.size(), effectiveRowCap( cfg.pageLimit, rw::kCallHierarchyRowCap ), cfg.pageOffset ),
                                imports, importPage, importLazyPage, prD, imSingleRoot, imRootPrefix, imRootAttr,
                                imSingleRoot ? cfg.roots[0] : std::string_view(), cfg.pageLimit, cfg.pageOffset,
-                               &imTestReach, imRadiusTested, imRadiusUntested, g };
+                               &imTestReach, imRadiusTested, imRadiusUntested, imDeclinedCalls, g };
 
         if( cfg.columnar ) { return emitImpactColumnar( view ); }
         if( cfg.json     ) { return emitImpactJson( view ); }
@@ -2333,7 +2348,7 @@ std::optional<int> runAround( const MainDispatch& d )
         rw::MapAnnotations aroundAnn;
         aroundAnn.seed = { ing.symbols[ focus ].name, cfg.aroundDepth, cfg.aroundFanout, definitionCountOfName( ing, focus ), eg.fanoutCut, eg.depthTruncated };
 
-        serialize( stdout, ing, rank, g.outOff, g.outTargets, int( eg.nodes.size() ), cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, false, g.outProv.empty() ? nullptr : &g.outProv, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, /*autoOrder=*/false, /*outEstTokens=*/nullptr, aroundCompose.tokens + aroundRoutes.tokens + wrap.tokens, aroundAnn, /*statsFirstScreen=*/false, aroundRootArg, &g.locPinOut, g.externalCalls );
+        serialize( stdout, ing, rank, g.outOff, g.outTargets, int( eg.nodes.size() ), cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, false, g.outProv.empty() ? nullptr : &g.outProv, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, /*autoOrder=*/false, /*outEstTokens=*/nullptr, aroundCompose.tokens + aroundRoutes.tokens + wrap.tokens, aroundAnn, /*statsFirstScreen=*/false, aroundRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
 
         if( !g.composeEdges.empty() )
         {

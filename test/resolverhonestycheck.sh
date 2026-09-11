@@ -178,11 +178,18 @@ check_signal "$F/f4" run      "F4 [A] Rule-3 pin"
 check_signal "$F/f8" bar8     "F8 [B] decl-only 2-way (audit find)"
 check_signal "$F/f9" compute9 "F9 [B] pure-virtual 2-way (audit find)"
 
-# F5: the cross-dir no-disambiguator call is DROPPED (0 edges) — honest, no amb, no unresolved.
+# F5: the cross-dir no-disambiguator call is DECLINED (0 edges) — no amb, no unresolved, no guess. A drop is only
+# honest when it is DISCLOSED: before test/declinecheck.sh it was silent, and the header said ambiguous=0
+# unresolved=0 beside a call it had refused. Now it must also count in the header's declined= and on the caller's
+# --callees root as declined_calls="1".
 n5="$( callee_count "$F/f5" run5 )"; n5="${n5:-0}"
 [ "$n5" = 0 ] && [ -z "$( amb_of "$F/f5" run5 )" ] \
-  && ok "F5 [drop] cross-dir no-narrow: 0 edges (honest §2a drop, not a silent pick)" \
-  || { no "F5: expected a clean drop, got $n5 edge(s)"; callees "$F/f5" run5; }
+  && ok "F5 [decline] cross-dir no-narrow: 0 edges (the §2a gate declines, not a silent pick)" \
+  || { no "F5: expected a decline with no edge, got $n5 edge(s)"; callees "$F/f5" run5; }
+d5="$( hdr "$F/f5" declined )"; d5="${d5:-0}"
+[ "$d5" = 1 ] && callees "$F/f5" run5 | grep -q 'declined_calls="1"' \
+  && ok "F5 [decline] disclosed: header declined=1 and --callees=run5 declined_calls=\"1\"" \
+  || no "F5: the decline is silent (header declined=$d5; --callees root: $( callees "$F/f5" run5 | grep -oE '<callees [^>]*>' ))"
 
 # F6: cross-language gap ⇒ unresolved ≥ 1 (the whole-corpus header carries it).
 u6="$( hdr "$F/f6" unresolved )"; u6="${u6:-0}"
