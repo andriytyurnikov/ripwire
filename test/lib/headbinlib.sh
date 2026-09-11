@@ -36,11 +36,20 @@
 #   - the cache lives under the per-user temp dir; a reboot or tmp-clean just costs one rebuild. Stale shas are left
 #     for the OS tmp cleaner — another session on a different branch may be using its own sha's binary concurrently,
 #     so pruning siblings here would be a race.
-#   - RIPWIRE_HEADBIN_BUILD_LOG, when set, receives the worktree and cmake output that otherwise goes to /dev/null
+#   - RIPWIRE_HEADBIN_BUILD_LOG, when set, receives the checkout and cmake output that otherwise goes to /dev/null
 #     (CI's staging step prints it when that build fails).
 #
-# Both modes set NO traps (gates own their EXIT trap) and clean up their own worktree/build dirs inline.
+# Both modes set NO traps (gates own their EXIT trap) and clean up their own checkout/build dirs inline.
 # test/headbinstagecheck.sh gates both modes, every caller's use of headbin_refusal, and CI's staging step.
+#
+# CHECKING OUT A COMMIT. ripwire_private_checkout is the one way a gate checks out a commit of the repository under
+# test: the monotonicity gates' held-constant input tree, _headbin_build's build tree, qdrefpaircheck's wave commit. It
+# is a `git clone --shared`, never `git worktree add`. A worktree is registered in the repository's .git/worktrees,
+# which every session on the machine shares, and a caller killed before its cleanup leaves that registration behind:
+# test/pargates.py's budget is SIGKILL, which no trap sees, and macOS bash 3.2 skips its EXIT trap on Ctrl-C. Twenty
+# such leftovers were found on 2026-09-10. The clone writes nothing into the source repository, so a killed caller —
+# a builder killed mid-cmake included — leaves only a directory under its temp dir. test/worktreeleakcheck.sh kills
+# every caller mid-flight and asserts the repository's .git/worktrees stays empty.
 
 # ripwire_head_binary ROOT FALLBACK_DIR  →  stdout: path to the HEAD binary
 ripwire_head_binary()
@@ -146,13 +155,31 @@ headbin_refusal()
     fi
 }
 
-# _headbin_build ROOT SHA WORKDIR OUT  →  builds HEAD into a throwaway worktree, copies the binary to OUT
+# ripwire_private_checkout ROOT REV DEST  →  DEST becomes a private clone of ROOT's repository with REV checked out,
+# detached, whole history included (`--cochange` and a quality-delta over a ref pair read it). `--shared` borrows the
+# objects through DEST's own alternates file, so nothing is written into ROOT's .git (see CHECKING OUT A COMMIT above).
+# --shared rather than --local: a hardlinking clone left behind by a kill would keep ROOT's replaced pack files (106 MiB
+# here) on disk past its next repack. Prints nothing on stdout; sets no trap and never removes DEST, which the caller's
+# temp-dir cleanup does. Non-zero, with the reason on stderr, when REV names no commit or the clone fails.
+ripwire_private_checkout()
+{
+    local _root="$1" _rev="$2" _dest="$3" _sha _common
+    _sha="$( cd "$_root" && git rev-parse -q --verify "$_rev^{commit}" )"
+    case "$_sha" in
+        ""|*[!0-9a-f]*) echo "headbinlib: '$_rev' names no commit in $_root" >&2; return 1 ;;
+    esac
+    _common="$( cd "$_root" && cd "$( git rev-parse --git-common-dir )" && pwd )" || return 1
+    git clone -q --shared --no-checkout "$_common" "$_dest" && git -C "$_dest" checkout -q --detach "$_sha"
+}
+
+# _headbin_build ROOT SHA WORKDIR OUT  →  builds SHA from a private checkout under WORKDIR, copies the binary to OUT
 _headbin_build()
 {
     local _root="$1" _sha="$2" _work="$3" _out="$4" _wt _bld _rc=1 _log="${RIPWIRE_HEADBIN_BUILD_LOG:-/dev/null}"
     _wt="$_work/head"; _bld="$_work/build"
     mkdir -p "$_work" || return 1
-    if ( cd "$_root" && git worktree add -q --detach "$_wt" "$_sha" ) 2>>"$_log"; then
+    # stdout to the log as well: ripwire_head_binary runs inside $( ), where a stray line would become the binary path.
+    if ripwire_private_checkout "$_root" "$_sha" "$_wt" >>"$_log" 2>&1; then
         # --target ripwire: the comparison needs that one binary. The default target also builds ripwire_probe and the
         # three doctest binaries, which took another 18 s after a 90 s ripwire-only build (dev machine, 2026-09-10).
         if cmake -S "$_wt" -B "$_bld" -DRIPWIRE_NATIVE=ON >>"$_log" 2>&1 \
@@ -160,7 +187,6 @@ _headbin_build()
            && [ -x "$_bld/ripwire" ]; then
             cp "$_bld/ripwire" "$_out" && chmod +x "$_out" && _rc=0
         fi
-        ( cd "$_root" && git worktree remove --force "$_wt" ) >/dev/null 2>&1
     fi
     rm -rf "$_work" 2>/dev/null
     return $_rc
