@@ -65,7 +65,7 @@ confidence="high" margin_pct="22" down to confidence="low" margin_pct="0" on thi
 bench/capsweep/sweep.json into the answer to a query about a cap. assert_corpus_clean below keeps the
 harness out of the frozen CORPUS; the file format keeps it out of the INDEX. Same rule, two surfaces.
 """
-import argparse, os, pathlib, re, shlex, shutil, subprocess, sys, collections
+import argparse, hashlib, os, pathlib, re, shlex, shutil, subprocess, sys, collections
 
 HERE  = pathlib.Path(__file__).resolve().parent
 REPO  = HERE.parent.parent
@@ -456,12 +456,32 @@ def assert_no_git_above(corpus):
 # seen it. A file LIST taken after the freeze and re-checked after every arm sees any of it.
 FINGERPRINT = 'corpus.filelist'          # lives in --scratch, never in the corpus
 
+def file_digest(path):
+    """sha256 of one file's bytes, read in chunks so a large fixture costs no memory."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
 def fingerprint_corpus(corpus):
-    """The corpus's file list, `.git/` excluded.
+    """The corpus's file list WITH each entry's type and content digest, `.git/` excluded.
 
     `.git/` is excluded deliberately and it is the one place a git verb may legitimately write:
     reading a repository refreshes the index stat cache and can write ORIG_HEAD or a reflog. Those are
     git's bookkeeping about the fixture, not the tree being measured. Everything else is the subject.
+
+    CONTENTS, not just names (CodeRabbit #127 / 3985249656). A name list cannot see a file being
+    OVERWRITTEN in place, and overwriting is not a hypothetical: `--cache=$RIPWIRE_CAPSWEEP_TMP` with
+    the variable unexpanded wrote a 10.4 MB blob into the frozen corpus, and a second run of the same
+    row would have rewritten the same path — same list, changed subject, every later immutability check
+    green. An arbitrary `run-corpus --binary` is by construction able to write anything anywhere.
+
+    A SYMLINK is fingerprinted by its TARGET TEXT, unfollowed: following it would digest something
+    outside the corpus (and could hang on a cycle), and a RETARGETED symlink is exactly the change this
+    is here to catch. `is_symlink()` is asked FIRST because `is_file()` follows.
+
+    Each line is `<kind>\t<digest>\t<relpath>`, sorted by PATH so the file diffs like a list.
     """
     corpus = pathlib.Path(corpus)
     out = []
@@ -469,9 +489,27 @@ def fingerprint_corpus(corpus):
         rp = p.relative_to(corpus)
         if rp.parts and rp.parts[0] == '.git':
             continue
-        if p.is_file() or p.is_symlink():
-            out.append(str(rp))
-    return sorted(out)
+        if p.is_symlink():
+            kind = 'l'
+            digest = hashlib.sha256(os.readlink(p).encode('utf-8', 'surrogateescape')).hexdigest()
+        elif p.is_file():
+            kind, digest = 'f', file_digest(p)
+        else:
+            continue                      # a directory is not a subject; its files are
+        out.append('%s\t%s\t%s' % (kind, digest, rp))
+    return sorted(out, key=lambda line: line.split('\t', 2)[2])
+
+def fingerprint_index(lines):
+    """{relpath: (kind, digest)} — so a CHANGED file reads as one `~` row, not a `+` and a `-`."""
+    out = {}
+    for line in lines:
+        parts = line.split('\t', 2)
+        if len(parts) != 3:
+            sys.exit('capsweep: %s holds a name-only fingerprint, which cannot see a file being\n'
+                     '          overwritten in place. Re-run `prepare` to record type+digest per entry.'
+                     % FINGERPRINT)
+        out[parts[2]] = (parts[0], parts[1])
+    return out
 
 def write_fingerprint(scratch, corpus):
     pathlib.Path(scratch, FINGERPRINT).write_text('\n'.join(fingerprint_corpus(corpus)) + '\n')
@@ -485,16 +523,21 @@ def read_fingerprint(scratch):
     return [l for l in f.read_text().splitlines() if l]
 
 def assert_corpus_unchanged(corpus, before, where):
-    now  = fingerprint_corpus(corpus)
-    new  = sorted(set(now) - set(before))
-    gone = sorted(set(before) - set(now))
-    if new or gone:
+    was    = fingerprint_index(before)
+    now    = fingerprint_index(fingerprint_corpus(corpus))
+    new    = sorted(set(now) - set(was))
+    gone   = sorted(set(was) - set(now))
+    edited = sorted(f for f in set(was) & set(now) if was[f] != now[f])
+    if new or gone or edited:
         lines = ['capsweep: the frozen corpus CHANGED during %s — every byte count in this run is a' % where,
                  '          measurement of the harness as much as of the subject.']
         lines += ['          + %s' % f for f in new[:20]]
         lines += ['          - %s' % f for f in gone[:20]]
-        if len(new) + len(gone) > 40:
-            lines.append('          (%d more)' % (len(new) + len(gone) - 40))
+        lines += ['          ~ %s (%s -> %s)' % (f, was[f][0] + ':' + was[f][1][:12], now[f][0] + ':' + now[f][1][:12])
+                  for f in edited[:20]]
+        shown = min(len(new), 20) + min(len(gone), 20) + min(len(edited), 20)
+        if len(new) + len(gone) + len(edited) > shown:
+            lines.append('          (%d more)' % (len(new) + len(gone) + len(edited) - shown))
         sys.exit('\n'.join(lines))
 
 # ── phases ──────────────────────────────────────────────────────────────────────────────────────────
@@ -673,14 +716,33 @@ def screen_core(binary, croot, corpus, bump, out_path, measured_at, before):
                  '          split. A ratio over a population that measured nothing is not a result.'
                  % len(corpus))
 
-    sens  = sorted(c for c in corpus if base.get(c) != allb.get(c))
-    answ  = set(ok)
-    hot   = [c for c in sens if c in answ]
-    late  = [c for c in sens if c not in answ]      # answered ONLY under the bumped arm — real signal
+    # THE SPLIT IS OVER EXECUTION STATES, NOT RAW VALUES (CodeRabbit #127 / 3985249659). `base.get(c)`
+    # is None for every non-answer — a timeout, a refusal, an unparseable row — and 0 for an exit-0 run
+    # that printed nothing, which `answered()` already defines as NO answer. Comparing those values
+    # directly counted two things that are not byte sensitivity:
+    #   * 100 bytes at the default, TIMEOUT when bumped: base=100, allb=None, "different" → counted as
+    #     cap-sensitive. It is a regression the bump introduced, and it inflated the numerator.
+    #   * refused at the default, exit 0 with ZERO bytes when bumped: base=None, allb=0, "different" →
+    #     counted as "answers only when a cap is bumped", about a row that still answers nothing.
+    # So: compare BYTES only where BOTH arms answered, classify a bumped-only answer with answered()
+    # over the bumped arm, and report every other transition as what it is.
+    answBase = set(ok)
+    answBump = set(c for c in corpus if answered(allb, gstate, c))
+    hot   = sorted(c for c in corpus if c in answBase and c in answBump and base.get(c) != allb.get(c))
+    late  = sorted(answBump - answBase)          # answered ONLY under the bumped arm — real signal
+    lost  = sorted(answBase - answBump)          # answered at the DEFAULT and stopped: a bump regression
+    moved = sorted(c for c in corpus if c not in answBase and c not in answBump
+                   and (bstate.get(c) != gstate.get(c) or base.get(c) != allb.get(c)))
+    sens  = sorted(set(hot) | set(late))         # the rows cmd_sweep will probe cap by cap
     recipe = ('split recipe: DENOMINATOR = rows that answered under the BASELINE arm (state=ok, >0 bytes).',
               'A row that emits nothing cannot respond to a cap; %d row(s) of %d never answer and are'
               % (len(corpus) - len(ok), len(corpus)),
               'recorded here but excluded from the ratio.',
+              'NUMERATOR = rows where BOTH arms answered and the byte counts differ. A row whose STATE',
+              'moved between the arms is not byte sensitivity and is reported separately, never counted:',
+              '%d answered only when bumped, %d stopped answering when bumped, %d moved between two'
+              % (len(late), len(lost), len(moved)),
+              'non-answering states.',
               'cap-sensitive=%d of %d answering (%.0f%%); %d row(s) answer only when a cap is bumped.'
               % (len(hot), len(ok), 100.0 * len(hot) / len(ok), len(late)))
     write_screen(out_path, corpus, base, allb, sens, measured_at, bstate, gstate, recipe)
@@ -688,7 +750,13 @@ def screen_core(binary, croot, corpus, bump, out_path, measured_at, before):
           'answering rows respond to NO cap'
           % (len(corpus), len(ok), len(hot), len(ok), 100.0 * len(hot) / len(ok), len(ok) - len(hot)))
     for c in late:
-        print('  %8s   %s' % ('BY-CAP', c[:88]))       # refused at the default, answers when bumped
+        print('  %8s   %s' % ('BY-CAP', c[:88]))       # refused at the default, ANSWERS when bumped
+    # The two transitions that are NOT cap sensitivity, printed with their states so the reason is on the
+    # screen rather than inferred from a byte count that was never comparable.
+    for c in lost:
+        print('  %8s   %s  [%s -> %s]' % ('LOST', c[:66], bstate.get(c, '?'), gstate.get(c, '?')))
+    for c in moved:
+        print('  %8s   %s  [%s -> %s]' % ('STATE', c[:66], bstate.get(c, '?'), gstate.get(c, '?')))
     for c in hot[:15]:
         if base.get(c) is None or allb.get(c) is None:
             print('  %8s   %s' % ('TIMEOUT', c[:88]))
