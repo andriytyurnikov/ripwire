@@ -281,13 +281,16 @@ else
     else
         no "(J) the corpus-tmp destination was not written outside the corpus: $( grep -m1 stub-tmp "$rc_out" )"
     fi
-fi
-
     # (J) A $NAME OUTSIDE THE HARNESS'S NAMESPACE IS NOT AN ENVIRONMENT REFERENCE. The first cut of the
     # rule above refused `--pattern='rankGraphTeleport($A, $B, $C)'` — a tree-sitter pattern whose $A/$B/$C
     # are METAVARIABLES — as "unexpanded", turning a legitimate corpus row into a non-answer. shlex.split
     # has already dropped the quoting by then, so single-quoted and double-quoted cannot be told apart:
     # naming the namespace is what makes the rule decidable.
+    #
+    # INSIDE the g_ok branch (CodeRabbit #127 / 3985249719): it reads $TMP/rc-screen.tsv, which only a
+    # successful run-corpus writes. Indented as if it belonged here but sitting after the `fi`, it ran on a
+    # FAILED run too — awk then failed on a missing file and the gate printed a second, invented "(J) the
+    # metavariable row did not answer" for a run that never produced one record.
     if grep -q 'unexpanded: \$A' "$rc_out"; then
         no "(J) a tree-sitter metavariable was refused as an unexpanded environment variable"
     elif awk -F'\t' '/stub-metavar/ { exit !($4 == "ok") }' "$TMP/rc-screen.tsv"; then
@@ -295,6 +298,7 @@ fi
     else
         no "(J) the metavariable row did not answer: $( grep -- 'stub-metavar' "$TMP/rc-screen.tsv" )"
     fi
+fi
 
 # (J) control — a destination that resolves INSIDE the corpus is refused. `--cache=`, `--export=` and
 # `--html=` all take one, and run_corpus runs with cwd=corpus, so this is the surface that put a 10.4 MB
