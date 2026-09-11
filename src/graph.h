@@ -702,6 +702,81 @@ inline bool keepRustQualifiedCandidates( const IngestResult& ing, ChaConeMemo& c
     return true;
 }
 
+// The std::-QUALIFIED C++ call scope guard — the C-family sibling of keepRustQualifiedCandidates, and far
+// narrower than it.
+//
+// A call written `std::X( … )` looks up the canonical key `std::X` first; when the def lives in the standard
+// library that misses, and the bare-name spray used to hand the site to whatever in-repo `X` it found. A LONE
+// candidate is the dangerous case, because nothing splits it: measured on a large C++20 engine, one string
+// wrapper's `move()` member took ~2,100 callers' std::move sites at full confidence — no amb=, no prov="split" —
+// and became the top-ranked symbol of the tree. test/stdqualcheck.sh reproduces it on test/stdqualfix.
+//
+// WHY ONLY `std`, NEVER THE RUST RULE FOR EVERY QUALIFIER. In C++ a qualifier legitimately misses its def's scope:
+// a namespace alias (`namespace fs = vendor::fsimpl; fs::exists( p )`), a using-declaration re-exporting a name,
+// a qualifier naming a class that inherits the member. A general "the qualifier must be the scope" rule deletes
+// those true edges (the gate's alias arm is one). `std` is the qualifier the language itself closes: a program
+// may not declare into namespace std beyond specializations ([namespace.std]), which live inside it, and `std`
+// can be neither a user alias nor a class at global scope. So a std-qualified call can only mean a def inside std.
+//
+// A candidate survives when it IS inside std: scope `std`; a scope written `std::…` (a member of
+// `template<> struct std::hash<T>`, or of `namespace std::x`); or a standard library's inline ABI namespace
+// (externalnames.h kStdInlineNamespaceNames), because `namespace std { inline namespace __1 { … } }` defs carry
+// the immediate scope "__1". The call side reads the immediate qualifier the same way, so `std::move`,
+// `::std::move` and `std::__1::move` arrive as "std", "std" and "__1".
+//
+// STATED FLOORS, not closed here (each pinned or recorded by the gate):
+//   * a NESTED std namespace — `std::chrono::duration_cast` arrives as qualifier "chrono", indistinguishable
+//     from a user's `mylib::chrono::` — keeps today's ladder;
+//   * ObjC++ (Lang::ObjC, .mm): tree-sitter-objc parses `std::move( x )` as an ERROR node spelling `std::` beside
+//     a bare `move( x )` call (measured), and ingest sets no qualifier for Lang::ObjC, so the reference arrives
+//     unqualified and the guard cannot see it (the Phase-5 veto still refuses table names such as move). The
+//     Lang::ObjC arm below is live the day extraction supplies a qualifier;
+//   * Lang::C is unaffected by construction: C has no `::`, and ingest sets a call qualifier for Lang::Cpp only.
+//     CUDA (.cu/.cuh) and Metal (.metal) ARE Lang::Cpp, so they take this guard exactly as .cpp does.
+//
+// Returns false when NOTHING survives, and the caller refuses the site through vetoExternal — `external=`, one
+// `C external` census row, no edge — the Phase-5 veto's own bucket, because a standard-library name with no
+// in-repo evidence is exactly what it counts. `unresolved=` is untouched, as in the Rust guard.
+//
+// WHY `canonical` AND NOT THE RUST GUARD'S `alreadyPinned`. Rule 3 (the include-file narrow) DOES run for a
+// qualified call: `std::exchange` in a file that #includes the one header defining an `exchange` gets narrowed
+// to it and pinned. An #include is evidence about files, never about namespace std, so only the canonical tier
+// exempts a site. A SCIP-pinned site cannot reach here with candidates (the overlay fills `tier`, never `cand`),
+// and the FFI binding tier is Python/JS/TS-only, so neither needs a parameter.
+inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference& r, bool canonical, std::vector<NodeId>& cand )
+{
+    const bool cppFamilyRef = r.lang == Lang::Cpp || r.lang == Lang::ObjC;
+    if( canonical || !cppFamilyRef || r.qualifier.empty() || cand.empty() )
+    {
+        return true; // guard does not apply
+    }
+    // One segment that names namespace std: `std` itself, or a standard library's inline ABI namespace
+    // (externalnames.h kStdInlineNamespaceNames — its sortedness static_assert is what makes this search valid).
+    const auto namesStd = []( std::string_view segment ) -> bool
+    {
+        return segment == "std"
+            || std::binary_search( std::begin( externalnames::kStdInlineNamespaceNames ), std::end( externalnames::kStdInlineNamespaceNames ),
+                                   segment, rw::sortutil::svLess );
+    };
+    if( !namesStd( r.qualifier ) )
+    {
+        return true; // any other qualifier keeps the unchanged ladder — see WHY ONLY `std` above
+    }
+
+    // stable in-place compaction, as the namespace gate does — preserves candidate order, allocates nothing.
+    std::size_t keepCount = 0;
+    for( std::size_t ci = 0; ci < cand.size(); ++ci )
+    {
+        const std::string& scope = ing.symbols[ cand[ ci ] ].scope;
+        if( namesStd( scope ) || scope.starts_with( "std::" ) )
+        {
+            cand[ keepCount++ ] = cand[ ci ];
+        }
+    }
+    cand.resize( keepCount );
+    return keepCount != 0;
+}
+
 
 // THE TIER-3 CANONICAL RESCUE (H4 V3 M-3) — why `canonical` sits beside `narrowed` in buildGraph's tier-3
 // gate. Tier 3 is "a UNIQUE global, else DROP". A Rule-1 narrowed call has always been exempt, because it is
@@ -2287,6 +2362,13 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         if( !keepRustQualifiedCandidates( ing, chaCones, r, alreadyPinned, cand ) && bindingTier.empty() )
         {
             continue;                                                           // qualified-external → no edge
+        }
+
+        // ---- std::-qualified C++ call scope guard — see keepStdQualifiedCandidates -------------------------
+        if( !keepStdQualifiedCandidates( ing, r, canonical, cand ) )
+        {
+            vetoExternal( r );                                                  // nothing inside std answers → external=
+            continue;
         }
 
         // ---- tier ladder (the name-based fallback) — SKIPPED when the SCIP overlay pinned this site (tier already holds the
