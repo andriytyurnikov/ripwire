@@ -220,8 +220,19 @@ fi
 # "cannot execute binary file", "Exec format error"); that — and only that — is the environment saying
 # no. A slice that RAN and exited nonzero (a doctest assertion, an abort) is a red, never a SKIP
 # (CodeRabbit on #127: the old branch read every nonzero exit as "no Rosetta").
+# A second environmental shape, seen on CI's macos-14 runners (PR #127 run 4): the slice DID execute under
+# Rosetta 2 and died with SIGILL (rc 132) before printing its first line — Rosetta 2 gained AVX2 only in
+# macOS 15, so a -march=x86-64-v3 slice on macOS 14 is illegal at its first vector instruction. That is
+# the emulator lacking the ISA, not a kernel defect: SKIP, with the reason. A SIGILL AFTER the slice has
+# printed (its path line, an assertion) is a real red and stays one.
 exec_unavailable(){   # $1 = rc, $2 = output log
-    [ "$1" = 126 ] || grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2"
+    [ "$1" = 126 ] && return 0
+    grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2" && return 0
+    if [ "$1" = 132 ] && ! grep -q 'strkern path' "$2"; then
+        echo "        (SIGILL before the first line: this Rosetta 2 has no AVX2 — macOS 15+ runs the v3 slice; macOS 14 cannot)"
+        return 0
+    fi
+    return 1
 }
 
 # ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
