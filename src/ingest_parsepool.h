@@ -539,17 +539,9 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 continue;
             }
 
-            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing: tree-sitter-kotlin's scanner abort()ed the
-            // whole run past ~512 nested string templates (see kMaxKotlinStringNestDepth in ingest.h; the vendored scanner
-            // now refuses the push under third_party/patches/kotlin/, so this is the FIRST of two independent layers).
-            // Unlike the three guards above, a refusal here is ITEMIZED: --skipped rows it why="nest-refused" (collected
-            // from scan.nestRefusedBytes after the pool), because a .kt file refused here takes real code out of the map.
-            if( le->lang == Lang::Kotlin && kotlinStringsNestTooDeep( bytes ) )
+            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing, and itemized in --skipped (ingest_prewarm.h)
+            if( refuseKotlinNesting( *le, bytes, path.c_str(), fileId, scan ) )
             {
-                DEGRADED_PATH_ALERT( "ingest: a .kt file nests string templates past kMaxKotlinStringNestDepth — refused before the parse (--skipped why=nest-refused)" );
-                rw::emitTo( stderr, "[ripwire] {}: kotlin string-template nesting > {} levels — refused before the parse (skipped)\n",
-                              path.c_str(), kMaxKotlinStringNestDepth );
-                scan.nestRefusedBytes[ fileId ] = static_cast<std::uint32_t>( std::min<std::size_t>( bytes.size(), UINT32_MAX ) );
                 continue;
             }
 

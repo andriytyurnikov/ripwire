@@ -97,6 +97,24 @@ inline void forgetNestRefusalsForCache( IngestFileScan& scan ) noexcept
     }
 }
 
+// The Kotlin string-template nesting guard, as one named step of the parse worker (the json/yaml/markdown guards sit
+// inline beside its call). PROCESS-SURVIVAL load-bearing: tree-sitter-kotlin's scanner abort()ed the whole run past ~512
+// nested string templates (see kMaxKotlinStringNestDepth in ingest.h; the vendored scanner now refuses the push under
+// third_party/patches/kotlin/, so this is the FIRST of two independent layers). Unlike those three guards a refusal here
+// is ITEMIZED — its size lands in scan.nestRefusedBytes, which collectNestRefusals turns into --skipped rows — because a
+// .kt file refused here takes real code out of the map. True means "refused: skip the parse".
+inline bool refuseKotlinNesting( const LangEntry& le, std::string_view bytes, const char* path, std::size_t fileId, IngestFileScan& scan )
+{
+    if( le.lang != Lang::Kotlin || !kotlinStringsNestTooDeep( bytes ) )
+    {
+        return false;
+    }
+    DEGRADED_PATH_ALERT( "ingest: a .kt file nests string templates past kMaxKotlinStringNestDepth — refused before the parse (--skipped why=nest-refused)" );
+    rw::emitTo( stderr, "[ripwire] {}: kotlin string-template nesting > {} levels — refused before the parse (skipped)\n", path, kMaxKotlinStringNestDepth );
+    scan.nestRefusedBytes[ fileId ] = static_cast<std::uint32_t>( std::min<std::size_t>( bytes.size(), UINT32_MAX ) );
+    return true;
+}
+
 // The compile/ready state the prewarm launch hands to the parse pool's install moment. Non-movable on
 // purpose (atomic + mutex + cv): constructed once in ingest(), passed by reference to both phases; the
 // async compile threads capture it and are joined by installCompiledQueriesAndOpenGate before it dies.

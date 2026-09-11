@@ -1682,8 +1682,12 @@ constexpr const char* kSkippedLegend =
 
 // The nest-refused clause of the legend, written ONLY into a document that carries nest-refused rows — the same
 // absent-means-nothing-happened rule nest_refused= itself follows — so every other --skipped document stays byte-identical.
-void writeNestRefusedLegend( rw::XmlWriter& w )
+void writeNestRefusedLegend( rw::XmlWriter& w, const rw::CrawlSkips& cs )
 {
+    if( cs.nestRefusedFiles == 0 )
+    {
+        return;
+    }
     char clause[ 1024 ];
     rw::formatTo( clause, sizeof( clause ),
                   "<!-- nest_refused= counts indexed files a pre-parse nesting guard REFUSED so that parsing them could not take the"
@@ -1919,6 +1923,39 @@ void writeLangRows( rw::XmlWriter& w, std::vector<char>& esc, const std::vector<
     }
 }
 
+// §L1 — the <skipped …> open tag's counters, up to (not including) root= and the closing '>'; runSkipped writes those two,
+// because root= is unbounded and must never enter this fixed buffer (the V1-1 truncation class). Every value here is an
+// integer or a closed-vocabulary literal, so the bound is arithmetic — test/fixedbufsweep.sh rows `hdr` and `nestAttr`.
+void writeSkippedHeader( rw::XmlWriter& w, const rw::IngestResult& ing, const SkipHealthReport& health, std::size_t maxFileBytes )
+{
+    using namespace rw;
+    const CrawlSkips& cs = ing.crawlSkips;
+    char hdr[ 768 ];   // fifteen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
+    // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
+    const std::size_t effectiveMax = maxFileBytes == 0 ? kDefaultMaxFileBytes : maxFileBytes;
+    const bool        rowsCapped   = cs.excluded.size() < cs.excludedFiles || cs.unsupported.size() < cs.unsupportedFiles
+                                  || cs.ignored.size() < cs.ignoredFiles || cs.ignoredDirRows.size() < cs.ignoredDirs   // §N6-C
+                                  || cs.nestRefused.size() < cs.nestRefusedFiles;
+    char nestAttr[ 48 ] = "";   // absent when zero, like every attribute that only a rare corpus can make non-zero
+    if( cs.nestRefusedFiles > 0 )
+    {
+        rw::formatTo( nestAttr, sizeof( nestAttr ), " nest_refused=\"{}\"", ( unsigned long long ) cs.nestRefusedFiles );
+    }
+    rw::formatTo( hdr, sizeof( hdr ),
+                   "<skipped indexed=\"{}\" oversize=\"{}\" excluded=\"{}\" unsupported_ext=\"{}\" excluded_dirs=\"{}\""
+                   " pruned_dirs=\"{}\" ignored=\"{}\" ignored_dirs=\"{}\" ignore_mode=\"{}\""
+                   " degraded_parse=\"{}\" minified_suspect=\"{}\" unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
+                   " yaml_ceiling=\"{}\"{}{}",
+                   ing.files.size(), ing.skippedOversize.size(),
+                   ( unsigned long long ) cs.excludedFiles, ( unsigned long long ) cs.unsupportedFiles,
+                   ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
+                   ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
+                   health.degraded, health.minified, health.unmeasured,
+                   effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
+                   std::string_view( nestAttr ), rowsCapped ? " rows_capped=\"1\"" : "" );
+    w.write( hdr );
+}
+
 // §P0.5d / §L1 — --skipped: WHY the index does not contain a file, and which files it DOES contain but
 // cannot vouch for. The disclosure doctrine ("every truncation is disclosed") applied to the corpus itself.
 //
@@ -1964,34 +2001,8 @@ std::optional<int> runSkipped( const MainDispatch& d )
 
         w.write( kSkippedLegend );
         const CrawlSkips& cs = ing.crawlSkips;
-        if( cs.nestRefusedFiles > 0 )
-        {
-            writeNestRefusedLegend( w );
-        }
-        char hdr[ 768 ];   // fifteen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
-        // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
-        const std::size_t effectiveMax = cfg.maxFileBytes == 0 ? kDefaultMaxFileBytes : cfg.maxFileBytes;
-        const bool        rowsCapped   = cs.excluded.size() < cs.excludedFiles || cs.unsupported.size() < cs.unsupportedFiles
-                                      || cs.ignored.size() < cs.ignoredFiles || cs.ignoredDirRows.size() < cs.ignoredDirs   // §N6-C
-                                      || cs.nestRefused.size() < cs.nestRefusedFiles;
-        char nestAttr[ 48 ] = "";   // absent when zero, like every attribute that only a rare corpus can make non-zero
-        if( cs.nestRefusedFiles > 0 )
-        {
-            rw::formatTo( nestAttr, sizeof( nestAttr ), " nest_refused=\"{}\"", ( unsigned long long ) cs.nestRefusedFiles );
-        }
-        rw::formatTo( hdr, sizeof( hdr ),
-                       "<skipped indexed=\"{}\" oversize=\"{}\" excluded=\"{}\" unsupported_ext=\"{}\" excluded_dirs=\"{}\""
-                       " pruned_dirs=\"{}\" ignored=\"{}\" ignored_dirs=\"{}\" ignore_mode=\"{}\""
-                       " degraded_parse=\"{}\" minified_suspect=\"{}\" unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
-                       " yaml_ceiling=\"{}\"{}{}",
-                       ing.files.size(), ing.skippedOversize.size(),
-                       ( unsigned long long ) cs.excludedFiles, ( unsigned long long ) cs.unsupportedFiles,
-                       ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
-                       ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
-                       health.degraded, health.minified, health.unmeasured,
-                       effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
-                       std::string_view( nestAttr ), rowsCapped ? " rows_capped=\"1\"" : "" );
-        w.write( hdr );
+        writeNestRefusedLegend( w, cs );                            // only into a document that has nest-refused rows
+        writeSkippedHeader( w, ing, health, cfg.maxFileBytes );    // the <skipped …> counters, up to root=
         // R-E: root= is unbounded (a deep absolute path), so it is NOT folded into the fixed `hdr` buffer
         // above (the V1-1 truncation class main.cpp's own history warns about) — written separately as the
         // std::string it already is, then the tag is closed.
