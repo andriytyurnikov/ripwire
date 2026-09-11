@@ -82,13 +82,15 @@ assetUrl="$( printf '%s' "$releaseJson" | grep -o "\"browser_download_url\": *\"
 # F16C, FMA, LZCNT, MOVBE — the RHEL 10 floor, roughly Intel Haswell (2013) / AMD Excavator (2015) onward. On an
 # older CPU that binary dies with SIGILL the first time it runs, and this installer used to report that as
 # "refusing version mismatch" with an empty version. So the flags are read BEFORE the download, and a CPU below
-# the floor stops here naming what it lacks. Four rules keep the check from refusing a machine the binary runs on:
+# the floor stops here naming what it lacks. On Linux that means EVERY processor's flags, not the first record's:
+# the scheduler can run the binary on any online processor, so a feature counts only if all of them carry it.
+# Four rules keep the check from refusing a machine the binary runs on:
 #   * no guessing: unreadable flags (no /proc/cpuinfo, a sysctl key missing) give no verdict, and the
 #     verification run after the download names a SIGILL for what it is;
 #   * a Rosetta-translated shell is not judged: its feature bits describe the translator, not the machine;
 #   * releases up to 0.5.x were built without the floor, so pinning one with RIPWIRE_VERSION is not judged;
 #   * RIPWIRE_SKIP_CPU_CHECK=1 overrides a verdict the user knows is wrong (a VM hiding a flag its host has).
-# test/releaseinstallcheck.sh arms (G1)-(G12) pin all of it.
+# test/releaseinstallcheck.sh arms (G1)-(G15) pin all of it.
 sourceBuildHint()
 {
     echo "  Build from source instead, tuned for this CPU (https://github.com/${repo}/blob/main/INSTALL.md#build-from-source):" >&2
@@ -105,18 +107,20 @@ if [ "$cpuFloor" = 1 ] && [ "$osName" = Darwin ] && [ "$( sysctl -n sysctl.proc_
     cpuTranslated=1
 fi
 if [ "$cpuFloor" = 1 ] && [ "$cpuTranslated" = 0 ] && [ "${RIPWIRE_SKIP_CPU_CHECK:-0}" != 1 ]; then
+    # cpuFlags holds ONE RECORD PER LINE, each padded with spaces so " name " only ever matches a whole flag.
     cpuFlags=""
     if [ "$osName" = Linux ]; then
         # Names as the kernel prints them (arch/x86/include/asm/cpufeatures.h): LZCNT is "abm". "lzcnt" is taken
-        # as well, so a synthetic cpuinfo that spells the instruction's own name is never refused over it.
+        # as well, so a synthetic cpuinfo that spells the instruction's own name is never refused over it. The kernel
+        # prints a "flags" line per online processor and each stays its own record ("vmx flags" is not one); the
+        # alias is added inside each record, so two records that spell LZCNT differently still agree.
         cpuSource="${RIPWIRE_CPUINFO:-/proc/cpuinfo}"
         cpuNeed="avx:AVX avx2:AVX2 bmi1:BMI1 bmi2:BMI2 f16c:F16C fma:FMA movbe:MOVBE abm:LZCNT"
-        cpuFlags="$( grep -m1 '^flags[[:space:]]*:' "$cpuSource" 2>/dev/null || true )"
-        [ -z "$cpuFlags" ] || cpuFlags=" ${cpuFlags#*:} "
-        case "$cpuFlags" in *" lzcnt "*) cpuFlags="$cpuFlags abm " ;; esac
+        cpuFlags="$( grep '^flags[[:space:]]*:' "$cpuSource" 2>/dev/null | sed 's/^[^:]*:/ /; s/$/ /; s/ lzcnt / lzcnt abm /' || true )"
     else
         # Names as XNU prints them (osfmk/i386/cpuid.c): AVX is "AVX1.0", AVX2/BMI1/BMI2 are leaf-7 bits and LZCNT
         # an extended one. A key that is missing or empty leaves no verdict, never a list of "missing" features.
+        # The three keys describe one CPU model, so they join into a single record.
         cpuSource="sysctl machdep.cpu"
         cpuNeed="AVX1.0:AVX AVX2:AVX2 BMI1:BMI1 BMI2:BMI2 F16C:F16C FMA:FMA MOVBE:MOVBE LZCNT:LZCNT"
         for cpuKey in machdep.cpu.features machdep.cpu.leaf7_features machdep.cpu.extfeatures; do
@@ -125,18 +129,19 @@ if [ "$cpuFloor" = 1 ] && [ "$cpuTranslated" = 0 ] && [ "${RIPWIRE_SKIP_CPU_CHEC
             cpuFlags="$cpuFlags $cpuValue "
         done
     fi
+    # A feature is missing when ANY record lacks it: grep -v counts the records without the name. -c reads to the
+    # end (-q would exit at the first hit and SIGPIPE the printf on a many-core cpuinfo); a grep that fails prints
+    # no count, and no count names nothing missing.
     cpuLacks=""
     if [ -n "$cpuFlags" ]; then
         for cpuPair in $cpuNeed; do
-            case "$cpuFlags" in
-                *" ${cpuPair%%:*} "*) ;;
-                *) cpuLacks="$cpuLacks ${cpuPair#*:}" ;;
-            esac
+            cpuWithout="$( printf '%s\n' "$cpuFlags" | grep -vcF " ${cpuPair%%:*} " )" || true
+            [ "${cpuWithout:-0}" = 0 ] || cpuLacks="$cpuLacks ${cpuPair#*:}"
         done
     fi
     if [ -n "$cpuLacks" ]; then
         echo "install.sh: this CPU is below x86-64-v3, which the prebuilt x86-64 ripwire ${resolvedTag} requires." >&2
-        echo "  missing:${cpuLacks} (read from ${cpuSource})" >&2
+        echo "  missing on at least one CPU:${cpuLacks} (read from ${cpuSource})" >&2
         echo "  x86-64-v3 is AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE: roughly Intel Haswell (2013) or AMD Excavator (2015) and newer." >&2
         echo "  That binary would die with SIGILL (illegal instruction) here, so nothing was downloaded." >&2
         sourceBuildHint

@@ -292,10 +292,13 @@ fi
 #   * AFTER the download, a verification run that dies or exits non-zero is a binary that COULD NOT RUN
 #     (G1)-(G3); only a binary that ran and printed another version is a mismatch (G4);
 #   * BEFORE the download, on x86_64, the CPU's flags are read and a CPU below v3 stops the install naming
-#     what it lacks: Linux /proc/cpuinfo (G5), Intel-Mac sysctl (G9).
+#     what it lacks: Linux /proc/cpuinfo (G5), Intel-Mac sysctl (G9). On Linux that is EVERY processor's
+#     flags record, since the binary can be scheduled on any of them: one below v3 stops it wherever it
+#     sits in the file (G13, G14).
 # The rest are controls, because a floor check that blocks a machine the binary runs on is worse than none:
-# a v3 CPU installs (G6, G10); unreadable flags never block (G1, G12); RIPWIRE_SKIP_CPU_CHECK=1 wins (G7); a
-# pre-floor release installs on an old CPU (G8); Rosetta's translated bits are not judged (G11).
+# a v3 CPU installs (G6, G10), and so do processors whose records differ but each carry v3 (G15); unreadable
+# flags never block (G1, G12); RIPWIRE_SKIP_CPU_CHECK=1 wins (G7); a pre-floor release installs on an old CPU
+# (G8); Rosetta's translated bits are not judged (G11).
 # Fixture flags use the names the platforms print: the kernel's arch/x86/include/asm/cpufeatures.h (LZCNT
 # is "abm") and XNU's osfmk/i386/cpuid.c (AVX is "AVX1.0"; LZCNT sits in machdep.cpu.extfeatures).
 GDIR="$TMP/cpufloor"
@@ -451,6 +454,61 @@ g_install g12 Darwin x86_64 FAKE_SYSCTL_DIR="$GDIR/sysctl-partial"
 [ "$G_RC" -eq 0 ] && [ -x "$GDIR/g12.prefix/bin/ripwire" ] \
     && ok "(G12) a Mac whose sysctl lacks the leaf7/extfeatures keys is not refused" \
     || no "(G12) missing sysctl keys were judged as missing features: $( g_said g12 ) (rc=$G_RC)"
+
+# (G13)-(G15) EVERY PROCESSOR, NOT THE FIRST. /proc/cpuinfo carries one "flags" record per online processor, and
+# the binary can be scheduled on any of them: a feature one processor lacks is a SIGILL the first time the
+# scheduler lands there. The records below are the Haswell one and edits of it; each keeps its "vmx flags"
+# line, which a check that matched "flags" anywhere on a line would take for a processor lacking everything.
+g_cpuinfo2()
+{
+    # g_cpuinfo2 FILE FLAGS0 FLAGS1 -> a two-processor cpuinfo (the format is applied once per processor)
+    printf 'processor\t: %s\nvendor_id\t: GenuineIntel\nflags\t\t: %s\nvmx flags\t: vnmi preemption_timer\nbugs\t\t: cpu_meltdown\n\n' \
+        0 "$2" 1 "$3" >"$1"
+}
+g_names_exactly()
+{
+    # g_names_exactly NAME FEATURE... -> 0 when the refusal's "missing" line names exactly those v3 features
+    _line=" $( grep -i 'missing' "$GDIR/$1.err" | head -1 ) "; shift
+    for _f in AVX AVX2 BMI1 BMI2 F16C FMA MOVBE LZCNT; do
+        case " $* " in *" $_f "*) _want=1 ;; *) _want=0 ;; esac
+        case "$_line" in *" $_f "*) _has=1 ;; *) _has=0 ;; esac
+        [ "$_want" = "$_has" ] || return 1
+    done
+}
+gV3Flags="$( sed -n 's/^flags[[:space:]]*: //p' "$GDIR/cpuinfo-haswell" )"
+gV3Other="${gV3Flags/ abm / lzcnt }"; gV3Other="${gV3Other/ vmx / } hypervisor"
+[ "${gV3Flags/ avx2 / }" != "$gV3Flags" ] && [ "${gV3Flags/ fma / }" != "$gV3Flags" ] \
+    || no "(G13)-(G14) fixture: the Haswell flags record was not read back, so no record lacks avx2 or fma"
+case " $gV3Other " in *" abm "*|*" vmx "*) no "(G15) fixture: the second complete record did not diverge from the first" ;; esac
+g_cpuinfo2 "$GDIR/cpuinfo-second-lacks" "$gV3Flags" "${gV3Flags/ avx2 / }"
+g_cpuinfo2 "$GDIR/cpuinfo-first-lacks" "${gV3Flags/ fma / }" "$gV3Flags"
+g_cpuinfo2 "$GDIR/cpuinfo-both-v3" "$gV3Flags" "$gV3Other"
+g_release 0.6.0 linux x64 'echo "ripwire 0.6.0 (Release, Test)"'
+
+# (G13) THE REVIEWED DEFECT. Processor 0 has all of v3, processor 1 lacks avx2. Reading only the first record
+# approved it; the install must stop before the download naming AVX2, and only AVX2 — the rest are on both.
+g_install g13 Linux x86_64 RIPWIRE_CPUINFO="$GDIR/cpuinfo-second-lacks"
+if [ "$G_RC" -ne 0 ] && g_names_exactly g13 AVX2 && ! grep -q 'tar\.gz' "$GDIR/g13.curl" && [ ! -e "$GDIR/g13.prefix/bin/ripwire" ]; then
+    ok "(G13) a second processor without avx2 stops the install before the download, naming exactly AVX2"
+else
+    no "(G13) a second processor without avx2 was not refused before the download: $( g_said g13 ) (rc=$G_RC)"
+fi
+
+# (G14) The same verdict when the lacking processor comes FIRST: the intersection decides, not the file order,
+# so a check that reads only the last record (or any one record that has the feature) fails here.
+g_install g14 Linux x86_64 RIPWIRE_CPUINFO="$GDIR/cpuinfo-first-lacks"
+if [ "$G_RC" -ne 0 ] && g_names_exactly g14 FMA && ! grep -q 'tar\.gz' "$GDIR/g14.curl" && [ ! -e "$GDIR/g14.prefix/bin/ripwire" ]; then
+    ok "(G14) a first processor without fma stops the install before the download, naming exactly FMA"
+else
+    no "(G14) a first processor without fma was not refused before the download: $( g_said g14 ) (rc=$G_RC)"
+fi
+
+# (G15) CONTROL: two records that DIFFER but each carry all of v3 install. The second spells LZCNT "lzcnt" where
+# the first says "abm", so a check that intersects the raw names before accepting either spelling refuses it.
+g_install g15 Linux x86_64 RIPWIRE_CPUINFO="$GDIR/cpuinfo-both-v3"
+[ "$G_RC" -eq 0 ] && [ -x "$GDIR/g15.prefix/bin/ripwire" ] \
+    && ok "(G15) two different processor records that each carry v3 (LZCNT as abm on one, lzcnt on the other) install" \
+    || no "(G15) processors that each carry v3 were refused: $( g_said g15 ) (rc=$G_RC)"
 
 if [ "${1:-}" != "--isolation-child" ]; then
     python3 "$ROOT/test/installer_isolation.py" "${RIPWIRE_BIN:-$ROOT/build/ripwire}" \
