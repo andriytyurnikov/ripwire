@@ -119,7 +119,12 @@ fi
 
 # ── #2c: the floor is x86-ONLY — an aarch64 Linux target must not be handed an x86 -march ─────────────
 armFlags="$( PROBE_PROC=aarch64 run_probe "$TMP/arm" -DRIPWIRE_PRETEND_LINUX=ON )"
-if printf '%s' "$armFlags" | grep -q -- '-march=x86'; then
+# The sentinel FIRST (CodeRabbit #127 / 3985249736): CONFIGURE_FAILED contains no '-march=x86' either, so
+# without this arm a broken aarch64-specific CMake path reported PASS on this portability gate — the exact
+# shape #2b above already guards against, missing on the one arm whose expectation is an ABSENCE.
+if [ "$armFlags" = "CONFIGURE_FAILED" ]; then
+    no "#2c aarch64 probe configure failed outright: $(tail -5 "$TMP/arm/configure.log" 2>/dev/null)"
+elif printf '%s' "$armFlags" | grep -q -- '-march=x86'; then
     no "#2c an aarch64 target was handed an x86 architecture flag: '$armFlags'"
 else
     ok "#2c aarch64 target stays generic (NEON is baseline there, no flag needed): '$armFlags'"

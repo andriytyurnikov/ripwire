@@ -301,7 +301,12 @@ R3="$TMP3/repo"; mkdir -p "$R3"
 printf 'int pinme( void )\n{\n    return 1;\n}\n' > "$R3/f.cpp"
 
 env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >/dev/null 2>"$TMP3/prime.err"
-OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null | head -1 )"
+# -name 'ripwire-*-lean.bin', not 'ripwire-*.bin' (CodeRabbit #127 / 3985249724): the sed below only
+# matches the LEAN basename, and the priming run can leave a -rich.bin beside it. `head -1` over the wider
+# glob then returns whichever the filesystem happens to list first, ROOTHEX3 keeps the whole basename, and
+# the 16-hex check goes red for a directory-ordering reason. Arm (k) at the bottom of this file already
+# uses the precise pattern for the same job.
+OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
 ROOTHEX3="$( basename "${OWN3:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
 if printf '%s' "$ROOTHEX3" | grep -qE '^[0-9a-f]{16}$'; then
     ok "(h) primed: this root's lean blob names root key $ROOTHEX3"
@@ -313,6 +318,14 @@ fi
 # the OLDEST blob in the dir, which is exactly what the pre-change oldest-first sweep deletes first.
 SIB3="$CD3/ripwire-$ROOTHEX3-rich.bin"
 truncate -s 1200M "$SIB3"
+# …and the SAME root's MCP index blob. It is the one family whose name is nothing but a root key, and it
+# is the only one that ends `.cache` rather than `-<something>.bin` — so quality.h::cacheBlobRootKey, which
+# split on '-' alone, read its last field as `<rootKey>.cache` (22 bytes, not hex16) and returned an EMPTY
+# key. An empty key pins nothing: the sweep kept this root's lean and rich blobs and evicted the MCP index
+# of the very root it was serving, and the MCP server paid a full re-parse for it. Zero-size on purpose —
+# survival is the question, not bytes (CodeRabbit #127 / 3985249706).
+MCP3="$CD3/ripwire-mcp-$ROOTHEX3.cache"
+: > "$MCP3"
 sleep 1
 # a DIFFERENT root's blob, newer and bigger — the one an oldest-first sweep would keep, and the one the
 # fixed sweep must take instead.
@@ -333,6 +346,8 @@ grep -q 'n="pinme"' "$TMP3/run.xml" 2>/dev/null && ok "(h) run output still corr
     || no "(h) the MRU root's sibling family was EVICTED — the sweep still takes the blob this root is about to need"
 [ ! -e "$OTHER3" ] && ok "(h) the OTHER root's blob is what the sweep took instead" \
     || no "(h) the other root's blob survived — the sweep did not free the bytes it needed"
+[ -e "$MCP3" ] && ok "(h) the MRU root's MCP index blob survives too — ripwire-mcp-<key>.cache reads as THIS root" \
+    || no "(h) the MRU root's ripwire-mcp-<key>.cache was EVICTED — cacheBlobRootKey cannot read a '.'-terminated key field"
 
 [ -s "$TMP3/run.err" ] && ok "(h) the eviction is DISCLOSED on stderr (was 0 bytes before this change)" \
     || no "(h) an eviction happened with ZERO disclosure — the honesty rule does not reach the cache layer"
@@ -471,6 +486,19 @@ EOF_K
 ( cd "$R6" && git init -q . && git add -A && git -c user.email=g@g -c user.name=g commit -qm init ) >/dev/null 2>&1
 
 primeallfamilies "$CB6" "$R6"
+
+# The MCP index family, seeded by hand: `ripwire wrap` is not something this gate can drive, but the family
+# exists (mcpindex.h::mcpCachePath → quality::rootKeyedCachePath( root, "ripwire-mcp-", ".cache" )) and it is
+# the one whose key field is terminated by '.' rather than '-'. Without it in the dir the key-agreement arm
+# below never asked the question that #127/3985249706 answered.
+MCPKEY6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
+MCPKEY6="$( basename "${MCPKEY6:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+if printf '%s' "$MCPKEY6" | grep -qE '^[0-9a-f]{16}$'; then
+    : > "$CD6/ripwire-mcp-$MCPKEY6.cache"
+    ok "(k) the MCP index family is present (ripwire-mcp-$MCPKEY6.cache) — the '.'-terminated key field"
+else
+    no "(k) could not derive this root's key from its lean blob, so the MCP family could not be seeded"
+fi
 
 blobs6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*' 2>/dev/null | wc -l | tr -d ' ' )"
 [ "$blobs6" -ge 4 ] && ok "(k) primed $blobs6 cache blobs across the families one session writes" \

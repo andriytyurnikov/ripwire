@@ -6,8 +6,9 @@
 # DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN, one TEST_CASE per kernel, one CHECK/REQUIRE per assertion, built
 # beside ripwire_test_csr / ripwire_test_pagerank / ripwire_test_radix. Until 2026-09-10 the same arms
 # lived in a standalone test/strkern_harness.cpp (14 `checkf` arms) and test/emitescape_harness.cpp (4);
-# the doctest target carries all 18 plus one — a compiled-path assertion — and this gate prints both
-# counts so a lost arm is arithmetic, not a feeling.
+# the doctest target carries all 18 plus a compiled-path assertion and, since the #127 review round, a
+# LexHeadIndex empty-bucket case; this gate prints both counts so a lost arm is arithmetic, not a
+# feeling, and MIN_ASSERTIONS is a FLOOR, never an exact expectation.
 #
 # THE TARGET IS BUILT THREE TIMES, and each build is a different question:
 #
@@ -124,6 +125,38 @@ if [ -n "$WANT" ]; then
     fi
 fi
 
+# ── COMPILER PORTABILITY, read off the SOURCE (CodeRabbit #127 / 3985249663) ─────────────────────────
+# The scalar twins are ALWAYS compiled and the vector paths compile under MSVC's /arch:AVX2, so no path in
+# this header may use a GCC/Clang-only builtin. `__builtin_ctzll` was the whole population: MSVC has no
+# such intrinsic, and the pending Windows port (PR #44) would not have compiled the file at all. The
+# portable spelling is <bit>'s std::countr_zero, which is the same instruction everywhere and is DEFINED
+# at zero where the builtin is undefined.
+#
+# This is a SOURCE arm, not a build arm, and deliberately so: the only compiler on this box accepts both
+# spellings, so no local build can tell them apart — the difference is visible in the text or nowhere.
+# CAN GO RED: put `__builtin_ctzll` back on any one of the eight sites and this arm fires.
+# CODE lines only: the prose above names the retired builtin on purpose, and a gate that cannot tell a
+# comment from a call site would forbid writing down what the rule is.
+HDR="$ROOT/src/infra/strkern.h"
+code_hits(){ grep -n "$1" "$HDR" 2>/dev/null | grep -vE '^[0-9]+: *(//|\*|/\*)'; }
+BUILTINS="$( code_hits '__builtin_' | wc -l | tr -d ' ' )"
+CTZ="$( grep -c 'std::countr_zero(' "$HDR" 2>/dev/null || echo 0 )"
+if [ "$BUILTINS" != "0" ]; then
+    echo "  FAIL  portability: src/infra/strkern.h uses $BUILTINS GCC/Clang-only __builtin_ — MSVC cannot compile it:"
+    code_hits '__builtin_' | sed 's/^/        /' | head -10
+    fail=1
+elif [ "$CTZ" -lt 8 ]; then
+    echo "  FAIL  portability: only $CTZ std::countr_zero( call sites in strkern.h — the eight trailing-zero"
+    echo "        counts (2 scalar twins + 6 vector) are the population this arm is non-vacuous over"
+    fail=1
+else
+    printf '  PASS  portability: 0 __builtin_ in strkern.h, %s std::countr_zero( sites (MSVC-compilable; <bit> included)\n' "$CTZ"
+fi
+if ! grep -q '^#include <bit>' "$HDR"; then
+    echo "  FAIL  portability: strkern.h calls std::countr_zero without including <bit>"
+    fail=1
+fi
+
 # compile one flavour of the target directly; $1 = label, remaining args = extra compile flags. Echoes the
 # binary path on success, nothing on failure (the caller decides whether a compile failure is fatal).
 compile_direct()
@@ -154,6 +187,31 @@ elif RIPWIRE_ROOT="$ROOT" "$REDBIN" > "$WORK/out_mutate.log" 2>&1; then
 else
     read_counts "$WORK/out_mutate.log"
     printf '  PASS  can-go-red: -DSTRKERN_MUTATE=1 fails %s of %s assertions as designed\n' "$ASSERTS_FAIL" "$ASSERTS"
+fi
+
+# ── 2b: THE FAILING SWEEP MUST HAVE SWEPT THE SAME CORPUS (CodeRabbit #127 / 3985249745) ──────────────
+# Arm 2's red run is only evidence about the SHIPPED kernels if the broken build walked the same buffers
+# the green build walked. The sweep's probes draw from one shared DeterministicRng, so a probe skipped
+# because its arm had already failed used to shorten the stream: every later buffer and every later probe
+# input moved, and a second, independent divergence could be shifted out of the run entirely — the failure
+# report then described a sweep nobody had ever seen green. verify_strkern.cpp now runs every probe
+# unconditionally and keeps only the FIRST message per arm, which makes this comparison the proof.
+#
+# The line is `strkern sweep-rng: <state> buffers=<n>`; the state is the generator's, after the loop, so
+# it is a pure function of how many draws were made. CAN GO RED: put the `if( r.<arm>Fail.empty() )`
+# guards back and the mutated build — whose arms all fail on iteration 0 — prints a different state.
+GREEN_RNG="$(  grep -m1 '^strkern sweep-rng: ' "$WORK/out_main.log"   2>/dev/null )"
+MUTATE_RNG="$( grep -m1 '^strkern sweep-rng: ' "$WORK/out_mutate.log" 2>/dev/null )"
+if [ -z "$GREEN_RNG" ] || [ -z "$MUTATE_RNG" ]; then
+    echo "  FAIL  sweep corpus: no 'strkern sweep-rng:' line (green='$GREEN_RNG' mutated='$MUTATE_RNG')"
+    fail=1
+elif [ "$GREEN_RNG" = "$MUTATE_RNG" ]; then
+    printf '  PASS  sweep corpus: the MUTATED build swept the same buffers as the green one (%s)\n' "$GREEN_RNG"
+else
+    echo "  FAIL  sweep corpus: a failing arm moved the RNG stream — the red run is not the green run's sweep"
+    echo "        green   $GREEN_RNG"
+    echo "        mutated $MUTATE_RNG"
+    fail=1
 fi
 
 # ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────

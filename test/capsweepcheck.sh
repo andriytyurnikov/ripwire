@@ -50,6 +50,8 @@
 #       passed through as a literal, and the destination resolves outside the corpus.
 #   (K) A CORPUS FINGERPRINT taken before the arms and re-checked after each one: a file created inside
 #       the corpus mid-run aborts and names the path. (B) guards one directory name; this guards the class.
+#   (K2) …and the fingerprint carries each entry's TYPE and CONTENT DIGEST, so a file OVERWRITTEN in
+#       place aborts too. A name list sees a creation and is blind to a rewrite of the same path.
 #   (L) A GIT REPOSITORY ABOVE the corpus is refused — ripwire walks up for .git in its own code.
 #   (M) THE HISTORY FIXTURE: `git archive HEAD` leaves no .git, so the git verbs measured their degraded
 #       path. Three commits over the same files plus a dirty tree; a tree missing them is REFUSED.
@@ -214,6 +216,16 @@ for a in "$@"; do
     --stub-refuse)  exit 3 ;;
     --stub-tmp=*)   d="${a#--stub-tmp=}"; mkdir -p "$d" 2>/dev/null; : > "$d/wrote-here"; printf 'tmp=%s' "$d"; exit 0 ;;
     --stub-litter)  : > "capsweep-litter.txt"; printf '%050d' 0; exit 0 ;;
+    # The two STATE TRANSITIONS the split must not read as byte sensitivity (#127 / 3985249659).
+    # --stub-lose: answers 100 B at the DEFAULT and REFUSES when the cap is bumped. base=100, allb=None,
+    #   "different" — the raw comparison counted it as cap-sensitive, inflating the numerator with a
+    #   regression the bump introduced.
+    # --stub-zero: refuses at the DEFAULT and exits 0 with ZERO bytes when bumped. base=None, allb=0,
+    #   "different" — counted as "answers only when a cap is bumped", about a row that still answers
+    #   nothing; answered() has defined zero bytes as no answer all along.
+    --stub-lose)    if [ -n "${RWCAP_kStubRowCap:-}" ]; then exit 3; else printf '%0100d' 0; exit 0; fi ;;
+    --stub-zero)    if [ -n "${RWCAP_kStubRowCap:-}" ]; then exit 0; else exit 3; fi ;;
+    --stub-edit=*)  printf 'x' > "${a#--stub-edit=}"; printf '%050d' 0; exit 0 ;;
     esac
 done
 printf 'x'; exit 0
@@ -229,6 +241,8 @@ cat > "$TMP/rc/corpus.txt" <<'CORPEOF'
 . --stub-tmp=$RIPWIRE_CAPSWEEP_TMP
 . --stub-undefined=$RIPWIRE_CAPSWEEP_NO_SUCH_VAR
 . --stub-ok --stub-metavar='fn($A, $B, $C)'
+. --stub-lose
+. --stub-zero
 CORPEOF
 rc_out="$TMP/rc.out"
 # env -u, not `VAR=`: an empty binding is not the operator's normal case, and it used to resolve to the
@@ -246,7 +260,7 @@ else
     # (G) the unbalanced-quote row is UNPARSEABLE, and the rows AFTER it still ran. The second half is
     # the F1b control: `except ValueError as e` shadows run_corpus's env dict `e`, and Python deletes an
     # except-name at block end, so the obvious repair kills the NEXT row with UnboundLocalError.
-    if grep -q 'unparseable' "$rc_out" && grep -Eq '^EXECUTABILITY.*: 4/7 answered' "$rc_out"; then
+    if grep -q 'unparseable' "$rc_out" && grep -Eq '^EXECUTABILITY.*: 5/9 answered' "$rc_out"; then
         ok "(G) an unbalanced quote is recorded UNPARSEABLE and the rows after it still run"
     else
         no "(G) unparseable row not classified, or the rows after it did not run: $( grep -m1 EXECUTABILITY "$rc_out" )"
@@ -258,11 +272,45 @@ else
     else
         no "(H) the refusing row was not recorded as a distinct state: $( grep -- '--stub-refuse' "$TMP/rc-screen.tsv" )"
     fi
-    # (I) the denominator is the ANSWERING rows: 1 of 3, never 1 of 6.
-    if grep -q 'cap-sensitive: 1 of 4 answering rows' "$rc_out"; then
-        ok "(I) the split is reported over the 4 answering rows, not over all 7"
+    # (I) the denominator is the ANSWERING rows, never every row in the file.
+    if grep -q 'cap-sensitive: 1 of 5 answering rows' "$rc_out"; then
+        ok "(I) the split is reported over the 5 answering rows, not over all 9"
     else
         no "(I) the split was not reported over the answering rows: $( grep -m1 'cap-sensitive' "$rc_out" )"
+    fi
+
+    # (I/#127-3985249659) THE SPLIT IS OVER EXECUTION STATES. Two rows in the corpus above change STATE
+    # between the arms and neither is byte sensitivity. The numerator must be 1 — the --stub-cap row —
+    # and each transition must be named for what it is:
+    #   --stub-lose  answered 100 B at the default, refused when bumped  → LOST, never counted
+    #   --stub-zero  refused at the default, exit 0 / 0 bytes when bumped → NOT an answer (answered()),
+    #                so it is neither cap-sensitive nor a BY-CAP row
+    # The pre-change spelling `base.get(c) != allb.get(c)` put --stub-lose in the numerator (cap-sensitive
+    # 2 of 5) and --stub-zero in the BY-CAP list.
+    if awk -F'\t' '/--stub-lose/ { exit !($3 == "0") }' "$TMP/rc-screen.tsv"; then
+        ok "(I) a row that answered at the default and STOPPED when bumped is not marked cap-sensitive"
+    else
+        no "(I) --stub-lose was marked cap-sensitive — a bump regression counted as byte sensitivity: $( grep -- '--stub-lose' "$TMP/rc-screen.tsv" )"
+    fi
+    if awk -F'\t' '/--stub-zero/ { exit !($3 == "0") }' "$TMP/rc-screen.tsv"; then
+        ok "(I) a row whose bumped arm exits 0 with ZERO bytes is not marked cap-sensitive"
+    else
+        no "(I) --stub-zero was marked cap-sensitive — zero bytes counted as an answer: $( grep -- '--stub-zero' "$TMP/rc-screen.tsv" )"
+    fi
+    if grep -Eq '^ +LOST .*--stub-lose' "$rc_out"; then
+        ok "(I) the lost row is REPORTED, with both states, rather than silently dropped"
+    else
+        no "(I) --stub-lose was excluded from the ratio AND from the screen — a change nobody is told about"
+    fi
+    if grep -Eq '^ +BY-CAP .*--stub-zero' "$rc_out"; then
+        no "(I) --stub-zero was listed as BY-CAP — a zero-byte exit 0 is not an answer"
+    else
+        ok "(I) a zero-byte bumped arm is not reported as a row that 'answers only when a cap is bumped'"
+    fi
+    if grep -q 'NUMERATOR = rows where BOTH arms answered' "$TMP/rc-screen.tsv"; then
+        ok "(I) the records state the state rule the numerator was computed under"
+    else
+        no "(I) the screen records do not say that the numerator needs BOTH arms to have answered"
     fi
     if grep -q 'split recipe: DENOMINATOR' "$TMP/rc-screen.tsv"; then
         ok "(I) the records carry the recipe the ratio was computed by"
@@ -281,13 +329,16 @@ else
     else
         no "(J) the corpus-tmp destination was not written outside the corpus: $( grep -m1 stub-tmp "$rc_out" )"
     fi
-fi
-
     # (J) A $NAME OUTSIDE THE HARNESS'S NAMESPACE IS NOT AN ENVIRONMENT REFERENCE. The first cut of the
     # rule above refused `--pattern='rankGraphTeleport($A, $B, $C)'` — a tree-sitter pattern whose $A/$B/$C
     # are METAVARIABLES — as "unexpanded", turning a legitimate corpus row into a non-answer. shlex.split
     # has already dropped the quoting by then, so single-quoted and double-quoted cannot be told apart:
     # naming the namespace is what makes the rule decidable.
+    #
+    # INSIDE the g_ok branch (CodeRabbit #127 / 3985249719): it reads $TMP/rc-screen.tsv, which only a
+    # successful run-corpus writes. Indented as if it belonged here but sitting after the `fi`, it ran on a
+    # FAILED run too — awk then failed on a missing file and the gate printed a second, invented "(J) the
+    # metavariable row did not answer" for a run that never produced one record.
     if grep -q 'unexpanded: \$A' "$rc_out"; then
         no "(J) a tree-sitter metavariable was refused as an unexpanded environment variable"
     elif awk -F'\t' '/stub-metavar/ { exit !($4 == "ok") }' "$TMP/rc-screen.tsv"; then
@@ -295,6 +346,7 @@ fi
     else
         no "(J) the metavariable row did not answer: $( grep -- 'stub-metavar' "$TMP/rc-screen.tsv" )"
     fi
+fi
 
 # (J) control — a destination that resolves INSIDE the corpus is refused. `--cache=`, `--export=` and
 # `--html=` all take one, and run_corpus runs with cwd=corpus, so this is the surface that put a 10.4 MB
@@ -344,6 +396,37 @@ else
         *)  no "(K) the litter run failed for the wrong reason: $( echo "$out" | tail -2 | tr '\n' ' ' )" ;;
     esac
 fi
+# (K2/#127-3985249656) A NAME LIST CANNOT SEE AN OVERWRITE. The fingerprint carries each entry's type and
+# content digest, so a row that rewrites an EXISTING corpus file in place — the same shape that put a
+# 10.4 MB cache blob in the frozen tree, on its second run — aborts and names the path with `~`. A
+# creation (arm K above) was already caught; this is the half the file list was blind to.
+mkdir -p "$TMP/rcedit/src"; printf 'original\n' > "$TMP/rcedit/src/a.h"
+cat > "$TMP/rcedit/corpus.txt" <<'CORPEOF'
+. --stub-ok
+. --stub-edit=src/a.h
+CORPEOF
+if out="$( python3 "$GEN" run-corpus --binary "$TMP/stub/ripwire" --corpus "$TMP/rcedit" \
+             --corpus-file "$TMP/rcedit/corpus.txt" --records "$TMP/rcedit-screen.tsv" 2>&1 )"; then
+    no "(K2) a row that OVERWROTE a corpus file was measured anyway — the fingerprint is name-only"
+else
+    case "$out" in
+        *'corpus CHANGED'*'~ src/a.h'*)
+            ok "(K2) a corpus file overwritten IN PLACE aborts the run and names it as changed, not added" ;;
+        *)  no "(K2) the overwrite run failed for the wrong reason: $( echo "$out" | tail -3 | tr '\n' ' ' )" ;;
+    esac
+fi
+# the control: the same corpus with only the non-writing row is measured, so (K2) is not refusing everything
+cat > "$TMP/rcedit/corpus.txt" <<'CORPEOF'
+. --stub-ok
+CORPEOF
+printf 'original\n' > "$TMP/rcedit/src/a.h"
+if python3 "$GEN" run-corpus --binary "$TMP/stub/ripwire" --corpus "$TMP/rcedit" \
+        --corpus-file "$TMP/rcedit/corpus.txt" --records "$TMP/rcedit-screen2.tsv" >/dev/null 2>&1; then
+    ok "(K2) control: a corpus whose bytes hold still is measured — the digest is not refusing everything"
+else
+    no "(K2) control: a corpus that did not change was refused — the content fingerprint is over-firing"
+fi
+
 # and the control: the SAME corpus without the littering row must be measured, or (K) refuses everything
 cat > "$TMP/rclitter/corpus.txt" <<'CORPEOF'
 . --stub-ok
