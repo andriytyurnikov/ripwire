@@ -257,76 +257,79 @@ exec_unavailable(){   # $1 = rc, $2 = output log — the exec-format shapes only
     grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2"
 }
 
-# ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
-# The x86-64 floor is -march=x86-64-v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE; CMakeLists.txt sets it
-# unconditionally for x86-64 targets). Compiled without sanitizers — the ASan runtime for a cross-arch
-# slice is not reliably present, and this arm's job is to run the AVX2 kernels at all, not to re-prove
-# memory safety arm 1 already did.
+# ── 3 / 3b / 3c: the x86_64 mirror under Rosetta 2 — v3 (AVX2) where the translated runtime can run it,
+# the x86-64 BASELINE (the scalar twins on x86) where it cannot ────────────────────────────────────────
+# The shipped x86-64 floor is -march=x86-64-v3 (CMakeLists.txt sets it unconditionally for x86-64
+# targets). CI's ubuntu legs run that slice natively; on an arm64 Mac it runs under Rosetta 2, which gained
+# AVX2 only in macOS 15 — so the probe above decides WHICH slice this host can execute. Owner (2026-09-11):
+# a non-AVX2 build of the mirror is fine for the no-AVX2 hosts — strkern.h has no SSE2 path, so that slice
+# runs the SCALAR twins and the tokenizer on x86, under the same assertions, sanitizer and mutation control.
+# The release floor does not move; this is the test slice only.
+#   3  — the slice runs green and compiled the expected path (AVX2 or scalar);
+#   3b — the same slice under -fsanitize=undefined,integer (UBSan's runtime is a universal dylib; ASan stays
+#        off here — arm 1 owns memory safety on the host ISA); a sanitizer report is a FAIL;
+#   3c — CONTROL: the slice built with -DSTRKERN_MUTATE=1 must fail on its OWN assertions (rc != 0,
+#        rc != 132, assertion output) — a SIGILL can never satisfy it.
+# A slice that RAN and exited nonzero is a FAIL, never a SKIP; only an exec-format failure SKIPs.
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
     rosetta_avx2_probe || true
-    if [ "$ROSETTA_AVX2" != "yes" ]; then
-        printf '  SKIP  x86_64/AVX2 mirror arms 3, 3b, 3c: rosetta_no_avx2 — the translated runtime cannot execute AVX2 here (%s); CI ubuntu-24.04 runs the v3 slice natively and is the proof\n' "$ROSETTA_AVX2"
-    elif X86BIN="$( compile_direct x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
+    if [ "$ROSETTA_AVX2" = "yes" ]; then
+        X86_MARCH="-march=x86-64-v3"; X86_PATH="AVX2"; X86_LABEL="x86_64/AVX2 (v3) mirror"
+    else
+        X86_MARCH="-march=x86-64";    X86_PATH="scalar"; X86_LABEL="x86_64 baseline (scalar) mirror"
+        printf '  INFO  rosetta_no_avx2 — the translated runtime cannot execute AVX2 here (%s); the mirror runs the x86-64 baseline slice (scalar twins on x86); CI ubuntu-24.04 runs the v3 slice natively\n' "$ROSETTA_AVX2"
+    fi
+    if X86BIN="$( compile_direct x86 -arch x86_64 $X86_MARCH )" && [ -n "$X86BIN" ]; then
         RIPWIRE_ROOT="$ROOT" "$X86BIN" > "$WORK/out_x86.log" 2>&1; rc_x86=$?
         if [ "$rc_x86" = 0 ]; then
             read_counts "$WORK/out_x86.log"
-            if grep -q '^strkern path: AVX2$' "$WORK/out_x86.log"; then
-                printf '  PASS  x86_64/AVX2 mirror runs green under Rosetta 2 (%s assertions)\n' "$ASSERTS"
+            if grep -q "^strkern path: $X86_PATH\$" "$WORK/out_x86.log"; then
+                printf '  PASS  3: %s runs green under Rosetta 2 (%s assertions, path=%s)\n' "$X86_LABEL" "$ASSERTS" "$X86_PATH"
             else
-                echo "  FAIL  x86_64 slice built but did NOT compile the AVX2 path: $( grep '^strkern path: ' "$WORK/out_x86.log" )"
+                echo "  FAIL  3: $X86_LABEL built but compiled a different path: $( grep '^strkern path: ' "$WORK/out_x86.log" ) (expected $X86_PATH)"
                 fail=1
             fi
         elif exec_unavailable "$rc_x86" "$WORK/out_x86.log"; then
-            printf '  SKIP  x86_64 slice built but cannot execute here (no Rosetta 2); CI ubuntu-24.04 is the AVX2 proof: %s\n' \
-                   "$( tail -1 "$WORK/out_x86.log" )"
+            printf '  SKIP  3: %s built but cannot execute here (no Rosetta 2): %s\n' "$X86_LABEL" "$( tail -1 "$WORK/out_x86.log" )"
         else
-            echo "  FAIL  x86_64/AVX2 mirror RAN and exited $rc_x86: $( tail -2 "$WORK/out_x86.log" | tr '\n' ' ' )"
+            echo "  FAIL  3: $X86_LABEL RAN and exited $rc_x86: $( tail -2 "$WORK/out_x86.log" | tr '\n' ' ' )"
             fail=1
         fi
-    else
-        printf '  SKIP  no x86_64 cross slice on this toolchain (no macOS x86_64 SDK); CI ubuntu-24.04 is the AVX2 proof\n'
-    fi
-fi
-
-# ── 3b: the x86_64 slice under UBSan's integer checks — the arm that CI's ubuntu ASan leg is ────────────
-# The 32-byte AVX2 block fills every bit of a uint32 mask, so a `<< 1` that is harmless on a 16-byte NEON
-# mask (top half always zero) DROPS a set bit on AVX2, and -fsanitize=integer's unsigned-shift-base check
-# aborts on exactly that (PR #127's first CI run: lexindex.h:186 on --for/--pack-task, clean on every arm64
-# ASan run). Arm 3 compiled without sanitizers and could not see it. UBSan's runtime is a universal dylib
-# in the Apple toolchain, so the cross slice CAN carry -fsanitize=undefined,integer; ASan stays off here
-# (arm 1 owns memory safety on the host ISA). A sanitizer report is a FAIL; a slice that will not run at
-# all (no Rosetta 2) is a SKIP, as in arm 3.
-if { [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; } && [ "$ROSETTA_AVX2" = "yes" ]; then
-    if X86UB="$( compile_direct x86ub -arch x86_64 -march=x86-64-v3 -fsanitize=undefined,integer -fno-sanitize-recover=all )" && [ -n "$X86UB" ]; then
-        RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; rc_ub=$?
-        if [ "$rc_ub" = 0 ]; then
-            read_counts "$WORK/out_x86ub.log"
-            printf '  PASS  x86_64/AVX2 mirror is clean under -fsanitize=undefined,integer (%s assertions)\n' "$ASSERTS"
-        elif grep -q 'runtime error' "$WORK/out_x86ub.log"; then
-            echo "  FAIL  x86_64/AVX2 mirror trips UBSan integer checks: $( grep -m1 'runtime error' "$WORK/out_x86ub.log" | sed 's|.*/src/|src/|' )"
-            fail=1
-        elif exec_unavailable "$rc_ub" "$WORK/out_x86ub.log"; then
-            printf '  SKIP  x86_64 UBSan slice built but cannot execute here (no Rosetta 2): %s\n' "$( tail -1 "$WORK/out_x86ub.log" )"
-        else
-            echo "  FAIL  x86_64 UBSan slice RAN and exited $rc_ub without a sanitizer report: $( tail -2 "$WORK/out_x86ub.log" | tr '\n' ' ' )"
-            fail=1
-        fi
-        # 3c CONTROL — a slice that runs and FAILS must read as FAIL, never as "no Rosetta": the x86_64 build
-        # of the mutation (arm 2's -DSTRKERN_MUTATE=1) is exactly that binary.
-        if X86MUT="$( compile_direct x86mut -arch x86_64 -march=x86-64-v3 -DSTRKERN_MUTATE=1 )" && [ -n "$X86MUT" ]; then
-            RIPWIRE_ROOT="$ROOT" "$X86MUT" > "$WORK/out_x86mut.log" 2>&1; rc_mut=$?
-            if [ "$rc_mut" != 0 ] && [ "$rc_mut" != 132 ] && grep -qE 'FAILED|assertion|CHECK' "$WORK/out_x86mut.log"; then
-                echo "  PASS  3c control: the mutated x86_64 slice RAN and failed on its own assertions (rc=$rc_mut) — a red, classified as a red"
-            elif [ "$rc_mut" = 132 ]; then
-                echo "  FAIL  3c control: the mutated x86_64 slice died with SIGILL although the AVX2 probe ran — that is a real red, not the mutation"
+        if X86UB="$( compile_direct x86ub -arch x86_64 $X86_MARCH -fsanitize=undefined,integer -fno-sanitize-recover=all )" && [ -n "$X86UB" ]; then
+            RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; rc_ub=$?
+            if [ "$rc_ub" = 0 ]; then
+                read_counts "$WORK/out_x86ub.log"
+                printf '  PASS  3b: %s is clean under -fsanitize=undefined,integer (%s assertions)\n' "$X86_LABEL" "$ASSERTS"
+            elif grep -q 'runtime error' "$WORK/out_x86ub.log"; then
+                echo "  FAIL  3b: $X86_LABEL trips UBSan integer checks: $( grep -m1 'runtime error' "$WORK/out_x86ub.log" | sed 's|.*/src/|src/|' )"
                 fail=1
+            elif exec_unavailable "$rc_ub" "$WORK/out_x86ub.log"; then
+                printf '  SKIP  3b: %s UBSan slice cannot execute here (no Rosetta 2): %s\n' "$X86_LABEL" "$( tail -1 "$WORK/out_x86ub.log" )"
             else
-                echo "  FAIL  3c control: the mutated x86_64 slice exited 0 — the mutation is not visible on the AVX2 path"
+                echo "  FAIL  3b: $X86_LABEL UBSan slice RAN and exited $rc_ub without a sanitizer report: $( tail -2 "$WORK/out_x86ub.log" | tr '\n' ' ' )"
                 fail=1
             fi
+        else
+            echo "  FAIL  3b: the $X86_LABEL did not build with -fsanitize=undefined,integer: $( head -2 "$WORK/cc_x86ub.log" | tr '\n' ' ' )"
+            fail=1
+        fi
+        if X86MUT="$( compile_direct x86mut -arch x86_64 $X86_MARCH -DSTRKERN_MUTATE=1 )" && [ -n "$X86MUT" ]; then
+            RIPWIRE_ROOT="$ROOT" "$X86MUT" > "$WORK/out_x86mut.log" 2>&1; rc_mut=$?
+            if [ "$rc_mut" != 0 ] && [ "$rc_mut" != 132 ] && grep -qE 'FAILED|assertion|CHECK' "$WORK/out_x86mut.log"; then
+                echo "  PASS  3c control: the mutated $X86_LABEL RAN and failed on its own assertions (rc=$rc_mut) — a red, classified as a red"
+            elif [ "$rc_mut" = 132 ]; then
+                echo "  FAIL  3c control: the mutated $X86_LABEL died with SIGILL although the probe ran — a real red, not the mutation"
+                fail=1
+            else
+                echo "  FAIL  3c control: the mutated $X86_LABEL exited $rc_mut without failing an assertion — the mutation is not visible on the $X86_PATH path"
+                fail=1
+            fi
+        else
+            echo "  FAIL  3c control: the mutated $X86_LABEL did not build: $( head -2 "$WORK/cc_x86mut.log" | tr '\n' ' ' )"
+            fail=1
         fi
     else
-        printf '  SKIP  no x86_64 UBSan cross slice on this toolchain; CI ubuntu-24.04 asan is the proof\n'
+        printf '  SKIP  3/3b/3c: no x86_64 cross slice on this toolchain (no macOS x86_64 SDK); CI ubuntu-24.04 runs the v3 slice natively\n'
     fi
 fi
 
