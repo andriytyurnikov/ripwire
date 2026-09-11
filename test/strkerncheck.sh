@@ -152,7 +152,7 @@ elif [ "$CTZ" -lt 8 ]; then
     echo "        counts (2 scalar twins + 6 vector) are the population this arm is non-vacuous over"
     fail=1
 else
-    printf '  PASS  portability: 0 __builtin_ in strkern.h, %s std::countr_zero( sites (MSVC-compilable; <bit> included)\n' "$CTZ"
+    printf '  PASS  portability: 0 __builtin_ in strkern.h, %s std::countr_zero( sites (<bit>, one spelling for the repo)\n' "$CTZ"
 fi
 if ! grep -q '^#include <bit>' "$HDR"; then
     echo "  FAIL  portability: strkern.h calls std::countr_zero without including <bit>"
@@ -220,19 +220,41 @@ fi
 # "cannot execute binary file", "Exec format error"); that — and only that — is the environment saying
 # no. A slice that RAN and exited nonzero (a doctest assertion, an abort) is a red, never a SKIP
 # (CodeRabbit on #127: the old branch read every nonzero exit as "no Rosetta").
-# A second environmental shape, seen on CI's macos-14 runners (PR #127 run 4): the slice DID execute under
-# Rosetta 2 and died with SIGILL (rc 132) before printing its first line — Rosetta 2 gained AVX2 only in
-# macOS 15, so a -march=x86-64-v3 slice on macOS 14 is illegal at its first vector instruction. That is
-# the emulator lacking the ISA, not a kernel defect: SKIP, with the reason. A SIGILL AFTER the slice has
-# printed (its path line, an assertion) is a real red and stays one.
-exec_unavailable(){   # $1 = rc, $2 = output log
-    [ "$1" = 126 ] && return 0
-    grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2" && return 0
-    if [ "$1" = 132 ] && ! grep -q 'strkern path' "$2"; then
-        echo "        (SIGILL before the first line: this Rosetta 2 has no AVX2 — macOS 15+ runs the v3 slice; macOS 14 cannot)"
-        return 0
+# Can the TRANSLATED x86_64 runtime execute AVX2 at all? Rosetta 2 gained AVX2 in macOS 15; CI's macos-14
+# runners SIGILL a -march=x86-64-v3 slice at its first vector instruction (PR #127 run 4, rc 132, no output).
+# The sysctl probes are NOT trustworthy here: on a macOS 26 host whose Rosetta runs the v3 slice green,
+# `arch -x86_64 sysctl -n hw.optional.avx2_0` still prints 0 and leaf7_features lists no AVX2 — so the probe
+# EXECUTES one AVX2 instruction under Rosetta and reads the exit. rc 0 + "avx2 ok" => available; rc 132
+# (SIGILL) or an exec failure => rosetta_no_avx2, and arms 3/3b/3c SKIP with that reason. Where the probe
+# runs, a slice that exits nonzero — SIGILL included — is a FAIL, never a SKIP.
+ROSETTA_AVX2="unknown"
+rosetta_avx2_probe(){
+    cat > "$WORK/avx2probe.c" <<'EOF_PROBE'
+#include <immintrin.h>
+#include <stdio.h>
+int main( void )
+{
+    volatile int seed = 3;
+    __m256i a = _mm256_set1_epi8( (char) seed );
+    __m256i b = _mm256_add_epi8( a, a );
+    unsigned char out[ 32 ];
+    _mm256_storeu_si256( (__m256i*) out, b );
+    printf( "avx2 ok %d\n", out[ 0 ] );
+    return out[ 0 ] == 6 ? 0 : 1;
+}
+EOF_PROBE
+    if ! "${CC:-cc}" -arch x86_64 -mavx2 -O1 "$WORK/avx2probe.c" -o "$WORK/avx2probe" 2>"$WORK/avx2probe.cc.log"; then
+        ROSETTA_AVX2="no_toolchain"; return 1
     fi
-    return 1
+    "$WORK/avx2probe" > "$WORK/avx2probe.out" 2>&1; local rc=$?
+    if [ "$rc" = 0 ] && grep -q '^avx2 ok' "$WORK/avx2probe.out"; then
+        ROSETTA_AVX2="yes"; return 0
+    fi
+    ROSETTA_AVX2="no (probe rc=$rc: $( tail -1 "$WORK/avx2probe.out" 2>/dev/null | tr -d '\n' ))"; return 1
+}
+exec_unavailable(){   # $1 = rc, $2 = output log — the exec-format shapes only; AVX2 absence is decided by the probe above
+    [ "$1" = 126 ] && return 0
+    grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2"
 }
 
 # ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
@@ -241,7 +263,10 @@ exec_unavailable(){   # $1 = rc, $2 = output log
 # slice is not reliably present, and this arm's job is to run the AVX2 kernels at all, not to re-prove
 # memory safety arm 1 already did.
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-    if X86BIN="$( compile_direct x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
+    rosetta_avx2_probe || true
+    if [ "$ROSETTA_AVX2" != "yes" ]; then
+        printf '  SKIP  x86_64/AVX2 mirror arms 3, 3b, 3c: rosetta_no_avx2 — the translated runtime cannot execute AVX2 here (%s); CI ubuntu-24.04 runs the v3 slice natively and is the proof\n' "$ROSETTA_AVX2"
+    elif X86BIN="$( compile_direct x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
         RIPWIRE_ROOT="$ROOT" "$X86BIN" > "$WORK/out_x86.log" 2>&1; rc_x86=$?
         if [ "$rc_x86" = 0 ]; then
             read_counts "$WORK/out_x86.log"
@@ -271,7 +296,7 @@ fi
 # in the Apple toolchain, so the cross slice CAN carry -fsanitize=undefined,integer; ASan stays off here
 # (arm 1 owns memory safety on the host ISA). A sanitizer report is a FAIL; a slice that will not run at
 # all (no Rosetta 2) is a SKIP, as in arm 3.
-if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+if { [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; } && [ "$ROSETTA_AVX2" = "yes" ]; then
     if X86UB="$( compile_direct x86ub -arch x86_64 -march=x86-64-v3 -fsanitize=undefined,integer -fno-sanitize-recover=all )" && [ -n "$X86UB" ]; then
         RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; rc_ub=$?
         if [ "$rc_ub" = 0 ]; then
@@ -290,10 +315,11 @@ if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
         # of the mutation (arm 2's -DSTRKERN_MUTATE=1) is exactly that binary.
         if X86MUT="$( compile_direct x86mut -arch x86_64 -march=x86-64-v3 -DSTRKERN_MUTATE=1 )" && [ -n "$X86MUT" ]; then
             RIPWIRE_ROOT="$ROOT" "$X86MUT" > "$WORK/out_x86mut.log" 2>&1; rc_mut=$?
-            if [ "$rc_mut" != 0 ] && ! exec_unavailable "$rc_mut" "$WORK/out_x86mut.log"; then
-                echo "  PASS  3c control: the mutated x86_64 slice RAN and failed (rc=$rc_mut) — a red, classified as a red, not a SKIP"
-            elif exec_unavailable "$rc_mut" "$WORK/out_x86mut.log"; then
-                echo "  SKIP  3c control: the mutated x86_64 slice cannot execute here either (no Rosetta 2)"
+            if [ "$rc_mut" != 0 ] && [ "$rc_mut" != 132 ] && grep -qE 'FAILED|assertion|CHECK' "$WORK/out_x86mut.log"; then
+                echo "  PASS  3c control: the mutated x86_64 slice RAN and failed on its own assertions (rc=$rc_mut) — a red, classified as a red"
+            elif [ "$rc_mut" = 132 ]; then
+                echo "  FAIL  3c control: the mutated x86_64 slice died with SIGILL although the AVX2 probe ran — that is a real red, not the mutation"
+                fail=1
             else
                 echo "  FAIL  3c control: the mutated x86_64 slice exited 0 — the mutation is not visible on the AVX2 path"
                 fail=1
