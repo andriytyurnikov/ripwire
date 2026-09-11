@@ -226,28 +226,46 @@ fi
 # `arch -x86_64 sysctl -n hw.optional.avx2_0` still prints 0 and leaf7_features lists no AVX2 — so the probe
 # EXECUTES one AVX2 instruction under Rosetta and reads the exit. rc 0 + "avx2 ok" => available; rc 132
 # (SIGILL) or an exec failure => rosetta_no_avx2, and arms 3/3b/3c SKIP with that reason. Where the probe
-# runs, a slice that exits nonzero — SIGILL included — is a FAIL, never a SKIP.
+# runs, a slice that exits nonzero — SIGILL included — is a FAIL, never a SKIP. The probe is compiled with
+# -march=x86-64-v3 itself and touches every ISA extension the floor implies (see the C below).
 ROSETTA_AVX2="unknown"
 rosetta_avx2_probe(){
     cat > "$WORK/avx2probe.c" <<'EOF_PROBE'
+// The probe must exercise the SAME feature set the slice is compiled with (-march=x86-64-v3 = AVX, AVX2,
+// BMI1, BMI2, FMA, LZCNT, MOVBE, F16C), not one AVX2 instruction: PR #127 run 7 showed a Rosetta 2 that
+// executes vpaddb and still SIGILLs the v3 slice. Every value flows through a volatile so nothing folds.
 #include <immintrin.h>
+#include <stdint.h>
 #include <stdio.h>
 int main( void )
 {
-    volatile int seed = 3;
-    __m256i a = _mm256_set1_epi8( (char) seed );
-    __m256i b = _mm256_add_epi8( a, a );
+    volatile uint64_t seed = 0x00F0F0F0F0F0F0F3ull;
+    volatile int      sh   = 3;
+    __m256i a = _mm256_set1_epi8( (char) seed );                      // AVX2 broadcast
+    __m256i b = _mm256_add_epi8( a, a );                              // AVX2 add
     unsigned char out[ 32 ];
     _mm256_storeu_si256( (__m256i*) out, b );
-    printf( "avx2 ok %d\n", out[ 0 ] );
-    return out[ 0 ] == 6 ? 0 : 1;
+    uint64_t v   = seed;
+    uint64_t r1  = _pdep_u64( v, 0xF0F0F0F0F0F0F0F0ull ) ^ _pext_u64( v, 0x0F0F0F0F0F0F0F0Full );   // BMI2
+    uint64_t r2  = _lzcnt_u64( v ) + _tzcnt_u64( v );                                          // LZCNT / BMI1
+    uint64_t r3  = ( v << sh ) | ( v >> sh );                                                   // shlx/shrx (BMI2)
+    __m256   f   = _mm256_fmadd_ps( _mm256_set1_ps( (float) sh ), _mm256_set1_ps( 2.0f ), _mm256_set1_ps( 1.0f ) );   // FMA
+    float    fo[ 8 ];
+    _mm256_storeu_ps( fo, f );
+    __m128i  h   = _mm256_cvtps_ph( f, 0 );                                                     // F16C
+    uint16_t ho[ 8 ];
+    _mm_storeu_si128( (__m128i*) ho, h );
+    uint64_t r4  = __builtin_bswap64( *(volatile uint64_t*) &v );                              // MOVBE-eligible
+    printf( "v3 ok %d %llu %llu %llu %g %u %llu\n", out[ 0 ], (unsigned long long) r1, (unsigned long long) r2,
+            (unsigned long long) r3, (double) fo[ 0 ], (unsigned) ho[ 0 ], (unsigned long long) r4 );
+    return out[ 0 ] == (unsigned char) ( 2 * (char) seed ) ? 0 : 1;   // reaching this line at all is the fact; a SIGILL never does
 }
 EOF_PROBE
-    if ! "${CC:-cc}" -arch x86_64 -mavx2 -O1 "$WORK/avx2probe.c" -o "$WORK/avx2probe" 2>"$WORK/avx2probe.cc.log"; then
+    if ! "${CC:-cc}" -arch x86_64 -march=x86-64-v3 -O1 "$WORK/avx2probe.c" -o "$WORK/avx2probe" 2>"$WORK/avx2probe.cc.log"; then
         ROSETTA_AVX2="no_toolchain"; return 1
     fi
     "$WORK/avx2probe" > "$WORK/avx2probe.out" 2>&1; local rc=$?
-    if [ "$rc" = 0 ] && grep -q '^avx2 ok' "$WORK/avx2probe.out"; then
+    if [ "$rc" = 0 ] && grep -q '^v3 ok' "$WORK/avx2probe.out"; then
         ROSETTA_AVX2="yes"; return 0
     fi
     ROSETTA_AVX2="no (probe rc=$rc: $( tail -1 "$WORK/avx2probe.out" 2>/dev/null | tr -d '\n' ))"; return 1
