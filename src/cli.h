@@ -784,7 +784,7 @@ inline constexpr char kHelpHead[] =
         "                               plain --query, and --format=candidates (incl. with --for). --for's OWN\n"
         "                               signature/lego/compose bundle self-limits via --pack-top-n instead — --top-k is\n"
         "                               INERT there (documented, not fixed — a real fix is a behavior change).\n"
-        "                               --pack-task/--from-trace/--run-trace/--situ self-budget via --token-budget, not --top-k.\n"
+        "                               --pack-task/--from-trace/--run-trace self-budget via --token-budget, not --top-k.\n"
         "                               --top-k=0 emits NO ranked map at all — ONLY the payload you asked for\n"
         "                               (--expand/--outline/--pack-signatures/--pack-top-n). Use it when you want the\n"
         "                               body and not the ~200-symbol map that otherwise rides along with it; the <ctx>\n"

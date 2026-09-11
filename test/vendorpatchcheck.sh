@@ -71,6 +71,12 @@
 #      kotlin/003: arm I's narrow-counter class at uint16_t — a run of 65,536 `$` inside a string truncates
 #      `additional_dollars`. A static check that the saturation guard is in the counting loop, and a
 #      generated 65,537-`$` run (closed by a quote, so the scan stays linear) that is the ASan tripwire.
+#   K  the yaml scanner under an UNSIGNED char — `char` is unsigned on aarch64 Linux (the linux-arm64
+#      release asset), where tree-sitter-yaml's SCN_FAIL (-1), returned through `static char`
+#      functions, becomes 255: a malformed %-escape in a tag parses differently, and G1's
+#      implicit-conversion check aborts on every `key: value` line. Neither CI leg has an unsigned
+#      char, so this arm does not use $BIN: it compiles the vendored grammar itself, -fsigned-char and
+#      -funsigned-char, and requires identical trees, plus a clean -funsigned-char sanitizer run.
 #
 # Usage:
 #   test/vendorpatchcheck.sh
@@ -91,6 +97,7 @@ fail=0
 
 ok(){ printf '  PASS  %s\n' "$*"; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
+skip(){ printf '  SKIP  %s\n' "$*"; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "git required for patch reverse-apply checks"; exit 2; }
@@ -530,6 +537,183 @@ if [ "$ktDollarRun" = 65537 ]; then
     fi
 else
     no "J: presence — the generated dollar run is $ktDollarRun long, not 65537 — the kotlin/003 runtime arm would assert on the wrong input"
+fi
+
+# ── K: the yaml scanner's SCN_FAIL (-1) under an UNSIGNED char — signedness forced, any host ─────────────────
+# tree-sitter-yaml v0.7.2 returns its scan status (SCN_SUCC 1, SCN_STOP 0, SCN_FAIL -1) through four functions
+# declared `static char`: scn_uri_esc, the two that hand its result back unchanged (scn_ns_uri_char and
+# scn_ns_tag_char), and scn_pln_cnt. `char` is signed on x86-64 and Apple arm64 and UNSIGNED on aarch64 Linux,
+# which is where the linux-arm64 release asset is built. There -1 comes back as 255, with two symptoms:
+#   parse  the three `case SCN_FAIL:` labels (scn_dir_tag_pfx, and scn_tag's verbatim and shorthand loops) never
+#          match 255, so a malformed %-escape in a tag or a %TAG prefix is swallowed into the token instead of
+#          ending it. `a: !<tag:x%zz> b` is ERROR under a signed char and a clean tagged scalar under an
+#          unsigned one: the same bytes give a different tree depending on the CPU the binary was built for.
+#   abort  scn_pln_cnt's `return SCN_FAIL;` is reached by an ordinary `key: value` line, and G1's
+#          implicit-conversion check stops the run there (int -1 to char 255). Its caller only tests
+#          `!= SCN_SUCC`, so that tree does not change; only a sanitizer sees this one.
+# Neither CI leg has an unsigned char, so no run of $BIN can show either symptom. This arm does not use $BIN. It
+# compiles the vendored grammar itself with the signedness FORCED and parses fixtures with the result:
+#   trees      parser.c + scanner.c built -fsigned-char and again -funsigned-char, each linked against one build
+#              of the vendored tree-sitter core, must print byte-identical output for every fixture: the
+#              S-expression, then every node with its byte range, so a token that ends one byte later differs.
+#              Each fixture's ERROR-or-clean verdict is pinned as well, so a "fix" that made BOTH signednesses
+#              accept a malformed escape still goes red.
+#   sanitizer  the -funsigned-char scanner built with -fsanitize=undefined,implicit-conversion
+#              -fno-sanitize-recover=all must parse every fixture and every test/yamlfix file with exit 0 and an
+#              empty stderr. A synthetic -1 returned through an unsigned char must abort under the same flags
+#              first, so this half cannot pass by instrumenting nothing. GCC has no implicit-conversion check:
+#              where the compiler cannot build with those flags, this half SKIPs and says why.
+# Fixtures, one per site the audit found (named by function, never by line): the reported repro under a mapping
+# key; a bad and a half escape in a verbatim tag (scn_uri_esc's two returns, scn_tag's verbatim case label); a
+# bad escape in a shorthand tag and in a %TAG prefix (the other two case labels); the same -1 reaching the three
+# sign-blind `!= SCN_SUCC` / `== SCN_SUCC` tests, where the tree cannot differ but the sanitizer still aborts;
+# `key: value` (scn_pln_cnt); and a CONTROL that reaches no failure path at all. The control parsed identically
+# and ran clean under the sanitizer BEFORE the fix, so an identical pair is evidence, not a harness that prints
+# the same nothing twice. The remedy is third_party/patches/yaml/003-scan-status-enum.patch; before it, this arm
+# is red on every host.
+# The compiler is $CC when set, else the first of clang, cc, gcc (clang first: only Clang has the sanitizer
+# half). With no C compiler at all the whole arm SKIPs and says so.
+KDIR="$TMP/uchar"; mkdir -p "$KDIR/fix"
+KYAML="$DEPS_DIR/yaml/src"
+KCORE="$DEPS_DIR/tree_sitter/lib"
+kcc=""
+for kcand in "${CC:-}" clang cc gcc; do
+    if [ -n "$kcand" ] && command -v "$kcand" >/dev/null 2>&1; then
+        kcc="$kcand"
+        break
+    fi
+done
+: > "$KDIR/fixtures.tsv"
+kfix(){   # file  printf-format-of-its-bytes  pinned-verdict(error|clean)  what-it-reaches
+    printf "$2" > "$KDIR/fix/$1"
+    printf '%s\t%s\t%s\n' "$1" "$3" "$4" >> "$KDIR/fixtures.tsv"
+}
+kfix repro_verbatim_tag.yaml      'a: !<tag:x%%zz> b\n'                 error 'the reported repro, a bad %-escape in a verbatim tag under a mapping key'
+kfix verbatim_bad_escape.yaml     '!<tag:x%%zz> b\n'                    error "scn_uri_esc's first SCN_FAIL, into scn_tag's verbatim case label"
+kfix verbatim_half_escape.yaml    '!<tag:x%%4z> b\n'                    error "scn_uri_esc's second SCN_FAIL (one hex digit, then none), same case label"
+kfix shorthand_bad_escape.yaml    '!foo%%zz b\n'                        error "scn_ns_tag_char handing SCN_FAIL to scn_tag's shorthand case label"
+kfix tag_prefix_bad_escape.yaml   '%%TAG !e! tag:x%%zz\n--- !e!b c\n'   error "scn_ns_uri_char handing SCN_FAIL to scn_dir_tag_pfx's case label"
+kfix verbatim_first_escape.yaml   '!<%%zz> b\n'                         error "SCN_FAIL at scn_tag's first verbatim character, a sign-blind != SCN_SUCC test"
+kfix shorthand_first_escape.yaml  '!e!%%zz b\n'                         error "SCN_FAIL at scn_tag's first shorthand character, a sign-blind != SCN_SUCC test"
+kfix tag_prefix_first_escape.yaml '%%TAG !e! %%zz\n--- !e!b c\n'        error "SCN_FAIL at scn_dir_tag_pfx's first character, a sign-blind == SCN_SUCC test"
+kfix plain_key_colon.yaml         'key: value\n'                        clean "scn_pln_cnt's SCN_FAIL at a colon with no plain-safe character after it, a sign-blind != SCN_SUCC test"
+kfix control.yaml                 '"seq":\n  - [alpha, beta]\n  - !<tag:yaml.org,2002:str> gamma\n  - !!str delta\n  - !<tag:x%%41> epsilon\n' \
+                                                                        clean 'CONTROL: flow scalars, a verbatim tag, a secondary-handle tag and a valid %41 escape, no failure path'
+cat > "$KDIR/parse.c" <<'CEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include "tree_sitter/api.h"
+
+const TSLanguage *tree_sitter_yaml(void);
+
+static void dump(TSNode node, unsigned depth) {
+    printf("%*s%s%s [%u,%u]%s\n", (int)(depth * 2), "", ts_node_is_named(node) ? "" : "'", ts_node_type(node),
+           ts_node_start_byte(node), ts_node_end_byte(node), ts_node_is_missing(node) ? " MISSING" : "");
+    for (uint32_t i = 0; i < ts_node_child_count(node); i++) {
+        dump(ts_node_child(node, i), depth + 1);
+    }
+}
+
+int main(int argc, char **argv) {
+    static char buf[1 << 20];
+    FILE *f = argc == 2 ? fopen(argv[1], "rb") : NULL;
+    if (!f) {
+        return 2;
+    }
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (n == sizeof buf) {
+        return 4;
+    }
+    TSParser *parser = ts_parser_new();
+    if (!ts_parser_set_language(parser, tree_sitter_yaml())) {
+        return 3;
+    }
+    TSTree *tree = ts_parser_parse_string(parser, NULL, buf, (uint32_t)n);
+    char *sexp = ts_node_string(ts_tree_root_node(tree));
+    printf("%s\n", sexp);
+    free(sexp);
+    dump(ts_tree_root_node(tree), 0);
+    ts_tree_delete(tree);
+    ts_parser_delete(parser);
+    return 0;
+}
+CEOF
+cat > "$KDIR/narrow.c" <<'CEOF'
+static char narrow(int value) {
+    return value;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    return narrow(argc - 2) == 0;
+}
+CEOF
+kdisp(){ printf '%s/%s' "$( basename "$( dirname "$1" )" )" "$( basename "$1" )"; }
+if [ -z "$kcc" ]; then
+    skip "K: no C compiler (tried \$CC, clang, cc, gcc) — the forced-signedness yaml build cannot run, so arm K asserted nothing on this host"
+else
+    kbuilt=1
+    "$kcc" -O1 -c "$KCORE/src/lib.c" -I "$KCORE/include" -I "$KCORE/src" -o "$KDIR/core.o" 2> "$KDIR/build.log" || kbuilt=0
+    "$kcc" -O1 -c "$KDIR/parse.c" -I "$KCORE/include" -o "$KDIR/parse.o" 2>> "$KDIR/build.log" || kbuilt=0
+    for ksign in signed unsigned; do
+        "$kcc" -O1 "-f$ksign-char" -c "$KYAML/parser.c" -I "$KYAML" -o "$KDIR/parser_$ksign.o" 2>> "$KDIR/build.log" || kbuilt=0
+        "$kcc" -O1 "-f$ksign-char" -c "$KYAML/scanner.c" -I "$KYAML" -o "$KDIR/scanner_$ksign.o" 2>> "$KDIR/build.log" || kbuilt=0
+        "$kcc" "$KDIR/parse.o" "$KDIR/core.o" "$KDIR/parser_$ksign.o" "$KDIR/scanner_$ksign.o" -o "$KDIR/parse_$ksign" 2>> "$KDIR/build.log" || kbuilt=0
+    done
+    if [ "$kbuilt" = 0 ]; then
+        no "K: $kcc could not build the forced-signedness yaml harness — $( grep -m1 -iE 'error|undefined' "$KDIR/build.log" )"
+    else
+        ok "K: presence — the vendored yaml grammar built twice with $kcc (-fsigned-char, -funsigned-char) against one tree-sitter core, $( wc -l < "$KDIR/fixtures.tsv" | tr -d ' ' ) fixtures"
+        while IFS=$'\t' read -r kname kwant kwhat; do
+            "$KDIR/parse_signed" "$KDIR/fix/$kname" > "$KDIR/$kname.signed" 2>/dev/null; krs=$?
+            "$KDIR/parse_unsigned" "$KDIR/fix/$kname" > "$KDIR/$kname.unsigned" 2>/dev/null; kru=$?
+            ksexp="$( head -1 "$KDIR/$kname.signed" )"
+            case "$ksexp" in
+                '')                kgot=empty ;;
+                *ERROR*|*MISSING*) kgot=error ;;
+                *)                 kgot=clean ;;
+            esac
+            if [ "$krs" != 0 ] || [ "$kru" != 0 ]; then
+                no "K: $kname — the harness itself failed (signed rc=$krs, unsigned rc=$kru), so nothing was compared"
+            elif ! cmp -s "$KDIR/$kname.signed" "$KDIR/$kname.unsigned"; then
+                no "K: $kname parses DIFFERENTLY once char is unsigned ($kwhat). signed: $ksexp | unsigned: $( head -1 "$KDIR/$kname.unsigned" )"
+            elif [ "$kgot" != "$kwant" ]; then
+                no "K: $kname parses the same under both signednesses, but $kgot where $kwant is pinned ($kwhat): $ksexp"
+            else
+                ok "K: $kname — identical tree under signed and unsigned char, $kwant as pinned ($kwhat)"
+            fi
+        done < "$KDIR/fixtures.tsv"
+
+        if ! "$kcc" -O0 -funsigned-char -fsanitize=undefined,implicit-conversion -fno-sanitize-recover=all "$KDIR/narrow.c" -o "$KDIR/narrow" 2> "$KDIR/narrow.log"; then
+            skip "K: sanitizer half — $kcc cannot build with -fsanitize=undefined,implicit-conversion ($( head -1 "$KDIR/narrow.log" )). GCC has no implicit-conversion check; CC=clang runs this half. The trees half above still ran."
+        else
+            ( UBSAN_OPTIONS=print_stacktrace=0 "$KDIR/narrow" > /dev/null 2> "$KDIR/narrow.err" ) 2>/dev/null; krc=$?
+            if [ "$krc" = 0 ] || ! grep -q 'implicit conversion' "$KDIR/narrow.err"; then
+                no "K: sanitizer self-test — a -1 returned through an unsigned char did NOT abort (rc=$krc) under -fsanitize=implicit-conversion -fno-sanitize-recover=all, so the population below would prove nothing"
+            elif ! { "$kcc" -O1 -g -funsigned-char -fsanitize=undefined,implicit-conversion -fno-sanitize-recover=all -c "$KYAML/scanner.c" -I "$KYAML" -o "$KDIR/scanner_ubsan.o" 2> "$KDIR/ubsan.log" \
+                     && "$kcc" -fsanitize=undefined,implicit-conversion "$KDIR/parse.o" "$KDIR/core.o" "$KDIR/parser_unsigned.o" "$KDIR/scanner_ubsan.o" -o "$KDIR/parse_ubsan" 2>> "$KDIR/ubsan.log"; }; then
+                no "K: sanitizer self-test passed, but the -funsigned-char sanitizer build of the yaml scanner failed — $( grep -m1 -iE 'error|undefined' "$KDIR/ubsan.log" )"
+            else
+                ok "K: sanitizer self-test — a -1 returned through an unsigned char aborts under -fsanitize=implicit-conversion -fno-sanitize-recover=all (rc=$krc)"
+                kpop=0; kyamlfix=0; kaborted=0
+                while IFS= read -r kfile; do
+                    kpop=$(( kpop + 1 ))
+                    case "$kfile" in "$ROOT/test/yamlfix/"*) kyamlfix=$(( kyamlfix + 1 )) ;; esac
+                    ( UBSAN_OPTIONS=print_stacktrace=0 "$KDIR/parse_ubsan" "$kfile" > /dev/null 2> "$KDIR/ubsan.err" ) 2>/dev/null; krc=$?
+                    if [ "$krc" != 0 ] || [ -s "$KDIR/ubsan.err" ]; then
+                        kaborted=$(( kaborted + 1 ))
+                        no "K: sanitizer — $( kdisp "$kfile" ) aborts once char is unsigned (rc=$krc): $( grep -m1 -oE 'scanner\.c:[0-9]+:[0-9]+: runtime error: [^(]*' "$KDIR/ubsan.err" )"
+                    fi
+                done < <( cut -f1 "$KDIR/fixtures.tsv" | sed "s|^|$KDIR/fix/|"; find "$ROOT/test/yamlfix" -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort )
+                if [ "$kyamlfix" -lt 3 ]; then
+                    no "K: sanitizer — presence: only $kyamlfix test/yamlfix file(s) found, expected >= 3 (the population shrank)"
+                elif [ "$kaborted" = 0 ]; then
+                    ok "K: sanitizer — all $kpop inputs ($kyamlfix of them test/yamlfix) parse clean with the -funsigned-char scanner under -fsanitize=implicit-conversion -fno-sanitize-recover=all"
+                fi
+            fi
+        fi
+    fi
 fi
 
 # ── verdict ─────────────────────────────────────────────────────────────────────────────────────
