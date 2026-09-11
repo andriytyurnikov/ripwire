@@ -34,6 +34,11 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-11, RUBY ARGUMENT + RESCUE CONSTANTS (feat/ruby-argument-rescue-constants): RE-PIN ONLY, kQSnapCacheScheme STAYS 10.
+#   The extraction-identity line moved: kParserVer 88 -> 89 in src/ingest_cache.h (a constant argument of a
+#   call/super/yield and a rescue class are symbolic Include records; a v88 blob lacks them, so the parser version
+#   is what rejects it). kIngestParserVerMirror 89 in the same diff, test/qextractionkeycheck.sh green. The twelve
+#   manifest functions are byte-identical; no snapshot field changed shape.
 # 2026-09-11, OUT-PARAM RETURNS (lane/outparam-returns-2026-09-11, PR #132): RE-PIN ONLY, kQSnapCacheScheme STAYS 10.
 #   One manifest function's SOURCE moved, and only its read. Because readWholeFile returns
 #   std::optional<std::string> now, readRegisterMacrosConfig went from

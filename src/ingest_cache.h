@@ -206,7 +206,17 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 88;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 89;           // bump on any grammar/.scm/extraction change
+                                                      // 89 = 2026-09-11 (Ruby argument + rescue constants,
+                                                      //    test/rubyargcheck.sh): a constant chain that is a direct
+                                                      //    argument of a call/super/yield (or a keyword pair's value
+                                                      //    there) and every class in a rescue list are symbolic
+                                                      //    Include records, deduped with receivers per (file, open,
+                                                      //    written); a rescue class is lazy always. A v88 blob holds
+                                                      //    none of them, so it is stale rather than wrong — the header
+                                                      //    version is what rejects it. Include's shape is unchanged,
+                                                      //    so kCacheVersion stays 18. quality.h's mirror bumped in
+                                                      //    the SAME commit.
                                                       // 88 = 2026-09-10 (Dart, test/dartcheck.sh): a 23rd grammar joins
                                                       //    kLangTable, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED —
                                                       //    a v87 blob has no record for the `.dart` it never saw, so the

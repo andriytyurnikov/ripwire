@@ -124,14 +124,16 @@ expect(){ # expect SYM 'rows'  — exact importer set
     local got; got="$( importers "$1" )"
     [ "$got" = "$2" ] && ok "$3" || no "$3 — importers of $1: ${got:-<none>}"
 }
+# The importer tier is per FILE (the files that import a file defining SYM), so Boom and Bust — both in errors.rb —
+# share one importer set; lazy= is per (importer, errors.rb) pair. floor.rb and admin/audit.rb name errors.rb nowhere.
 expect lib/app/errors.rb:Boom \
-    '<f via="import" p="lib/app/service.rb" lazy="1"/> <f via="import" p="lib/script.rb" lazy="0"/> ' \
-    'resolve: App::Errors::Boom is reached by `raise`/`rescue` in a method (service, lazy="1") and a file-level `raise` (script, lazy="0"); the floor and admin files name it nowhere'
+    '<f via="import" p="lib/app/mixed.rb" lazy="0"/> <f via="import" p="lib/app/rescue_at_load.rb" lazy="1"/> <f via="import" p="lib/app/service.rb" lazy="1"/> <f via="import" p="lib/script.rb" lazy="0"/> ' \
+    'resolve: errors.rb is reached by `raise`/`rescue` in a method (service, lazy="1"), a file-level `raise` (script, lazy="0") and the two Bust files; the floor and admin files name it nowhere'
 expect lib/app/admin/errors.rb:Boom \
     '<f via="import" p="lib/app/admin/audit.rb" lazy="1"/> ' \
     'resolve: LEXICAL — `raise Errors::Boom` inside App::Admin lands on App::Admin::Errors::Boom'
 expect Bust \
-    '<f via="import" p="lib/app/mixed.rb" lazy="0"/> <f via="import" p="lib/app/rescue_at_load.rb" lazy="1"/> <f via="import" p="lib/app/service.rb" lazy="1"/> ' \
+    '<f via="import" p="lib/app/mixed.rb" lazy="0"/> <f via="import" p="lib/app/rescue_at_load.rb" lazy="1"/> <f via="import" p="lib/app/service.rb" lazy="1"/> <f via="import" p="lib/script.rb" lazy="0"/> ' \
     'lazy: a RESCUE class is lazy even at class-body level (rescue_at_load lazy="1"); one load-time receiver of the same name makes the pair load-time (mixed lazy="0")'
 expect Validator \
     '<f via="import" p="lib/app/mixin.rb" lazy="0"/> <f via="import" p="lib/app/nested.rb" lazy="1"/> <f via="import" p="lib/app/service.rb" lazy="0"/> <f via="import" p="lib/app/super_yield.rb" lazy="1"/> ' \
@@ -168,8 +170,11 @@ printf '%s' "$DEPS" | grep -qE '<health [^>]*lazy_edges="9" dep_langs=' \
 printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfiles>.*||' | grep -q '^<godfiles total="4" shown="4" capped="0"><f p="lib/app/helper.rb" afferent="4"/>' \
     && ok 'structure: godfiles = the four load-time importees, helper.rb first with afferent 4 (service, rescue_at_load, super_yield, mixin)' \
     || no "structure: godfiles: $( printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfiles>.*||' )"
+# lazy_edges= counts DISTINCT (file, target) pairs. service.rb's Errors::Boom, ::App::Errors::Boom and Errors::Bust all
+# resolve to errors.rb with user.rb and mailer.rb resolved BETWEEN them in directive order — the shape under which the
+# pre-89 count (a run-of-equal-ids shortcut over an adjacency that is in directive order, not sorted) read 4 for 3 pairs.
 [ "$( frow lib/app/service.rb )" = '<f p="lib/app/service.rb" includes="7" lazy_edges="3" afferent="0" instab="1.00" transitive="3">' ] \
-    && ok 'structure: service.rb — Validator and Helper are load-time (transitive 3); errors, user and mailer are 3 lazy pairs' \
+    && ok 'structure: service.rb — Validator and Helper are load-time (transitive 3); errors, user and mailer are 3 lazy pairs — three spellings onto errors.rb interleaved with two other files count ONE pair' \
     || no "structure: service.rb row: $( frow lib/app/service.rb )"
 [ "$( frow lib/app/rescue_at_load.rb )" = '<f p="lib/app/rescue_at_load.rb" includes="2" lazy_edges="1" afferent="0" instab="1.00" transitive="2">' ] \
     && ok 'structure: rescue_at_load.rb — the class-body receiver is the one load-time edge; the class-body rescue is a lazy pair, not structure' \
