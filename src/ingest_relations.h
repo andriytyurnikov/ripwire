@@ -95,7 +95,7 @@ bool macroBodyKeyword( std::string_view w ) noexcept
 // the `value:` (preproc_arg) child of a preproc_function_def / preproc_def; null node if absent.
 TSNode preprocValueNode( TSNode defineNode ) noexcept
 {
-    return ts_node_child_by_field_name( defineNode, "value", 5 );
+    return fieldChild( defineNode, NodeField::Value );
 }
 
 // the def's body node: the `body:` field for every function/class grammar, and — macro-edges round — a
@@ -105,10 +105,10 @@ TSNode preprocValueNode( TSNode defineNode ) noexcept
 // forward decl. Kept out of captureTagsFacts (the file's densest dispatch point) behind one call.
 TSNode defBodyNodeOf( TSNode roleNode, SymKind kind ) noexcept
 {
-    TSNode body = ts_node_child_by_field_name( roleNode, "body", 4 );
+    TSNode body = fieldChild( roleNode, NodeField::Body );
     if( ts_node_is_null( body ) && kind == SymKind::Macro )
     {
-        body = ts_node_child_by_field_name( roleNode, "value", 5 );
+        body = fieldChild( roleNode, NodeField::Value );
     }
     return body;
 }
@@ -186,7 +186,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
     // the macro's own name (self-reference never expands) + its parameter names (a param used call-shaped
     // is the ARGUMENT's business, not a body call — `#define CALL(f) f()` has no resolvable callee here).
     std::string macroName;
-    if( const TSNode nameNode = ts_node_child_by_field_name( defineNode, "name", 4 ); !ts_node_is_null( nameNode ) )
+    if( const TSNode nameNode = fieldChild( defineNode, NodeField::Name ); !ts_node_is_null( nameNode ) )
     {
         const uint32_t na = ts_node_start_byte( nameNode );
         const uint32_t nb = ts_node_end_byte( nameNode );
@@ -196,7 +196,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
         }
     }
     std::vector<std::string> params;
-    if( const TSNode paramsNode = ts_node_child_by_field_name( defineNode, "parameters", 10 ); !ts_node_is_null( paramsNode ) )
+    if( const TSNode paramsNode = fieldChild( defineNode, NodeField::Parameters ); !ts_node_is_null( paramsNode ) )
     {
         const uint32_t pc = ts_node_child_count( paramsNode );
         for( uint32_t i = 0; i < pc; ++i )
@@ -317,11 +317,15 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 // child, collecting type nodes at both depths (Rust is a separate pass — impl Trait for T is a sibling).
 void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
 {
-    const uint32_t cc = ts_node_child_count( classNode );
-    for( uint32_t i = 0; i < cc; ++i )
+    // O(children) at all three levels. These child lists LOOK grammar-bounded — a class node's clauses, a
+    // clause's base types — and the earlier class-3 reasoning said so, but EXTRAS refute it: a comment run
+    // between two base types is spliced straight into the clause's own child array (src/infra/tschildren.h),
+    // and 16 000 of them measured 118× the same file with the flood outside the clause
+    // (test/childwalkscalecheck.sh, arm B10). Each level owns its cursor — the loops nest.
+    ChildCursor classCursor( classNode );
+    forEachChild( classNode, classCursor.cur, [ & ]( TSNode clause )
     {
-        const TSNode clause = ts_node_child( classNode, i );
-        const char*  ct     = ts_node_type( clause );
+        const char* ct = ts_node_type( clause );
         const bool   isClause =    kindIs( ct, "base_class_clause" )     // C++    : public Base
                                 || kindIs( ct, "class_heritage" )        // TS/JS  extends / implements (wraps clauses)
                                 || kindIs( ct, "superclasses" )          // Python class X(Base):   (field)
@@ -334,32 +338,33 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
                                 || kindIs( ct, "class_interface_clause" ); // PHP  implements I, J
         if( !isClause )
         {
-            continue;
+            return true;
         }
 
-        const uint32_t bc = ts_node_child_count( clause );
-        for( uint32_t j = 0; j < bc; ++j )
+        ChildCursor clauseCursor( clause );
+        forEachChild( clause, clauseCursor.cur, [ & ]( TSNode bn )
         {
-            const TSNode bn = ts_node_child( clause, j );
-            const char*  bt = ts_node_type( bn );
+            const char* bt = ts_node_type( bn );
             if( isBaseTypeNode( bt ) )                 // DIRECT: type node right under the clause
             {
                 emitBaseRef( bn, fileId, lang, src, refs );
-                continue;
+                return true;
             }
             // WRAPPED: descend ONE level into a wrapper (extends_clause / implements_clause / type_list)
             // and emit each type node it holds. One level is enough for every measured grammar shape.
-            const uint32_t wc = ts_node_child_count( bn );
-            for( uint32_t w = 0; w < wc; ++w )
+            ChildCursor wrapCursor( bn );
+            forEachChild( bn, wrapCursor.cur, [ & ]( TSNode wn )
             {
-                const TSNode wn = ts_node_child( bn, w );
                 if( isBaseTypeNode( ts_node_type( wn ) ) )
                 {
                     emitBaseRef( wn, fileId, lang, src, refs );
                 }
-            }
-        }
-    }
+                return true;
+            } );
+            return true;
+        } );
+        return true;
+    } );
 }
 
 // Rust inheritance capture (separate pass — different shape). `impl Trait for T { … }` is a top-level
@@ -387,8 +392,8 @@ void rustImplVisitNode( RustImplCtx& cx, TSNode node, const char* t )
     {
         return;
     }
-    const TSNode traitNode = ts_node_child_by_field_name( node, "trait", 5 );
-    const TSNode typeNode  = ts_node_child_by_field_name( node, "type",  4 );
+    const TSNode traitNode = fieldChild( node, NodeField::Trait );
+    const TSNode typeNode  = fieldChild( node, NodeField::Type );
     if( ts_node_is_null( traitNode ) || ts_node_is_null( typeNode ) )
     {
         return;
@@ -451,7 +456,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             //   type_identifier — a plain class name (SpherePool)
             //   type_descriptor — a reference/pointer type containing a type_identifier
             // We consider type_identifier directly under type= as the declared type.
-            const TSNode typeNode = ts_node_child_by_field_name( fdecl, "type", 4 );
+            const TSNode typeNode = fieldChild( fdecl, NodeField::Type );
             if( ts_node_is_null( typeNode ) )
             {
                 continue;
@@ -516,7 +521,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             //   field_identifier                       — plain value field: `SpherePool m_pool;`
             //   reference_declarator > field_identifier — reference field: `SoundEngine& m_sound;`
             //   pointer_declarator   > field_identifier — pointer field:   `Foo* m_foo;`
-            const TSNode decl = ts_node_child_by_field_name( fdecl, "declarator", 10 );
+            const TSNode decl = fieldChild( fdecl, NodeField::Declarator );
             if( ts_node_is_null( decl ) )
             {
                 continue;
@@ -641,7 +646,7 @@ inline std::string importSpecifierText( TSNode node, std::string_view src )
 // for the first one.
 inline std::string csharpUsingTarget( TSNode usingNode, std::string_view src )
 {
-    if( const TSNode aliasType = ts_node_child_by_field_name( usingNode, "type", 4 ); !ts_node_is_null( aliasType ) )
+    if( const TSNode aliasType = fieldChild( usingNode, NodeField::Type ); !ts_node_is_null( aliasType ) )
     {
         return importSpecifierText( aliasType, src );
     }
@@ -734,12 +739,12 @@ inline std::string phpUseTarget( TSNode useNode, std::string_view src )
 //     unresolvable include: a floor, never a wrong answer.
 inline std::string jsModuleLoadTarget( TSNode n, std::string_view src )
 {
-    const std::string_view callee = nodeFieldText( n, "function", 8, src );
+    const std::string_view callee = nodeFieldText( n, NodeField::Function, src );
     if( callee != "require" && callee != "import" )
     {
         return {};
     }
-    const TSNode ar = ts_node_child_by_field_name( n, "arguments", 9 );
+    const TSNode ar = fieldChild( n, NodeField::Arguments );
     if( ts_node_is_null( ar ) )
     {
         return {};
@@ -794,8 +799,10 @@ std::string includePathOf( std::string_view spelling, bool& isAngleOut )
 // plus its own null-and-bounds ladder. Empty when the node carries no readable path field.
 inline std::string preprocIncludeTarget( TSNode n, std::string_view src, bool& isAngleOut )
 {
-    const std::string_view spelling = nodeFieldText( n, "path", 4, src );
-    return spelling.empty() ? std::string{} : includePathOf( spelling, isAngleOut );
+    // No empty-guard: includePathOf( "" ) already returns "" through its own size < 2 arm, and leaves
+    // isAngleOut alone doing it. The guard that used to stand here was dead, and --quality-delta found it
+    // the way dead code is usually found — as a duplication, once the two call sites normalised alike.
+    return includePathOf( nodeFieldText( n, NodeField::Path, src ), isAngleOut );
 }
 
 // The `#import "x.h"` spelling under the C/C++ grammar. `#import` is `#include` + include-once, so it
@@ -808,12 +815,12 @@ inline std::string preprocIncludeTarget( TSNode n, std::string_view src, bool& i
 // beyond #import.
 inline std::string preprocImportTarget( TSNode n, std::string_view src, bool& isAngleOut )
 {
-    if( nodeFieldText( n, "directive", 9, src ) != "#import" )
+    if( nodeFieldText( n, NodeField::Directive, src ) != "#import" )
     {
         return {};
     }
-    const std::string_view spelling = nodeFieldText( n, "argument", 8, src );   // preproc_arg: runs to end-of-line
-    return spelling.empty() ? std::string{} : includePathOf( spelling, isAngleOut );   // the closing delimiter ends the path
+    // preproc_arg runs to end-of-line, so the CLOSING delimiter ends the path — includePathOf's job.
+    return includePathOf( nodeFieldText( n, NodeField::Argument, src ), isAngleOut );
 }
 
 // ─── kParserVer 81: the four languages that had no directive branch at all ───────────────────────────
@@ -877,12 +884,12 @@ inline std::string bashWordText( TSNode arg, std::string_view src )
 // positional parameters to the sourced script, they are not further files.
 inline std::string bashSourceTarget( TSNode n, std::string_view src )
 {
-    const std::string_view name = nodeFieldText( n, "name", 4, src );
+    const std::string_view name = nodeFieldText( n, NodeField::Name, src );
     if( name != "source" && name != "." )
     {
         return {};
     }
-    return bashWordText( ts_node_child_by_field_name( n, "argument", 8 ), src );
+    return bashWordText( fieldChild( n, NodeField::Argument ), src );
 }
 
 // The first STRING-literal argument of a call-shaped node, read through the grammar: `arguments`/
@@ -920,12 +927,12 @@ inline std::string firstStringArgText( TSNode args, std::string_view src )
 // is somebody's own method, not the loader.
 inline std::string luaRequireTarget( TSNode n, std::string_view src )
 {
-    const TSNode name = ts_node_child_by_field_name( n, "name", 4 );
+    const TSNode name = fieldChild( n, NodeField::Name );
     if( ts_node_is_null( name ) || !kindIs( ts_node_type( name ), "identifier" ) || nodeTextOf( name, src ) != "require" )
     {
         return {};
     }
-    return firstStringArgText( ts_node_child_by_field_name( n, "arguments", 9 ), src );
+    return firstStringArgText( fieldChild( n, NodeField::Arguments ), src );
 }
 
 // Ruby `require_relative "x"` / `require "lib/x"` / `load "x.rb"` — a `call` whose `method:` is one of
@@ -944,11 +951,11 @@ inline std::string luaRequireTarget( TSNode n, std::string_view src )
 // mis-resolve: unique-or-degrade means a wrong file-relative guess simply finds nothing.
 inline std::string rubyRequireTarget( TSNode n, std::string_view src )
 {
-    if( !ts_node_is_null( ts_node_child_by_field_name( n, "receiver", 8 ) ) )
+    if( !ts_node_is_null( fieldChild( n, NodeField::Receiver ) ) )
     {
         return {};
     }
-    const TSNode method = ts_node_child_by_field_name( n, "method", 6 );
+    const TSNode method = fieldChild( n, NodeField::Method );
     if( ts_node_is_null( method ) || !kindIs( ts_node_type( method ), "identifier" ) )
     {
         return {};
@@ -958,7 +965,7 @@ inline std::string rubyRequireTarget( TSNode n, std::string_view src )
     {
         return {};
     }
-    std::string spec = firstStringArgText( ts_node_child_by_field_name( n, "arguments", 9 ), src );
+    std::string spec = firstStringArgText( fieldChild( n, NodeField::Arguments ), src );
     if( spec.empty() )
     {
         return {};
@@ -989,7 +996,7 @@ inline std::string rubyRequireTarget( TSNode n, std::string_view src )
 // and it is how Ruby spells a constant whose whole definition is its existence — so it defines. Recorded on the ConstOpen captureIncludes emits; read by resolve.h::buildRubyConstantIndex (test/rubyconstcheck.sh, namespace arms).
 inline bool rubyNamespaceOnly( TSNode defNode ) noexcept
 {
-    const TSNode body = ts_node_child_by_field_name( defNode, "body", 4 );
+    const TSNode body = fieldChild( defNode, NodeField::Body );
     if( ts_node_is_null( body ) )
     {
         return false;   // an empty open defines its constant
@@ -1047,7 +1054,7 @@ inline std::string rubySuperclassTarget( TSNode superclassNode, std::string_view
 inline std::string rubyAutoloadTarget( TSNode n, std::string_view src, bool& symbolic )
 {
     symbolic = false;
-    const TSNode args = ts_node_child_by_field_name( n, "arguments", 9 );
+    const TSNode args = fieldChild( n, NodeField::Arguments );
     if( ts_node_is_null( args ) || ts_node_named_child_count( args ) == 0 )
     {
         return {};
@@ -1078,11 +1085,11 @@ inline std::string rubyAutoloadTarget( TSNode n, std::string_view src, bool& sym
 // `autoload` and the three mixin verbs; `obj.include X` is somebody's own method and reads as nothing.
 inline std::string_view rubyConstantDirective( TSNode n, std::string_view src )
 {
-    if( !ts_node_is_null( ts_node_child_by_field_name( n, "receiver", 8 ) ) )
+    if( !ts_node_is_null( fieldChild( n, NodeField::Receiver ) ) )
     {
         return {};
     }
-    const TSNode method = ts_node_child_by_field_name( n, "method", 6 );
+    const TSNode method = fieldChild( n, NodeField::Method );
     if( ts_node_is_null( method ) || !kindIs( ts_node_type( method ), "identifier" ) )
     {
         return {};
@@ -1106,7 +1113,7 @@ inline std::vector<std::string> rubyMixinTargets( TSNode n, std::string_view src
     {
         return out;
     }
-    const TSNode args = ts_node_child_by_field_name( n, "arguments", 9 );
+    const TSNode args = fieldChild( n, NodeField::Arguments );
     if( ts_node_is_null( args ) )
     {
         return out;
@@ -1150,8 +1157,8 @@ inline bool rubyIsConstantChain( TSNode n ) noexcept
         {
             return false;
         }
-        const TSNode name  = ts_node_child_by_field_name( n, "name", 4 );
-        const TSNode scope = ts_node_child_by_field_name( n, "scope", 5 );
+        const TSNode name  = fieldChild( n, NodeField::Name );
+        const TSNode scope = fieldChild( n, NodeField::Scope );
         if( ts_node_is_null( name ) || !kindIs( ts_node_type( name ), "constant" ) )
         {
             return false;
@@ -1172,7 +1179,7 @@ inline bool rubyIsConstantChain( TSNode n ) noexcept
 // rescue class is NOT a receiver: a disclosed floor of this round, stated in the gate's header.
 inline std::string rubyReceiverTarget( TSNode n, std::string_view src )
 {
-    const TSNode recv = ts_node_child_by_field_name( n, "receiver", 8 );
+    const TSNode recv = fieldChild( n, NodeField::Receiver );
     if( !rubyIsConstantChain( recv ) )
     {
         return {};
@@ -1196,7 +1203,7 @@ inline std::string rubyReceiverTarget( TSNode n, std::string_view src )
 // the name alias does NOT narrow call resolution, exactly as that query's own comment already says.
 inline std::string elixirDirectiveTarget( TSNode n, std::string_view src )
 {
-    const TSNode target = ts_node_child_by_field_name( n, "target", 6 );
+    const TSNode target = fieldChild( n, NodeField::Target );
     if( ts_node_is_null( target ) || !kindIs( ts_node_type( target ), "identifier" ) )
     {
         return {};
@@ -1225,7 +1232,7 @@ inline std::string elixirDirectiveTarget( TSNode n, std::string_view src )
 inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src )
 {
     std::vector<std::string> out;
-    const TSNode target = ts_node_child_by_field_name( n, "target", 6 );
+    const TSNode target = fieldChild( n, NodeField::Target );
     if( ts_node_is_null( target ) || !kindIs( ts_node_type( target ), "identifier" ) )
     {
         return out;
@@ -1245,8 +1252,8 @@ inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src
     {
         return out;
     }
-    const TSNode left  = ts_node_child_by_field_name( first, "left", 4 );
-    const TSNode right = ts_node_child_by_field_name( first, "right", 5 );
+    const TSNode left  = fieldChild( first, NodeField::Left );
+    const TSNode right = fieldChild( first, NodeField::Right );
     if( ts_node_is_null( left ) || ts_node_is_null( right )
         || !kindIs( ts_node_type( left ), "alias" ) || !kindIs( ts_node_type( right ), "tuple" ) )
     {
@@ -1595,13 +1602,13 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         // needs the REAL written specifier, not the clause). Empirically confirmed node shapes:
         //   Python: import_statement name:(dotted_name|aliased_import)  → the dotted module `pkg.mod`.
         //   TS/JS:  import_statement source:(string)                    → the quoted specifier `'./x'`.
-        // ts_node_child_by_field_name returns null for the language that lacks the field, so a single
+        // A grammar that lacks the field resolves it to id 0, and fieldChild returns null for it, so a single
         // capture covers both grammars without a per-language branch.
-        if( const TSNode src_ = ts_node_child_by_field_name( n, "source", 6 );  !ts_node_is_null( src_ ) )
+        if( const TSNode src_ = fieldChild( n, NodeField::Source );  !ts_node_is_null( src_ ) )
         {
             target = importSpecifierText( src_, src );                    // TS/JS: strip the surrounding quotes
         }
-        else if( const TSNode nm = ts_node_child_by_field_name( n, "name", 4 );  !ts_node_is_null( nm ) )
+        else if( const TSNode nm = fieldChild( n, NodeField::Name );  !ts_node_is_null( nm ) )
         {
             target = importSpecifierText( nm, src );                      // Python: the dotted module head
         }
@@ -1610,7 +1617,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
     {
         // module_name:(dotted_name)  → `pkg.mod`;  module_name:(relative_import)  → `.rel` / `..up` (leading
         // dots preserved so the resolver can resolve relative-to-file). The imported-names clause is dropped.
-        if( const TSNode mn = ts_node_child_by_field_name( n, "module_name", 11 );  !ts_node_is_null( mn ) )
+        if( const TSNode mn = fieldChild( n, NodeField::ModuleName );  !ts_node_is_null( mn ) )
         {
             target = importSpecifierText( mn, src );
         }
@@ -1663,7 +1670,7 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
     {
         // argument:(scoped_identifier|scoped_use_list|identifier|…)  → `crate::a::b`. A brace group
         // `crate::{a, b}` is kept verbatim; the resolver degrades on it (no unique single-file hit).
-        if( const TSNode arg = ts_node_child_by_field_name( n, "argument", 8 );  !ts_node_is_null( arg ) )
+        if( const TSNode arg = fieldChild( n, NodeField::Argument );  !ts_node_is_null( arg ) )
         {
             target = importSpecifierText( arg, src );
         }
@@ -1673,9 +1680,9 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         // A body-LESS `mod x;` declares module `x` in a sibling file (`x.rs` or `x/mod.rs`); a `mod x { … }`
         // with a body is INLINE (no file) → skip it. Prefix `mod:` so the Rust resolver applies the
         // module-file rule, distinct from a bare `use x;`. name:(identifier) → `x`.
-        if( ts_node_is_null( ts_node_child_by_field_name( n, "body", 4 ) ) )
+        if( ts_node_is_null( fieldChild( n, NodeField::Body ) ) )
         {
-            if( const TSNode nm = ts_node_child_by_field_name( n, "name", 4 );  !ts_node_is_null( nm ) )
+            if( const TSNode nm = fieldChild( n, NodeField::Name );  !ts_node_is_null( nm ) )
             {
                 if( std::string bare = importSpecifierText( nm, src );  !bare.empty() )
                 {
@@ -1754,36 +1761,39 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
     std::string target;
     if( isFrom )
     {
-        const TSNode mn = ts_node_child_by_field_name( stmt, "module_name", 11 );
+        const TSNode mn = fieldChild( stmt, NodeField::ModuleName );
         if( ts_node_is_null( mn ) )
         {
             return;
         }
         target = importSpecifierText( mn, src );
     }
-    const TSNode        moduleNode = isFrom ? ts_node_child_by_field_name( stmt, "module_name", 11 ) : TSNode{};
-    const std::uint32_t n          = ts_node_child_count( stmt );
-    for( std::uint32_t i = 0; i < n; ++i )
+    const TSNode        moduleNode = isFrom ? fieldChild( stmt, NodeField::ModuleName ) : TSNode{};
+    // One import statement's clause list: the count comes from the input (`from m import ( a, b, … )`),
+    // and a comment between two clauses is a further child, so the indexed form was O(children²) here too.
+    // No scaling arm exists for it (an import flood is not a shape any corpus produces) — this is the
+    // pure-iteration conversion, covered by the byte-identical arms (test/childwalkscalecheck.sh).
+    ChildCursor cursor( stmt );
+    forEachChild( stmt, cursor.cur, [ & ]( TSNode kid )
     {
-        const TSNode kid = ts_node_child( stmt, i );
         if( ts_node_is_null( kid ) )
         {
-            continue;
+            return true;
         }
         const char* kt = ts_node_type( kid );
         if( isFrom && ts_node_eq( kid, moduleNode ) )
         {
-            continue;   // the module_name child of a from-import is not a bound name; only the `name:` clauses are
+            return true;   // the module_name child of a from-import is not a bound name; only the `name:` clauses are
         }
         std::string_view bound;
         std::string      clauseTarget;
         if( kindIs( kt, "aliased_import" ) )
         {
-            const TSNode alias = ts_node_child_by_field_name( kid, "alias", 5 );
-            const TSNode nm    = ts_node_child_by_field_name( kid, "name", 4 );
+            const TSNode alias = fieldChild( kid, NodeField::Alias );
+            const TSNode nm    = fieldChild( kid, NodeField::Name );
             if( ts_node_is_null( alias ) || ts_node_is_null( nm ) )
             {
-                continue;
+                return true;
             }
             bound        = pattern::nodeText( alias, src );
             clauseTarget = isFrom ? target : importSpecifierText( nm, src );
@@ -1805,11 +1815,11 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         }
         else
         {
-            continue;   // keywords, punctuation, wildcard_import
+            return true;   // keywords, punctuation, wildcard_import
         }
         if( bound.empty() || clauseTarget.empty() )
         {
-            continue;
+            return true;
         }
         RawBind b;
         b.fileId    = fileId;
@@ -1819,7 +1829,8 @@ inline void capturePythonImportBinds( TSNode stmt, const char* t, std::uint32_t 
         b.var.assign( bound );
         b.typeName  = std::move( clauseTarget );
         binds.push_back( std::move( b ) );
-    }
+        return true;
+    } );
 }
 
 void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_view src, std::vector<Include>& incs, std::vector<RawRef>& refs,
@@ -1880,7 +1891,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
         std::uint32_t childOpenIdx = frame.openIdx;
         if( lang == Lang::Ruby && ( kindIs( t, "class" ) || kindIs( t, "module" ) ) )
         {
-            if( const TSNode nm = ts_node_child_by_field_name( n, "name", 4 ); !ts_node_is_null( nm ) )
+            if( const TSNode nm = fieldChild( n, NodeField::Name ); !ts_node_is_null( nm ) )
             {
                 if( std::string written = rubyConstantText( nm, src ); !written.empty() )
                 {

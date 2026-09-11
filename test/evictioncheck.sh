@@ -33,8 +33,18 @@
 #       saveCache publishes via tmp-then-rename, and a double fs::remove of an already-gone file is a
 #       benign ENOENT no-op — so two sweepers racing on the same stale blob is safe by construction.
 #
+#   (h) P1-1: the MRU root's SIBLING family is PINNED through a byte-budget sweep — the sweep takes another
+#       root's blob instead, and says so once on stderr.
+#   (i) P1-1: when the pinned set ALONE exceeds the budget it is kept anyway, said once on stderr.
+#   (j) P1-1: a sweep that evicts nothing writes ZERO bytes to stderr (the disclosure is conditional).
+#   (k) ONE ROOT KEY FOR EVERY FAMILY: prime lean/rich/qheadsnap/qsnap/qchurn against one root; every blob
+#       name must carry the SAME 16-hex root field, qchurn included (P1-1's stated gap).
+#   (l) that key is a property of the ROOT, not its SPELLING: a trailing slash and a symlinked path add no
+#       new key.
+#
 # Sparse filler (truncate -s) keeps the ">2 GB" file logically oversized (what fs::file_size measures)
-# without touching real disk, so the gate stays fast. Does NOT edit regression.sh.
+# without touching real disk, so the gate stays fast — which is also why arms (h)-(j) can exercise the REAL
+# 2 GB budget rather than a test-only override. Does NOT edit regression.sh.
 # Usage:  test/evictioncheck.sh   |   RIPWIRE_BIN=build_r2a1/ripwire test/evictioncheck.sh
 set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
@@ -239,5 +249,297 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
                        || no "(c3) a fresh lock was removed — the age bound is not binding"
 # (d) .bin behavior unchanged: already covered above by the pre-existing OLD/FILLER/FRESH .bin arms (both
 # flat and sharded layouts), which this section's separate TMPDIR/CACHEDIR does not touch or interact with.
+
+# ── (h)(i)(j) P1-1 (2026-09-10 audit) — the MRU ROOT'S OWN FAMILIES ARE PINNED DURING A BUDGET SWEEP ────
+# THE DEFECT. One llvm-project root needs 1.76 GB of cache for its OWN two families (rich 1.19 GB + lean
+# 0.57 GB) against a dir-wide 2 GB oldest-first sweep. Add anything else — a second corpus, or one
+# --edit-check HEAD snapshot (0.52 GB on llvm) — and the sweep evicts the SIBLING FAMILY OF THE SAME ROOT,
+# because evictOldCacheFamily only ever protected `keepPath` (the one blob being written). Measured, same
+# argv, same session, same binary: `--grep=SmallVector` 20 s → 206 s, `--for=...` 19 s → 268 s, and the
+# ping-pong is self-sustaining (each cold run's save evicts the other family again). Zero disclosure: all
+# four .err files were 0 bytes. The 2 GB constant is a blow-up guard and is NOT lowered (owner rule
+# `quality-first-caps-are-blowup-guards`); the eviction ORDER is what changes.
+#
+# THE CONTRACT UNDER TEST (quality.h: cacheBlobRootKey + evictOldCacheFamily's size pass):
+#   (h) every blob of the MRU root — lean, rich, qheadsnap, qsnap, … — is PINNED for the duration of a
+#       byte-budget sweep; the sweep takes OTHER roots first, oldest-first, exactly as before. Red-first:
+#       against the pre-change binary the pinned sibling is the FIRST thing deleted (it is the oldest).
+#   (i) if the pinned set ALONE still exceeds the budget, it is kept anyway (evicting it would force the
+#       full re-parse this whole change exists to prevent) and ONE `ripwire: cache …` line says so. That
+#       line is a plain stderr emit, never DEGRADED_PATH_ALERT: NDEBUG compiles the alert out and the
+#       whole point is that a Release binary discloses this too.
+#   (j) the disclosure is CONDITIONAL: a run whose sweep evicts nothing writes ZERO bytes to stderr.
+# The PIN KEY is the 16-hex root field that every family's filename carries — defaultCachePath's
+# `ripwire-<rootKey>-{lean,rich}.bin`, mcpCachePath's `ripwire-mcp-<rootKey>.cache` and shaKeyedCachePath's
+# `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin` alike, so no plumbing is needed: the sweep reads it
+# off `keepPath` itself. That all three really do SPELL it the same way is arms (k)/(l) below — when these
+# arms were written they did not, and (h) was pinning only half the dir.
+#
+# The AGE pass is deliberately NOT pinned — a blob nobody has touched in 30 days is stale by the hygiene
+# policy's own definition, and its eviction costs one cold parse rather than a self-sustaining ping-pong.
+# Every arm below therefore seeds mtimes inside the 30-day window, so only the size pass can fire.
+#
+# Sparse fillers again (truncate -s), so these arms exercise the REAL 2 GB budget — no test-only override
+# env var is introduced, and the constant under test is the shipped one.
+
+# apparent bytes of every ripwire-*.bin under an arbitrary cache dir (the arms below each own a private
+# one, so the file-scope allblobs()/dirapparentbytes() — which are bound to $CACHEDIR — do not apply).
+dirbytesof(){
+    local total=0 f sz
+    while IFS= read -r f; do
+        [ -e "$f" ] || continue
+        sz="$( apparentsize "$f" )"
+        total=$(( total + sz ))
+    done < <( find "$1" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null )
+    echo "$total"
+}
+
+# ---- (h) two roots, the MRU root's sibling family is the OLDEST blob in the dir --------------------
+TMP3="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3"' EXIT
+CB3="$TMP3/cachebase"; CD3="$CB3/ripwire"; mkdir -p "$CD3"
+R3="$TMP3/repo"; mkdir -p "$R3"
+printf 'int pinme( void )\n{\n    return 1;\n}\n' > "$R3/f.cpp"
+
+env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >/dev/null 2>"$TMP3/prime.err"
+# -name 'ripwire-*-lean.bin', not 'ripwire-*.bin' (CodeRabbit #127 / 3985249724): the sed below only
+# matches the LEAN basename, and the priming run can leave a -rich.bin beside it. `head -1` over the wider
+# glob then returns whichever the filesystem happens to list first, ROOTHEX3 keeps the whole basename, and
+# the 16-hex check goes red for a directory-ordering reason. Arm (k) at the bottom of this file already
+# uses the precise pattern for the same job.
+OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
+ROOTHEX3="$( basename "${OWN3:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+if printf '%s' "$ROOTHEX3" | grep -qE '^[0-9a-f]{16}$'; then
+    ok "(h) primed: this root's lean blob names root key $ROOTHEX3"
+else
+    no "(h) could not read a 16-hex root key off the primed blob (own='$OWN3')"
+fi
+
+# the SIBLING family of the SAME root — seeded FLAT (the sweep must find it in either layout) and made
+# the OLDEST blob in the dir, which is exactly what the pre-change oldest-first sweep deletes first.
+SIB3="$CD3/ripwire-$ROOTHEX3-rich.bin"
+truncate -s 1200M "$SIB3"
+# …and the SAME root's MCP index blob. It is the one family whose name is nothing but a root key, and it
+# is the only one that ends `.cache` rather than `-<something>.bin` — so quality.h::cacheBlobRootKey, which
+# split on '-' alone, read its last field as `<rootKey>.cache` (22 bytes, not hex16) and returned an EMPTY
+# key. An empty key pins nothing: the sweep kept this root's lean and rich blobs and evicted the MCP index
+# of the very root it was serving, and the MCP server paid a full re-parse for it. Zero-size on purpose —
+# survival is the question, not bytes (CodeRabbit #127 / 3985249706).
+MCP3="$CD3/ripwire-mcp-$ROOTHEX3.cache"
+: > "$MCP3"
+sleep 1
+# a DIFFERENT root's blob, newer and bigger — the one an oldest-first sweep would keep, and the one the
+# fixed sweep must take instead.
+OTHER3="$CD3/ripwire-00000000deadf00d-lean.bin"
+truncate -s 1500M "$OTHER3"
+
+b3="$( dirbytesof "$CD3" )"
+[ "$b3" -gt 2147483648 ] && ok "(h) seed: dir exceeds the 2 GB budget (~$b3 bytes: 1200M sibling + 1500M other root)" \
+    || no "(h) seed: dir does not exceed budget (~$b3 bytes) — fillers too small"
+
+printf 'int pinme2( void )\n{\n    return 2;\n}\n' >> "$R3/f.cpp"   # Win-2: saveCache (and the sweep) only run when something changed
+env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >"$TMP3/run.xml" 2>"$TMP3/run.err"
+rc4=$?
+[ "$rc4" -eq 0 ] && ok "(h) run exits 0" || { no "(h) run exited $rc4"; cat "$TMP3/run.err"; }
+grep -q 'n="pinme"' "$TMP3/run.xml" 2>/dev/null && ok "(h) run output still correct (pinme present)" || no "(h) run output missing pinme()"
+
+[ -e "$SIB3" ] && ok "(h) the MRU root's SIBLING family survives a budget sweep (pinned) — P1-1's 206 s ping-pong" \
+    || no "(h) the MRU root's sibling family was EVICTED — the sweep still takes the blob this root is about to need"
+[ ! -e "$OTHER3" ] && ok "(h) the OTHER root's blob is what the sweep took instead" \
+    || no "(h) the other root's blob survived — the sweep did not free the bytes it needed"
+[ -e "$MCP3" ] && ok "(h) the MRU root's MCP index blob survives too — ripwire-mcp-<key>.cache reads as THIS root" \
+    || no "(h) the MRU root's ripwire-mcp-<key>.cache was EVICTED — cacheBlobRootKey cannot read a '.'-terminated key field"
+
+[ -s "$TMP3/run.err" ] && ok "(h) the eviction is DISCLOSED on stderr (was 0 bytes before this change)" \
+    || no "(h) an eviction happened with ZERO disclosure — the honesty rule does not reach the cache layer"
+grep -q '^ripwire: cache ' "$TMP3/run.err" 2>/dev/null && ok "(h) the disclosure uses the house 'ripwire: cache …' shape" \
+    || { no "(h) no 'ripwire: cache …' line on stderr"; cat "$TMP3/run.err"; }
+errlines3="$( wc -l < "$TMP3/run.err" | tr -d ' ' )"
+[ "$errlines3" -eq 1 ] && ok "(h) exactly ONE disclosure line (not one per evicted blob)" \
+    || no "(h) expected 1 stderr line, got $errlines3"
+
+# ---- (i) the pinned set ALONE exceeds the budget → kept anyway, said once ---------------------------
+TMP4="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4"' EXIT
+CB4="$TMP4/cachebase"; CD4="$CB4/ripwire"; mkdir -p "$CD4"
+R4="$TMP4/repo"; mkdir -p "$R4"
+printf 'int solo( void )\n{\n    return 1;\n}\n' > "$R4/f.cpp"
+
+env -u XDG_CACHE_HOME TMPDIR="$CB4" "$BIN" "$R4" >/dev/null 2>/dev/null
+OWN4="$( find "$CD4" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null | head -1 )"
+ROOTHEX4="$( basename "${OWN4:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+SIB4="$CD4/ripwire-$ROOTHEX4-rich.bin"
+if printf '%s' "$ROOTHEX4" | grep -qE '^[0-9a-f]{16}$'; then
+    truncate -s 2600M "$SIB4"   # this root's own sibling ALONE blows the 2 GB budget (llvm's rich blob is 1.19 GB; a second root doubles it)
+    ok "(i) primed: root key $ROOTHEX4, sibling family seeded at 2600M (over budget on its own)"
+else
+    no "(i) could not read a 16-hex root key off the primed blob (own='$OWN4')"
+fi
+
+printf 'int solo2( void )\n{\n    return 2;\n}\n' >> "$R4/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB4" "$BIN" "$R4" >"$TMP4/run.xml" 2>"$TMP4/run.err"
+rc5=$?
+[ "$rc5" -eq 0 ] && ok "(i) run exits 0 even with the pinned set over budget" || { no "(i) run exited $rc5"; cat "$TMP4/run.err"; }
+grep -q 'n="solo"' "$TMP4/run.xml" 2>/dev/null && ok "(i) run output still correct (solo present)" || no "(i) run output missing solo()"
+[ -e "$SIB4" ] && ok "(i) the pinned set is KEPT even though it alone exceeds the budget" \
+    || no "(i) the pinned set was evicted when nothing else could be freed — the ping-pong is back"
+grep -q '^ripwire: cache ' "$TMP4/run.err" 2>/dev/null && ok "(i) the over-budget pinned set is said once on stderr" \
+    || { no "(i) the pinned set exceeded the budget with no disclosure"; cat "$TMP4/run.err"; }
+errlines4="$( wc -l < "$TMP4/run.err" | tr -d ' ' )"
+[ "$errlines4" -eq 1 ] && ok "(i) exactly ONE stderr line" || no "(i) expected 1 stderr line, got $errlines4"
+
+# ---- (j) nothing evicted → ZERO stderr bytes -------------------------------------------------------
+# The disclosure must be conditional, or every warm run in every gate that compares stderr grows a line.
+TMP5="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4" "$TMP5"' EXIT
+CB5="$TMP5/cachebase"; CD5="$CB5/ripwire"; mkdir -p "$CD5"
+R5="$TMP5/repo"; mkdir -p "$R5"
+printf 'int quiet( void )\n{\n    return 1;\n}\n' > "$R5/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >/dev/null 2>/dev/null
+printf 'int quiet2( void )\n{\n    return 2;\n}\n' >> "$R5/f.cpp"
+env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >"$TMP5/run.xml" 2>"$TMP5/run.err"
+rc6=$?
+[ "$rc6" -eq 0 ] && ok "(j) run exits 0" || no "(j) run exited $rc6"
+[ ! -s "$TMP5/run.err" ] && ok "(j) a sweep that evicts nothing writes ZERO bytes to stderr" \
+    || { no "(j) stderr is not empty on a no-eviction run — the disclosure is unconditional"; cat "$TMP5/run.err"; }
+
+# ---- (k)(l) ONE ROOT KEY FOR EVERY CACHE FAMILY -----------------------------------------------------
+#
+# THE DEFECT (2026-09-10, the follow-up to P1-1's stated gap). The pin in (h) is only as wide as the set of
+# blobs that SPELL the root the same way, and two spellings shipped. Both builders hash realpath(root) with
+# FNV-1a, but with DIFFERENT offset bases:
+#   main.cpp::defaultCachePath        seeded 1469598103934665603   (17 digits — a truncated basis)
+#   quality.h::cacheRootKeyHex        seeded 14695981039346656037  (the real FNV-1a 64 basis)
+# so ONE root produced TWO key families, always, on every corpus. Measured on llvm-project: lean/rich carried
+# 4280d3ca01d82374 while qchurn carried 6b73c58ba5897c7a. Reproduced on a four-file fixture in one command:
+# `ripwire-844a155665d606eb-{lean,rich}.bin` beside `ripwire-qchurn-526f2ad625b9f069--….bin`. Consequence:
+# the byte-budget pin covers lean+rich and leaves qheadsnap/qsnap/qbody/qhist/qms/qchurn/stier unpinned — a
+# git-metadata family that grew large under the divergent spelling is still evicted out from under the very
+# root that is writing.
+#
+#   (k) prime EVERY family a normal session writes (default map, --for, --edit-check, --quality-delta,
+#       --cochange) against ONE root, then read the 16-hex root field off every blob name by the SAME rule
+#       cacheBlobRootKey uses (the first '-'-delimited field that is exactly 16 hex digits). There must be
+#       EXACTLY ONE distinct value, and a qchurn blob must be among the blobs carrying it. Red-first: the
+#       pre-change binary yields two.
+#   (l) the key is a property of the ROOT, not of its SPELLING: the same tree addressed with a trailing
+#       slash and through a symlink must not add a single new key (realpath-normalized before hashing).
+#
+# git is required for the qchurn/qheadsnap/qsnap families to exist at all; without it those verbs degrade to
+# the uncached walk and write no blob, so the arm would compare one family against itself and pass blind.
+if ! command -v git >/dev/null 2>&1; then
+    no "(k)(l) git is required to prime the qchurn/qheadsnap/qsnap families — cannot run"
+else
+
+# TWO families carry a 16-hex field that is NOT a root key and must be read as unowned: `ripwire-docmd-`
+# is content-addressed (the document's bytes) and `ripwire-stier-` is file-addressed (one span-tier memo
+# per source file above 32 KiB — an llvm --for leaves ~30 of them). quality.h names them in
+# `kNonRootKeyedBlobPrefixes`; this list is the shell mirror, and the arm below FAILS if the two disagree,
+# so a family added later with a non-root 16-hex field cannot quietly join the pin.
+NONROOT_PREFIXES='ripwire-docmd- ripwire-stier-'
+
+# the root field, by cacheBlobRootKey's own rule: FIRST '-'-delimited field of the basename that is
+# exactly 16 hex digits, EXCEPT for the non-root-keyed families above. Prints nothing when there is none.
+blobrootkey(){
+    local b p
+    b="$( basename "$1" )"
+    for p in $NONROOT_PREFIXES; do
+        case "$b" in "$p"*) return 0;; esac
+    done
+    printf '%s' "$b" | sed -E 's/\.(bin|cache)$//' | awk -F- '{ for( i = 1; i <= NF; ++i ) if( $i ~ /^[0-9a-f]{16}$/ ) { print $i; exit } }'
+}
+# every distinct root key present under a cache dir, sorted+uniqued
+allrootkeys(){
+    local f
+    while IFS= read -r f; do
+        blobrootkey "$f"
+    done < <( find "$1" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*' 2>/dev/null ) | sort -u
+}
+# prime every family a normal session writes, against root spelling $2, cache base $1
+primeallfamilies(){
+    local cb="$1" rt="$2"
+    env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt"                            >/dev/null 2>&1
+    env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --for="how does pinme work" >/dev/null 2>&1
+    env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --edit-check=pinme          >/dev/null 2>&1
+    env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --quality-delta             >/dev/null 2>&1
+    env -u XDG_CACHE_HOME TMPDIR="$cb" "$BIN" "$rt" --cochange=f.cpp            >/dev/null 2>&1
+}
+
+# the two lists must name the SAME families, or this arm reads a key the binary does not.
+SRC_NONROOT="$( sed -n 's/^inline constexpr std::string_view kNonRootKeyedBlobPrefixes\[\] = {\(.*\)};$/\1/p' "$ROOT/src/quality.h" \
+                | tr ',' '\n' | sed -E 's/[^"]*"([^"]*)".*/\1/' | grep . | sort | tr '\n' ' ' )"
+WANT_NONROOT="$( printf '%s\n' $NONROOT_PREFIXES | sort | tr '\n' ' ' )"
+[ -n "$SRC_NONROOT" ] && [ "$SRC_NONROOT" = "$WANT_NONROOT" ] \
+    && ok "(k) the non-root-keyed family list matches quality.h::kNonRootKeyedBlobPrefixes ($WANT_NONROOT)" \
+    || no "(k) family-list drift: quality.h says '$SRC_NONROOT', this gate reads '$WANT_NONROOT'"
+
+TMP6="$( mktemp -d )"; trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4" "$TMP5" "$TMP6"' EXIT
+CB6="$TMP6/cachebase"; CD6="$CB6/ripwire"; mkdir -p "$CD6"
+R6="$TMP6/repo"; mkdir -p "$R6"
+cat > "$R6/f.cpp" <<'EOF_K'
+int pinme( void )
+{
+    return 1;
+}
+int other( void )
+{
+    return pinme() + 1;
+}
+EOF_K
+( cd "$R6" && git init -q . && git add -A && git -c user.email=g@g -c user.name=g commit -qm init ) >/dev/null 2>&1
+
+primeallfamilies "$CB6" "$R6"
+
+# The MCP index family, seeded by hand: `ripwire wrap` is not something this gate can drive, but the family
+# exists (mcpindex.h::mcpCachePath → quality::rootKeyedCachePath( root, "ripwire-mcp-", ".cache" )) and it is
+# the one whose key field is terminated by '.' rather than '-'. Without it in the dir the key-agreement arm
+# below never asked the question that #127/3985249706 answered.
+MCPKEY6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
+MCPKEY6="$( basename "${MCPKEY6:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
+if printf '%s' "$MCPKEY6" | grep -qE '^[0-9a-f]{16}$'; then
+    : > "$CD6/ripwire-mcp-$MCPKEY6.cache"
+    ok "(k) the MCP index family is present (ripwire-mcp-$MCPKEY6.cache) — the '.'-terminated key field"
+else
+    no "(k) could not derive this root's key from its lean blob, so the MCP family could not be seeded"
+fi
+
+blobs6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*' 2>/dev/null | wc -l | tr -d ' ' )"
+[ "$blobs6" -ge 4 ] && ok "(k) primed $blobs6 cache blobs across the families one session writes" \
+    || no "(k) only $blobs6 blob(s) written — the families under test were never primed"
+
+find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-qchurn-*' 2>/dev/null | grep -q . \
+    && ok "(k) the qchurn family is present (the family P1-1 named as unpinned)" \
+    || no "(k) no qchurn blob was written — --cochange did not memoize, arm proves nothing"
+
+keys6="$( allrootkeys "$CD6" )"
+nkeys6="$( printf '%s\n' "$keys6" | grep -c . )"
+if [ "$nkeys6" -eq 1 ]; then
+    ok "(k) ONE root key for every family: $keys6"
+else
+    no "(k) $nkeys6 distinct root keys for ONE root — a family outside the winning key is unpinnable:"
+    find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*' 2>/dev/null | while IFS= read -r f; do
+        printf '          %s  key=%s\n' "$( basename "$f" )" "$( blobrootkey "$f" )"
+    done
+fi
+
+# the qchurn blob must carry the SAME key as the main parse cache, by name — the specific gap P1-1 stated.
+lean6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
+churn6="$( find "$CD6" -mindepth 1 -maxdepth 2 -type f -name 'ripwire-qchurn-*' 2>/dev/null | head -1 )"
+if [ -n "$lean6" ] && [ -n "$churn6" ]; then
+    kl6="$( blobrootkey "$lean6" )"; kc6="$( blobrootkey "$churn6" )"
+    [ -n "$kl6" ] && [ "$kl6" = "$kc6" ] && ok "(k) qchurn carries the main parse cache's root key ($kl6)" \
+        || no "(k) qchurn key '$kc6' != lean key '$kl6' — the pin cannot reach it"
+else
+    no "(k) missing a lean or a qchurn blob to compare (lean='$lean6' churn='$churn6')"
+fi
+
+# ---- (l) trailing slash and a symlinked spelling of the SAME tree add no new key --------------------
+ln -s "$R6" "$TMP6/link"
+primeallfamilies "$CB6" "$R6/"
+primeallfamilies "$CB6" "$TMP6/link"
+keysl="$( allrootkeys "$CD6" )"
+nkeysl="$( printf '%s\n' "$keysl" | grep -c . )"
+[ "$nkeysl" -eq 1 ] && ok "(l) trailing-slash and symlinked spellings of one root keep ONE key ($keysl)" \
+    || { no "(l) $nkeysl distinct root keys after re-priming through '\$R/' and a symlink — the key follows the SPELLING, not the tree:"; printf '          %s\n' $keysl; }
+
+fi
+
 
 [ "$fail" -eq 0 ] && echo "evictioncheck: ALL PASS" || { echo "evictioncheck: SOME CHECKS FAILED"; exit 1; }

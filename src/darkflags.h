@@ -35,12 +35,15 @@
 #include "arch.h"               // relForHash
 #include "serialize.h"          // escapeXml
 #include "docparse.h"           // lowerExtOf / isDocExtension — which files are PROSE, not code
+#include "pageview.h"           // §P8: pageWindow / effectiveRowCap / secondaryCutAttrs — the ONE paging contract
+#include "nextverb.h"           // P3: nextAttrXml — the ONE pasteable follow-up a cut root carries
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT
 
 #include "btree.hpp"      // gtl::btree_map — sorted iteration (house rule: never std::map)
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -54,7 +57,7 @@ namespace darkflags
 {
 
 constexpr std::size_t kMaxFlagFileBytes = 4u << 20;   // 4 MB — past this a "source" file is generated data
-constexpr std::size_t kMaxSitesShown    = 8;          // per gate, per list; the rest are counted in a <more/>
+constexpr std::size_t kMaxSitesShown    = 8;          // <read> sites per gate; a DEFAULT, raisable by --limit=N (effectiveRowCap), lifted by --detail
 constexpr std::size_t kMaxEnvNameLen    = 128;        // longest plausible environment-variable name
 
 enum class GateKind : std::uint8_t { Compile = 0, CMake, Env };
@@ -1058,11 +1061,27 @@ inline FlagsResult computeFlags( const IngestResult& ing, const std::string& roo
 
 using XmlEscaper = std::function<std::string( std::string_view )>;
 
-inline void writeGate( std::FILE* out, const Gate& g, const XmlEscaper& ex, std::size_t maxSites )
+// C1 F-07 (2026-09-10): the <read> site list was cut at 8 and this file emitted no shown=/total=/capped=
+// token anywhere — a reporting verb dropping rows in silence, with only the <more reads=> remainder to say
+// so and no flag that could lift it. The GATE rows are the answer here ("what is built but dark") and are
+// never windowed; the SITES under one gate are context, so they are what pages. reads= on the same element
+// is already this listing's rule-2 total, so the disclosure is rule 1's pair alone (pageview.h).
+inline std::size_t gateReadWindow( const Gate& g, std::size_t maxSites, int pageOffset, PageWindow& window ) noexcept
 {
-    rw::emitTo( out, "<gate name=\"{}\" kind=\"{}\" default=\"{}\" dark=\"{}\" regions=\"{}\" loc=\"{}\" reads=\"{}\" p=\"{}\" l=\"{}\">",
+    // maxSites == SIZE_MAX is --detail ("every row"), which pageWindow spells as limit <= 0.
+    const int limit = maxSites >= std::size_t( INT_MAX ) ? 0 : int( maxSites );
+    window = pageWindow( g.reads.size(), limit, pageOffset );
+    return window.end - window.begin;
+}
+
+inline void writeGate( std::FILE* out, const Gate& g, const XmlEscaper& ex, std::size_t maxSites, int pageOffset = 0 )
+{
+    PageWindow        readPage{ 0, 0 };
+    const std::size_t shownCount = gateReadWindow( g, maxSites, pageOffset, readPage );
+    rw::emitTo( out, "<gate name=\"{}\" kind=\"{}\" default=\"{}\" dark=\"{}\" regions=\"{}\" loc=\"{}\" reads=\"{}\" p=\"{}\" l=\"{}\"{}>",
                   ex( g.name ).c_str(), gateKindTag( g.kind ), ex( g.def ).c_str(), isDarkDefault( g.def ) ? 1 : 0,
-                  g.regions, g.guardedLines, g.reads.size(), ex( g.defSite.path ).c_str(), g.defSite.line );
+                  g.regions, g.guardedLines, g.reads.size(), ex( g.defSite.path ).c_str(), g.defSite.line,
+                  secondaryCutAttrs( "reads", shownCount, g.reads.size() ).c_str() );
     if( !g.aliasOf.empty() )
     {
         rw::emitTo( out, "<alias-of name=\"{}\"/>", ex( g.aliasOf ).c_str() );
@@ -1080,8 +1099,7 @@ inline void writeGate( std::FILE* out, const Gate& g, const XmlEscaper& ex, std:
     // is exactly what it will not. The `shown++ >= cap` form got this wrong twice over — it left the counter
     // at cap+1, so <more/> under-reported the drop by one, and at exactly cap+1 reads the element vanished
     // entirely and one row disappeared unmarked. abicheck.h::writeAbiRef is the shape this follows.
-    const std::size_t shownCount = std::min( g.reads.size(), maxSites );
-    for( std::size_t readIndex = 0; readIndex < shownCount; ++readIndex )
+    for( std::size_t readIndex = readPage.begin; readIndex < readPage.end; ++readIndex )
     {
         rw::emitTo( out, "<read p=\"{}\" l=\"{}\"/>", ex( g.reads[ readIndex ].path ).c_str(), g.reads[ readIndex ].line );
     }
@@ -1092,7 +1110,7 @@ inline void writeGate( std::FILE* out, const Gate& g, const XmlEscaper& ex, std:
     rw::emitRaw( out, "</gate>" );
 }
 
-inline void writeFlags( std::FILE* out, const FlagsResult& res, std::size_t maxSites )
+inline void writeFlags( std::FILE* out, const FlagsResult& res, std::size_t maxSites, int pageOffset = 0 )
 {
     std::vector<char> esc;
     const XmlEscaper  ex = [ & ]( std::string_view s ) { return std::string( escapeXml( s, esc ) ); };
@@ -1106,6 +1124,20 @@ inline void writeFlags( std::FILE* out, const FlagsResult& res, std::size_t maxS
                        "is the COUNT of dark gates; it was spelled dark until that collided with the child bool. files= is THIS "
                        "verb's own harvest scan (source + CMakeLists files it read looking for gates) — a wider crawl than the "
                        "map's indexed corpus, so it will not equal the map's files= -->" );
+    // C1 F-07: the site listing's own vocabulary, DEFINED where the reader meets it (legendcoveragecheck's
+    // rule). Emitted unconditionally because it describes a listing every run carries, unlike the attributes
+    // themselves, which appear only on a gate that was actually cut.
+    rw::emitRaw( out, "<!-- ROWS AND WHAT IS NEVER CUT: the gate rows ARE the answer this verb was asked for "
+                       "and are never windowed, capped or paged, and gates/dark_gates/compile/cmake/env/files "
+                       "on the root plus regions/loc/reads/dark on every gate are counted over the FULL set "
+                       "before any cap exists. What pages is the read SITES under one gate, at 8 a gate by "
+                       "default: a gate whose sites were cut says shown_reads= (the rows this run printed) "
+                       "with reads_capped=\"1\", against the reads= total already on the same element, and the "
+                       "more reads= child keeps naming the remainder. The pair is emitted ONLY on a gate that "
+                       "was cut, never as a capped=\"0\" on the gates that fit. limit=N raises the per gate "
+                       "cap (offset=M skips that many sites in every gate), detail lifts it entirely, and "
+                       "next= on the root is the exact pasteable invocation that shows every site this run "
+                       "dropped. -->" );
     // §P8 collision: `dark=` was a COUNT here and a BOOL on the <gate/> children beneath — indistinguishable
     // to a parser. The count is renamed (index-vs-count rule) and reads correctly beside its
     // gates=/compile=/cmake=/env= siblings; it had ZERO parsers, so the bool half keeps its name.
@@ -1114,12 +1146,25 @@ inline void writeFlags( std::FILE* out, const FlagsResult& res, std::size_t maxS
     std::vector<char> fgEsc;
     const std::string fgFilterAttr = res.filter.empty() ? std::string()
                                                         : ( " filter=\"" + std::string( rw::escapeXml( res.filter, fgEsc ) ) + "\"" );
-    rw::emitTo( out, "<flags gates=\"{}\" dark_gates=\"{}\" compile=\"{}\" cmake=\"{}\" env=\"{}\" files=\"{}\"{}>",
-                  res.gates.size(), res.dark, res.compileCount, res.cmakeCount, res.envCount, res.filesScanned,
-                  fgFilterAttr.c_str() );
+    // P3 (nextverb.h): the ONE pasteable follow-up, and it is EXACT — the smallest --limit that cuts no
+    // gate's site list. Empty when nothing was cut, so an uncut root is byte-identical to what it was.
+    std::size_t widestCut = 0;
     for( const Gate& g : res.gates )
     {
-        writeGate( out, g, ex, maxSites );
+        PageWindow probe{ 0, 0 };
+        if( gateReadWindow( g, maxSites, pageOffset, probe ) < g.reads.size() )
+        {
+            widestCut = std::max( widestCut, g.reads.size() );
+        }
+    }
+    const std::string flagsNext = widestCut == 0 ? std::string()
+                                                 : nextAttrXml( "--flags --limit=" + std::to_string( widestCut ) );
+    rw::emitTo( out, "<flags gates=\"{}\" dark_gates=\"{}\" compile=\"{}\" cmake=\"{}\" env=\"{}\" files=\"{}\"{}{}>",
+                  res.gates.size(), res.dark, res.compileCount, res.cmakeCount, res.envCount, res.filesScanned,
+                  fgFilterAttr.c_str(), flagsNext.c_str() );
+    for( const Gate& g : res.gates )
+    {
+        writeGate( out, g, ex, maxSites, pageOffset );
     }
     rw::emitRaw( out, "</flags>" );
 }

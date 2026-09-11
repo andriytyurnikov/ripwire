@@ -72,10 +72,17 @@ printf '%s' "$OPY" | grep -q 'kind="error-masking" sym="handle"' \
 SH="$WORK/shc"; mkdir -p "$SH/src"
 ( cd "$SH" && git init -q && git config user.email t@t && git config user.name t )
 # hot.cpp: two commits (both recent) → will be edited a third time. cold.cpp: one commit → edited once.
-printf 'int hot(){ return 1; }\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
+# hot() is MULTI-LINE and gets TWO in-window commits on TWO DIFFERENT lines, because that is what the kind
+# gates on since the 2026-09-10 dial round: churn="self" (the edit touches a line committed inside the window)
+# is informational, and only "rewritten by >= 2 COMMITTED in-window commits, the working edit not counted"
+# fires exit 2. A one-line hot() rewritten by a single commit can never show more than ONE blamed commit, so
+# the old fixture could no longer exercise the gating arm at all (see test/qddialscheck.sh §1 for the pair).
+printf 'int hot(){\n    int x = 1;\n    return x;\n}\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
 ( cd "$SH" && git add -A >/dev/null 2>&1 && git commit -qm c1 >/dev/null 2>&1 )
-printf 'int hot(){ return 2; }\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
+printf 'int hot(){\n    int x = 2;\n    return x;\n}\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
 ( cd "$SH" && git add -A >/dev/null 2>&1 && git commit -qm c2 >/dev/null 2>&1 )
+printf 'int hot(){\n    int x = 2;\n    return x + 0;\n}\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
+( cd "$SH" && git add -A >/dev/null 2>&1 && git commit -qm c3 >/dev/null 2>&1 )
 # a SEPARATE file with only ONE commit (churn == 1 < 2 → never flags short-horizon-churn even when edited)
 printf 'int lone(){ return 0; }\nint uselone(){ return lone(); }\n' > "$SH/src/g.cpp"
 ( cd "$SH" && git add -A >/dev/null 2>&1 && git commit -qm c3single >/dev/null 2>&1 )
@@ -88,10 +95,10 @@ ecsh(){ ( cd "$SH" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo 
     || { no "short-horizon-churn: clean tree should be clean (exit $( ecsh ))"; dsh | tr '>' '\n' | grep '<r '; }
 
 # 2b) rewrite hot() (its file has 2 in-window commits) AND lone() (its file has 1) in the working tree.
-printf 'int hot(){ return 3; }\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
+printf 'int hot(){\n    int x = 3;\n    return x + 1;\n}\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
 printf 'int lone(){ return 9; }\nint uselone(){ return lone(); }\n' > "$SH/src/g.cpp"
 OSH="$( dsh )"
-[ "$( ecsh )" = 2 ] && ok "short-horizon-churn: rewrite of a high-churn file → exit 2" || no "short-horizon-churn: should exit 2 (got $( ecsh ))"
+[ "$( ecsh )" = 2 ] && ok "short-horizon-churn: rewrite of lines TWO in-window commits wrote → exit 2" || no "short-horizon-churn: should exit 2 (got $( ecsh ))"
 printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="hot"' \
     && ok "short-horizon-churn: hot() flagged (file had ≥2 recent commits, rewritten again)" || { no "short-horizon-churn: hot() not flagged"; printf '%s\n' "$OSH" | tr '>' '\n' | grep '<r '; }
 printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="lone"' \
@@ -161,9 +168,16 @@ OSF="$( cd "$SF" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
 printf '%s' "$OSF" | grep -q 'kind="short-horizon-churn" sym="hot"[^/]*churn="self"' \
     && ok "self/ambient churn: in-place edit of a recently-committed line → facet churn=\"self\"" \
     || { no "self/ambient churn: expected churn=\"self\" on hot()"; printf '%s\n' "$OSF" | tr '>' '\n' | grep '<r '; }
+# DIAL 2026-09-10 — this assertion is INVERTED on purpose, and the inversion is the finding: hot() here was
+# rewritten by exactly ONE in-window commit (c2), which is a touch, not thrash. SELF names that the edit lands
+# on hot content and stops there; what gates is 2 or more committed in-window rewrites (§2 above, and
+# test/qddialscheck.sh §1 measures the pair side by side). Over twelve LANDED commits of this repo the old
+# "SELF gates" rule supplied 135 of 171 gating rows at 0% precision (audit Q1 §2b/§2d).
 printf '%s' "$OSF" | grep -q 'kind="short-horizon-churn" sym="hot"[^/]*sev="minor"' \
-    && no "self/ambient churn: genuine thrash wrongly downgraded to sev=\"minor\"" \
-    || ok "self/ambient churn: genuine thrash stays MAJOR (no sev=\"minor\")"
+    && ok "self/ambient churn: ONE in-window rewrite is informational — sev=\"minor\", facet still self" \
+    || { no "self/ambient churn: a single in-window rewrite must not gate"; printf '%s\n' "$OSF" | tr '>' '\n' | grep '<r '; }
+ESF="$( cd "$SF" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo $? )"
+[ "$ESF" = 0 ] && ok "self/ambient churn: a self-only finding does not gate exit 2" || no "self/ambient churn: self-only run should exit 0 (got $ESF)"
 
 # 4b) AMBIENT — adds lines: the working-tree edit only INSERTS a new statement, touching no existing line.
 AF="$WORK/ambientadd"; mkdir -p "$AF/src"

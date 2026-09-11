@@ -584,14 +584,15 @@ struct McpIndex
 // Cache file path, deterministic per (user, root), under the shared private cache ladder and its existing
 // two-hex shard layout. MCP sessions used to leave one flat file per temporary checkout directly in TMPDIR;
 // tens of thousands of those files made every later cache-hygiene scan enumerate the shared directory.
+//
+// The root field is `quality::cacheRootKeyHex` — the ONE canonical spelling the CLI families use, so an MCP
+// blob is pinned by the byte-budget sweep alongside its own root's lean/rich/qchurn siblings instead of
+// looking like a foreign root. This used to open-code the hash AND skip realpath entirely, so the MCP blob
+// diverged from the CLI's twice over: a different offset basis, and a key that followed the SPELLING of the
+// root (a trailing slash or a symlinked checkout minted a second blob).
 inline std::string mcpCachePath( const std::string& root )
 {
-    std::uint64_t h = 1469598103934665603ULL;     // FNV-1a of the root → a stable per-root cache name
-    for( char c : root ) { h ^= static_cast<unsigned char>( c ); h = hashutil::fnv1aMultiply( h ); }
-    char name[ 64 ];
-    rw::formatTo( name, sizeof( name ), "ripwire-mcp-{:016x}.cache", (unsigned long long)h );
-
-    return quality::resolveCacheBlobPath( quality::cacheDirLadder(), name );
+    return quality::rootKeyedCachePath( root, "ripwire-mcp-", ".cache" );
 }
 
 // working-set (Cody-style): FNV-1a-64 of the SORTED changed-file id list, so the hash is a pure

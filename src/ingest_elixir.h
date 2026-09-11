@@ -19,7 +19,7 @@ std::string_view elixirTarget( TSNode node, std::string_view src ) noexcept
     {
         return {};
     }
-    const TSNode target = ts_node_child_by_field_name( node, "target", 6 );
+    const TSNode target = fieldChild( node, NodeField::Target );
     if( ts_node_is_null( target ) || std::strcmp( ts_node_type( target ), "identifier" ) != 0 )
     {
         return {};
@@ -85,14 +85,14 @@ TSNode elixirKeywordValue( TSNode node, std::string_view key, std::string_view s
         for( std::uint32_t pairId = 0; pairId < ts_node_named_child_count( arg ); ++pairId )
         {
             const TSNode pair = ts_node_named_child( arg, pairId );
-            auto found = nodeTextOf( ts_node_child_by_field_name( pair, "key", 3 ), src );
+            auto found = nodeTextOf( fieldChild( pair, NodeField::Key ), src );
             while( !found.empty() && std::isspace( static_cast<unsigned char>( found.back() ) ) )
             {
                 found.remove_suffix( 1 );
             }
             if( found == key )
             {
-                return ts_node_child_by_field_name( pair, "value", 5 );
+                return fieldChild( pair, NodeField::Value );
             }
         }
     }
@@ -121,7 +121,7 @@ std::uint16_t elixirParams( TSNode node ) noexcept
     TSNode head = elixirFirstArgument( node );
     if( !ts_node_is_null( head ) && std::strcmp( ts_node_type( head ), "binary_operator" ) == 0 )
     {
-        head = ts_node_child_by_field_name( head, "left", 4 );
+        head = fieldChild( head, NodeField::Left );
     }
     const TSNode args = elixirArguments( head );
     const auto count = ts_node_is_null( args ) ? 0u : ts_node_named_child_count( args );
@@ -137,7 +137,7 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     for( TSNode parent = ts_node_parent( role ); !ts_node_is_null( parent ); parent = ts_node_parent( parent ) )
     {
         if( elixirTarget( parent, src ) == "quote"
-            || ( std::strcmp( ts_node_type( parent ), "unary_operator" ) == 0 && nodeFieldText( parent, "operator", 8, src ) == "@" ) )
+            || ( std::strcmp( ts_node_type( parent ), "unary_operator" ) == 0 && nodeFieldText( parent, NodeField::Operator, src ) == "@" ) )
         {
             return false;
         }
@@ -169,10 +169,10 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     {
         return false; // the test declaration itself is not a call
     }
-    const TSNode callTarget = ts_node_child_by_field_name( role, "target", 6 );
+    const TSNode callTarget = fieldChild( role, NodeField::Target );
     if( !ts_node_is_null( callTarget ) && std::strcmp( ts_node_type( callTarget ), "dot" ) == 0 )
     {
-        const TSNode receiver = ts_node_child_by_field_name( callTarget, "left", 4 );
+        const TSNode receiver = fieldChild( callTarget, NodeField::Left );
         if( ts_node_is_null( receiver ) || std::strcmp( ts_node_type( receiver ), "alias" ) != 0 )
         {
             return false; // runtime receiver / anonymous function dispatch cannot name a module
@@ -188,9 +188,9 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     bool inDefault = false;
     for( TSNode parent = ts_node_parent( role ); !ts_node_is_null( parent ); parent = ts_node_parent( parent ) )
     {
-        if( std::strcmp( ts_node_type( parent ), "binary_operator" ) == 0 && nodeFieldText( parent, "operator", 8, src ) == "\\\\" )
+        if( std::strcmp( ts_node_type( parent ), "binary_operator" ) == 0 && nodeFieldText( parent, NodeField::Operator, src ) == "\\\\" )
         {
-            const TSNode value = ts_node_child_by_field_name( parent, "right", 5 );
+            const TSNode value = fieldChild( parent, NodeField::Right );
             inDefault = inDefault || ( !ts_node_is_null( value ) && ts_node_start_byte( role ) >= ts_node_start_byte( value )
                                       && ts_node_end_byte( role ) <= ts_node_end_byte( value ) );
         }
@@ -201,7 +201,7 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
         TSNode head = elixirFirstArgument( parent );
         if( !ts_node_is_null( head ) && std::strcmp( ts_node_type( head ), "binary_operator" ) == 0 )
         {
-            head = ts_node_child_by_field_name( head, "left", 4 );
+            head = fieldChild( head, NodeField::Left );
         }
         if( !ts_node_is_null( head ) && ts_node_start_byte( name ) >= ts_node_start_byte( head ) && ts_node_end_byte( name ) <= ts_node_end_byte( head ) )
         {

@@ -320,6 +320,43 @@ inline const char* pageDisclosure( char* buf, std::size_t bufCap, std::size_t ro
     return buf;
 }
 
+// ── LB-G (listing-paging round, 2026-09-10) — the SECONDARY listing's pair, emitted ONLY on a CUT ────────
+//
+// Rule 6 reserves the paging half for a report's PRIMARY listing; a SECONDARY one "discloses through its own
+// shown_<noun>=/<noun>_capped= pair". Three reports had that listing and no pair at all: --doc-drift's per-doc
+// <a> rows (cut at 12), --flags' per-gate <read> rows (cut at 8) and --flip's six row families (cut at 25).
+// They are per-CHILD listings — one per <doc>, one per <gate> — so there is no single root window to page,
+// and the honest disclosure is the pair on the child that was cut.
+//
+// EMITTED ONLY WHEN THE CUT HAPPENED, both halves together or neither. Rule 3 says capped= is always emitted
+// beside its shown=, and that is exactly what this does — what it does NOT do is emit shown_<noun>="8"
+// <noun>_capped="0" on the ninety-nine children that fit, which on --flags would be 86 of 88 gates paying
+// bytes to say nothing was dropped. Rule 3's own sentence sanctions the shape ("If a verb emits no shown=,
+// it emits no capped= either — --skill-scan emits the pair only on a capped scan; that is conformant"), and
+// the round's rule 1 requires it: a capped="0" is a disclosure that never fires, and the reader cannot tell
+// it from one that cannot fire.
+//
+// `totalAttr` is rule 2's total: pass nullptr when the element ALREADY carries the row total under its own
+// name (--flags' reads=, --doc-drift's <weak-file-line n=>), and a name when it does not (--doc-drift's <doc>,
+// whose row population is drift= + dated= and has no single attribute — a reader should not have to sum two
+// numbers to learn what was cut). A caller must never pass a name the element already uses for something
+// else: `anchors=` on <doc> counts EVERY anchor in the doc, not the failed ones these rows list, and reusing
+// it would rebuild the dark=/dark_gates= count-vs-bool collision §P8 renamed its way out of.
+inline std::string secondaryCutAttrs( const char* noun, std::size_t shown, std::size_t total, const char* totalAttr = nullptr )
+{
+    if( shown >= total )
+    {
+        return {};   // nothing was cut: the element is byte-identical to what it was
+    }
+    std::string a = " shown_" + std::string( noun ) + "=\"" + std::to_string( shown )
+                  + "\" " + std::string( noun ) + "_capped=\"1\"";
+    if( totalAttr != nullptr )
+    {
+        a += " " + std::string( totalAttr ) + "=\"" + std::to_string( total ) + "\"";
+    }
+    return a;
+}
+
 // The PAGING HALF ALONE — rule 1's noun-prefixed exception, and the ONLY sanctioned way to emit a page
 // without a bare shown=. A report with several INDEPENDENT listings already spells its primary listing's
 // row count as shown_<noun>=/<noun>_capped= (--communities' shown_modules=/modules_capped=, which stay

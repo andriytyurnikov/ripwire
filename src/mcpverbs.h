@@ -311,6 +311,15 @@ inline constexpr long long kMcpPageValueMax = 1000000000;   // == cli.h's kPageV
 // value outside the band is refused rather than quietly rewritten (the §B8.1 ruling, same as radius).
 inline constexpr long long kMcpRecallTopKMax = 1000;
 
+// C1 F-07: the verb-side fold of pageview.h's effectiveRowCap — "an explicit limit beats the verb's own
+// display default" in ONE place on this surface too. It exists because writing that line twice, once in
+// flagsText and once in flipText, is what --quality-delta reads as a new clone of a reused helper, and it
+// is right to: two copies of a cap decision is one more than the contract needs.
+inline std::size_t mcpRowCap( int pageLimit, std::size_t verbDefault ) noexcept
+{
+    return std::size_t( rw::effectiveRowCap( pageLimit, int( verbDefault ) ) );
+}
+
 inline McpPageParse mcpPageArgs( const std::string& scope )
 {
     const McpIntArg limitArg = mcpIntArg( scope, "limit", 1, kMcpPageValueMax );
@@ -513,11 +522,15 @@ inline std::string strayContentText( const std::string& root, const std::string&
 }
 
 // `flags` verb: the dark-content dashboard. Index-backed (it needs the crawled file list).
-inline std::string flagsText( const std::string& root, const std::string& filter, std::size_t maxSites )
+// C1 F-07 (2026-09-10): --flags joined cli.h's honorsPaging set when its per-gate <read> listing became
+// windowable, so the twin takes the same pair rather than 0,0 — M13's rule is that a CLI verb that pages has
+// a twin that pages, and test/mcpcontractcheck.sh (G) derives that set from kPagingHonoringVerbs itself.
+inline std::string flagsText( const std::string& root, const std::string& filter, std::size_t maxSites,
+                              McpPageArgs page = {} )
 {
     const McpIndex& ix = getIndex( root );
     const darkflags::FlagsResult res = darkflags::computeFlags( ix.ing, root, {}, filter );
-    return captureXml( [ & ]( std::FILE* f ) { darkflags::writeFlags( f, res, maxSites ); } );
+    return captureXml( [ & ]( std::FILE* f ) { darkflags::writeFlags( f, res, mcpRowCap( page.limit, maxSites ), page.offset ); } );
 }
 
 // `flags` verb with the optional `symbol` argument = the CLI's `--flags --flip=NAME`: the blast radius of
@@ -526,12 +539,12 @@ inline std::string flagsText( const std::string& root, const std::string& filter
 // index-backed, and unlike the plain lane it needs the call graph too (ix.g). "" ⇒ no such gate: the
 // handler turns that into a -32602 naming the near-misses, never an empty-looking success.
 inline std::string flipText( const std::string& root, const std::string& gate, std::size_t maxRows,
-                             std::vector<std::string>& nearMissesOut )
+                             std::vector<std::string>& nearMissesOut, McpPageArgs page = {} )
 {
     const McpIndex&                  ix  = getIndex( root );
-    const flipimpact::FlipResult     res = flipimpact::computeFlip( ix.ing, ix.g, root, {}, gate );
+    const flipimpact::FlipResult     res = flipimpact::computeFlip( ix.ing, ix.g, root, {}, gate, page.limit );
     if( !res.ok ) { nearMissesOut = res.nearMisses; return {}; }
-    return captureXml( [ & ]( std::FILE* f ) { flipimpact::writeFlip( f, res, ix.ing, root, maxRows ); } );
+    return captureXml( [ & ]( std::FILE* f ) { flipimpact::writeFlip( f, res, ix.ing, root, mcpRowCap( page.limit, maxRows ), page.offset ); } );
 }
 
 // `doc_drift` verb: the markdown docs' checkable anchors vs the live index. Index-backed —
@@ -1171,7 +1184,14 @@ inline std::string declDefAndWindowJson( const SituationFacts& facts, PathRelFn 
          + std::to_string( facts.coCommits );
 }
 
-inline std::string situationDiffJson( const std::string& root, const std::string& diffOrEmpty )
+// C1 F-10 (2026-09-10): --situ joined cli.h's honorsPaging set (its blast-radius and co-change sections
+// window), so this twin takes limit/offset too — M13's rule, derived by test/mcpcontractcheck.sh (G) from
+// kPagingHonoringVerbs. THE DEFAULT IS DIFFERENT ON PURPOSE, and it is the honest one: the CLI report caps
+// those two listings at 8 because it is a screen an agent reads inline, while this payload is machine-read
+// and has always served EVERY row. An absent limit therefore still serves every row — this adds relief for
+// a caller who wants less, never a new cut — and the two arrays are the only ones windowed: tests_to_run and
+// hotspot_alert are the answer, exactly as in the CLI twin.
+inline std::string situationDiffJson( const std::string& root, const std::string& diffOrEmpty, McpPageArgs page = {} )
 {
     const McpIndex&     ix  = getIndex( root );
     const IngestResult& ing = ix.ing;
@@ -1245,10 +1265,39 @@ inline std::string situationDiffJson( const std::string& root, const std::string
     // payload used to emit {"file":...} alone, so the agent got a ranked blast radius with no magnitude and
     // could not tell a file contributing 300 dependent symbols from one contributing 1 — while the CLI text
     // report has printed "(N dependent symbols)" on every such line all along.
-    out += "],\"blast_radius\":[";
+    const PageWindow situJBlast   = pageWindow( facts.blastRadius.size(), page.limit, page.offset );
+    const PageWindow situJForgot   = pageWindow( facts.forgotten.size(),   page.limit, page.offset );
+
+    // ── PAGING DISCLOSURE for the TWO windowed arrays (CodeRabbit #127 / 3985249704) ─────────────────
+    // Both windows above cut rows, and the payload said so about neither: a caller could not tell that
+    // rows were omitted, nor construct a next request. This is --test-gate's exact shape (§B7.1, situ.h's
+    // writeTestGateReportJson) because it is the same situation — TWO INDEPENDENT listings in one report,
+    // which pageview.h rule 6 answers with the rule-1 noun-prefixed exception rather than a bare `shown`
+    // that would be ambiguous next to two arrays. So:
+    //   * shown_blast_radius / blast_radius_capped and shown_forgotten / forgotten_capped — the pair per
+    //     LISTING, DERIVED from the rows this document actually emits, not asserted;
+    //   * forgotten_total, because the second listing has no other key carrying its row population;
+    //   * the paging half (total / has_more / next_offset / offset / limit) from pageview.h's ONE
+    //     disclosure under the JSON syntax row, describing the PRIMARY listing — blast_radius, the array
+    //     it precedes. blast_radius's own total is that `total`; a second spelling of it would be the
+    //     duplicate key jsoncheck #10 pins.
+    // pagingDisclosure emits NOTHING when no window applied, so a bare call (this verb's default is
+    // unbounded) is byte-unchanged apart from the four derived counts, which are always present.
+    const std::size_t situJBlastShown  = situJBlast.end  - situJBlast.begin;
+    const std::size_t situJForgotShown = situJForgot.end - situJForgot.begin;
+    char              situJPageJson[ kPageDisclosureCap ];
+    pagingDisclosure( situJPageJson, sizeof( situJPageJson ), facts.blastRadius.size(), situJBlast.end,
+                      page.limit, page.offset, kJsonPageSyntax );
+    out += "],\"shown_blast_radius\":" + std::to_string( situJBlastShown )
+         + ",\"blast_radius_capped\":" + ( situJBlastShown < facts.blastRadius.size() ? "true" : "false" )
+         + ",\"shown_forgotten\":" + std::to_string( situJForgotShown )
+         + ",\"forgotten_capped\":" + ( situJForgotShown < facts.forgotten.size() ? "true" : "false" )
+         + ",\"forgotten_total\":" + std::to_string( facts.forgotten.size() )
+         + situJPageJson
+         + ",\"blast_radius\":[";
     {
         bool first = true;
-        for( std::size_t i = 0; i < facts.blastRadius.size(); ++i )
+        for( std::size_t i = situJBlast.begin; i < situJBlast.end; ++i )
         {
             if( !first )
             {
@@ -1288,8 +1337,9 @@ inline std::string situationDiffJson( const std::string& root, const std::string
     out += "]" + declDefAndWindowJson( facts, situJPathRel ) + ",\"forgotten\":[";
     {
         bool first = true;
-        for( const auto& [ f, deg ] : facts.forgotten )
+        for( std::size_t i = situJForgot.begin; i < situJForgot.end; ++i )
         {
+            const auto& [ f, deg ] = facts.forgotten[i];
             if( !first )
             {
                 out += ",";
@@ -1503,7 +1553,7 @@ inline void priceForTaskRoot( std::string& doc, std::size_t budgetTokens )
 }
 
 inline std::string forTaskText( const std::string& root, const std::string& task, RedactCounts* redact = nullptr,
-                                std::size_t budgetTokens = 0 )
+                                std::size_t budgetTokens = 0, bool noRoute = false )
 {
     const std::size_t forBudgetBytes = budgetTokens > 0 ? budgetBytesForTokens( budgetTokens )
                                                         : kForPayloadBudgetBytes;
@@ -1513,7 +1563,13 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // query-shape classifier picks name-exact vs subtoken+body BM25, so an identifier query lands the
     // symbol (recall@1 ~99% vs ~77% plain) while conceptual queries keep the subtoken+body behavior
     // (lexical.h chooseForRanker). MCP-only agents get the same optimization the CLI ships.
-    const RouteChoice        rc        = chooseForRanker( ing, task );
+    // `noRoute` is the MCP twin of the CLI --no-route (2026-09-10 audit F-R1-07): the router is not asked,
+    // so the ranker is the plain subtoken+body default, and — exactly as verbs_for.h does under the flag —
+    // the query-shape demotion, the mention anchor and the co-change prior are all skipped, because each of
+    // them is part of the routed reading. A default-constructed RouteChoice IS that reading: SubtokenBody,
+    // no reason, no anchors, so there is no route= to disclose and ctxRootOpen omits the attribute, which is
+    // byte-for-byte what the CLI emits under --no-route.
+    const RouteChoice        rc        = noRoute ? RouteChoice{} : chooseForRanker( ing, task );
     // NOT const: LB-A's relevance floor narrows it below, once every boost has landed on lensRank. The
     // MaxScore pruning bound two stanzas down consumes the PRE-floor value, which is the safe direction —
     // a bound computed for a larger K can only keep more candidates, never fewer.
@@ -1532,7 +1588,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // mention anchor) as the CLI --for. This dialect always routes, so the shape is always asked for and
     // the disclosure always has a route= to ride in.
     const queryshape::Verdict shape   = queryshape::classify( task );
-    const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, shape.fires() );
+    const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, !noRoute && shape.fires() );
     // deep-tail: this bundle now serves the file-grain tail, a full-distribution consumer — the H2
     // MaxScore prune bound is 0 (exhaustive) here for the same reason the CLI --for passes
     // fullDistribution (a pruned tail would make total= mode-dependent and its order incomplete).
@@ -1550,7 +1606,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // The CLI twin's lr.capAttrs: the INDEXING caps that cut this ranking, same names, same order, so the
     // two surfaces cannot disagree about what was dropped (mention.h CapDisclosure). "" unless one bit.
     std::string   capAttrs;
-    if( !std::getenv( "RIPWIRE_NO_MENTION" ) )
+    if( !noRoute && !std::getenv( "RIPWIRE_NO_MENTION" ) )
     {
         MentionBoostInfo mentionInfo;
         if( applyMentionBoost( ing, task, lensRank, &mentionInfo ) )
@@ -1574,7 +1630,7 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // has no per-call flags — RIPWIRE_COCHANGE=1 (the shared opt-in env) enables it here.
     // Inert without usable history (depth-1 / non-git ⇒ support threshold unreachable ⇒ byte-identical output).
     std::string boostNote;
-    if( std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
+    if( !noRoute && std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
         CommitWindowCensus coCensus;   // the kCoBoostMaxFilesPerCommit census (gitmine.h)
         const auto coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, UINT32_MAX, &coCensus );
@@ -1677,7 +1733,8 @@ inline std::string forTaskText( const std::string& root, const std::string& task
     // §L10b + verify-wave2 F6: same trim as the CLI --for twin (verbs_for.h) — no leading " [" and no
     // trailing "]"; the value lands only in route=, where the attribute quote is the delimiter.
     const std::string mcpForAtAttrStr = gitstamp::atAttr( root );   // M10's at=, computed once: spliced onto the root AND exempted from the sigs charge below
-    std::string rootOpenStr = ctxRootOpen( task, "routed: " + rc.reason + shapeDemotionNote( shape ), flRootArg );   // §B1.7: same root attrs as the CLI twin
+    std::string rootOpenStr = ctxRootOpen( task, noRoute ? std::string() : ( "routed: " + rc.reason + shapeDemotionNote( shape ) ),
+                                           flRootArg );   // §B1.7: same root attrs as the CLI twin (no route= under no_route, as --no-route)
     if( !rootOpenStr.empty() && rootOpenStr.back() == '>' )
     {
         // Attribute ORDER matches the CLI twin's: confidence/margin_pct, then at=, then this dialect's own
@@ -3101,6 +3158,7 @@ struct QualityDeltaOutcome
     std::size_t                       ackedByRename    = 0;
     std::size_t                       ackedByContent   = 0;
     std::size_t                       registerMacroExcluded = 0;   // P2.2: the CLI's disclosed dead-code exemption count — see quality.h
+    std::size_t                       apiNewSurface         = 0;   // Q-DIAL-4: the CLI's api-new-surface= count — see quality.h
 };
 
 // §B6 M10 — a CORRUPT sidecar used to read as "no sidecar". readBaseline reports a file that yields no header,
@@ -3184,7 +3242,7 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
     auto       acks = rw::quality::readAckRecords( qualityAcksPath( root ) );
     const auto heal = rw::quality::healIdentity( baseSel.snapshot, acks, ing, g, root, root, /*wantContentIds=*/false );
 
-    oc.regs       = rw::quality::computeDelta( ing, g, baseSel.snapshot, root, {}, rw::kDefaultMaxFileBytes, &oc.registerMacroExcluded );
+    oc.regs       = rw::quality::computeDelta( ing, g, baseSel.snapshot, root, {}, rw::kDefaultMaxFileBytes, &oc.registerMacroExcluded, &oc.apiNewSurface );
 
     // signal-to-noise round: honor the per-finding ack ratchet exactly like the CLI — the acks sidecar is
     // root-qualified (same SIDECAR LOCATION discipline as the baseline), suppression is reported via `acked`.
@@ -3260,6 +3318,8 @@ inline std::string qualityDeltaJson( const std::string& root, std::string& errOu
                     // zero, unlike the identity fields just below): mcpclidiffcheck.sh's JSON-key-set lens
                     // diffs this verb against `--quality-delta --json`, and the CLI never omits it either.
                     + ",\"register-macro-excluded\":" + std::to_string( oc.registerMacroExcluded )
+                    // Q-DIAL-4 — same always-present rule, same mcpclidiffcheck key-set lens.
+                    + ",\"api-new-surface\":" + std::to_string( oc.apiNewSurface )
                     // R1 IDENTITY — the CLI root's identity disclosure, spelled in JSON. Present only when
                     // git could be read at all, exactly like the CLI arm (absent ≠ zero — see the legend).
                     + oc.identityJson
@@ -3368,14 +3428,16 @@ inline std::string qualityBaselineJson( const std::string& root, std::string& er
 // value outside 2..16, which is silently clamped OFF rather than erroring an otherwise valid explore call)
 // ⇒ the plain single-bundle form, byte-identical to before.
 inline std::string packTaskText( const std::string& root, const std::string& task, std::size_t budgetTokens,
-                                 RedactCounts* redact = nullptr, std::uint32_t partitionCount = 0 )
+                                 RedactCounts* redact = nullptr, std::uint32_t partitionCount = 0, bool noRoute = false )
 {
     const McpIndex&     ix  = getIndex( root );
     const IngestResult& ing = ix.ing;
     const Graph&        g   = ix.g;
 
     LensRanking       lr;
-    const RouteChoice rc = chooseForRanker( ing, task );
+    // See forTaskText's own note: `noRoute` is the CLI --no-route over MCP, and it skips the shape demotion,
+    // the mention anchor and the co-change prior with the ranker, because all four are the routed reading.
+    const RouteChoice rc = noRoute ? RouteChoice{} : chooseForRanker( ing, task );
     std::vector<char> ifaceExact( ing.symbols.size(), 0 );
     for( std::size_t i = 0; i < ix.g.implementors.size() && i < ifaceExact.size(); ++i )
     {
@@ -3387,13 +3449,13 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
     // Query SHAPE + §P4 tier de-prioritization — same classifier, same multiplier, same order (before the
     // mention anchor) as CLI --pack-task.
     const queryshape::Verdict shape   = queryshape::classify( task );
-    const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, shape.fires() );
+    const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, !noRoute && shape.fires() );
     lr.rank      = ( rc.which == LexMode::NameExact ) ? lexicalScoresNameExactRanked( ing, task, &tierMul )
                                                        : lexicalScoresTiered( ing, g.outOff, g.outTargets, task, 0, &ifaceExact, &tierMul );
     // §L10b + verify-wave2 F6: same trim as the other route= construction sites — neither bracket.
-    lr.routeNote = "routed: " + rc.reason + shapeDemotionNote( shape );
+    lr.routeNote = noRoute ? std::string() : ( "routed: " + rc.reason + shapeDemotionNote( shape ) );
 
-    if( !std::getenv( "RIPWIRE_NO_MENTION" ) )
+    if( !noRoute && !std::getenv( "RIPWIRE_NO_MENTION" ) )
     {
         MentionBoostInfo mentionInfo;
         if( applyMentionBoost( ing, task, lr.rank, &mentionInfo ) )
@@ -3405,7 +3467,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         }
         absorbCapDisclosure( mentionInfo.caps, lr.mentionNote, lr.capAttrs, lr.capJson );
     }
-    if( std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
+    if( !noRoute && std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
         CommitWindowCensus coCensus;
         const auto  coSets = gitRecentCommitFileSets( root, ing, kCoBoostCommitWindow, kCoBoostMaxFilesPerCommit, UINT32_MAX, &coCensus );

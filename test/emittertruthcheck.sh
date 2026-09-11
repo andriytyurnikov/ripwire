@@ -420,7 +420,7 @@ ingest_astquery.h|never suppressed|1
 landingplan.h|always printed|1
 verbs_grep.h|always emitted|1
 verbs_grep.h|never suppressed|1
-verbs_quality.h|printed even at zero|1
+verbs_quality.h|printed even at zero|2
 verbs_report.h|never omitted|1
 EOF
 )"
@@ -530,6 +530,26 @@ else
     grep -q '"register-macro-excluded"' "$TMP/zqd.json" \
         && ok "(Z2c) --quality-delta --json: register-macro-excluded rides at zero" \
         || no "(Z2c) --quality-delta --json DROPPED register-macro-excluded"
+fi
+
+# ── (Z2g) api-new-surface= — 'printed even at zero' (verbs_quality.h, the second claim in that file) ────
+# The zero repo's change added an export (api-new-surface=1), so make a second change that adds NONE: the
+# body of keep() moves, no new symbol. The count must still ride, as the legend promises, at 0.
+(
+  cd "$ZQ" && git add lib.h && git commit -qm added
+  printf 'int keep( int a ) { return a + 3; }\nint added( int a ) { return a + 2; }\n' > lib.h
+) >/dev/null 2>&1
+"$BIN" "$ZQ" --quality-delta --no-cache > "$TMP/zqd2.xml" 2>/dev/null
+"$BIN" "$ZQ" --quality-delta --json --no-cache > "$TMP/zqd2.json" 2>/dev/null
+if ! grep -q '<quality-delta ' "$TMP/zqd2.xml"; then
+    no "(Z2g) presence guard: --quality-delta produced no root on the body-only change — the probe is inert"
+else
+    zAns="$( sed -n 's/.*api-new-surface="\([^"]*\)".*/\1/p' "$TMP/zqd2.xml" | head -1 )"
+    [ "$zAns" = "0" ] && ok "(Z2g) --quality-delta XML: api-new-surface=\"0\" rides at zero on a body-only change" \
+                      || no "(Z2g) --quality-delta XML: api-new-surface= is '$zAns' on a body-only change — the legend says it is printed even at zero"
+    grep -q '"api-new-surface"' "$TMP/zqd2.json" \
+        && ok "(Z2g) --quality-delta --json: api-new-surface rides at zero" \
+        || no "(Z2g) --quality-delta --json DROPPED api-new-surface at zero"
 fi
 
 # ── (Z2d) sub_windows= — 'the denominator and is never omitted' (verbs_report.h) ─────────────────────
