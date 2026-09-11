@@ -18,7 +18,7 @@
 // A 1 ms `sample` of a cold `--no-cache` run over the go corpus (15,865 files), 18,963 busy leaf
 // samples: `strncmp` + its two dyld stubs are **3.44 %** of busy CPU, the `ts_node_child_by_field_name`
 // subtree is 4.70 %, and **93.6 % of that subtree is owned by one caller** — `cc_boolOp`, which
-// `cc_walk` asks twice per AST node at the fall-through of its dispatch. The ripwire tree's own share
+// `cc_walk` asks twice per AST node at the fall-through of its dispatch. The host tree's own share
 // is 2.56 % (it is markdown-heavy, so less of it is AST walk).
 //
 // WHAT IT REPLACES IT WITH. `fieldChild( n, NodeField::Name )` resolves the id ONCE PER GRAMMAR, at

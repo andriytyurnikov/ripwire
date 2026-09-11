@@ -2,7 +2,7 @@
 
 // strkern.h — THE byte-parallel string kernels. One header, three mirrored paths, no other home.
 //
-// House rule (owner, 2026-09-10): every SIMD string kernel ripwire owns lives HERE, as inline functions
+// House rule (owner, 2026-09-10): every SIMD string kernel the host project owns lives HERE, as inline functions
 // with the NEON, the AVX2 and the scalar/SWAR reference written side by side in one place, so a reader
 // can diff the three by eye and a reviewer can see immediately when one path drifted. No SIMD intrinsic
 // for string work exists outside this header. (The pre-existing vector code in fixedStr.h, radixSort.h,
@@ -254,7 +254,7 @@ inline void classMasks( const char* p, std::size_t n, Masks& out ) noexcept
 //  2. lowerFoldAscii / lowerFoldedEquals — the A-Z-only fold
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// A-Z ONLY, on purpose: this is the fold ripwire's lexical layer means by "lowercase" (lexindex.h
+// A-Z ONLY, on purpose: this is the fold the host's lexical layer means by "lowercase" (lexindex.h
 // lexLowerByte), and it is the only one that is locale-free, byte-exact and reversible enough to hash
 // with. Bytes >= 0x80 are left alone — a UTF-8 continuation byte is not a letter to fold.
 //
@@ -763,7 +763,7 @@ inline std::size_t findByteset( const char* p, std::size_t n, const Byteset256& 
 // box load 24-33). Milliseconds for the whole trace, lower is better:
 //
 //   corpus     per-byte switch   run-copy + scalar scan   run-copy + findByteset
-//   ripwire      1.60-2.00              0.81-1.01               0.71-0.96   −15% vs scalar
+//   host tree    1.60-2.00              0.81-1.01               0.71-0.96   −15% vs scalar
 //   go           6.85-7.62              4.57-4.85               4.74-5.08    +1% (median len 8: 82% of
 //                                                                                calls never reach a block)
 //   django       8.00-9.12              3.80-4.30               2.97-3.11   −23% vs scalar
