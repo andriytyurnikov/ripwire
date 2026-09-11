@@ -2411,7 +2411,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // ---- std::-qualified C++ call scope guard — see keepStdQualifiedCandidates -------------------------
         if( !keepStdQualifiedCandidates( ing, r, canonical, cand ) )
         {
-            vetoExternal( r );                                                  // nothing inside std answers → external=
+            disposition = vetoExternal( r );                                    // nothing inside std answers → external=, counted External
             continue;
         }
 

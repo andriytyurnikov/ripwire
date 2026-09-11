@@ -42,7 +42,8 @@
 #       emits, and an answer with nothing declined carries neither the key nor its clause
 #   (F) conservation: the dispositions sum to calls=, unaccounted=0, census declined/external/unresolved == the
 #       header's, bound == the non-external decision rows; every exit the fixture is built to reach is reached;
-#       a two-root run reaches other_root and conserves too
+#       a two-root run reaches other_root and conserves too; and test/stdqualfix, where the std:: guard refuses
+#       std::move sites through vetoExternal, conserves with each refusal counted external, never unaccounted
 #   (G) the predicates can fail (a line that does not sum, unaccounted=1, a bare zero, a header without declined=)
 #   (H) determinism x2 (map and census), xmllint, no degrade alert on stderr
 #
@@ -277,6 +278,29 @@ v="$( disp_in "$TMP/mr.tsv" other_root 2>/dev/null )"
 [ -n "$MR" ] && conserves "$MR" && [ -n "$v" ] && [ "$v" -ge 1 ] \
     && ok "(F) two-root run reaches other_root ($v) and conserves: $MR" \
     || no "(F) two-root run: ${MR:-no dispositions line}"
+# the std:: guard (graph.h keepStdQualifiedCandidates) refuses a std::-qualified C++ call with no candidate inside namespace
+# std through vetoExternal — the Phase-5 veto's own refusal, so the site is external= and must be counted External. Its
+# fixture, test/stdqualfix, gives std::move and std::swap LONE in-repo decoys, so those sites reach the guard with
+# candidates. A guard exit that drops vetoExternal's disposition lands in unaccounted, raises the alert, and leaves the
+# census's external below the header's — three reds below.
+SQFIX="$ROOT/test/stdqualfix"
+"$BIN" "$SQFIX" --no-cache --pin-census="$TMP/sq.tsv" >"$TMP/sq.xml" 2>"$TMP/sq.err"
+SQ="$( grep -m1 '^# dispositions ' "$TMP/sq.tsv" 2>/dev/null )"
+SQHDR="$( stats "$TMP/sq.xml" )"
+# premise: a qualified call cannot reach the Phase-5 veto (it requires an empty qualifier), so takeTwice's two std::move
+# external rows are the guard's own refusals — without them the arms below would pass on a corpus the guard never touched
+SQG="$( awk -F'\t' '$1=="C" && $2=="external" && index($6, "takeTwice#") > 0' "$TMP/sq.tsv" 2>/dev/null | wc -l | tr -d ' ' )"
+[ "$SQG" = 2 ] && ok "(F) std:: guard premise: takeTwice's two std::move sites are refused (2 external census rows)" \
+    || no "(F) std:: guard premise: takeTwice has ${SQG:-0} external census rows, expected 2 — the arms below would prove nothing"
+[ -n "$SQ" ] && conserves "$SQ" && ok "(F) the std:: guard corpus conserves: $SQ" \
+    || no "(F) the std:: guard corpus does not conserve: ${SQ:-no dispositions line}"
+v="$( disp_in "$TMP/sq.tsv" external 2>/dev/null )"
+[ -n "$v" ] && [ "$v" = "$( gauge "$SQHDR" external )" ] \
+    && ok "(F) std:: guard corpus: census external=$v == header external=" \
+    || no "(F) std:: guard corpus: census external=${v:-absent} but header external=$( gauge "$SQHDR" external ) — a vetoExternal exit named no disposition"
+grep -q 'disposition' "$TMP/sq.err" \
+    && no "(F) the std:: guard corpus raised the unaccounted-disposition alert: $( grep 'disposition' "$TMP/sq.err" | head -1 )" \
+    || ok "(F) no unaccounted-disposition alert on the std:: guard corpus"
 
 # ── (G) the predicates can fail ───────────────────────────────────────────────────────────────────────────────
 echo "=== (G) mutation — every predicate above rejects its failure shape ==="

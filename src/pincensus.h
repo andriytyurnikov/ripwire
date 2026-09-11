@@ -107,7 +107,7 @@ enum class CallDisposition : std::uint8_t
     Bound             = 0,   // at least one non-self edge committed — exactly the sites with a non-external C row
     Self              = 1,   // every surviving target was the caller itself (recursion), or a SCIP-covered site whose
                              // targets were all self/out-of-range: the only symbol that could lose a caller is the caller
-    External          = 2,   // the Phase-5 veto refused it as bound outside the indexed tree — header external=
+    External          = 2,   // a vetoExternal refusal — the Phase-5 veto, an ES import bound outside the tree, super() past the MRO, the C++ std:: guard — header external=
     Unresolved        = 3,   // an in-repo name the tool refused to answer (every def lang-filtered, an L3 known-indirect
                              // call, a shadowed/refused/renamed ES import) — header unresolved=
     Undefined         = 4,   // no in-repo definition of the name at all — a stdlib or third-party call, no gauge by design
