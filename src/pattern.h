@@ -836,14 +836,26 @@ inline bool nodesMatchExactly( TSNode a, TSNode b, std::string_view src, unsigne
     {
         return false;
     }
-    for( std::uint32_t i = 0; i < an; ++i )
+    // O(children) on both sides: a bound metavariable and its candidate both come from the FILE, so each
+    // list is as wide as the comments in it (a comment is a NAMED extra) — `$X == $X` over two 16 000-comment
+    // argument lists measured 126x the plain map (test/childwalkscalecheck.sh, arm B36). a's list is
+    // materialised so b's can be walked in lockstep; each frame owns its cursors because the body recurses.
+    std::vector<TSNode> aKids;
+    aKids.reserve( an );
     {
-        if( !nodesMatchExactly( ts_node_named_child( a, i ), ts_node_named_child( b, i ), src, depth + 1 ) )
-        {
-            return false;
-        }
+        ChildCursor aCursor( a );
+        forEachNamedChild( a, aCursor.cur, [ & ]( TSNode c ) { aKids.push_back( c ); return true; } );
     }
-    return true;
+    bool          same  = true;
+    std::uint32_t index = 0;
+    ChildCursor   bCursor( b );
+    forEachNamedChild( b, bCursor.cur, [ & ]( TSNode bc )
+    {
+        same = index < aKids.size() && nodesMatchExactly( aKids[ index ], bc, src, depth + 1 );
+        ++index;
+        return same;
+    } );
+    return same;
 }
 
 // V-2 (adversarial verification 2026-08-20). The ellipsis probe ABANDONS a candidate node when the run of

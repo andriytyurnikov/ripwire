@@ -3,7 +3,10 @@
 # and the answers each of them must still produce. Lane W2 wrote arms (B1..B6) for the ten class-1
 # `ts_node_child( n, i )` walks; lane W3 added (B7..B9) for the last two — bindsVisitNode's index-keyed
 # field lookup and --slice`s rung-3 flow walk (`ts_node_named_child`, the same defect with
-# include_anonymous=false) — which together closed the class.
+# include_anonymous=false) — and (B10..B12) for the three "class 3" sites that refuted the class-3 table.
+# Lane W4 (2026-09-10) added (B13..B36): one isolation arm for every indexed loop the W3 handover left
+# unaudited across src/ingest_relations.h, ingest_names.h, ingest_elixir.h, ingest_sidecap.h and
+# pattern.h — twenty-two walks, EVERY one of them red on the pre-change binary (12x..86x its control).
 #
 #   bash test/childwalkscalecheck.sh                       # build/ripwire
 #   bash test/childwalkscalecheck.sh .ripwire_pre          # the RED run (pre-change binary, indexed walks)
@@ -88,9 +91,9 @@
 #     qualifierOf 2 629, enclosingScopeOf 1 040, cc_isCountableLocalDecl 676, cc_walk 531.
 #     bindsVisitNode's TypeScript `type_annotation` scan was converted in the same pass: it breaks at the
 #     first `type_identifier`, but nothing bounds how many comments precede one.
-#   * src/ingest_names.h:61 (firstChildOfType) keeps the indexed form: both callers pass a
-#     `using_declaration` / `qualified_identifier`, whose width comes from the grammar, and a per-call
-#     cursor allocation would cost more than the scan it replaces. Class 3 in practice, not class 2.
+#   * src/ingest_names.h (firstChildOfType) WAS kept indexed by W3 — "both callers pass a using_declaration
+#     / qualified_identifier, whose width comes from the grammar" — which is the exact reason the next bullet
+#     refutes. `using` + 16 000 comments + `namespace ns::inner;` measured 12.9x its control (B22). Converted.
 #   * THE CLASS-3 TABLE WAS WRONG, AND ARMS (B10..B12) ARE WHAT SHOWS IT. The P1-0 follow-up called ~37
 #     sites "class 3 — width from the GRAMMAR, correct as written": base clauses, argument and parameter
 #     lists, attribute lists, a declaration's declarators. A comment can sit between ANY two children of
@@ -98,16 +101,29 @@
 #     by the FILE wherever a comment may legally appear in it. Measured on the W2 binary, 16 000 comments
 #     inside ONE list vs the identical flood just outside it: `declaration` 77x (B7), `argument_list` 56x
 #     (B11), lambda capture list 26x (B12), `base_class_clause` 13x (B10). All four are converted.
-#     WHAT REMAINS, and the sweep that bounds it. Fifteen language shapes were flooded the same way and
-#     timed on the FIXED binary — a C++ `using` declaration, a template argument list, a brace initializer,
-#     a struct field list, an enum body, a parameter list, a Python argument list and base list, a JS object
-#     literal, a TS type annotation, a Ruby class body, a Go call, a Java implements list, a Rust call, and
-#     a 16 000-paragraph markdown document (mdWalk, whose root IS the file). Every one came out at 0.01-0.10 s,
-#     i.e. flat, because the balanced `_repeat` subtree absorbs the flood at those sites or the indexed loop
-#     is not on the map path. That is EVIDENCE OF ABSENCE FOR THOSE FIFTEEN SHAPES ONLY — it is not a proof
-#     that the ~25 remaining indexed loops are safe (src/ingest_relations.h, ingest_names.h, ingest_docs.h,
-#     ingest_elixir.h, ingest_sidecap.h, pattern.h). Each still needs the one-line reason the note on
-#     src/infra/tschildren.h now demands, or a cursor. Handed over whole rather than half-converted.
+#     W3's sweep then flooded fifteen language SHAPES on the fixed binary and found them flat — evidence of
+#     absence for those shapes only, not clearance for the loops. Lane W4 went loop by loop instead, and the
+#     difference is what (B13..B36) record: a Python base list is flat when the flood sits in the class body
+#     (W3's shape) and 54x when it sits INSIDE the superclasses parens (B28); a Ruby class body is flat when
+#     the comments LEAD the body (tree-sitter hands leading extras to the parent `class`, not to the
+#     body_statement that has not started) and 58x once one nested class precedes them (B19); a C++ `using`
+#     is flat in its unqualified spelling because that form is never captured, and 12.9x in the qualified
+#     one (B22). A flat measurement proves the FIXTURE missed the list, never that the loop is safe. Every
+#     arm below therefore records the shape that reached its walk, and the CPU `sample` that attributed the
+#     two fixtures whose owner was not obvious (excall -> elixirBody; testmacrosemi -> the MISSING-`;` probe).
+#     THE THREE LOOPS THAT STAY INDEXED, each with the one-line reason the note on src/infra/tschildren.h
+#     demands, written at the loop: mdWalk (src/ingest_docs.h — the markdown grammar declares NO extras, its
+#     parser.c has zero SHIFT_EXTRA actions, so every child list there is a balanced grammar repeat);
+#     stringLiteralText (src/ingest_relations.h) and the Elixir test-title interpolation scan
+#     (src/ingest_elixir.h) — a string's children are produced by the external scanner, which owns every
+#     byte between the delimiters, so no comment token is ever lexed into that list.
+#     TWO CONTROLS THAT WERE THEMSELVES QUADRATIC, and what they mean. The C# controls first put the flood
+#     in the class body and read 1.09 s / 2.31 s — csharpNodeCarriesTestAttr is applied to every ANCESTOR
+#     of a def (anySelfOrAncestor), so the declaration_list and the compilation_unit scanned the flood too.
+#     The controls now flood a method BODY, which is no def's ancestor. And the Rust control floods AFTER
+#     the item, because rustItemCarriesTestAttr's own prev-sibling climb (`ts_node_prev_sibling`, which
+#     restarts from the parent's first child on every call) is a second restarting scan this gate does not
+#     own — it is the parent-chain family, not a child walk, and is left for that lane.
 #
 # Exit 0 = ALL PASS, non-zero = SOME FAILED.
 
@@ -135,6 +151,8 @@ python3 - "$TMP" <<'PY'
 import os, sys
 base = sys.argv[ 1 ]
 C = "// pad " + "x" * 40
+H = "# pad " + "x" * 40      # the `#` comment: Python, Ruby, Elixir
+B = "/* pad */"              # a block comment: the one shape a preprocessor line can hold 16 000 of
 
 def w( rel, lines ):
     p = os.path.join( base, rel )
@@ -210,6 +228,81 @@ for n in ( 1000, 16000 ):
        [ "int helper( int x );", "int target( int x )", "{", "    int acc = x;" ] + [ C ] * n
        + [ "    if( x > 0 )", "    {", "        acc = x + 1;", "    }" ] + [ C ] * n
        + [ "    return helper( acc );", "}" ] )
+    # ── lane W4: one pair per walk the W3 handover left indexed. Each floods ONE node's own child list and
+    # its control puts the identical flood where no walk under test owns it as a direct child.
+    # captureMacroBodyCalls — a preproc_params list (block comments: a #define is one logical line)
+    w( "macroparams/n%d/big.c" % n, [ "int h( int a, int b );", "#define F( a, " + B * n + " b ) h( a, b )", "int g( int x ) { return F( x, 1 ); }" ] )
+    w( "macroparams_off/n%d/big.c" % n, [ "int h( int a, int b );", B * n, "#define F( a, b ) h( a, b )", "int g( int x ) { return F( x, 1 ); }" ] )
+    # captureFields, the type walk — a qualified_identifier `ns /*…*/ ::T` as a field's type
+    w( "fieldtype/n%d/big.cpp" % n, [ "namespace ns { struct T { int q; }; }", "struct S", "{", "    ns" ] + [ C ] * n + [ "    ::T m;", "};" ] )
+    w( "fieldtype_off/n%d/big.cpp" % n, [ "namespace ns { struct T { int q; }; }", "struct S", "{", "    ns::T m;" ] + [ C ] * n + [ "};" ] )
+    # captureFields, the declarator walk — a reference_declarator `T & /*…*/ m`
+    w( "fielddecl/n%d/big.cpp" % n, [ "struct T { int q; };", "struct S", "{", "    T &" ] + [ C ] * n + [ "    m;", "};" ] )
+    w( "fielddecl_off/n%d/big.cpp" % n, [ "struct T { int q; };", "struct S", "{", "    T & m;" ] + [ C ] * n + [ "};" ] )
+    # csharpUsingTarget — a using_directive; its control floods a method BODY (see the header: a class body
+    # or the file root is an ancestor of every def, and the ancestor scan would read the flood too)
+    w( "csusing/n%d/big.cs" % n, [ "using" ] + [ C ] * n + [ "    System.Text;", "namespace A { class K { void M() {} } }" ] )
+    w( "csusing_off/n%d/big.cs" % n, [ "using System.Text;", "namespace A { class K { void M() {" ] + [ C ] * n + [ "} } }" ] )
+    # phpUseTarget — a namespace_use_declaration
+    w( "phpuse/n%d/big.php" % n, [ "<?php", "namespace A;", "use" ] + [ C ] * n + [ "    Foo\\Bar;", "function f() {}" ] )
+    w( "phpuse_off/n%d/big.php" % n, [ "<?php", "namespace A;", "use Foo\\Bar;" ] + [ C ] * n + [ "function f() {}" ] )
+    # jsModuleLoadTarget — require()'s arguments
+    w( "jsrequire/n%d/big.js" % n, [ "const m = require(" ] + [ C ] * n + [ "    'mod' );", "function f() { return m; }" ] )
+    w( "jsrequire_off/n%d/big.js" % n, [ "const m = require( 'mod' );" ] + [ C ] * n + [ "function f() { return m; }" ] )
+    # rubyNamespaceOnly — a class body_statement; ONE nested class precedes the flood so the comments are
+    # the body's children (leading extras go to the parent `class` node, whose body has not started)
+    w( "rubyns/n%d/big.rb" % n, [ "class Foo", "  class Baz", "  end" ] + [ H ] * n + [ "  class Bar", "  end", "end" ] )
+    w( "rubyns_off/n%d/big.rb" % n, [ "class Foo", "  class Baz", "  end", "  class Bar", "  end", "end" ] + [ H ] * n )
+    # rubyMixinTargets — an `include` argument_list
+    w( "rubymixin/n%d/big.rb" % n, [ "module A; end", "module B; end", "class Foo", "  include A," ] + [ "  " + H ] * n + [ "    B", "end" ] )
+    w( "rubymixin_off/n%d/big.rb" % n, [ "module A; end", "module B; end", "class Foo", "  include A, B" ] + [ "  " + H ] * n + [ "end" ] )
+    # elixirAliasGroup — an `alias Foo.{…}` tuple
+    w( "exalias/n%d/big.ex" % n, [ "defmodule M do", "  alias Foo.{A," ] + [ "  " + H ] * n + [ "    B}", "  def f, do: 1", "end" ] )
+    w( "exalias_off/n%d/big.ex" % n, [ "defmodule M do", "  alias Foo.{A, B}" ] + [ "  " + H ] * n + [ "  def f, do: 1", "end" ] )
+    # firstChildOfType — a using_declaration, in the QUALIFIED spelling the tags query captures
+    w( "cppusing/n%d/big.cpp" % n, [ "namespace ns { namespace inner { int q; } }", "using" ] + [ C ] * n + [ "    namespace ns::inner;", "int f( void ) { return q; }" ] )
+    w( "cppusing_off/n%d/big.cpp" % n, [ "namespace ns { namespace inner { int q; } }", "using namespace ns::inner;" ] + [ C ] * n + [ "int f( void ) { return q; }" ] )
+    # rustItemCarriesTestAttr — an attribute_item; control flood AFTER the item (see the header)
+    w( "rustattr/n%d/big.rs" % n, [ "#[" ] + [ C ] * n + [ "test]", "fn t() { let a = 1; }" ] )
+    w( "rustattr_off/n%d/big.rs" % n, [ "#[test]", "fn t() { let a = 1; }" ] + [ C ] * n )
+    # csharpNodeCarriesTestAttr — a method_declaration's own children; control floods its body
+    w( "csattr/n%d/big.cs" % n, [ "namespace A { class K {", "public" ] + [ C ] * n + [ "void M() {}", "} }" ] )
+    w( "csattr_off/n%d/big.cs" % n, [ "namespace A { class K {", "public void M() {" ] + [ C ] * n + [ "}", "} }" ] )
+    # testMacroBlockPartsOf — the argument scan (flood inside the parens) and the MISSING-`;` probe (flood
+    # between `)` and `{`, which the recovered expression_statement owns); one control serves both
+    w( "testmacro/n%d/big.cpp" % n, [ "TEST_CASE(" ] + [ C ] * n + [ "    \"title\" ) { int a = 1; }" ] )
+    w( "testmacrosemi/n%d/big.cpp" % n, [ "TEST_CASE( \"title\" )" ] + [ C ] * n + [ "{ int a = 1; }" ] )
+    w( "testmacro_off/n%d/big.cpp" % n, [ "TEST_CASE( \"title\" ) { int a = 1; }" ] + [ C ] * n )
+    # childTokenAmong — a field_declaration with NO `static`, so the scan runs to the end
+    w( "fieldstatic/n%d/big.cpp" % n, [ "struct S", "{", "    int" ] + [ C ] * n + [ "    m;", "};" ] )
+    w( "fieldstatic_off/n%d/big.cpp" % n, [ "struct S", "{", "    int m;" ] + [ C ] * n + [ "};" ] )
+    # isPyEnumMemberTarget — the superclasses argument_list (W3's flood sat in the class body: flat)
+    w( "pyenum/n%d/big.py" % n, [ "from enum import Enum", "class C(" ] + [ H ] * n + [ "    Enum", "):", "    A = 1" ] )
+    w( "pyenum_off/n%d/big.py" % n, [ "from enum import Enum", "class C( Enum ):", "    A = 1" ] + [ H ] * n )
+    # elixirKeywordValue — a def's arguments between the head and `do:`
+    w( "exkw/n%d/big.ex" % n, [ "defmodule M do", "  def f(x)," ] + [ "  " + H ] * n + [ "    do: x", "end" ] )
+    w( "exkw_off/n%d/big.ex" % n, [ "defmodule M do", "  def f(x), do: x" ] + [ "  " + H ] * n + [ "end" ] )
+    # elixirBody — a call's OWN child list: comments between the head and its do_block (attributed by
+    # `sample`: 3 441 of 3 441 busy samples under elixirBody -> ts_node_named_child)
+    w( "excall/n%d/big.ex" % n, [ "defmodule M do", "  def f(x)" ] + [ "  " + H ] * n + [ "  do", "    x", "  end", "end" ] )
+    w( "excall_off/n%d/big.ex" % n, [ "defmodule M do", "  def f(x) do", "    x", "  end" ] + [ "  " + H ] * n + [ "end" ] )
+    # ffiVisitNode, the pybind arm — `m.def(…)`'s argument_list (the file names pybind11, which arms it)
+    w( "pybind/n%d/big.cpp" % n, [ "#include <pybind11/pybind11.h>", "int f( int a );", "PYBIND11_MODULE( m, mod )", "{", "    mod.def(" ] + [ C ] * n + [ "        \"f\", &f );", "}" ] )
+    w( "pybind_off/n%d/big.cpp" % n, [ "#include <pybind11/pybind11.h>", "int f( int a );", "PYBIND11_MODULE( m, mod )", "{", "    mod.def( \"f\", &f );" ] + [ C ] * n + [ "}" ] )
+    # ffiVisitNode, the linkage-string scan — between `extern` and `"C"` (ffi/ above floods the BODY)
+    w( "externc/n%d/big.cpp" % n, [ "extern" ] + [ C ] * n + [ "\"C\" {", "int f0( int a );", "}", "int useit( void ) { return f0( 1 ); }" ] )
+    w( "externc_off/n%d/big.cpp" % n, [ C ] * n + [ "extern \"C\" {", "int f0( int a );", "}", "int useit( void ) { return f0( 1 ); }" ] )
+    # pyMethodsKeyword — a Flask route decorator's argument_list
+    w( "pyroute/n%d/big.py" % n, [ "from flask import Flask", "app = Flask( __name__ )", "@app.route( \"/x\"," ] + [ H ] * n + [ "    methods=[ \"POST\" ] )", "def h():", "    return 1" ] )
+    w( "pyroute_off/n%d/big.py" % n, [ "from flask import Flask", "app = Flask( __name__ )", "@app.route( \"/x\", methods=[ \"POST\" ] )", "def h():", "    return 1" ] + [ H ] * n )
+    # jsMethodProperty — fetch()'s options object
+    w( "jsfetch/n%d/big.js" % n, [ "function g() {", "    return fetch( '/x', {" ] + [ C ] * n + [ "        method: 'POST' } );", "}" ] )
+    w( "jsfetch_off/n%d/big.js" % n, [ "function g() {", "    return fetch( '/x', { method: 'POST' } );" ] + [ C ] * n + [ "}" ] )
+    # captureTagsFacts, the ObjC body fallback — a method_definition's own children before its `{`
+    w( "objcbody/n%d/big.m" % n, [ "@interface Foo", "@end", "@implementation Foo", "- (void) m" ] + [ C ] * n + [ "{ }", "@end" ] )
+    w( "objcbody_off/n%d/big.m" % n, [ "@interface Foo", "@end", "@implementation Foo", "- (void) m { }" ] + [ C ] * n + [ "@end" ] )
+    # nodesMatchExactly — two flooded argument_lists joined by a repeated metavariable (`$X == $X`)
+    w( "patmeta/n%d/big.c" % n, [ "int a( int x );", "int f( void )", "{", "    return a(" ] + [ C ] * n + [ "    1 ) == a(" ] + [ C ] * n + [ "    1 );", "}" ] )
 PY
 
 # user-CPU seconds (user+sys) of one cold run of "$@" against corpus $1
@@ -310,6 +403,32 @@ if [ "$( count_rows "$TMP/a_rd.xml" '<s l="2009" k="use" t="call-arg" rd="4,1007
 else
     no "(A10) SliceRdWalker: the reaching-def join is wrong — expected rd=\"4,1007\" on the line-2009 use row"
 fi
+# lane W4 — the four converted walks whose answer is visible in the map or a verb row
+"$BIN" "$TMP/externc/n1000" --no-cache --top-k=100000 >"$TMP/a_externc.xml" 2>/dev/null
+if [ "$( count_rows "$TMP/a_externc.xml" '<c n="f0"/>' )" = 1 ]; then
+    ok "(A11) ffiVisitNode/linkage: \`extern /*…*/ \"C\"\` is still read as C linkage past 1000 comments (f0 is a call target)"
+else
+    no "(A11) ffiVisitNode/linkage: the linkage string was not found past the flood — the extern \"C\" call edge is gone"
+fi
+"$BIN" "$TMP/pyenum/n1000" --no-cache --top-k=100000 >"$TMP/a_pyenum.xml" 2>/dev/null
+if [ "$( count_rows "$TMP/a_pyenum.xml" '<s t="var" n="A" id="big.py::C::A"' )" = 1 ]; then
+    ok "(A12) isPyEnumMemberTarget: \`A = 1\` is still an enum member when Enum sits past 1000 comments in the base list"
+else
+    no "(A12) isPyEnumMemberTarget: the Enum base was not found past the flood — the member row is gone"
+fi
+"$BIN" "$TMP/testmacro/n1000" --no-cache --top-k=100000 >"$TMP/a_tm.xml" 2>/dev/null
+"$BIN" "$TMP/testmacrosemi/n1000" --no-cache --top-k=100000 >"$TMP/a_tms.xml" 2>/dev/null
+if [ "$( count_rows "$TMP/a_tm.xml" '<s t="fn" n="title"' )" = 1 ] && [ "$( count_rows "$TMP/a_tms.xml" '<s t="fn" n="title"' )" = 1 ]; then
+    ok "(A13) testMacroBlockPartsOf: TEST_CASE still mints its \`title\` symbol with 1000 comments in the args AND with 1000 before the block"
+else
+    no "(A13) testMacroBlockPartsOf: the title string or the MISSING \`;\` was not found past the flood"
+fi
+"$BIN" "$TMP/patmeta/n1000" --no-cache --pattern='$X == $X' >"$TMP/a_pm.xml" 2>/dev/null
+if [ "$( count_rows "$TMP/a_pm.xml" '<m p="big.c:4" in="f">' )" = 1 ]; then
+    ok "(A14) nodesMatchExactly: \`\$X == \$X\` still unifies two calls whose argument lists each hold 1000 comments"
+else
+    no "(A14) nodesMatchExactly: the repeated metavariable no longer unifies across the flooded argument lists"
+fi
 "$BIN" "$TMP/slicew/n1000" --no-cache --slice=target >"$TMP/a_slice2.xml" 2>/dev/null
 if [ ! -s "$TMP/a_slice.xml" ]; then
     no "(A8) determinism (empty --slice answer)"
@@ -371,6 +490,40 @@ b_lcap_off="$(     usercpu "$TMP/lcap_off/n16000" "$BIN" --top-k=100000 )"
 b_lcap_on="$(      usercpu "$TMP/lcap/n16000"     "$BIN" --top-k=100000 )"
 arm "(B12) captureLambdaShadowDecls" "$b_lcap_off" "$b_lcap_on" 8 0.30 "a lambda capture list 16000 children wide vs the identical flood outside it"
 
+# lane W4 — one map-path pair per walk; `pair LABEL fixture control what` times both sides of one shape
+pair(){ # $1 = label, $2 = walk fixture, $3 = control fixture, $4 = what the pair is
+    local off on
+    off="$( usercpu "$TMP/$3/n16000" "$BIN" --top-k=100000 )"
+    on="$(  usercpu "$TMP/$2/n16000" "$BIN" --top-k=100000 )"
+    arm "$1" "$off" "$on" 8 0.30 "$4"
+}
+pair "(B13) captureMacroBodyCalls"      macroparams  macroparams_off "a preproc_params list 16000 children wide vs the identical flood outside the #define"
+pair "(B14) captureFields/type"         fieldtype    fieldtype_off   "a field's qualified_identifier type 16000 children wide vs the identical flood after the field"
+pair "(B15) captureFields/declarator"   fielddecl    fielddecl_off   "a field's reference_declarator 16000 children wide vs the identical flood after the field"
+pair "(B16) csharpUsingTarget"          csusing      csusing_off     "a using_directive 16000 children wide vs the identical flood inside a method body"
+pair "(B17) phpUseTarget"               phpuse       phpuse_off      "a namespace_use_declaration 16000 children wide vs the identical flood after it"
+pair "(B18) jsModuleLoadTarget"         jsrequire    jsrequire_off   "require()'s arguments 16000 children wide vs the identical flood after the statement"
+pair "(B19) rubyNamespaceOnly"          rubyns       rubyns_off      "a class body_statement 16000 children wide vs the identical flood after the class"
+pair "(B20) rubyMixinTargets"           rubymixin    rubymixin_off   "an include argument_list 16000 children wide vs the identical flood after the include"
+pair "(B21) elixirAliasGroup"           exalias      exalias_off     "an alias tuple 16000 children wide vs the identical flood after the alias"
+pair "(B22) firstChildOfType"           cppusing     cppusing_off    "a using_declaration 16000 children wide vs the identical flood after it"
+pair "(B23) rustItemCarriesTestAttr"    rustattr     rustattr_off    "an attribute_item 16000 children wide vs the identical flood after the item"
+pair "(B24) csharpNodeCarriesTestAttr"  csattr       csattr_off      "a method_declaration 16000 children wide vs the identical flood inside its body"
+pair "(B25) testMacroBlockPartsOf/args" testmacro    testmacro_off   "a TEST_CASE argument_list 16000 children wide vs the identical flood after the block"
+pair "(B26) testMacroBlockPartsOf/;"    testmacrosemi testmacro_off  "16000 comments between TEST_CASE(…) and its block vs the identical flood after the block"
+pair "(B27) childTokenAmong"            fieldstatic  fieldstatic_off "a field_declaration 16000 children wide vs the identical flood after the field"
+pair "(B28) isPyEnumMemberTarget"       pyenum       pyenum_off      "a superclasses argument_list 16000 children wide vs the identical flood after the class"
+pair "(B29) elixirKeywordValue"         exkw         exkw_off        "a def's arguments 16000 children wide vs the identical flood after the def"
+pair "(B30) elixirBody"                 excall       excall_off      "a def call 16000 children wide (comments before its do) vs the identical flood after the def"
+pair "(B31) ffiVisitNode/pybind"        pybind       pybind_off      "m.def()'s argument_list 16000 children wide vs the identical flood after the call"
+pair "(B32) ffiVisitNode/linkage"       externc      externc_off     "a linkage_specification 16000 children wide (before its \"C\") vs the identical flood before it"
+pair "(B33) pyMethodsKeyword"           pyroute      pyroute_off     "a route decorator's argument_list 16000 children wide vs the identical flood after the def"
+pair "(B34) jsMethodProperty"           jsfetch      jsfetch_off     "fetch()'s options object 16000 children wide vs the identical flood after the call"
+pair "(B35) captureTagsFacts/objc-body" objcbody     objcbody_off    "an ObjC method_definition 16000 children wide vs the identical flood after the method"
+b_pm_map="$(  usercpu "$TMP/patmeta/n16000" "$BIN" --top-k=100000 )"
+b_pm_walk="$( usercpu "$TMP/patmeta/n16000" "$BIN" --pattern='$X == $X' )"
+arm "(B36) nodesMatchExactly" "$b_pm_map" "$b_pm_walk" 8 0.30 "--pattern='\$X == \$X' over two 16000-comment argument lists vs the plain map"
+
 # ── (C) byte-identical against a reference binary ────────────────────────────────────────────────────
 echo
 echo "=== (C) byte-identical output vs RIPWIRE_REF_BIN ==="
@@ -394,9 +547,15 @@ else
     }
     for n in n1000 n16000; do
         for d in slicew slicepp span health health_off ffi ffi_off locals pat binds binds_off slicerd \
-                 bases bases_off args args_off lcap lcap_off; do
+                 bases bases_off args args_off lcap lcap_off \
+                 macroparams macroparams_off fieldtype fieldtype_off fielddecl fielddecl_off csusing csusing_off \
+                 phpuse phpuse_off jsrequire jsrequire_off rubyns rubyns_off rubymixin rubymixin_off exalias exalias_off \
+                 cppusing cppusing_off rustattr rustattr_off csattr csattr_off testmacro testmacrosemi testmacro_off \
+                 fieldstatic fieldstatic_off pyenum pyenum_off exkw exkw_off excall excall_off pybind pybind_off \
+                 externc externc_off pyroute pyroute_off jsfetch jsfetch_off objcbody objcbody_off patmeta; do
             cmp_pair "$TMP/$d/$n" --top-k=100000
         done
+        cmp_pair "$TMP/patmeta/$n" --pattern='$X == $X'
         cmp_pair "$TMP/slicew/$n"  --slice=target
         cmp_pair "$TMP/slicepp/$n" --slice=target
         cmp_pair "$TMP/span/$n"    --grep=needle_marker
@@ -445,6 +604,14 @@ esac
 case "$( verdict 0.03 2.52 8 0.30 )" in
     quad\ *) ok "(D) the measured pre-change SliceRdWalker pair (0.03s vs 2.52s) IS called quad";;
     *)       no "(D) the isolation verdict cannot see the SliceRdWalker pathology";;
+esac
+case "$( verdict 0.03 2.57 8 0.30 )" in
+    quad\ *) ok "(D) the measured pre-change elixirAliasGroup pair (0.03s vs 2.57s) IS called quad";;
+    *)       no "(D) the isolation verdict cannot see the elixirAliasGroup pathology";;
+esac
+case "$( verdict 0.09 1.13 8 0.30 )" in
+    quad\ *) ok "(D) the measured pre-change linkage-string pair (0.09s vs 1.13s, the smallest W4 ratio) IS called quad";;
+    *)       no "(D) the isolation verdict cannot see the smallest W4 pathology";;
 esac
 case "$( verdict 0.10 0.70 8 0.30 )" in
     linear\ *) ok "(D) a 7x pair (0.10s vs 0.70s) IS called linear, not quad";;
