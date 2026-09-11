@@ -46,6 +46,8 @@
 #                  Then whatever is left in the group is SIGKILLed, as a job teardown does, and the throwaway
 #                  repository's .git/worktrees must be empty. The HEAD-binary builder is killed the same three ways
 #                  mid-cmake (a sleeping cmake shim), through the first caller that also asks headbinlib for a binary.
+#                  Every scenario puts a cmake first on PATH (outside the builder scenarios one that exits at once),
+#                  because the monotonicity arms skip before their checkout on a host with no cmake at all.
 #                  A gate whose pinned commit is absent from this clone (shallow, or a fork) is reported, not faked.
 #                  Control: headbinlib.sh with ripwire_private_checkout reverted to `git worktree add`, KILL>gate — every
 #                  caller and the builder must leave a registration. The revert drops the old removal on purpose: under
@@ -309,9 +311,11 @@ def run_scenario(ctx, sc):
         env.update(RIPWIRE_BIN=ctx["stub"], WL_STAMP=git_out(corpus, "rev-parse", "-q", "--verify", "HEAD")[:9],
                    WL_TOP=git_out(corpus, "rev-parse", "--show-toplevel"), WL_GIT=os.path.realpath(os.path.join(corpus, ".git")),
                    WL_MARK=mark, TMPDIR=tmpdir)
+        # a cmake always comes first on PATH: the monotonicity arms skip before their checkout on a host without one
         if sc["stage"] == "build":
             env["PATH"] = ctx["shimdir"] + os.pathsep + env.get("PATH", "")
         else:
+            env["PATH"] = ctx["idledir"] + os.pathsep + env.get("PATH", "")
             env["RIPWIRE_HEADBIN"] = ctx["stub"]
         with open(logpath, "wb") as log:
             p = subprocess.Popen(["bash", os.path.join(corpus, "test", sc["gate"])], cwd=corpus, env=env,
@@ -368,13 +372,14 @@ def kill_main(root, work, lib, mutlib, buildgate, specs):
     stub = os.path.join(work, "ripwire-stub")
     io.open(stub, "w").write(STUB)
     os.chmod(stub, 0o755)
-    shimdir = os.path.join(work, "shim")
-    os.makedirs(shimdir, exist_ok=True)
-    io.open(os.path.join(shimdir, "cmake"), "w").write(SHIM)
-    os.chmod(os.path.join(shimdir, "cmake"), 0o755)
+    shimdir, idledir = os.path.join(work, "shim"), os.path.join(work, "idle")
+    for dirpath, body in ((shimdir, SHIM), (idledir, "#!/bin/sh\nexit 0\n")):
+        os.makedirs(dirpath, exist_ok=True)
+        io.open(os.path.join(dirpath, "cmake"), "w").write(body)
+        os.chmod(os.path.join(dirpath, "cmake"), 0o755)
     cg = git_out(root, "rev-parse", "--git-common-dir")
     common = os.path.realpath(os.path.join(root, cg)) if cg else ""
-    ctx = dict(root=root, work=work, stub=stub, shimdir=shimdir, common=common, hist=threading.Semaphore(1))
+    ctx = dict(root=root, work=work, stub=stub, shimdir=shimdir, idledir=idledir, common=common, hist=threading.Semaphore(1))
     rows, scen = [], []
     gates = [tuple(s.split(":", 1)) for s in specs]
     if gates:
