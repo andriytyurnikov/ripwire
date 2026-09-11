@@ -63,8 +63,11 @@ static inline bool stack_push(Stack *stack, char chr, bool triple, uint8_t prefi
   return true;
 }
 
+// RIPWIRE_VENDOR_PATCH(kotlin/001-stack-push-no-abort): upstream's abort() here was unreachable (every
+// caller tests size >= 2 first); an empty stack now simply stays empty, so no abort() is left on the
+// string-stack path.
 static inline void stack_pop(Stack *stack) {
-  if (stack->size < 2) abort();
+  if (stack->size < 2) return;
   stack->size -= 2;
 }
 

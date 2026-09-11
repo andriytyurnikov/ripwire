@@ -237,7 +237,9 @@ inline void mergeCrawlDisclosures( IngestResult& m, IngestResult& part, const Wo
     relabel( part.crawlSkips.unsupported, m.crawlSkips.unsupported );
     relabel( part.crawlSkips.ignored,        m.crawlSkips.ignored );          // §N6-C, per root, labeled like its siblings
     relabel( part.crawlSkips.ignoredDirRows, m.crawlSkips.ignoredDirRows );   // §N6-C
+    relabel( part.crawlSkips.nestRefused,    m.crawlSkips.nestRefused );      // the Kotlin nesting guard's refusals
 
+    m.crawlSkips.nestRefusedFiles += part.crawlSkips.nestRefusedFiles;
     m.crawlSkips.excludedFiles    += part.crawlSkips.excludedFiles;
     m.crawlSkips.unsupportedFiles += part.crawlSkips.unsupportedFiles;
     m.crawlSkips.excludedDirs     += part.crawlSkips.excludedDirs;

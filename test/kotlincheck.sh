@@ -437,6 +437,143 @@ pyedit "$TMP/mut/Util.kt" 'interface Taggable' 'interface TaggableKt' \
              || no "mutation 7g: expected defs=1 after removing the Kotlin side of the collision, got: $( echo "$USES_TAGGABLE_MUT" | grep -o '<uses [^>]*>' )"; } \
     || no "mutation 7g: the interface rename did not apply — the arm would have been inert"
 
+# ═══════════════════════════════════════════════════════════════════════════
+echo
+echo "=== 12. HOSTILE NESTING: 600 nested string templates are refused before the parse, never a process abort ==="
+# ═══════════════════════════════════════════════════════════════════════════
+# tree-sitter-kotlin's external scanner keeps one stack entry per OPEN string, and upstream abort()ed when the next push
+# would overrun the 1024-byte serialization buffer: on the first Kotlin binary ONE such file ended the run for its whole
+# tree at rc=134 with no output — the map, --skipped, --grep, --match, every verb. Two independent layers now, and this
+# section is the runtime arm for the FIRST: ingest's kotlinStringsNestTooDeep prescan (ingest.h
+# kMaxKotlinStringNestDepth = 128) refuses the FILE before any parse, names it on stderr (plus DEGRADED_PATH_ALERT on a
+# non-NDEBUG build) and rows it in --skipped as why="nest-refused". The SECOND layer, the vendored scanner refusing the
+# push instead of aborting, is vendorpatchcheck arm J. The ceiling is pinned from BOTH sides (128 indexed, 129 refused)
+# and the siblings must stay indexed, so a guard that refuses the whole tree and a guard that refuses nothing are both red.
+NEST="$TMP/nest"; mkdir -p "$NEST"
+python3 - "$NEST" <<'PYEOF'
+import os, sys
+root = sys.argv[1]
+def nested(depth):   # `depth` simultaneously-open strings: "a${"a${ … "leaf" … }"}"
+    return '"a${' * (depth - 1) + '"leaf"' + '}"' * (depth - 1)
+def write(name, fn, depth):
+    with open(os.path.join(root, name), "w") as f:
+        f.write("package nest\n\nfun %s(): Int = 1\n\nval v_%s = %s\n" % (fn, fn, nested(depth)))
+write("Deep.kt", "deepFn", 600)
+write("OverCeiling.kt", "overCeilingFn", 129)
+write("AtCeiling.kt", "atCeilingFn", 128)
+with open(os.path.join(root, "Sibling.kt"), "w") as f:
+    f.write('package nest\n\nfun siblingFn(name: String): String = "hi ${name.uppercase()} ${"x${name}"}"\n\nfun callsSibling(): String = siblingFn("k")\n')
+PYEOF
+nestOpeners(){ grep -o '"a\${' "$1" | wc -l | tr -d ' '; }   # open strings = openers + 1 (the "leaf")
+[ "$( nestOpeners "$NEST/Deep.kt" )" = 599 ] && [ "$( nestOpeners "$NEST/OverCeiling.kt" )" = 128 ] && [ "$( nestOpeners "$NEST/AtCeiling.kt" )" = 127 ] \
+    && ok "presence: Deep.kt nests 600 open strings, OverCeiling.kt 129, AtCeiling.kt 128" \
+    || no "presence: fixture depths are not 600/129/128 — every arm below would assert on the wrong input"
+
+"$BIN" "$NEST" --no-cache >"$TMP/nest.xml" 2>"$TMP/nest.err"; NEST_RC=$?
+[ "$NEST_RC" -eq 0 ] && ok "hostile nesting: the map exits 0 (the first Kotlin binary died here at rc=134, the scanner's abort)" \
+    || no "hostile nesting: the map exited $NEST_RC — 134 is the scanner's abort(): $( head -3 "$TMP/nest.err" )"
+# Every arm below reads the map, so it is evaluated ONLY on a clean exit: a crashed run prints nothing, and "no deepFn in
+# an empty file" would otherwise pass for the very defect this section exists to catch.
+if [ "$NEST_RC" -eq 0 ]; then
+    command -v xmllint >/dev/null 2>&1 && { xmllint --noout "$TMP/nest.xml" 2>/dev/null && ok "hostile nesting: the map is well-formed" || no "hostile nesting: the map fails xmllint"; }
+    grep -q 'n="siblingFn"' "$TMP/nest.xml" && grep -q 'n="callsSibling"' "$TMP/nest.xml" \
+        && ok "hostile nesting: Sibling.kt stays indexed (siblingFn, callsSibling) — the refusal is per file, not per tree" \
+        || no "hostile nesting: Sibling.kt's symbols are missing — the guard took the tree down with the file"
+    grep -q 'n="atCeilingFn"' "$TMP/nest.xml" \
+        && ok "hostile nesting: AtCeiling.kt (128 open strings) is indexed — the ceiling is inclusive" \
+        || no "hostile nesting: AtCeiling.kt (128 deep) was refused — the prescan over-counts at the ceiling"
+    grep -q 'n="deepFn"' "$TMP/nest.xml" || grep -q 'n="overCeilingFn"' "$TMP/nest.xml" \
+        && no "hostile nesting: Deep.kt or OverCeiling.kt contributed symbols — the prescan did not refuse them before the parse" \
+        || ok "hostile nesting: Deep.kt (600) and OverCeiling.kt (129) contribute no symbols — refused before the parse"
+    grep -q 'Deep.kt: kotlin string-template nesting > 128 levels' "$TMP/nest.err" && grep -q 'OverCeiling.kt: kotlin string-template nesting > 128 levels' "$TMP/nest.err" \
+        && ok "hostile nesting: both refusals are named on stderr (the json/yaml house skip style)" \
+        || no "hostile nesting: stderr does not name both refusals: $( head -5 "$TMP/nest.err" )"
+    # DEGRADED_PATH_ALERT prints only where NDEBUG is undefined (the plain dev build, the asan build); Release compiles it
+    # out. The flavour is read from --version's build-type token, the reading estchargecheck and versioncheck share, so
+    # this arm neither goes red on a Release leg nor passes blind on the plain build.
+    NEST_FLAVOUR="$( "$BIN" --version 2>/dev/null | sed -nE 's/^[^(]*\(([^,)]*).*/\1/p' )"
+    case "$NEST_FLAVOUR" in
+        Release|RelWithDebInfo|MinSizeRel)
+            ok "hostile nesting: $NEST_FLAVOUR build defines NDEBUG — DEGRADED_PATH_ALERT is compiled out, nothing to assert" ;;
+        *)
+            grep -q 'math degraded.*kMaxKotlinStringNestDepth' "$TMP/nest.err" \
+                && ok "hostile nesting: DEGRADED_PATH_ALERT names the refusal on this '${NEST_FLAVOUR:-unknown}' (non-NDEBUG) build" \
+                || no "hostile nesting: '${NEST_FLAVOUR:-unknown}' is a non-NDEBUG build, yet the Kotlin refusal raised no DEGRADED_PATH_ALERT" ;;
+    esac
+else
+    no "hostile nesting: the symbol, stderr and degrade-alert arms were NOT evaluated — the map did not exit 0"
+fi
+
+SKN="$( "$BIN" "$NEST" --skipped --no-cache 2>/dev/null )"; SKN_RC=$?
+deepBytes="$( wc -c < "$NEST/Deep.kt" | tr -d ' ' )"; overBytes="$( wc -c < "$NEST/OverCeiling.kt" | tr -d ' ' )"
+if [ "$SKN_RC" -eq 0 ] && echo "$SKN" | grep -q '<skipped '; then
+    ok "--skipped exits 0 over the hostile tree with a <skipped> report"
+    echo "$SKN" | grep -q "<f p=\"Deep.kt\" why=\"nest-refused\" bytes=\"$deepBytes\" ext=\".kt\"/>" \
+        && ok "--skipped itemizes Deep.kt: why=\"nest-refused\" bytes=\"$deepBytes\" ext=\".kt\"" \
+        || no "--skipped has no exact nest-refused row for Deep.kt: $( echo "$SKN" | grep -o '<f p="[^"]*" why="[^"]*"[^/]*/>' | head -5 )"
+    echo "$SKN" | grep -q "<f p=\"OverCeiling.kt\" why=\"nest-refused\" bytes=\"$overBytes\" ext=\".kt\"/>" \
+        && ok "--skipped itemizes OverCeiling.kt" || no "--skipped has no exact nest-refused row for OverCeiling.kt"
+    # why="nest-refused" specifically: AtCeiling.kt is one long whitespace-poor line, so it legitimately earns a
+    # minified-suspect <h> health row — an indexed file flagged, which is exactly what it is.
+    echo "$SKN" | grep -q 'p="AtCeiling.kt" why="nest-refused"' && no "--skipped rows AtCeiling.kt as nest-refused, but it was indexed" \
+        || ok "--skipped does not row AtCeiling.kt as nest-refused (indexed, not refused)"
+    echo "$SKN" | grep -q 'nest_refused="2"' && ok '--skipped header: nest_refused="2"' \
+        || no "--skipped header: expected nest_refused=\"2\": $( echo "$SKN" | grep -o '<skipped [^>]*>' )"
+    echo "$SKN" | grep -q '<!-- nest_refused= counts' && ok "--skipped defines nest_refused= in the legend of the document that carries the rows" \
+        || no "--skipped: nest-refused rows with no legend clause defining them"
+    "$BIN" "$NEST" --skipped --no-cache 2>/dev/null | cmp -s - <( echo "$SKN" ) && ok "--skipped over the hostile tree: two runs byte-identical" \
+        || no "--skipped over the hostile tree differs between two runs"
+else
+    no "--skipped over the hostile tree exited $SKN_RC or printed no <skipped> report — its row, header and legend arms were NOT evaluated"
+fi
+SK_CLEAN="$( "$BIN" "$FIX" --skipped --no-cache 2>/dev/null )"
+if echo "$SK_CLEAN" | grep -q '<skipped '; then
+    echo "$SK_CLEAN" | grep -q 'nest_refused\|nest-refused' \
+        && no "--skipped on the clean kotlinfix mentions nest_refused — absent-means-nothing-happened is broken" \
+        || ok "--skipped on the clean kotlinfix: no nest_refused attribute, row or legend clause"
+else
+    no "--skipped on the clean kotlinfix printed no <skipped> report — the absent-when-zero arm would pass on nothing"
+fi
+
+# warm: a refused file yields no facts, so it is never cached — a cached re-run must re-read and re-refuse it, not lose it.
+"$BIN" "$NEST" --cache="$TMP/nest.cache" >/dev/null 2>&1
+if ls "$TMP"/nest.cache* >/dev/null 2>&1; then
+    SKW="$( "$BIN" "$NEST" --skipped --cache="$TMP/nest.cache" 2>/dev/null )"
+    echo "$SKW" | grep -q 'nest_refused="2"' && echo "$SKW" | grep -q '<f p="Deep.kt" why="nest-refused"' \
+        && ok "warm: the cached re-run still refuses and rows both files" \
+        || no "warm: the cached re-run lost the refusal: $( echo "$SKW" | grep -o '<skipped [^>]*>' )"
+else
+    no "warm: presence — the first run wrote no cache under $TMP/nest.cache* (the warm arm would have run cold)"
+fi
+
+# multi-root: the row relabels like every other skipped row, and the count sums across roots.
+mkdir -p "$TMP/other"; printf 'package other\n\nfun otherFn(): Int = 2\n' > "$TMP/other/Other.kt"
+SKM="$( cd "$TMP" && "$BIN" nest other --skipped --no-cache 2>/dev/null )"
+echo "$SKM" | grep -q '<f p="nest/Deep.kt" why="nest-refused"' && echo "$SKM" | grep -q 'nest_refused="2"' \
+    && ok "multi-root: the refusal row keeps its <label>/<rel> spelling (nest/Deep.kt) and nest_refused merges to 2" \
+    || no "multi-root: expected <f p=\"nest/Deep.kt\" why=\"nest-refused\" and nest_refused=\"2\": $( echo "$SKM" | grep -o '<f p="[^"]*" why="nest-refused"[^/]*/>' )"
+
+# Mutation: take ONE level off OverCeiling.kt (129 -> 128). The identical extraction must now index it and the count must
+# drop to 1 — so the ceiling arms above track DEPTH, not a file name or a size.
+rm -rf "$TMP/nestmut"; cp -R "$NEST" "$TMP/nestmut"
+python3 - "$TMP/nestmut/OverCeiling.kt" <<'PYEOF'
+import sys
+p = sys.argv[1]; s = open(p).read()
+t = s.replace('"a${', '', 1).replace('}"', '', 1)
+if t == s:
+    sys.exit("mutation target not present")
+open(p, "w").write(t)
+PYEOF
+if [ "$( nestOpeners "$TMP/nestmut/OverCeiling.kt" )" = 127 ]; then
+    "$BIN" "$TMP/nestmut" --no-cache >"$TMP/nestmut.xml" 2>/dev/null
+    SKMUT="$( "$BIN" "$TMP/nestmut" --skipped --no-cache 2>/dev/null )"
+    grep -q 'n="overCeilingFn"' "$TMP/nestmut.xml" && echo "$SKMUT" | grep -q 'nest_refused="1"' \
+        && ok "mutation: one level off OverCeiling.kt (129 -> 128) -> indexed, nest_refused 2 -> 1" \
+        || no "mutation: 128-deep OverCeiling.kt is still refused, or the count did not move: $( echo "$SKMUT" | grep -o '<skipped [^>]*>' )"
+else
+    no "mutation 12: OverCeiling.kt did not lose exactly one level — the arm would have been inert"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo
 if [ "$fail" -eq 0 ]; then

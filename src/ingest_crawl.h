@@ -751,6 +751,255 @@ bool mdNestsTooDeep( std::string_view bytes ) noexcept
     return false;
 }
 
+// ── the Kotlin string-template nesting prescan (kotlinStringsNestTooDeep) and its three lexical helpers ──────────────
+
+// The byte length of the character literal that starts at bytes[ i ] == '\'', or 0 when none does. The grammar's shape
+// is `'` (an escape, or ONE codepoint that is not a quote or a newline) `'`, and the parser's internal lexer takes it
+// whole, so a quote inside one (`'"'`) is never offered to the external scanner as a string start.
+inline std::size_t kotlinCharLiteralLength( std::string_view bytes, std::size_t i ) noexcept
+{
+    const auto byteAt = [ & ]( std::size_t k ) noexcept -> unsigned char { return k < bytes.size() ? static_cast<unsigned char>( bytes[ k ] ) : 0u; };
+    const unsigned char first  = byteAt( i + 1 );
+    std::size_t         length = 0;
+    if( first == '\\' )
+    {
+        length = ( byteAt( i + 2 ) == 'u' ) ? 8u : 4u;   // '\uXXXX' or a one-character escape
+    }
+    else if( first != 0u && first != '\'' && first != '\n' && first != '\r' )
+    {
+        std::size_t codepointBytes = 1;
+        if( ( first >> 5 ) == 0x6u )
+        {
+            codepointBytes = 2;
+        }
+        else if( ( first >> 4 ) == 0xEu )
+        {
+            codepointBytes = 3;
+        }
+        else if( ( first >> 3 ) == 0x1Eu )
+        {
+            codepointBytes = 4;
+        }
+        length = codepointBytes + 2u;
+    }
+    return ( length > 0 && byteAt( i + length - 1 ) == '\'' ) ? length : 0u;
+}
+
+// The index just past the `/* … */` comment whose `/*` starts at bytes[ i ], nesting exactly as the vendored scanner's
+// scan_multiline_comment does — including its reading of an unterminated comment, which runs to end of input.
+inline std::size_t kotlinBlockCommentEnd( std::string_view bytes, std::size_t i ) noexcept
+{
+    std::size_t k         = i + 2;
+    std::size_t depth     = 1;
+    bool        afterStar = false;
+    while( k < bytes.size() )
+    {
+        const char c = bytes[ k ];
+        ++k;
+        if( c == '*' )
+        {
+            afterStar = true;
+        }
+        else if( c == '/' && afterStar )
+        {
+            afterStar = false;
+            if( --depth == 0 )
+            {
+                return k;
+            }
+        }
+        else
+        {
+            afterStar = false;
+            if( c == '/' && k < bytes.size() && bytes[ k ] == '*' )
+            {
+                ++depth;
+                ++k;
+            }
+        }
+    }
+    return k;
+}
+
+// In Kotlin CODE: the index just past a token that is consumed WHOLE before the external scanner can see a quote inside
+// it — a `//` comment, a nested `/* */` comment, a character literal, a backtick identifier — or `i` itself when none
+// starts at bytes[ i ].
+inline std::size_t kotlinCodeTriviaEnd( std::string_view bytes, std::size_t i ) noexcept
+{
+    const std::size_t byteCount = bytes.size();
+    const char        c         = bytes[ i ];
+    const char        next      = ( i + 1 < byteCount ) ? bytes[ i + 1 ] : '\0';
+    if( c == '/' && next == '/' )
+    {
+        const std::size_t newline = bytes.find( '\n', i );
+        return ( newline == std::string_view::npos ) ? byteCount : newline;
+    }
+    if( c == '/' && next == '*' )
+    {
+        return kotlinBlockCommentEnd( bytes, i );
+    }
+    if( c == '\'' )
+    {
+        return i + kotlinCharLiteralLength( bytes, i );
+    }
+    if( c == '`' )
+    {
+        const std::size_t close = bytes.find_first_of( "`\r\n", i + 1 );
+        const bool        named = close != std::string_view::npos && bytes[ close ] == '`' && close > i + 1;
+        return named ? close + 1 : i;
+    }
+    return i;
+}
+
+enum class KotlinStringEvent : std::uint8_t { None, OpenInterpolation, CloseString };
+
+// One step of the vendored scanner's scan_string_content at bytes[ i ], inside an open string of the given shape: the
+// index after the bytes it consumes, and whether those bytes opened an interpolation or closed the string.
+//   `$`  a run of at least the string's `$` prefix followed by `{` opens an interpolation; any other run is content.
+//   `\`  skips the byte after it — except that `\$` directly before a quote CLOSES the string, triple-quoted or not
+//        (upstream's own reading, mirrored because the stack follows it), and in a triple-quoted string `\` before
+//        a quote is no escape at all, so the quote is read again.
+//   `"`  closes a single-quoted string; a run of three or more closes a triple-quoted one, and shorter runs are content.
+inline std::pair<std::size_t, KotlinStringEvent> kotlinStringStep( std::string_view bytes, std::size_t i, bool tripleQuoted,
+                                                                   std::size_t dollars ) noexcept
+{
+    const std::size_t byteCount = bytes.size();
+    const auto        byteAt    = [ & ]( std::size_t k ) noexcept -> char { return k < byteCount ? bytes[ k ] : '\0'; };
+    const auto        runOf     = [ & ]( char c ) noexcept
+    {
+        std::size_t run = 0;
+        while( i + run < byteCount && bytes[ i + run ] == c )
+        {
+            ++run;
+        }
+        return run;
+    };
+    switch( bytes[ i ] )
+    {
+        case '$':
+        {
+            const std::size_t run   = runOf( '$' );
+            const bool        opens = run >= dollars && byteAt( i + run ) == '{';
+            return { i + run + ( opens ? 1u : 0u ), opens ? KotlinStringEvent::OpenInterpolation : KotlinStringEvent::None };
+        }
+        case '\\':
+        {
+            if( byteAt( i + 1 ) == '$' )
+            {
+                return { i + 3, byteAt( i + 2 ) == '"' ? KotlinStringEvent::CloseString : KotlinStringEvent::None };
+            }
+            if( tripleQuoted && byteAt( i + 1 ) == '"' )
+            {
+                return { i + 1, KotlinStringEvent::None };
+            }
+            return { i + 2, KotlinStringEvent::None };
+        }
+        case '"':
+        {
+            if( !tripleQuoted )
+            {
+                return { i + 1, KotlinStringEvent::CloseString };
+            }
+            const std::size_t run = runOf( '"' );
+            return { i + run, run >= 3 ? KotlinStringEvent::CloseString : KotlinStringEvent::None };
+        }
+        default:
+        {
+            return { i + 1, KotlinStringEvent::None };
+        }
+    }
+}
+
+// True when string-template nesting would take tree-sitter-kotlin's scanner string stack past kMaxKotlinStringNestDepth —
+// see that constant in ingest.h for the defect. Like the json/yaml/markdown prescans: one deterministic O(n) byte scan
+// BEFORE any parse, never a wall-clock timeout. Unlike them it is not a shape ESTIMATE, because the stack it bounds
+// changes in exactly two places — a string START pushes one entry and a string END pops one — so this scan MIRRORS the
+// vendored scanner's state machine (scan_string_start / scan_string_content; kotlinStringStep above carries the string
+// half). In code — top level, or inside an interpolation, which closes at the `}` balancing its `${` — a quote after an
+// optional `$` run is a string START, and kotlinCodeTriviaEnd skips what the parser's internal lexer takes whole first.
+// What a byte mirror cannot see is the parser's ERROR RECOVERY, which is why the ceiling sits 4x under the cliff rather
+// than at it, and why the vendored patch that turns the scanner's own abort() into a refused push is a second,
+// independent layer and not a formality.
+bool kotlinStringsNestTooDeep( std::string_view bytes ) noexcept
+{
+    struct NestFrame
+    {
+        bool        isString     = false;
+        bool        tripleQuoted = false;
+        std::size_t dollars      = 1;   // a string: how long a `$` run must be to open an interpolation inside it
+        std::size_t openBraces   = 0;   // an interpolation: `{` opened inside this `${ … }` and not yet closed
+    };
+    // String and interpolation frames strictly alternate above top-level code, so twice the ceiling bounds the stack —
+    // and the string push that would pass the ceiling IS the verdict, so it is reached before the array could fill.
+    std::array<NestFrame, 2u * kMaxKotlinStringNestDepth> frames {};
+    std::size_t       frameCount  = 0;
+    std::uint32_t     stringDepth = 0;
+    const std::size_t byteCount   = bytes.size();
+    std::size_t       i           = 0;
+    while( i < byteCount )
+    {
+        NestFrame* const top = ( frameCount > 0 ) ? &frames[ frameCount - 1 ] : nullptr;
+        if( top != nullptr && top->isString )
+        {
+            const auto [ next, event ] = kotlinStringStep( bytes, i, top->tripleQuoted, top->dollars );
+            i = next;
+            if( event == KotlinStringEvent::CloseString )
+            {
+                --frameCount;
+                --stringDepth;
+            }
+            else if( event == KotlinStringEvent::OpenInterpolation && frameCount < frames.size() )
+            {
+                frames[ frameCount ] = NestFrame{};
+                ++frameCount;
+            }
+            continue;
+        }
+        const std::size_t afterTrivia = kotlinCodeTriviaEnd( bytes, i );
+        if( afterTrivia != i )
+        {
+            i = afterTrivia;
+            continue;
+        }
+        std::size_t dollarRun = 0;
+        while( i + dollarRun < byteCount && bytes[ i + dollarRun ] == '$' )
+        {
+            ++dollarRun;
+        }
+        if( i + dollarRun < byteCount && bytes[ i + dollarRun ] == '"' )
+        {
+            if( stringDepth >= kMaxKotlinStringNestDepth || frameCount >= frames.size() )
+            {
+                return true;
+            }
+            const std::size_t quote  = i + dollarRun;
+            const bool        triple = quote + 2 < byteCount && bytes[ quote + 1 ] == '"' && bytes[ quote + 2 ] == '"';
+            frames[ frameCount ] = NestFrame{ true, triple, std::clamp<std::size_t>( dollarRun, 1u, 255u ), 0u };   // the scanner caps its prefix at 255
+            ++frameCount;
+            ++stringDepth;
+            i = quote + ( triple ? 3u : 1u );
+            continue;
+        }
+        if( top != nullptr && bytes[ i ] == '{' )
+        {
+            ++top->openBraces;
+        }
+        else if( top != nullptr && bytes[ i ] == '}' )
+        {
+            if( top->openBraces == 0 )
+            {
+                --frameCount;   // the brace that balances `${` closes the interpolation: back inside its string
+            }
+            else
+            {
+                --top->openBraces;
+            }
+        }
+        i += ( dollarRun > 0 ) ? dollarRun : 1u;
+    }
+    return false;
+}
+
 // A .h defaults to C++, but an Objective-C header (@interface/@protocol) must use the objc grammar or its
 // class/protocol structure is lost to the C++ parser. Cheap content peek (first 8 KB) for the distinctive
 // '@' declarations. @ is not valid C++ outside a string/comment — and "outside a string/comment" is load-

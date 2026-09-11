@@ -847,6 +847,14 @@ struct CrawlSkips
     std::uint64_t             ignoredFiles    = 0;  // EXACT count (rows may be fewer)
     std::uint64_t             ignoredDirs     = 0;  // subtrees pruned by git's ignore rules: contents NEVER enumerated
     IgnoreMode                ignoreMode      = IgnoreMode::Unavailable;   // NOT-ASKED is the honest default
+
+    // The one PARSE-time class in this taxonomy: files the crawl INDEXED (they keep their fileId and stay inside files=
+    // and unmeasured=) that a pre-parse nesting guard then refused, so they contribute no symbols. Today only the Kotlin
+    // string-template guard rows its refusals (ingest.h kMaxKotlinStringNestDepth); the json/yaml/markdown guards are
+    // counted in unmeasured= alone. Filled after the parse pool, never by the walk, and NOT part of the accounting
+    // invariant's drop classes — a refused file is already inside indexed=.
+    std::vector<SkippedFile>  nestRefused;          // capped rows, path-sorted
+    std::uint64_t             nestRefusedFiles = 0; // EXACT count (rows may be fewer)
 };
 
 // §L1 — PARSE HEALTH: a per-indexed-file record of how much of the file the parser actually understood,

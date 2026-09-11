@@ -55,11 +55,18 @@
 #      EXACTLY 256 and gated as ==, because the wrong parse only fires while the wrapped value lands
 #      under the threshold tested (N mod 256 in 0..3) — at a round 300 the parse is accidentally
 #      correct and every plain-build assertion here would go inert while asan stayed green.
-#   J  kotlin/001 + kotlin/002 — a DELIBERATE abort() (not UB, so no sanitizer catches it and no
-#      corpus/fuzz sweep found it) when 700 nested interpolated strings overrun the delimiter stack's
-#      TREE_SITTER_SERIALIZATION_BUFFER_SIZE budget, generated fresh like arm G; plus the plain-build
-#      exit-0 mis-tokenization from an escaped `$` right before a triple-quoted string's closing
-#      delimiter (test/vendorpatchfix/tripledollar.kt, committed like arm F's fixture) — checked via
+#   J  kotlin/001 + kotlin/002. kotlin/001: tree-sitter-kotlin's stack_push abort()ed the process when
+#      nested interpolated strings overran the delimiter stack's TREE_SITTER_SERIALIZATION_BUFFER_SIZE
+#      budget (512 open strings) — a DELIBERATE abort(), not UB, so no sanitizer catches it and no
+#      corpus/fuzz sweep found it. Three halves: a STATIC shape audit (no abort() left on the string-stack
+#      path — stack_push / stack_pop / scan_string_start — and both string-start shapes return the push's
+#      verdict); the default map over 700 nested string-opens, generated fresh like arm G, must exit 0
+#      well-formed; and a --match run over a 600-deep file, the RUNTIME half — ingest's
+#      kotlinStringsNestTooDeep prescan refuses such a file before any parse, so the default map no longer
+#      reaches the scanner, while --match's structural-query pass still hands it that input directly
+#      (kotlincheck §12 is the runtime arm for the prescan). kotlin/002: the plain-build exit-0
+#      mis-tokenization from an escaped `$` right before a triple-quoted string's closing delimiter
+#      (test/vendorpatchfix/tripledollar.kt, committed like arm F's fixture) — checked via
 #      degraded_parse=0 and that the symbol declared right after the tricky string still extracts.
 #
 # Usage:
@@ -246,12 +253,12 @@ serializeClassOf(){
                                            # minus even the bare per-iteration check)
         kotlin)           echo upfront ;;  # `n = stack->size; if (n > BUFFER_SIZE) n = BUFFER_SIZE;`
                                            # THEN one memcpy(buffer, contents, n) — upstream's own
-                                           # whole-write clamp, verified in third_party/deps/kotlin/
-                                           # src/scanner.c (no vendored patch needed). The separate
-                                           # `stack->size + 1 >= BUFFER_SIZE) abort()` in stack_push is
-                                           # a DIFFERENT, independent guard — it caps how large the
-                                           # dynamic stack may grow, not the serialize buffer write;
-                                           # the write-side safety is entirely the clamp above.
+                                           # whole-write clamp, so the WRITE needs no patch. The stack
+                                           # that feeds it was NOT harmless: upstream's stack_push
+                                           # bounded it with `abort()`, which killed the whole process
+                                           # on 512 nested string templates in one .kt file (rc=134,
+                                           # no output). That is kotlin/001, and arm J, not this arm,
+                                           # is what keeps it from coming back.
         cpp|cuda)         echo static ;;
         python)           echo loop1 ;;
         yaml)             echo loopwide ;;
@@ -385,11 +392,39 @@ else
 fi
 
 # ── J: kotlin/001 (stack-push-no-abort) + kotlin/002 (triple-dollar-escape) live tripwires ────────
+# kotlin/001, STATIC: Arm B proves the patch file is still carried. This arm proves the SHAPE it exists for is gone, so a
+# re-vendor that brings an abort() back onto the string-stack path fails here even if someone
+# regenerates the patch file to match the new tree. Presence first: the extraction keys on the
+# PATCHED signature (`static inline bool stack_push`), so upstream's `void` form — or a rename on a
+# bump — fails the presence check instead of passing an arm that extracted nothing.
+KT_SCANNER="$DEPS_DIR/kotlin/src/scanner.c"
+ktStackPath="$( awk '/^static inline bool stack_push\(/,/^}/ { print } /^static inline void stack_pop\(/,/^}/ { print } /^static bool scan_string_start\(/,/^}/ { print }' "$KT_SCANNER" 2>/dev/null )"
+if printf '%s\n' "$ktStackPath" | grep -q 'array_push(stack' \
+   && printf '%s\n' "$ktStackPath" | grep -q 'stack->size -= 2' \
+   && printf '%s\n' "$ktStackPath" | grep -q 'lexer->lookahead'; then
+    ok "J: presence — the bool stack_push, stack_pop and scan_string_start bodies extracted from the kotlin scanner"
+    if printf '%s\n' "$ktStackPath" | grep -q 'abort()'; then
+        no "J: the kotlin scanner's string-stack path calls abort() again — re-apply third_party/patches/kotlin/001-stack-push-no-abort.patch"
+    else
+        ok "J: no abort() on the kotlin scanner's string-stack path (stack_push / stack_pop / scan_string_start)"
+    fi
+    ktPropagate="$( printf '%s\n' "$ktStackPath" | grep -c 'return stack_push(' )"
+    if [ "$ktPropagate" -eq 2 ]; then
+        ok "J: both string-start shapes (single- and triple-quoted) return the push's verdict — a refused push is no string start"
+    else
+        no "J: expected 2 'return stack_push(' sites in scan_string_start, found $ktPropagate — a refused push would be reported as a string the stack never recorded"
+    fi
+else
+    no "J: presence — no bool stack_push / stack_pop / scan_string_start bodies in $KT_SCANNER (upstream's abort() form, or renamed on a bump) — the arm would otherwise pass while inert"
+fi
+
 # kotlin/001: the delimiter stack's abort() is a DELIBERATE process termination, not UB — no sanitizer
 # flags it, so it is invisible to every fuzz/ASan sweep that found every other patch in this file
 # (found instead by an automated PR review, 2026-09-10). A file whose interpolated strings nest deep
 # enough (>=512 unterminated string-opens, TREE_SITTER_SERIALIZATION_BUFFER_SIZE / 2 bytes-per-entry)
 # used to SIGABRT the whole process; it must now degrade to ERROR nodes like any other malformed input.
+# Since the ingest nesting guard landed (kotlincheck §12) the default map refuses this file before any parse, so
+# this run proves the WHOLE pipeline survives it; the --match run below is the half that reaches the scanner.
 mkdir -p "$TMP/deepinterp"
 python3 - "$TMP/deepinterp/deep.kt" <<'PYEOF'
 import sys
@@ -401,15 +436,42 @@ if [ "$( wc -c < "$TMP/deepinterp/deep.kt" )" -gt 2000 ]; then
 else
     no "J: presence — deep-interpolation file generation failed"
 fi
-if "$BIN" "$TMP/deepinterp" --no-cache > "$TMP/deepinterp.xml" 2> "$TMP/deepinterp.err"; then
+"$BIN" "$TMP/deepinterp" --no-cache > "$TMP/deepinterp.xml" 2> "$TMP/deepinterp.err"; deepRc=$?
+if [ "$deepRc" -eq 0 ]; then
     if xmllint --noout "$TMP/deepinterp.xml" 2>/dev/null; then
-        ok "J: 700-deep nested interpolated strings parse without aborting (well-formed, degraded is fine)"
+        ok "J: the default map over 700 nested string-opens exits 0 and is well-formed (ingest's prescan refuses the file first; the --match run below is what reaches the scanner)"
     else
         no "J: deep-interpolation parse ran but produced malformed output"
     fi
 else
-    no "J: ripwire ABORTED on 700-deep nested interpolated strings (rc=$?) — kotlin/001-stack-push-no-abort is not in effect"
+    no "J: the default map exited $deepRc over 700 nested string-opens (134 = an abort) — neither the ingest prescan nor kotlin/001-stack-push-no-abort held"
     head -3 "$TMP/deepinterp.err" | sed 's/^/        /'
+fi
+
+# The RUNTIME half. The default map never reaches this scanner path — ingest's prescan refuses the file first — but
+# --match's structural-query pass parses every file of a grammar the query compiles against, with no nesting guard,
+# so it hands the scanner the 600-deep file directly. Hits INSIDE Deep.kt are the proof that the parse really ran
+# there, which is what makes exit 0 the patch's doing rather than the prescan's (the first Kotlin binary died on
+# exactly this command at rc=134). Under the asan flavour it is also the sanitizer tripwire for the refused push.
+KTDEEP="$TMP/ktdeep"; mkdir -p "$KTDEEP"
+{
+    printf 'package deep\n\nfun deepFn(): Int = 1\n\nval deep = '
+    for _ in $( seq 1 599 ); do printf '"a${'; done
+    printf '"leaf"'
+    for _ in $( seq 1 599 ); do printf '}"'; done
+    printf '\n'
+} > "$KTDEEP/Deep.kt"
+ktOpeners="$( grep -o '"a\${' "$KTDEEP/Deep.kt" | wc -l | tr -d ' ' )"
+if [ "$ktOpeners" = 599 ]; then
+    "$BIN" "$KTDEEP" --no-cache '--match=(string_literal) @s' > "$TMP/ktdeep.xml" 2> "$TMP/ktdeep.err"; ktRc=$?
+    ktHits="$( grep -o '<m p="Deep.kt:[0-9]*"' "$TMP/ktdeep.xml" | wc -l | tr -d ' ' )"
+    if [ "$ktRc" -eq 0 ] && [ "$ktHits" -gt 0 ]; then
+        ok "J: --match parses the 600-deep Deep.kt directly and exits 0 ($ktHits string_literal hits inside it) — the scanner refused the push instead of aborting"
+    else
+        no "J: --match over a 600-deep string template exited $ktRc with $ktHits hits inside Deep.kt (134 = the scanner's abort(); 0 hits = the parse never ran, so exit 0 would prove nothing): $( head -2 "$TMP/ktdeep.err" )"
+    fi
+else
+    no "J: presence — the generated Deep.kt has $ktOpeners string openers, not 599 (600 open strings) — the runtime arm would assert on the wrong input"
 fi
 
 # kotlin/002: an escaped `$` immediately before a triple-quoted string's closing delimiter used to

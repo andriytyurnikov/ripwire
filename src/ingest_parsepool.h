@@ -539,6 +539,20 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 continue;
             }
 
+            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing: tree-sitter-kotlin's scanner abort()ed the
+            // whole run past ~512 nested string templates (see kMaxKotlinStringNestDepth in ingest.h; the vendored scanner
+            // now refuses the push under third_party/patches/kotlin/, so this is the FIRST of two independent layers).
+            // Unlike the three guards above, a refusal here is ITEMIZED: --skipped rows it why="nest-refused" (collected
+            // from scan.nestRefusedBytes after the pool), because a .kt file refused here takes real code out of the map.
+            if( le->lang == Lang::Kotlin && kotlinStringsNestTooDeep( bytes ) )
+            {
+                DEGRADED_PATH_ALERT( "ingest: a .kt file nests string templates past kMaxKotlinStringNestDepth — refused before the parse (--skipped why=nest-refused)" );
+                rw::emitTo( stderr, "[ripwire] {}: kotlin string-template nesting > {} levels — refused before the parse (skipped)\n",
+                              path.c_str(), kMaxKotlinStringNestDepth );
+                scan.nestRefusedBytes[ fileId ] = static_cast<std::uint32_t>( std::min<std::size_t>( bytes.size(), UINT32_MAX ) );
+                continue;
+            }
+
             if( le->lang == Lang::Markdown )
             {
                 // hostile/degenerate markdown guard — MEMORY-SAFETY load-bearing, the yaml pair's
@@ -862,6 +876,7 @@ inline RawFacts runParsePool( IngestResult& result, const char* rootDir, std::st
         // Skips the ~11ms / 7 MB serialization+write on a no-change warm run.
         if( !cacheFile.empty() && dirty.load() )
         {
+            forgetNestRefusalsForCache( scan );   // a refused file is written UNKNOWN, so a warm run re-refuses it (ingest_prewarm.h)
             saveCache( std::string( cacheFile ), rootDir, result.files, scan.hash, scan.statSize, scan.statMtime, scan.statCtime, scan.health, raw.defs, raw.refs, raw.incs, raw.binds, raw.ffis, raw.routeDefs, raw.routeUses, raw.constOpens, captureValueUses );
         }
     }
