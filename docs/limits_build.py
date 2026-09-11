@@ -115,6 +115,29 @@ def validate_classes(classes, caps):
     live = {c[0] for c in caps}
     return sorted(set(classes) - live)
 
+# ── pinned by what a cap IS, never by the line it sits on ───────────────────────────────────────────
+# This table used to carry each cap's LINE. A line is where a cap happens to sit, not a claim about it,
+# and pinning it made the document stale on every edit ABOVE a cap: a rewritten comment, a deleted
+# helper. On 2026-09-10 PRs #115, #116 and #117 all went red on test/limitstablecheck.sh (B) for nothing
+# else — each of #117's six failed CI jobs was `fail=1 limitstablecheck.sh`, caused only by
+# kPrDefaultBudgetTokens moving from line 452 of src/prcontext.h to 431 after an unrelated deletion — and
+# because every src/ PR cut from one main pins the same lines, each landing re-staled the next. A row is
+# now keyed by what --check SHOULD be strict about: file, name, value, class and note, beside its file's
+# disclosure vocabulary. docs/TUNING.md made the same call for the same reason (bench/capsweep render()).
+# The line survives only where it is read at once and never committed: the validate_anchors() refusal.
+#
+# Without a line, one file declaring the same name, value and note twice (two namespaces, two function
+# bodies) would render two indistinguishable rows. They collapse into ONE row marked ×N — never into a
+# silent drop of the duplicate, because a multiplicity is part of the cap set and deleting one of the two
+# must still make --check fail (limitstablecheck arm J).
+def pinned(cells):
+    """Each distinct rendered row with the number of declarations that render it, in content order — never
+    source order, which is the line by another name."""
+    return sorted(collections.Counter(cells).items())
+
+def times(k):
+    return ' ×%d' % k if k > 1 else ''
+
 def render(caps, disc, classes):
     out = []
     w = out.append
@@ -125,6 +148,11 @@ def render(caps, disc, classes):
     w('it fires. A cap is a **routing decision**: it decides what an agent can and cannot find. Set one')
     w('where the pathological tail is, never near the typical case — and when it fires, say so')
     w('(`*_capped="1"` with a `*_total=`), because a silent cut reads to the caller as "none exists".\n')
+    w('A row is pinned by what a cap IS — its file, name, value, class and note — never by the line it sits')
+    w('on, so a comment rewritten or a helper deleted above a cap changes no row here and cannot stale this')
+    w('document. To reach a declaration, search its file for the name (`grep -n <name> <file>`, or')
+    w('`ripwire . --grep=<name>`). A file that declares the same name, value and note more than once shows')
+    w('it once, marked `×N`.\n')
     allcaps = caps
     caps, weights = partition(caps)
     silent = [c for c in caps if not disc.get(c[2])]
@@ -180,21 +208,21 @@ def render(caps, disc, classes):
         w('refuse to write, so the column cannot be satisfied by pointing at nothing.\n')
         w('| constant | value | site | anchor | note |')
         w('| --- | --- | --- | --- | --- |')
-        for n, v, rel, ln, note in sorted(weights):
-            w('| `%s` | `%s` | `%s:%d` | %s | %s |'
-              % (n, v, rel, ln, '`%s`' % anchor_of(note) if anchor_of(note) else '**unsourced**',
-                 note.replace('|', '\\|')[:130] or '—'))
+        cells = ((n, v, rel, '`%s`' % anchor_of(note) if anchor_of(note) else '**unsourced**',
+                  note.replace('|', '\\|')[:130] or '—') for n, v, rel, _, note in weights)
+        for (n, v, rel, anchor, note), k in pinned(cells):
+            w('| `%s`%s | `%s` | `%s` | %s | %s |' % (n, times(k), v, rel, anchor, note))
         w('')
     for rel in sorted({c[2] for c in caps}):
         rows = [c for c in caps if c[2] == rel]
         d = ', '.join('`%s_capped`' % a for a in sorted(disc.get(rel, []))) or '**none**'
         w('### `%s`\n' % rel)
         w('Discloses: %s\n' % d)
-        w('| constant | value | line | class | note |')
-        w('| --- | --- | --- | --- | --- |')
-        for n, v, _, ln, note in sorted(rows):
-            w('| `%s` | `%s` | %d | %s | %s |'
-              % (n, v, ln, classes.get(n, '—'), note.replace('|', '\\|')[:150] or '—'))
+        w('| constant | value | class | note |')
+        w('| --- | --- | --- | --- |')
+        cells = ((n, v, classes.get(n, '—'), note.replace('|', '\\|')[:150] or '—') for n, v, _, _, note in rows)
+        for (n, v, cls, note), k in pinned(cells):
+            w('| `%s`%s | `%s` | %s | %s |' % (n, times(k), v, cls, note))
         w('')
     return '\n'.join(out) + '\n'
 

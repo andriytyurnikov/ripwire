@@ -1046,7 +1046,7 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
         DeltaBasis   basis;
         if( const std::optional<int> refused = resolveDeltaBasis( d, baselineFile, refs, basis ) )
         {
-            return *refused;
+            return refused;
         }
         const quality::BaselineSelection& baseSel   = basis.baseSel;
         const std::string&                deltaRoot = basis.deltaRoot;
@@ -1059,11 +1059,11 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
         const IngestResult&              judged        = refPair ? refs.target().ing : ing;
         if( const std::optional<int> refused = expandScopeDiff( scope, refPair, judged, root, deltaRoot, diffFileCount ) )
         {
-            return *refused;
+            return refused;
         }
         if( const std::optional<int> refused = refuseUnusableScope( cfg, scope, judged, deltaRoot ) )
         {
-            return *refused;
+            return refused;
         }
 
         // Signal-to-noise round — the per-finding ACK RATCHET. Suppress findings already accepted (with a
@@ -1126,7 +1126,7 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
             // P1 — THE RUBBER-STAMP GUARD (refuseForeignAckSelection owns the rule and the message).
             if( const std::optional<int> refused = refuseForeignAckSelection( cfg, scope, outOfScope, deltaRoot, ackSelected ) )
             {
-                return *refused;
+                return refused;
             }
 
             std::size_t ackWritten = 0, ackSkipped = 0;

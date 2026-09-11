@@ -57,7 +57,8 @@
 #include "graph.h"
 #include "filter.h"             // isTestPath
 #include "gitmine.h"            // shSingleQuote, cochangePartners, gitFileAuthors, FileOwnership
-#include "quality.h"            // gitOneLine — the SAME one-line git primitive crossref/abicheck/mergescout resolve their merge-base with
+#include "quality.h"            // gitOneLine — the SAME one-line git primitive crossref/abicheck/mergescout resolve their merge-base with;
+                                // gitResolveCommitSha — the shared resolver BASEREF goes through (P0.1)
 #include "serialize.h"          // escapeXml
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — the unrelated-history (no merge-base) degrade
 #include "gitstamp.h"           // gitstamp::atAttr — the at="<sha>[+dirty]" root anchor
@@ -261,15 +262,20 @@ inline NumstatDiff numstatChangedPaths( const std::string& root, const std::stri
 // stops SHELL injection, but the token still arrives at git as its own argv entry — and `git diff` honors
 // `--output=FILE`, which TRUNCATES and rewrites FILE. A ref beginning with `-` fails merge-base first,
 // which is *exactly* what routed it into that fallback: `--pr-context=--output=/etc/x` clobbered a file
-// outside the repo and exited 0. So: resolve through `rev-parse --verify ...^{commit}` FIRST (the same
-// probe mergescout.h:resolveCommittish uses) and diff the resulting 40-hex sha, which can never begin
-// with `-`. An unresolvable ref is a REFUSAL (`badRef`), never a fallback — the caller exits 1 (P2.8).
+// outside the repo and exited 0. So: resolve through quality::gitResolveCommitSha FIRST and diff the sha it
+// returns. That is the one resolver a user-supplied revision goes through, and it holds both halves of the
+// house rule: a ref beginning with `-` is refused before git is asked at all (a private copy of the probe
+// used to live here and handed `rev-parse` `--output=…^{commit}` as its own argv entry, stopped only by git's
+// own rejection), and `rev-parse --verify ...^{commit}`'s answer counts only as a bare 40/64-hex object name
+// (`^REF` answers `^<sha>` at rc 0) — so "the revision token can never begin with `-`" is proven in ripwire,
+// not inherited from git's output format. An unresolvable ref is a REFUSAL (`badRef`), never a fallback — the
+// caller exits 1 (P2.8). test/prrefsafecheck.sh proves both halves from the git child's argv, through a PATH shim.
 struct DiffAnchor
 {
     std::string revArgs;               // the already-shell-quoted revision tail for `git diff --numstat`
     std::string baseSha;               // the resolved merge-base, or "" (default form / unrelated history)
-    std::string refSha;                // BASEREF resolved to a commit sha — the ONLY spelling of the ref that
-                                       // reaches a git argv (see the base-moved probe below)
+    std::string refSha;                // BASEREF resolved to a commit sha — the ONLY spelling of the ref any git
+                                       // call after its own resolve probe is handed (see the base-moved probe below)
     bool        baseRefGiven = false;
     bool        baseAnchored = false;
     bool        refHasNoWork = false;  // §A9.2: merge-base == the ref's own tip ⇒ the ref is an ancestor of HEAD
@@ -277,34 +283,6 @@ struct DiffAnchor
     bool        badRef       = false;  // ref given, root has git history, ref does not resolve ⇒ refuse (exit 1)
     bool        gitUnusable  = false;  // no HEAD at all (non-git root / git unavailable) ⇒ the exit-0 degrade
 };
-
-// A git object name is 40 (sha-1) or 64 (sha-256) lowercase hex characters. Checked explicitly rather than
-// assumed so "the revision token can never look like an option" is a property this file PROVES rather than
-// inherits from git's output format — a non-hex answer degrades to a refusal, never to a raw-token diff.
-inline bool isCommitSha( std::string_view s )
-{
-    if( s.size() != 40 && s.size() != 64 )
-    {
-        return false;
-    }
-    for( const char c : s )
-    {
-        if( !( ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'f' ) ) )
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Resolve REF to a commit sha. `^{commit}` peels — so a blob/tree hash or a malformed ref answers "" — and
-// mirrors mergescout.h:resolveCommittish verbatim rather than growing a second dialect of the same probe.
-inline std::string resolveBaseRefSha( const std::string& root, std::string_view ref )
-{
-    const std::string sha = quality::gitOneLine( root, "rev-parse --verify --quiet "
-                                                       + shSingleQuote( std::string( ref ) + "^{commit}" ) + " 2>/dev/null" );
-    return isCommitSha( sha ) ? sha : std::string{};
-}
 
 inline DiffAnchor resolveDiffAnchor( const std::string& root, std::string_view baseRef )
 {
@@ -318,8 +296,9 @@ inline DiffAnchor resolveDiffAnchor( const std::string& root, std::string_view b
     const std::string headSha = quality::gitOneLine( root, "rev-parse --verify --quiet HEAD 2>/dev/null" );
     if( headSha.empty() ) { out.gitUnusable = true; return out; }
 
-    // P0.1 + P2.8: an unresolvable ref REFUSES. It is never handed to `git diff` as a token.
-    out.refSha = resolveBaseRefSha( root, baseRef );
+    // P0.1 + P2.8: an unresolvable ref REFUSES. It is never handed to `git diff` as a token — and one beginning
+    // with `-` is refused inside the resolver, before git is asked to resolve it at all.
+    out.refSha = quality::gitResolveCommitSha( root, std::string( baseRef ) );
     if( out.refSha.empty() )
     {
         // No DEGRADED_PATH_ALERT (F20): the caller REFUSES on badRef, so this stamped a "[math degraded] …"
