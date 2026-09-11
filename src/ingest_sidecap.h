@@ -771,16 +771,22 @@ inline bool isDeclSiteName( TSNode id, TSNode parent, const char* pt ) noexcept
     }
     if( kindIs( pt, "declaration" ) )
     {
-        const std::uint32_t cc = ts_node_child_count( parent );
-        for( std::uint32_t i = 0; i < cc; ++i )
+        // O(children) on the cursor's O(1) field name, and this runs PER IDENTIFIER of the declaration:
+        // the indexed form was O(names × C²) in a width a comment run sets (src/infra/tschildren.h,
+        // test/childwalkscalecheck.sh arm B7).
+        bool        isSlot = false;
+        ChildCursor cursor( parent );
+        forEachChild( parent, cursor.cur, [ & ]( TSNode c )
         {
-            const char* fieldName = ts_node_field_name_for_child( parent, i );
-            if( fieldName != nullptr && kindIs( fieldName, "declarator" ) && sameSpan( ts_node_child( parent, i ), id ) )
+            const char* fieldName = ts_tree_cursor_current_field_name( &cursor.cur );
+            if( fieldName == nullptr || !kindIs( fieldName, "declarator" ) || !sameSpan( c, id ) )
             {
                 return true;
             }
-        }
-        return false;
+            isSlot = true;
+            return false;
+        } );
+        return isSlot;
     }
     if( kindIs( pt, "for_range_loop" ) )
     {

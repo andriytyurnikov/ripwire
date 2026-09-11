@@ -10,8 +10,18 @@
 // unbounded-width walk therefore collects the child list ONCE per node with a TSTreeCursor — the same
 // child set (named + anonymous + extras) in the same left-to-right order, O(C) total. The cursor and the
 // out vector are caller-owned and reused across nodes, so a warm walk allocates nothing per node.
-// Bounded-shape scans (base clauses, argument lists, a declaration's declarators) keep the indexed form —
-// their widths come from the grammar, not from the input file.
+//
+// "BOUNDED SHAPE" IS NOT A PROPERTY OF THE GRAMMAR RULE — IT IS A PROPERTY OF THE LIST, AND ALMOST NO LIST
+// HAS IT. Earlier revisions of this note named base clauses, argument lists and a declaration's declarators
+// as the safe indexed cases, "their widths come from the grammar, not from the input file". That was wrong,
+// and every one of those three was measured quadratic on 2026-09-10 (lane W3): a `base_class_clause` with
+// 16 000 comments in it is 13x the same file with the flood outside the clause, an `argument_list` 56x, a
+// `declaration` 77x, a lambda capture list 26x (test/childwalkscalecheck.sh, arms B7 and B10..B12). A
+// comment can sit between ANY two children of ANY node, and tree-sitter splices an extra into the child
+// array it is parsing — so the width of a list is set by the FILE wherever a comment may legally appear in
+// it, which is everywhere. The indexed form is right only where the node's child list cannot grow at all:
+// a FIXED-INDEX probe (`ts_node_child( n, 0 )`), or a scan of a node whose children a comment cannot reach.
+// If you cannot name that reason in one line, use the cursor.
 //
 // WHY IT IS ITS OWN HEADER AND NOT A SECTION OF ingest.cpp. It was one, inside ingest_metrics.h's unnamed
 // namespace, and that made it unreachable from the two headers that ALSO walk whole subtrees and are
@@ -77,6 +87,54 @@ inline void forEachChild( TSNode n, TSTreeCursor& cur, const Fn& fn )   // A4-F2
         }
         while( ts_tree_cursor_goto_next_sibling( &cur ) );
     }
+}
+
+// VISIT n's NAMED children, left to right — the cursor form of a `ts_node_named_child( n, i )` loop.
+// That call is the SAME `ts_node__child` body with include_anonymous=false and the same restart from the
+// first child, so an indexed named-child loop is O(C²) exactly like an all-children one; and a COMMENT is
+// a NAMED extra, so the flood shape above reaches this class too. Measured on the pre-change binary,
+// 2026-09-10: --slice's rung-3 flow walk over a 16 000-comment definition body was 87× the plain map of
+// the same file (test/childwalkscalecheck.sh arm B8).
+//
+// WHY FILTERING forEachChild BY ts_node_is_named REPRODUCES ts_node_named_child EXACTLY. The cursor yields
+// precisely the VISIBLE children — a visible subtree, or an invisible one carrying a visible alias — which
+// is `ts_node__is_relevant( child, true )`; it never yields a hidden node, it descends through it. For
+// those nodes `ts_node_is_named` (alias ? alias.named : subtree.named, node.c:505) and
+// `ts_node__is_relevant( child, false )` (alias ? alias.named : visible && named, node.c:109) agree term
+// for term, because `visible` is already true. And a named-but-INVISIBLE node — a hidden `_rule` — is
+// skipped identically by both: the cursor descends through it, and ts_node__child counts through its
+// stored named child count. Same set, same order.
+template< class Fn >
+inline void forEachNamedChild( TSNode n, TSTreeCursor& cur, const Fn& fn )   // A4-F25: NOT noexcept — `fn` may allocate
+{
+    forEachChild( n, cur, [ &fn ]( TSNode child ) { return ts_node_is_named( child ) ? fn( child ) : true; } );
+}
+
+// TRUE when `pred` holds for any node in n's child subtree — depth-first, left to right, stopping at the
+// first hit, bounded at `maxDepth` levels below n (`maxDepth < 0` = unbounded). Two walks ask exactly this
+// question in exactly this shape — slicev::SliceRdWalker::hasStructureBelow ("is there a block or control
+// construct below?") and cc_declHasStructuredBinding ("is there a structured_binding_declarator within 4
+// levels?") — and a second hand-written copy of the cursor-plus-recursion loop is the clone this header
+// exists to prevent. `namedOnly` picks which child set: the named one (`ts_node_named_child`'s) or all.
+template< class Pred >
+inline bool anyChildBelow( TSNode n, int maxDepth, bool namedOnly, const Pred& pred )
+{
+    if( maxDepth == 0 )
+    {
+        return false;
+    }
+    ChildCursor cursor( n );   // this frame's own: the body recurses
+    bool        found = false;
+    forEachChild( n, cursor.cur, [ & ]( TSNode c )
+    {
+        if( ( namedOnly && !ts_node_is_named( c ) ) || ( !pred( c ) && !anyChildBelow( c, maxDepth - 1, namedOnly, pred ) ) )
+        {
+            return true;
+        }
+        found = true;
+        return false;
+    } );
+    return found;
 }
 
 // APPEND n's children, left to right, to whatever `out` already holds. This is the form a DFS-STACK walk
