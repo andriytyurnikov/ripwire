@@ -4,7 +4,7 @@
 #
 # The defect this gate exists for (measured 2026-09-10 on a BSL-licensed C++ corpus, reproduced here with
 # fresh identifiers): a run of structs whose LAST member is a macro invocation with no semicolon
-# (`DECLARE_NAME(X)` right before `};`). tree-sitter-cpp recovers each as a field declaration missing its
+# (`declare_name(X)` right before `};`). tree-sitter-cpp recovers each as a field declaration missing its
 # `;`, dissolves the earlier structs into an ERROR region, and lets the last struct's body swallow every
 # definition up to the enclosing namespace's closing brace. ripwire then filed free functions under that
 # struct's scope (`id=…::IndiaError::drainQueue`), typed them `method`, and — in the larger corpus, where a
@@ -15,6 +15,9 @@
 # + any definition after them. One struct does not reproduce; semicolons after the invocations remove it.
 # The fixture uses nine (the corpus had nine) so the recovery takes the whole-file ERROR root, the harder
 # case for precision: a clean class and a clean function sit INSIDE that same ERROR root and must stay clean.
+# The macro is spelled in LOWERCASE on purpose: since the member-macro re-parse (src/macroreparse.h,
+# test/macroreparsecheck.sh) the ALL-CAPS spelling of this run is REPAIRED, not merely disclosed, and the re-parse
+# deliberately leaves a lowercase invocation alone — so this is the shape that still derails.
 #
 # THE RULES (src/extentsuspect.h; the reason codes a row's extent_suspect= carries, in this order):
 #   name  — a definition's own name lies outside its own signature span (a span adopted from another node).
@@ -108,7 +111,7 @@ for n in $SWALLOWED IndiaError; do
     r="$( reasonOf "$( row "$TMP/a.xml" "$n" )" )"
     case ",$r," in *,error,*) ok "(A) $n carries extent_suspect with reason error ($r)";; *) no "(A) $n row lacks extent_suspect=…error…: $( row "$TMP/a.xml" "$n" )";; esac
 done
-for n in Ledger larger fileScopeHelper DECLARE_NAME; do
+for n in Ledger larger fileScopeHelper declare_name; do
     rr="$( row "$TMP/a.xml" "$n" )"
     if [ -z "$rr" ]; then
         no "(A) precision control $n is missing from the map"

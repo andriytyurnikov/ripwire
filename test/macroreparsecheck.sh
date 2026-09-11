@@ -104,13 +104,15 @@ cap "$TMP/a_met.xml" "$TMP/leak" --no-cache --metrics
 cap "$TMP/a_map.xml" "$TMP/leak" --no-cache
 cap "$TMP/b_twin.xml" "$TMP/twin" --no-cache --metrics
 cat > "$TMP/expect.py" <<'PY'
-# file -> (free functions, structs)
+# file -> (free functions, structs). leak_objc.m lists NO structs: the Objective-C tags query does not extract a C
+# `struct` definition even from a clean .m file (measured on the pre-change binary: `struct beacon {…};` + a function in
+# plain.m yields only the function; the same bytes as plain.c yield both) — so its functions are the whole claim.
 EXPECT = {
     'leak_anon.cpp':    (['tallyCargo', 'berthIsFree', 'clearManifest'], ['HarborFault', 'InletFault', 'JettyFault', 'KeelFault']),
     'leak_plain.cpp':   (['countMoorings', 'sumDraft'],                 ['LanternRecord', 'MooringRecord', 'NavigatorRecord']),
     'leak_lambda.cpp':  (['weighHarvest', 'gradeYield', 'afterOrchard'], ['OrchardError', 'PastureError', 'QuarryError']),
     'leak_c.c':         (['sum_rations', 'reset_tally'],                 ['ration', 'satchel', 'trailmap']),
-    'leak_objc.m':      (['brightest', 'zero_bearing'],                  ['beacon', 'lanyard', 'compass']),
+    'leak_objc.m':      (['brightest', 'zero_bearing'],                  []),
     'leak_cuda.cu':     (['blockCount'],                                 ['RiverKernel', 'StreamKernel', 'TideKernel']),
     'leak_partial.cpp': (['portCount', 'ferryFare'],                     ['UplandFault', 'ValleyFault', 'WillowFault']),
 }

@@ -1720,6 +1720,20 @@ constexpr const char* kSkippedLegend =
                  " list hit its 500-row ceiling, so the rows are a SAMPLE of the count beside them; every count stays exact. A zero means"
                  " none found. -->";
 
+// MEMBER-MACRO RE-PARSE (src/macroreparse.h, gate test/macroreparsecheck.sh) — the reading of why=macro-blanked,
+// macro_blanked= and macro_blanked_files=, written only into a report that carries them, so a corpus with no re-parsed
+// file keeps every byte. XML comment text: no double hyphen, so the verbs are named in words.
+constexpr const char* kMacroBlankedSkippedLegend =
+    "<!-- why=macro-blanked on an <h> row = this file's symbols come from a SECOND parse. Its first parse held error bytes,"
+    " so macro_blanked= semicolon-less ALL-CAPS function-like macro invocations, each alone on its line directly inside a"
+    " class/struct/union body (a shape the C-family grammars misread as a field missing its semicolon, letting one body"
+    " swallow what follows it), were replaced by spaces with every offset and line unchanged, and that re-parse was adopted"
+    " because it held STRICTLY FEWER error bytes; names, spans and bodies still read the original bytes. err=, err_ratio="
+    " and degraded-parse on such a row describe the ADOPTED parse: a row without degraded-parse parsed clean once blanked."
+    " A blanked invocation stays a use of the macro name for the uses verb (role=type, as the unrepaired parse recorded"
+    " it) but is no call edge, and identifiers inside its parentheses are not recorded. macro_blanked_files= on the root"
+    " counts such rows. Nothing is dropped. -->";
+
 // §L1 — one indexed file the health pass flagged. `fileIndex` indexes IngestResult::files.
 struct SkipHealthFinding
 {
@@ -1727,6 +1741,7 @@ struct SkipHealthFinding
     bool        degraded  = false;   // the parse holds ERROR/MISSING nodes
     bool        minified  = false;   // whitespace frequency under the threshold
     std::uint32_t extentSuspectSyms = 0;   // extent honesty: definitions here carrying extent_suspect= (0 ⇒ none flagged)
+    std::uint32_t macroBlanked      = 0;   // member-macro re-parse: invocations blanked for the adopted parse (0 ⇒ first parse)
 };
 
 // §L1 — the health pass's whole answer: the flagged files, plus the counts the root discloses.
@@ -1737,6 +1752,7 @@ struct SkipHealthReport
     std::size_t                    minified   = 0;
     std::size_t                    unmeasured = 0;   // indexed but never parsed — NOT the same as clean
     std::size_t                    extentSuspectFiles = 0;   // extent honesty: files holding >= 1 flagged definition
+    std::size_t                    macroBlankedFiles  = 0;   // member-macro re-parse: files whose symbols come from a re-parse
 };
 
 // §L1 — classify every indexed file's recorded health against the two disclosure thresholds.
@@ -1783,11 +1799,13 @@ SkipHealthReport classifySkipHealth( const rw::IngestResult& ing )
         const std::uint32_t wsPerMil = sample == 0 ? 1000u : std::uint32_t( ( std::uint64_t( h.wsBytes ) * 1000ull ) / sample );
         const bool          degraded = rw::fileParseDegraded( ing, f );   // the ONE predicate (model.h) — grep + refusals route through it too
         const bool          minified = h.fileBytes >= kMinifiedMinBytes && wsPerMil < kMinifiedWsPerMille;
+        const bool          blanked  = rw::isMacroBlankedHealth( h );   // member-macro re-parse: rowed even when the adopted parse is clean
         out.degraded += degraded ? 1u : 0u;
         out.minified += minified ? 1u : 0u;
-        if( degraded || minified || suspect > 0 )
+        out.macroBlankedFiles += blanked ? 1u : 0u;
+        if( degraded || minified || suspect > 0 || blanked )
         {
-            out.findings.push_back( { f, degraded, minified, suspect } );
+            out.findings.push_back( { f, degraded, minified, suspect, h.macroBlanked } );
         }
     }
     return out;
@@ -1864,9 +1882,10 @@ void writeUnindexedExtRows( rw::XmlWriter& w, std::vector<char>& esc, const std:
 // §L1 + extent honesty — an <h> row's why=: the reasons that fired, in their fixed order, comma-joined.
 std::string healthWhyList( const SkipHealthFinding& hr )
 {
-    const std::array<std::pair<bool, std::string_view>, 3> reasons = { { { hr.degraded, "degraded-parse" },
+    const std::array<std::pair<bool, std::string_view>, 4> reasons = { { { hr.degraded, "degraded-parse" },
                                                                          { hr.minified, "minified-suspect" },
-                                                                         { hr.extentSuspectSyms > 0, "extent-suspect" } } };
+                                                                         { hr.extentSuspectSyms > 0, "extent-suspect" },
+                                                                         { hr.macroBlanked > 0, "macro-blanked" } } };
     std::string why;
     for( const auto& [ isFired, token ] : reasons )
     {
@@ -1879,11 +1898,35 @@ std::string healthWhyList( const SkipHealthFinding& hr )
     return why;
 }
 
-// extent honesty — the row's count attribute, empty when the file holds no flagged definition (composed, never the
-// fixed `row` buffer, so the fixed-buffer sweep's population is unchanged).
-std::string healthExtentSuspectAttr( const SkipHealthFinding& hr )
+// extent honesty + member-macro re-parse — ` name="N"`, or nothing at 0: every absent-at-zero count this verb adds to a
+// row or to its root (composed, never the fixed `row`/`hdr` buffers, so the fixed-buffer sweep's population is unchanged).
+std::string countAttrOrEmpty( std::string_view name, std::size_t count )
 {
-    return hr.extentSuspectSyms > 0 ? " extent_suspect_syms=\"" + std::to_string( hr.extentSuspectSyms ) + "\"" : std::string();
+    return count > 0 ? " " + std::string( name ) + "=\"" + std::to_string( count ) + "\"" : std::string();
+}
+
+// The root's absent-at-zero health counts, in their fixed order: extent_suspect_files= (h rows carrying
+// why=extent-suspect), then macro_blanked_files= (h rows carrying why=macro-blanked).
+std::string skippedHealthRootAttrs( const SkipHealthReport& health )
+{
+    return countAttrOrEmpty( "extent_suspect_files", health.extentSuspectFiles ) + countAttrOrEmpty( "macro_blanked_files", health.macroBlankedFiles );
+}
+
+// extent honesty + member-macro re-parse — each reading rides ONLY a report that carries its rows, so a corpus with
+// neither keeps every byte of this document.
+void writeSkippedHealthLegends( rw::XmlWriter& w, const SkipHealthReport& health )
+{
+    if( health.extentSuspectFiles > 0 )
+    {
+        w.write( "<!-- why=extent-suspect on an <h> row = the file holds extent_suspect_syms= definitions whose extent, scope or kind"
+                 " FAILED a containment check (the map and bundle rows carry the reasons as extent_suspect=: name, head, scope, error);"
+                 " joined to the parse-health reasons comma-separated, and rowed even when the parse itself is clean."
+                 " extent_suspect_files= on the root counts such rows. Nothing is dropped. -->" );
+    }
+    if( health.macroBlankedFiles > 0 )
+    {
+        w.write( kMacroBlankedSkippedLegend );
+    }
 }
 
 void writeHealthRows( rw::XmlWriter& w, std::vector<char>& esc, const rw::IngestResult& ing,
@@ -1902,7 +1945,8 @@ void writeHealthRows( rw::XmlWriter& w, std::vector<char>& esc, const rw::Ingest
         rw::formatTo( row, sizeof( row ), "\" why=\"{}\" err=\"{}\" err_ratio=\"{:.3f}\" ws_freq=\"{:.3f}\" bytes=\"{}\"",
                        healthWhyList( hr ), h.errNodes, errFrac, wsFrac, h.fileBytes );
         w.write( row );
-        w.write( healthExtentSuspectAttr( hr ) );
+        w.write( countAttrOrEmpty( "extent_suspect_syms", hr.extentSuspectSyms ) );
+        w.write( countAttrOrEmpty( "macro_blanked", hr.macroBlanked ) );
         w.write( "/>" );
     }
 }
@@ -2032,14 +2076,7 @@ std::optional<int> runSkipped( const MainDispatch& d )
         const SkipHealthReport health = classifySkipHealth( ing );
 
         w.write( kSkippedLegend );
-        // extent honesty: its reading rides ONLY a report that carries it, so a clean corpus keeps every byte.
-        if( health.extentSuspectFiles > 0 )
-        {
-            w.write( "<!-- why=extent-suspect on an <h> row = the file holds extent_suspect_syms= definitions whose extent, scope or kind"
-                     " FAILED a containment check (the map and bundle rows carry the reasons as extent_suspect=: name, head, scope, error);"
-                     " joined to the parse-health reasons comma-separated, and rowed even when the parse itself is clean."
-                     " extent_suspect_files= on the root counts such rows. Nothing is dropped. -->" );
-        }
+        writeSkippedHealthLegends( w, health );
         char hdr[ 768 ];   // fourteen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
         // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
         const std::size_t effectiveMax = cfg.maxFileBytes == 0 ? kDefaultMaxFileBytes : cfg.maxFileBytes;
@@ -2056,8 +2093,7 @@ std::optional<int> runSkipped( const MainDispatch& d )
                        ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
                        ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
                        health.degraded, health.minified,
-                       // extent honesty: extent_suspect_files= counts the h rows carrying why=extent-suspect (absent at 0)
-                       health.extentSuspectFiles > 0 ? " extent_suspect_files=\"" + std::to_string( health.extentSuspectFiles ) + "\"" : std::string(),
+                       skippedHealthRootAttrs( health ),   // extent_suspect_files= then macro_blanked_files=, each absent at 0
                        health.unmeasured,
                        effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
                        rowsCapped ? " rows_capped=\"1\"" : "" );

@@ -122,7 +122,11 @@ constexpr std::uint32_t kCacheMagic   = 0x4b505443;   // "CTPK"
 //   all match) rather than silently re-absolutizing a key that was never root-relative to begin
 //   with — a v2 cache simply misses on every lookup that survives the guard, which is exactly the
 //   self-healing full-reparse path already used for any other corrupt/stale cache.
-constexpr std::uint32_t kCacheVersion = 19;           // 19: extent honesty (test/extentcheck.sh) — each def record gains
+constexpr std::uint32_t kCacheVersion = 20;           // 20: the member-macro re-parse (test/macroreparsecheck.sh) — each
+                                                      //    FILE record gains FileHealth::macroBlanked, a fifth health
+                                                      //    u32 after wsBytes — a FORMAT change → reject v19 blobs.
+                                                      //    kParserVer moves with it.
+                                                      // 19: extent honesty (test/extentcheck.sh) — each def record gains
                                                       //    the `recovered` u8 (RawDef::recovered, after testScope) — a
                                                       //    FORMAT change → reject v18 blobs. kParserVer moves with it.
                                                       // 18: #62 — call refs inside a preprocessor-DECIDED-dead region
@@ -212,7 +216,15 @@ constexpr std::uint32_t kCacheVersion = 19;           // 19: extent honesty (tes
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 89;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 90;           // bump on any grammar/.scm/extraction change
+                                                      // 90 = 2026-09-11 (member-macro re-parse, test/macroreparsecheck.sh):
+                                                      //    a C-family file whose first parse holds error bytes may be
+                                                      //    extracted from a re-parse with its semicolon-less member macro
+                                                      //    invocations blanked (src/macroreparse.h) — different defs,
+                                                      //    scopes, complexity and health for exactly those files, plus
+                                                      //    one role=Type use per blanked invocation on the rich family.
+                                                      //    A v89 record cannot say which parse it came from, and the
+                                                      //    file record grows a u32, so kCacheVersion moves 19 -> 20.
                                                       // 89 = 2026-09-11 (extent honesty, test/extentcheck.sh): every
                                                       //    def carries RawDef::recovered — the parse recovered its
                                                       //    container (a class whose body holds an error, inside an
@@ -988,8 +1000,8 @@ inline std::uint64_t blobChecksum( std::string_view s ) noexcept
 //     [21:25)  u32  entryCount    file records == offset-table entries; cross-checked against the trailer
 //
 //   RECORD REGION — [ kCacheHeaderBytes, tableOffset ), entryCount records in ASCENDING pathHash order.
-//     Each record is the v14 per-file record, unchanged byte for byte: the root-relative path string,
-//     the content hash, the (size, mtime, ctime) stat-gate triple, the four FileHealth u32s, the rich
+//     Each record is the v14 per-file record plus v20's fifth FileHealth u32: the root-relative path string,
+//     the content hash, the (size, mtime, ctime) stat-gate triple, the five FileHealth u32s, the rich
 //     family's subtoken dictionary, then the seven counted record arrays (defs, refs, includes, binds,
 //     FFI aliases, route defs, route uses). Nothing inside a record moved — that is what lets a carry-
 //     over be a raw byte copy and what will let a future content-addressed store lift a record whole.
@@ -1670,6 +1682,7 @@ inline bool readFileRecord( ByteR& r, bool captureValueUses, std::vector<std::ui
     ffOut.health.errBytes  = r.u32();       //   NOT-MEASURED meaning across the round trip
     ffOut.health.fileBytes = r.u32();
     ffOut.health.wsBytes   = r.u32();
+    ffOut.health.macroBlanked = r.u32();   // v20: member-macro re-parse — rides the record so the disclosure survives a warm run
     if( !r.ok )
     {
         return false;
@@ -2229,6 +2242,7 @@ inline void saveCache( const std::string& path, std::string_view rootDir, const 
                 // NOT MEASURED — no sentinel of its own, and no way to mistake it for "clean".
                 const FileHealth fh = f < fileHealth.size() ? fileHealth[f] : FileHealth{};
                 w.u32( fh.errNodes );  w.u32( fh.errBytes );  w.u32( fh.fileBytes );  w.u32( fh.wsBytes );
+                w.u32( fh.macroBlanked );   // v20: the member-macro re-parse's per-file count (0 ⇒ the first parse was kept)
             }
             if( captureValueUses )
             {

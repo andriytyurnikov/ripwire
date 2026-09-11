@@ -4,9 +4,12 @@
 // LAST struct's body swallow everything up to the namespace's closing brace. Without the extent check
 // the free functions after the run come out as `method` rows filed under IndiaError:: — a scope the
 // source never gave them. test/extentfix/control/leak.cpp is this file with the semicolons added.
+// The macro is LOWERCASE on purpose: the member-macro re-parse (src/macroreparse.h, test/macroreparsecheck.sh) repairs
+// the ALL-CAPS spelling of this run and deliberately leaves a lowercase invocation alone — so this is the shape that
+// still derails, and the extent detector keeps a live producer.
 #include <exception>
 
-#define DECLARE_NAME(T) static const char* Name() { return #T; }
+#define declare_name(T) static const char* Name() { return #T; }
 
 struct Ledger
 {
@@ -33,47 +36,47 @@ namespace {
 
 struct AlphaError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(AlphaError);
+  declare_name(AlphaError);
 };
 
 struct BravoError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(BravoError);
+  declare_name(BravoError);
 };
 
 struct CharlieError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(CharlieError);
+  declare_name(CharlieError);
 };
 
 struct DeltaError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(DeltaError);
+  declare_name(DeltaError);
 };
 
 struct EchoError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(EchoError);
+  declare_name(EchoError);
 };
 
 struct FoxtrotError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(FoxtrotError);
+  declare_name(FoxtrotError);
 };
 
 struct GolfError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(GolfError);
+  declare_name(GolfError);
 };
 
 struct HotelError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(HotelError);
+  declare_name(HotelError);
 };
 
 struct IndiaError : public lib::BaseError {
   using lib::BaseError::BaseError;
-  DECLARE_NAME(IndiaError);
+  declare_name(IndiaError);
 };
 
 void accumulateOrders(int &total, int count) {
