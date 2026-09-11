@@ -771,7 +771,7 @@ function qdExamples(s, entries){
 {
   const s = p.addSlide(); bg(s);
   kicker(s, "// the rule: numbers are held back until the loss list is worked", AMBER);
-  title(s, "Every head-to-head round, and the ones that went against us", { size: 32 });
+  title(s, "Every head-to-head round, and the ones that went against us", { size: 28 });   // 32 wrapped onto the first row
   const rounds = [
     ["r1", "2026-07-13/14", "Aider repo-map · codebase-memory-mcp · graphify", "superseded by r4", MUTED],
     ["r2", "2026-08-03",    "repowise · codeseek",                             "superseded by r4", MUTED],
@@ -1272,13 +1272,14 @@ function qdExamples(s, entries){
   ];
   let y = 2.05;
   for (const [yr, t, d] of classics){
-    card(s, MX, y, 6.1, 0.66);
-    s.addText(yr, { x: MX+0.16, y: y+0.04, w: 0.75, h: 0.58, fontFace: MONO, fontSize: 12, bold: true, color: AMBER, valign: "middle", margin: 0 });
+    // 7 cards at 0.70 end at 6.87, clear of the footer; at 0.74 the last one ran under it.
+    card(s, MX, y, 6.1, 0.62);
+    s.addText(yr, { x: MX+0.16, y: y+0.04, w: 0.75, h: 0.54, fontFace: MONO, fontSize: 12, bold: true, color: AMBER, valign: "middle", margin: 0 });
     s.addText([
       { text: t + "\n", options: { color: TEXT, bold: true, fontSize: 11 } },
       { text: d, options: { color: MUTED, fontSize: 9.5 } },
-    ], { x: MX+1.0, y: y+0.04, w: 5.0, h: 0.58, fontFace: SANS, valign: "middle", margin: 0 });
-    y += 0.74;
+    ], { x: MX+1.0, y: y+0.04, w: 5.0, h: 0.54, fontFace: SANS, valign: "middle", margin: 0 });
+    y += 0.70;
   }
   const modern = [
     ["TDAD · arXiv 2603.17973", "a static test-map cut agent-caused regressions 6.08% → 1.82%; prose TDD instructions alone made agents WORSE → the shape of --test-gate"],
@@ -1289,12 +1290,12 @@ function qdExamples(s, entries){
   ];
   y = 2.05;
   for (const [t, d] of modern){
-    card(s, 7.0, y, 5.6, 0.95, CARD2);
+    card(s, 7.0, y, 5.6, 0.9, CARD2);   // 5 cards at 0.97 end at 6.83; at 1.03 the last one ran under the footer
     s.addText(t, { x: 7.2, y: y+0.06, w: 5.2, h: 0.3, fontFace: MONO, fontSize: 11, bold: true, color: CYAN, margin: 0 });
-    s.addText(d, { x: 7.2, y: y+0.36, w: 5.2, h: 0.55, fontFace: SANS, fontSize: 9.5, color: MUTED, margin: 0 });
-    y += 1.03;
+    s.addText(d, { x: 7.2, y: y+0.36, w: 5.2, h: 0.5, fontFace: SANS, fontSize: 9.5, color: MUTED, margin: 0 });
+    y += 0.97;
   }
-  foot(s, "counts gated in-repo (readmedriftcheck arm E derives them from LINEAGE.md's own tables) — the lineage is the design rationale, not decoration");
+  foot(s, "counts gated in-repo: readmedriftcheck arm E derives them from LINEAGE.md's own tables — the lineage is the design rationale");
 }
 
 /* ── S12c · re-derive this deck ─────────────────────────────────────────── */
