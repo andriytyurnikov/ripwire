@@ -51,7 +51,7 @@ GEN="$ROOT/docs/docs_commands_build.py"
 DOC="$ROOT/docs/COMMANDS.md"
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 # A missing prerequisite must never read as a clean tree. Name it and exit 2 — never 0.

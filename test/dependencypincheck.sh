@@ -17,7 +17,7 @@ DEPS="$ROOT/third_party/deps"
 SWIFT_COMMIT="31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 # ── (A) provenance pins ───────────────────────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -148,7 +148,7 @@ print("A3 %s silence: shallow bundle mentions name_ladder=%s"
       % ("OK" if "name_ladder" not in shallow else "NO", "name_ladder" in shallow))
 PY
 while read -r tag verdict rest; do
-    [ "$verdict" = OK ] && ok "$tag $rest" || no "$tag $rest"
+    if [ "$verdict" = OK ]; then ok "$tag $rest"; else no "$tag $rest"; fi
 done < <( grep -E '^A[0-9]b? ' "$TMP/a.res" )
 grep -q PROBE_BROKEN "$TMP/a.res" && no "(A) --from-trace probe broken: $( cat "$TMP/a.res" )"
 
@@ -266,7 +266,7 @@ print("B7 %s split: the two caps differ (code %d, prose %d) and the prose file i
       % ("OK" if CODE != DOC and pk["wide.md"][1] == DOC and pk["wide.c"][1] == CODE else "NO", CODE, DOC))
 PY
 while read -r tag verdict rest; do
-    [ "$verdict" = OK ] && ok "$tag $rest" || no "$tag $rest"
+    if [ "$verdict" = OK ]; then ok "$tag $rest"; else no "$tag $rest"; fi
 done < <( grep -E '^B[0-9] ' "$TMP/b.res" )
 grep -q PROBE_BROKEN "$TMP/b.res" && no "(B) --handoff probe broken: $( cat "$TMP/b.res" )"
 

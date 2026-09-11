@@ -62,7 +62,7 @@ CORPUS="$ROOT/test/declinefix"
 CLEAN="$ROOT/test/lpinfix"                           # one directory: no call can reach tier 3
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -325,7 +325,7 @@ if [ -z "$DL" ]; then
     no "(F) the census carries no '# dispositions' line — the resolver's reference total is not exposed"
 else
     ok "(F) census: $DL"
-    conserves "$DL" && ok "(F) the dispositions sum to calls= and unaccounted=0" || no "(F) conservation broken: $DL"
+    if conserves "$DL"; then ok "(F) the dispositions sum to calls= and unaccounted=0"; else no "(F) conservation broken: $DL"; fi
     for pair in "declined declined" "external external" "unresolved unresolved"; do
         set -- $pair
         [ "$( disp_in "$TMP/c.tsv" "$1" )" = "$( gauge "$HDR" "$2" )" ] \
@@ -397,7 +397,7 @@ cmp -s "$TMP/map.xml" "$TMP/map2.xml" && cmp -s "$TMP/c.tsv" "$TMP/c2.tsv" && ok
     || no "(H) map or census differs between two runs"
 if command -v xmllint >/dev/null 2>&1; then
     for f in map.xml callers.xml impact.xml callees.xml; do
-        xmllint --noout "$TMP/$f" 2>/dev/null && ok "(H) xmllint clean: $f" || no "(H) xmllint rejected $f"
+        if xmllint --noout "$TMP/$f" 2>/dev/null; then ok "(H) xmllint clean: $f"; else no "(H) xmllint rejected $f"; fi
     done
 fi
 grep -q 'disposition' "$TMP/err" && no "(H) the map run raised the unaccounted-disposition alert: $( grep 'disposition' "$TMP/err" | head -1 )" \

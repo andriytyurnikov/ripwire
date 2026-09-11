@@ -7,7 +7,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -48,7 +48,7 @@ git -C "$REPO" add router.cpp package.json
 git -C "$REPO" commit -qm base
 route(){ "$BIN" "$REPO" --no-cache --help-task="$1" 2>"$TMP/err"; }
 
-"$BIN" --help=all 2>&1 | grep -q -- '--help-task=' && ok "--help advertises --help-task=" || no "--help does not advertise --help-task="
+if "$BIN" --help=all 2>&1 | grep -q -- '--help-task='; then ok "--help advertises --help-task="; else no "--help does not advertise --help-task="; fi
 V="$( route 'calls(betaNode, alphaNode)' )"
 case "$V" in *'status="recommend"'*'intent="verify-claim"'*'--verify='*) ok "closed claim -> --verify";; *) no "closed claim route wrong: $V";; esac
 C="$( route 'How do alphaNode, betaNode, and gammaNode connect?' )"
@@ -297,22 +297,22 @@ done
 
 N="$( route 'Write a cheerful release announcement' )"
 case "$N" in *'status="abstain"'*) ok "off-topic prompt abstains";; *) no "off-topic prompt did not abstain: $N";; esac
-[ "$( printf '%s' "$N" | grep -o '<run>' | wc -l | tr -d ' ' )" = 0 ] && ok "abstention emits zero commands" || no "abstention emitted a command"
-[ "$( printf '%s' "$D" | grep -o '<run>' | wc -l | tr -d ' ' )" = 1 ] && ok "recommendation emits exactly one command" || no "recommendation command cardinality != 1"
+if [ "$( printf '%s' "$N" | grep -o '<run>' | wc -l | tr -d ' ' )" = 0 ]; then ok "abstention emits zero commands"; else no "abstention emitted a command"; fi
+if [ "$( printf '%s' "$D" | grep -o '<run>' | wc -l | tr -d ' ' )" = 1 ]; then ok "recommendation emits exactly one command"; else no "recommendation command cardinality != 1"; fi
 
 Q="Plan feature O'Brien & <friends>; touch $TMP/PWNED"
 route "$Q" >"$TMP/q1"; route "$Q" >"$TMP/q2"
-diff -q "$TMP/q1" "$TMP/q2" >/dev/null && ok "task routing byte-identical" || no "task routing nondeterministic"
-[ ! -e "$TMP/PWNED" ] && ok "task text executes nothing" || no "task text was executed"
-grep -Fq 'O&apos;\&apos;&apos;Brien' "$TMP/q1" && ok "single quote receives POSIX shell quoting" || no "recommended argv is not safely shell-quoted"
-if command -v xmllint >/dev/null 2>&1; then xmllint --noout "$TMP/q1" 2>/dev/null && ok "task route XML well formed" || no "task route XML malformed"; fi
+if diff -q "$TMP/q1" "$TMP/q2" >/dev/null; then ok "task routing byte-identical"; else no "task routing nondeterministic"; fi
+if [ ! -e "$TMP/PWNED" ]; then ok "task text executes nothing"; else no "task text was executed"; fi
+if grep -Fq 'O&apos;\&apos;&apos;Brien' "$TMP/q1"; then ok "single quote receives POSIX shell quoting"; else no "recommended argv is not safely shell-quoted"; fi
+if command -v xmllint >/dev/null 2>&1; then if xmllint --noout "$TMP/q1" 2>/dev/null; then ok "task route XML well formed"; else no "task route XML malformed"; fi; fi
 
 "$BIN" "$REPO" --help-task= >/dev/null 2>"$TMP/empty.err"; rc=$?
-[ "$rc" -ne 0 ] && grep -q 'needs' "$TMP/empty.err" && ok "empty task refuses" || no "empty task did not refuse clearly"
+if [ "$rc" -ne 0 ] && grep -q 'needs' "$TMP/empty.err"; then ok "empty task refuses"; else no "empty task did not refuse clearly"; fi
 "$BIN" "$REPO" --help-task='plan a feature' --json >/dev/null 2>"$TMP/json.err"; rc=$?
-[ "$rc" -ne 0 ] && grep -qi 'json' "$TMP/json.err" && ok "unsupported --json combination refuses" || no "--json combination did not refuse"
+if [ "$rc" -ne 0 ] && grep -qi 'json' "$TMP/json.err"; then ok "unsupported --json combination refuses"; else no "--json combination did not refuse"; fi
 "$BIN" "$REPO" "$ROOT/test/fixture" --help-task='plan a feature' >/dev/null 2>"$TMP/multi.err"; rc=$?
-[ "$rc" -ne 0 ] && grep -qi 'single-root' "$TMP/multi.err" && ok "multi-root routing refuses" || no "multi-root routing did not refuse"
+if [ "$rc" -ne 0 ] && grep -qi 'single-root' "$TMP/multi.err"; then ok "multi-root routing refuses"; else no "multi-root routing did not refuse"; fi
 for f in --verify --connect --expand --grep --grep-context --edit-check --from-trace --situ --pack-task --exemplar --for \
          --edit-plan --dry-run --handles --legend --doctor --agent=codex --test-gate --slice --slice-flow --at --uses --seams; do "$BIN" --help=all 2>&1 | grep -q -- "$f" || no "recommended flag absent from --help: $f"; done
 
@@ -379,7 +379,7 @@ case "$RB" in
 esac
 
 EVAL="$( python3 "$ROOT/bench/taskroute_eval.py" --bin "$BIN" --corpus "$ROOT/test/taskroutefix/prompts.tsv" --split test 2>&1 )"; rc=$?
-[ "$rc" -eq 0 ] && ok "held-out command-routing floors ($EVAL)" || no "held-out command-routing floors failed: $EVAL"
+if [ "$rc" -eq 0 ]; then ok "held-out command-routing floors ($EVAL)"; else no "held-out command-routing floors failed: $EVAL"; fi
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit "$fail"

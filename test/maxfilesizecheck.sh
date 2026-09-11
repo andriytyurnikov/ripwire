@@ -22,7 +22,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -142,9 +142,9 @@ EOF_ROWS
 # ── 3. still valid XML and still deterministic under the ceiling
 "$BIN" "$ROOT" --max-file-size=8K --top-k=3 >"$TMP/d1" 2>/dev/null
 "$BIN" "$ROOT" --max-file-size=8K --top-k=3 >"$TMP/d2" 2>/dev/null
-diff -q "$TMP/d1" "$TMP/d2" >/dev/null && ok "deterministic under --max-file-size" || no "non-deterministic under --max-file-size"
+if diff -q "$TMP/d1" "$TMP/d2" >/dev/null; then ok "deterministic under --max-file-size"; else no "non-deterministic under --max-file-size"; fi
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/small" >/dev/null 2>&1 && ok "output is well-formed XML (G4)" || no "output is not well-formed XML"
+    if xmllint --noout "$TMP/small" >/dev/null 2>&1; then ok "output is well-formed XML (G4)"; else no "output is not well-formed XML"; fi
 fi
 
 # ── adversarial-round extension: the disclosure must reach --json consumers too ──────────────────────

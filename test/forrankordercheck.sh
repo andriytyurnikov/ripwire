@@ -37,7 +37,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${RIPWIRE_BIN:-$ROOT/build/ripwire}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -250,7 +250,7 @@ if not any( "off-by-one lives here" in n.get( "text", "" ) for r in rows for n i
 print( "OK" )
 ' "$NORM_FILE" )" && ok "(4) JSON: the file note is the carrier row's file_notes array; the symbol note stays in notes" \
      || { no "(4) JSON file note: $v"; printf '%s\n' "$NOTE_JSON" | head -c 900; echo; }
-    printf '%s' "$NOTE_FOR" | xmllint --noout - 2>/dev/null && ok "(4) --for with notes is xmllint-clean" || no "(4) --for with notes is not well-formed"
+    if printf '%s' "$NOTE_FOR" | xmllint --noout - 2>/dev/null; then ok "(4) --for with notes is xmllint-clean"; else no "(4) --for with notes is not well-formed"; fi
 fi
 
 # ── (5) mutation control: the checker rejects the pre-fix shapes ──────────────────────────────────────────
@@ -259,22 +259,22 @@ PREFIX_JSON='{"sigs":[{"p":"src/a.h","symbols":[{"l":1,"n":"x","r":2,"sig":"int 
 FLAT_XML='<ctx><sigs><d l="9" n="y" p="src/a.h" r="1">int y()</d><d l="1" n="x" p="src/a.h" r="2">int x()</d><d l="3" n="z" p="src/b.h" r="3">int z()</d></sigs></ctx>'
 if printf '%s' "$PREFIX_XML" | check xml >/dev/null; then no "(5) the checker ACCEPTED a file-grouped XML bundle — no teeth"; else ok "(5) mutation control: the checker rejects the pre-fix file-grouped XML shape"; fi
 if printf '%s' "$PREFIX_JSON" | check json >/dev/null; then no "(5) the checker ACCEPTED a file-grouped JSON bundle — no teeth"; else ok "(5) mutation control: the checker rejects the pre-fix file-grouped JSON shape"; fi
-printf '%s' "$FLAT_XML" | check xml >/dev/null && ok "(5) …and accepts a flat rank-ordered bundle with p= on every row" || no "(5) the checker rejects the target shape"
+if printf '%s' "$FLAT_XML" | check xml >/dev/null; then ok "(5) …and accepts a flat rank-ordered bundle with p= on every row"; else no "(5) the checker rejects the target shape"; fi
 
 # ── (6) shown= consistency, determinism, well-formedness ─────────────────────────────────────────────────
 A="$( "$BIN" . --for="rank graph teleport" 2>/dev/null )"
 B="$( "$BIN" . --for="rank graph teleport" 2>/dev/null )"
-[ "$A" = "$B" ] && ok "(6) two runs byte-identical" || no "(6) --for is not deterministic"
+if [ "$A" = "$B" ]; then ok "(6) two runs byte-identical"; else no "(6) --for is not deterministic"; fi
 shown="$( printf '%s' "$A" | grep -o '<sigs[^>]*>' | head -1 | grep -o 'shown="[0-9]*"' | tr -dc '0-9' )"
 drows="$( printf '%s' "$A" | python3 -c 'import re,sys; s=sys.stdin.read(); m=re.search(r"<sigs[^>]*>(.*?)</sigs>",s,re.S); print(len(re.findall(r"<d ",m.group(1))) if m else -1)' )"
 if [ -n "$shown" ]; then
-    [ "$shown" = "$drows" ] && ok "(6) shown=\"$shown\" equals the $drows <d> rows printed" || no "(6) shown=\"$shown\" but $drows <d> rows printed"
+    if [ "$shown" = "$drows" ]; then ok "(6) shown=\"$shown\" equals the $drows <d> rows printed"; else no "(6) shown=\"$shown\" but $drows <d> rows printed"; fi
 else
     ok "(6) <sigs> is uncapped on this query (shown= absent by contract)"
 fi
 if command -v xmllint >/dev/null 2>&1; then
-    printf '%s' "$A" | xmllint --noout - 2>/dev/null && ok "(6) full bundle is well-formed" || no "(6) full bundle is not well-formed"
-    "$BIN" . --for="rank graph teleport" --legend=compact 2>/dev/null | xmllint --noout - 2>/dev/null && ok "(6) compact bundle is well-formed" || no "(6) compact bundle is not well-formed"
+    if printf '%s' "$A" | xmllint --noout - 2>/dev/null; then ok "(6) full bundle is well-formed"; else no "(6) full bundle is not well-formed"; fi
+    if "$BIN" . --for="rank graph teleport" --legend=compact 2>/dev/null | xmllint --noout - 2>/dev/null; then ok "(6) compact bundle is well-formed"; else no "(6) compact bundle is not well-formed"; fi
 else
     printf '  SKIP  xmllint (not installed)\n'
 fi

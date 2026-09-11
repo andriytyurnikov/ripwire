@@ -27,7 +27,7 @@ set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 PARGATES="$ROOT/test/pargates.py"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -f "$PARGATES" ] || { echo "no test/pargates.py at $PARGATES"; exit 2; }
@@ -521,7 +521,7 @@ fi
 #   pre-fix     run_gate() put back to the subprocess.run(timeout=) call it replaced -> processes survive the TIMEOUT
 #   TERM only   the stop sends no KILL -> the child ignoring TERM survives
 #   KILL only   the stop sends no TERM -> the gate's EXIT trap never runs
-#   pipe grace  _stop_group() put back to that first version -> the grace probe's cleaning child is KILLed mid-cleanup
+#   leader only _stop_group() put back to that first version -> the grace probe's cleaning child is KILLed mid-cleanup
 #   read first  run_gate() put back to the loop that read for STOP_POLL_SEC before checking the stop -> the admission
 #               probe reaches its 0.3 s mark
 #   no handler  pargates installs no signal handler -> after Ctrl-C or SIGTERM the gate's processes are still running
@@ -608,33 +608,43 @@ PREFIX = '''def run_gate(argv, env, limit):
         return 124, e.stdout or b"", "timeout"
 '''
 
-# _stop_group() as #129 first shipped it: its grace ended as soon as the gate's bash was reaped and its pipe closed
-PREREVIEW = '''def _stop_group(p, out):
+# _stop_group() as #129 first shipped it: its grace ended as soon as the gate's bash was reaped, rather than running
+# until the whole process group was empty. Re-spelled 2026-09-11 against the file-backed capture -- the defect is the
+# LEADER-ONLY wait, which is what KILLs the grace probe's cleaning child mid-cleanup; the old spelling expressed the
+# same wait through p.communicate() only because stdout was still a pipe then.
+PREREVIEW = '''def _stop_group(p):
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(p.pid, sig)
         except OSError:
             pass
-        try:
-            out = p.communicate(timeout=KILL_GRACE_SEC)[0]
-        except subprocess.TimeoutExpired as e:
-            out = e.stdout if e.stdout is not None else out
-    return out or b""
+        _wait_for(p, KILL_GRACE_SEC)
 '''
-# run_gate() as e442a5d8 had it: the stop was checked only after a STOP_POLL_SEC read, so a gate admitted as the signal
-# was recorded ran that long before anything looked
+# run_gate() as e442a5d8 had it: the stop was checked only after a STOP_POLL_SEC wait, so a gate admitted as the signal
+# was recorded ran that long before anything looked. Re-spelled 2026-09-11 against the file-backed capture; the defect is
+# the ORDER of the two checks, not how the output is collected.
 READFIRST = '''def run_gate(argv, env, limit):
     deadline = time.monotonic() + limit
-    with subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          start_new_session=True) as p:
-        while True:
-            out, done = _read_for(p, None, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
-            if done:
-                return p.returncode, out, "exited"
-            if stop_signal is not None:
-                return 128 + stop_signal, _stop_group(p, out), "stopped"
-            if time.monotonic() >= deadline:
-                return 124, _stop_group(p, out), "timeout"
+    fd, capture = tempfile.mkstemp(prefix="ripwire-pargates-capture-", suffix=".out")
+    os.close(fd)
+    try:
+        with open(capture, "wb") as fh, \
+             subprocess.Popen(argv, cwd=root, env=env, stdout=fh, stderr=subprocess.STDOUT,
+                              start_new_session=True) as p:
+            while True:
+                if _wait_for(p, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic()))):
+                    return p.returncode, _capture_read(capture), "exited"
+                if stop_signal is not None:
+                    _stop_group(p)
+                    return 128 + stop_signal, _capture_read(capture), "stopped"
+                if time.monotonic() >= deadline:
+                    _stop_group(p)
+                    return 124, _capture_read(capture), "timeout"
+    finally:
+        try:
+            os.unlink(capture)
+        except OSError:
+            pass
 '''
 TEMPLATES = {"prefix": ("run_gate", PREFIX), "prereview": ("_stop_group", PREREVIEW), "readfirst": ("run_gate", READFIRST)}
 
@@ -845,8 +855,8 @@ def rows(r):
             "injected": "admitted as pargates' own SIGTERM was recorded (after run()'s admission check, before the spawn)"}[r["mode"]]
     mut = {None: "", "prefix": ", run_gate() put back to the pre-fix subprocess.run(timeout=)", "termonly": ", the stop sending TERM only",
            "killonly": ", the stop sending KILL only", "nohandler": ", no signal handler installed",
-           "prereview": ", _stop_group() put back to #129's first version (its grace ends when the pipe closes)",
-           "readfirst": ", run_gate() put back to e442a5d8's loop (the stop checked only after a first read)"}[r["mutation"]]
+           "prereview": ", _stop_group() put back to #129's first version (its grace ends when the gate's bash is reaped)",
+           "readfirst": ", run_gate() put back to e442a5d8's loop (the stop checked only after a first wait)"}[r["mutation"]]
     head = "(%s%s) %s %s%s" % ("T" if r["mode"] == "timeout" else "I", "" if r["mutation"] is None else " control",
                               {"probecleangate": "grace probe gate", "probelategate": "admission probe gate"}.get(r["gate"], "probe gate"), what, mut)
     if r["err"]:

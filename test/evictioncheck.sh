@@ -51,7 +51,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ echo "  PASS  $1"; }
+ok(){ echo "  PASS  $1" || { fail=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -119,7 +119,7 @@ printf 'fresh-small-cache-blob' > "$FRESH"
 printf 'fresh-small-cache-blob-sharded' > "$FRESH_SH"
 
 beforecount="$( allblobs | wc -l | tr -d ' ' )"
-[ "$beforecount" -eq 5 ] && ok "seed: 5 fake blobs in place (old/filler/fresh flat + old/fresh sharded)" || no "seed setup wrong (count=$beforecount)"
+if [ "$beforecount" -eq 5 ]; then ok "seed: 5 fake blobs in place (old/filler/fresh flat + old/fresh sharded)"; else no "seed setup wrong (count=$beforecount)"; fi
 beforebytes="$( dirapparentbytes )"
 [ "$beforebytes" -gt 2147483648 ] && ok "seed: dir already exceeds the 2 GB budget (~$beforebytes bytes)" \
     || no "seed: dir does not exceed budget yet (~$beforebytes bytes) — filler too small"
@@ -129,14 +129,14 @@ beforebytes="$( dirapparentbytes )"
 env -u XDG_CACHE_HOME TMPDIR="$CACHEBASE" "$BIN" "$REPO" >"$TMP/run1.xml" 2>"$TMP/run1.err"
 rc1=$?
 
-[ "$rc1" -eq 0 ] && ok "run against the seeded dir exits 0" || { no "run exited $rc1"; cat "$TMP/run1.err"; }
-grep -q 'n="tiny"' "$TMP/run1.xml" 2>/dev/null && ok "run output still correct (tiny present)" || no "run output missing tiny()"
+if [ "$rc1" -eq 0 ]; then ok "run against the seeded dir exits 0"; else { no "run exited $rc1"; cat "$TMP/run1.err"; }; fi
+if grep -q 'n="tiny"' "$TMP/run1.xml" 2>/dev/null; then ok "run output still correct (tiny present)"; else no "run output missing tiny()"; fi
 
-[ ! -e "$OLD" ]     && ok "OLD blob (flat, mtime > 30 days) swept"                    || no "OLD flat blob survived — age sweep not working"
-[ ! -e "$OLD_SH" ]  && ok "OLD blob (sharded, mtime > 30 days) swept"                 || no "OLD sharded blob survived — age sweep does not reach the shard layout"
-[ ! -e "$FILLER" ]  && ok "OVERSIZED filler swept once dir total exceeded 2 GB"       || no "oversized filler survived — size sweep not working"
-[ -e "$FRESH" ]     && ok "FRESH small blob (flat) survives both passes"              || no "FRESH flat blob was wrongly swept"
-[ -e "$FRESH_SH" ]  && ok "FRESH small blob (sharded) survives both passes"           || no "FRESH sharded blob was wrongly swept"
+if [ ! -e "$OLD" ]; then ok "OLD blob (flat, mtime > 30 days) swept"; else no "OLD flat blob survived — age sweep not working"; fi
+if [ ! -e "$OLD_SH" ]; then ok "OLD blob (sharded, mtime > 30 days) swept"; else no "OLD sharded blob survived — age sweep does not reach the shard layout"; fi
+if [ ! -e "$FILLER" ]; then ok "OVERSIZED filler swept once dir total exceeded 2 GB"; else no "oversized filler survived — size sweep not working"; fi
+if [ -e "$FRESH" ]; then ok "FRESH small blob (flat) survives both passes"; else no "FRESH flat blob was wrongly swept"; fi
+if [ -e "$FRESH_SH" ]; then ok "FRESH small blob (sharded) survives both passes"; else no "FRESH sharded blob was wrongly swept"; fi
 
 aftercount="$( allblobs | wc -l | tr -d ' ' )"
 # FRESH (both layouts) survive + exactly the real blob(s) this run just wrote/used remain (lean cache for the fixture repo).
@@ -144,7 +144,7 @@ aftercount="$( allblobs | wc -l | tr -d ' ' )"
     || no "this run's own cache blob is missing — keepPath not honored ($aftercount file(s) remain)"
 
 ownblob="$( allblobs | grep -v -e "$FRESH" -e "$FRESH_SH" )"
-[ -n "$ownblob" ] && ok "this run's own cache blob found: $( basename "$ownblob" )" || no "could not locate this run's own cache blob at all"
+if [ -n "$ownblob" ]; then ok "this run's own cache blob found: $( basename "$ownblob" )"; else no "could not locate this run's own cache blob at all"; fi
 printf '%s' "$ownblob" | grep -qE '/[0-9a-f]{2}/ripwire-' \
     && ok "this run's own cache blob landed in a SHARD subdir (Y4 write path exercised, not just flat)" \
     || no "this run's own cache blob is still FLAT — resolveCacheBlobPath did not shard a fresh write ($ownblob)"
@@ -170,16 +170,16 @@ pid_b=$!
 wait "$pid_a"; rc_a=$?
 wait "$pid_b"; rc_b=$?
 
-[ "$rc_a" -eq 0 ] && ok "concurrent run A exits 0" || { no "concurrent run A exited $rc_a"; cat "$TMP/run2a.err"; }
-[ "$rc_b" -eq 0 ] && ok "concurrent run B exits 0" || { no "concurrent run B exited $rc_b"; cat "$TMP/run2b.err"; }
-grep -q 'n="tiny"' "$TMP/run2a.xml" 2>/dev/null && ok "concurrent run A output well-formed (tiny present)" || no "concurrent run A output malformed"
-grep -q 'n="tiny"' "$TMP/run2b.xml" 2>/dev/null && ok "concurrent run B output well-formed (tiny present)" || no "concurrent run B output malformed"
+if [ "$rc_a" -eq 0 ]; then ok "concurrent run A exits 0"; else { no "concurrent run A exited $rc_a"; cat "$TMP/run2a.err"; }; fi
+if [ "$rc_b" -eq 0 ]; then ok "concurrent run B exits 0"; else { no "concurrent run B exited $rc_b"; cat "$TMP/run2b.err"; }; fi
+if grep -q 'n="tiny"' "$TMP/run2a.xml" 2>/dev/null; then ok "concurrent run A output well-formed (tiny present)"; else no "concurrent run A output malformed"; fi
+if grep -q 'n="tiny"' "$TMP/run2b.xml" 2>/dev/null; then ok "concurrent run B output well-formed (tiny present)"; else no "concurrent run B output malformed"; fi
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/run2a.xml" 2>/dev/null && ok "concurrent run A: xml well-formed" || no "concurrent run A: xml malformed"
-    xmllint --noout "$TMP/run2b.xml" 2>/dev/null && ok "concurrent run B: xml well-formed" || no "concurrent run B: xml malformed"
+    if xmllint --noout "$TMP/run2a.xml" 2>/dev/null; then ok "concurrent run A: xml well-formed"; else no "concurrent run A: xml malformed"; fi
+    if xmllint --noout "$TMP/run2b.xml" 2>/dev/null; then ok "concurrent run B: xml well-formed"; else no "concurrent run B: xml malformed"; fi
 fi
-[ ! -e "$OLD2" ]    && ok "concurrency: stale blob swept without either process crashing"   || no "concurrency: stale blob survived both sweeps"
-[ ! -e "$FILLER2" ] && ok "concurrency: oversized filler swept without either process crashing" || no "concurrency: oversized filler survived both sweeps"
+if [ ! -e "$OLD2" ]; then ok "concurrency: stale blob swept without either process crashing"; else no "concurrency: stale blob survived both sweeps"; fi
+if [ ! -e "$FILLER2" ]; then ok "concurrency: oversized filler swept without either process crashing"; else no "concurrency: oversized filler survived both sweeps"; fi
 
 # ── (g) W1-V4 (2026-08-11): the ".cache" arm and the locks/ invariant, neither previously gated ──────────
 # evictOldCacheFamily's `matches()` lambda (src/quality.h) accepts EITHER ".bin" OR ".cache" as a family
@@ -233,8 +233,8 @@ printf 'fresh-small-cache-blob-dotcache' > "$FRESHCACHE"
 
 env -u XDG_CACHE_HOME TMPDIR="$CACHEBASE2" "$BIN" "$REPO2" >"$TMP2/run.xml" 2>"$TMP2/run.err"
 rc3=$?
-[ "$rc3" -eq 0 ] && ok "Y5: run against the seeded .cache/locks dir exits 0" || { no "Y5: run exited $rc3"; cat "$TMP2/run.err"; }
-grep -q 'n="tiny3"' "$TMP2/run.xml" 2>/dev/null && ok "Y5: run output correct (tiny3 present)" || no "Y5: run output missing tiny3()"
+if [ "$rc3" -eq 0 ]; then ok "Y5: run against the seeded .cache/locks dir exits 0"; else { no "Y5: run exited $rc3"; cat "$TMP2/run.err"; }; fi
+if grep -q 'n="tiny3"' "$TMP2/run.xml" 2>/dev/null; then ok "Y5: run output correct (tiny3 present)"; else no "Y5: run output missing tiny3()"; fi
 
 [ ! -e "$OLDCACHE" ]  && ok "(a) an old .cache file IS evicted by the family eviction (age pass reaches .cache too)" \
                        || no "(a) old .cache blob survived — the .cache arm of matches() is not being swept"
@@ -339,8 +339,8 @@ b3="$( dirbytesof "$CD3" )"
 printf 'int pinme2( void )\n{\n    return 2;\n}\n' >> "$R3/f.cpp"   # Win-2: saveCache (and the sweep) only run when something changed
 env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >"$TMP3/run.xml" 2>"$TMP3/run.err"
 rc4=$?
-[ "$rc4" -eq 0 ] && ok "(h) run exits 0" || { no "(h) run exited $rc4"; cat "$TMP3/run.err"; }
-grep -q 'n="pinme"' "$TMP3/run.xml" 2>/dev/null && ok "(h) run output still correct (pinme present)" || no "(h) run output missing pinme()"
+if [ "$rc4" -eq 0 ]; then ok "(h) run exits 0"; else { no "(h) run exited $rc4"; cat "$TMP3/run.err"; }; fi
+if grep -q 'n="pinme"' "$TMP3/run.xml" 2>/dev/null; then ok "(h) run output still correct (pinme present)"; else no "(h) run output missing pinme()"; fi
 
 [ -e "$SIB3" ] && ok "(h) the MRU root's SIBLING family survives a budget sweep (pinned) — P1-1's 206 s ping-pong" \
     || no "(h) the MRU root's sibling family was EVICTED — the sweep still takes the blob this root is about to need"
@@ -377,14 +377,14 @@ fi
 printf 'int solo2( void )\n{\n    return 2;\n}\n' >> "$R4/f.cpp"
 env -u XDG_CACHE_HOME TMPDIR="$CB4" "$BIN" "$R4" >"$TMP4/run.xml" 2>"$TMP4/run.err"
 rc5=$?
-[ "$rc5" -eq 0 ] && ok "(i) run exits 0 even with the pinned set over budget" || { no "(i) run exited $rc5"; cat "$TMP4/run.err"; }
-grep -q 'n="solo"' "$TMP4/run.xml" 2>/dev/null && ok "(i) run output still correct (solo present)" || no "(i) run output missing solo()"
+if [ "$rc5" -eq 0 ]; then ok "(i) run exits 0 even with the pinned set over budget"; else { no "(i) run exited $rc5"; cat "$TMP4/run.err"; }; fi
+if grep -q 'n="solo"' "$TMP4/run.xml" 2>/dev/null; then ok "(i) run output still correct (solo present)"; else no "(i) run output missing solo()"; fi
 [ -e "$SIB4" ] && ok "(i) the pinned set is KEPT even though it alone exceeds the budget" \
     || no "(i) the pinned set was evicted when nothing else could be freed — the ping-pong is back"
 grep -q '^ripwire: cache ' "$TMP4/run.err" 2>/dev/null && ok "(i) the over-budget pinned set is said once on stderr" \
     || { no "(i) the pinned set exceeded the budget with no disclosure"; cat "$TMP4/run.err"; }
 errlines4="$( wc -l < "$TMP4/run.err" | tr -d ' ' )"
-[ "$errlines4" -eq 1 ] && ok "(i) exactly ONE stderr line" || no "(i) expected 1 stderr line, got $errlines4"
+if [ "$errlines4" -eq 1 ]; then ok "(i) exactly ONE stderr line"; else no "(i) expected 1 stderr line, got $errlines4"; fi
 
 # ---- (j) nothing evicted → ZERO stderr bytes -------------------------------------------------------
 # The disclosure must be conditional, or every warm run in every gate that compares stderr grows a line.
@@ -396,7 +396,7 @@ env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >/dev/null 2>/dev/null
 printf 'int quiet2( void )\n{\n    return 2;\n}\n' >> "$R5/f.cpp"
 env -u XDG_CACHE_HOME TMPDIR="$CB5" "$BIN" "$R5" >"$TMP5/run.xml" 2>"$TMP5/run.err"
 rc6=$?
-[ "$rc6" -eq 0 ] && ok "(j) run exits 0" || no "(j) run exited $rc6"
+if [ "$rc6" -eq 0 ]; then ok "(j) run exits 0"; else no "(j) run exited $rc6"; fi
 [ ! -s "$TMP5/run.err" ] && ok "(j) a sweep that evicts nothing writes ZERO bytes to stderr" \
     || { no "(j) stderr is not empty on a no-eviction run — the disclosure is unconditional"; cat "$TMP5/run.err"; }
 

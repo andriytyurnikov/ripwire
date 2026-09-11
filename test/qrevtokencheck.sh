@@ -32,7 +32,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 QSRC="$ROOT/src/quality.h"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -59,7 +59,7 @@ int added( int a );
 EOF
 
 NOSIDECAR="$( run )"; NOSIDECAR_RC="$( rc_of )"
-[ -n "$NOSIDECAR" ] && ok "baseline phase: the no-sidecar (git-HEAD) report is non-empty" || no "no-sidecar report empty — checks are vacuous"
+if [ -n "$NOSIDECAR" ]; then ok "baseline phase: the no-sidecar (git-HEAD) report is non-empty"; else no "no-sidecar report empty — checks are vacuous"; fi
 
 # ── (a)(b) hostile `head` stamps ───────────────────────────────────────────────────────────────────────────
 BASEF="$REPO/.ripwire_quality_baseline"

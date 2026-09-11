@@ -105,7 +105,7 @@ FIX="$ROOT/test/kotlinfix"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -118,7 +118,7 @@ echo "kotlincheck: BIN=$BIN  FIX=$FIX"
 echo
 echo "=== 0. PRESENCE: the fixture really spells every shape the arms below assert ==="
 # ═══════════════════════════════════════════════════════════════════════════
-presence(){ grep -qF -- "$2" "$FIX/$1" && ok "fixture $1 spells: $3" || no "fixture $1 no longer spells: $3"; }
+presence(){ if grep -qF -- "$2" "$FIX/$1"; then ok "fixture $1 spells: $3"; else no "fixture $1 no longer spells: $3"; fi; }
 presence Util.kt        'fun square(n: Int)'          'a top-level function, cross-file callee'
 presence Util.kt        'class Formatter'             'a plain class with a member function'
 presence Util.kt        'object Extra'                'the Kotlin half of the collision pair'
@@ -135,8 +135,8 @@ presence JavaBridge.java 'static int javaOnly(int n)'  'the Java-only bridge tar
 MAP_OUT="$TMP/map.xml"
 "$BIN" "$FIX" --no-cache >"$MAP_OUT" 2>"$TMP/map.err"
 MAP_EXIT=$?
-[ "$MAP_EXIT" -eq 0 ] && ok "default map: exits 0 on the Kotlin fixture" || no "default map: exited $MAP_EXIT: $( cat "$TMP/map.err" )"
-command -v xmllint >/dev/null 2>&1 && { xmllint --noout "$MAP_OUT" && ok "default map: passes xmllint --noout" || no "default map: xmllint failed"; }
+if [ "$MAP_EXIT" -eq 0 ]; then ok "default map: exits 0 on the Kotlin fixture"; else no "default map: exited $MAP_EXIT: $( cat "$TMP/map.err" )"; fi
+command -v xmllint >/dev/null 2>&1 && { if xmllint --noout "$MAP_OUT"; then ok "default map: passes xmllint --noout"; else no "default map: xmllint failed"; fi; }
 [ -s "$TMP/map.err" ] && no "default map: unexpected stderr (ABI/degrade?): $( cat "$TMP/map.err" )" || ok "default map: clean stderr (no ABI mismatch / degrade)"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,10 +150,10 @@ echo "=== 1. STRUCTURE: 3 files / 31 symbols / 14 edges, and no ambiguity left =
 # calls in the fixture. The rest is the original port's accounting: §8's enum_class_body pair (Mode/Mode) adds 3
 # definitions and no call edges; §9's Labeled/Shape/Square/describe adds 8 definitions, and Square's `Shape()` delegation
 # is one real call edge (tags.scm's constructor_invocation capture), like any other call expression.
-grep -q 'files=3 symbols=31 ' "$MAP_OUT" && ok "header: files=3 symbols=31" || no "header: expected files=3 symbols=31: $( grep -o 'files=[0-9]* symbols=[0-9]*' "$MAP_OUT" )"
-grep -q ' edges=14 ' "$MAP_OUT" && ok "header: edges=14" || no "header: expected edges=14: $( grep -o 'edges=[0-9]*' "$MAP_OUT" )"
-grep -q ' ambiguous=0 ' "$MAP_OUT" && ok "header: ambiguous=0" || no "header: expected ambiguous=0: $( grep -o 'ambiguous=[0-9]*' "$MAP_OUT" )"
-grep -q 'unresolved=0' "$MAP_OUT" && ok "header: unresolved=0" || no "header: expected unresolved=0: $( grep -o 'unresolved=[0-9]*' "$MAP_OUT" )"
+if grep -q 'files=3 symbols=31 ' "$MAP_OUT"; then ok "header: files=3 symbols=31"; else no "header: expected files=3 symbols=31: $( grep -o 'files=[0-9]* symbols=[0-9]*' "$MAP_OUT" )"; fi
+if grep -q ' edges=14 ' "$MAP_OUT"; then ok "header: edges=14"; else no "header: expected edges=14: $( grep -o 'edges=[0-9]*' "$MAP_OUT" )"; fi
+if grep -q ' ambiguous=0 ' "$MAP_OUT"; then ok "header: ambiguous=0"; else no "header: expected ambiguous=0: $( grep -o 'ambiguous=[0-9]*' "$MAP_OUT" )"; fi
+if grep -q 'unresolved=0' "$MAP_OUT"; then ok "header: unresolved=0"; else no "header: expected unresolved=0: $( grep -o 'unresolved=[0-9]*' "$MAP_OUT" )"; fi
 
 grep -q 'id="Greeter.kt::Greeter::of"' "$MAP_OUT" && ok 'scope: companion-object factory carries id=Greeter.kt::Greeter::of' \
     || no "scope: Greeter::of id missing — kotlinEnclosingScopeOf regressed: $( grep -o 'n="of"[^>]*' "$MAP_OUT" )"
@@ -480,7 +480,7 @@ nestOpeners(){ grep -o '"a\${' "$1" | wc -l | tr -d ' '; }   # open strings = op
 # Every arm below reads the map, so it is evaluated ONLY on a clean exit: a crashed run prints nothing, and "no deepFn in
 # an empty file" would otherwise pass for the very defect this section exists to catch.
 if [ "$NEST_RC" -eq 0 ]; then
-    command -v xmllint >/dev/null 2>&1 && { xmllint --noout "$TMP/nest.xml" 2>/dev/null && ok "hostile nesting: the map is well-formed" || no "hostile nesting: the map fails xmllint"; }
+    command -v xmllint >/dev/null 2>&1 && { if xmllint --noout "$TMP/nest.xml" 2>/dev/null; then ok "hostile nesting: the map is well-formed"; else no "hostile nesting: the map fails xmllint"; fi; }
     grep -q 'n="siblingFn"' "$TMP/nest.xml" && grep -q 'n="callsSibling"' "$TMP/nest.xml" \
         && ok "hostile nesting: Sibling.kt stays indexed (siblingFn, callsSibling) — the refusal is per file, not per tree" \
         || no "hostile nesting: Sibling.kt's symbols are missing — the guard took the tree down with the file"

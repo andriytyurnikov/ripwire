@@ -39,7 +39,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -272,9 +272,9 @@ PY
 
 # ── (7) determinism + well-formedness ────────────────────────────────────────────────────────────────
 "$BIN" corpus --skipped --no-cache > "$TMP/h2.xml" 2>/dev/null
-cmp -s "$TMP/h.xml" "$TMP/h2.xml" && ok '(7) two runs are byte-identical' || no '(7) output is NOT deterministic'
+if cmp -s "$TMP/h.xml" "$TMP/h2.xml"; then ok '(7) two runs are byte-identical'; else no '(7) output is NOT deterministic'; fi
 if command -v xmllint >/dev/null 2>&1; then
-  xmllint --noout "$TMP/h.xml" 2>/dev/null && ok '(7) well-formed XML' || no '(7) NOT well-formed XML'
+  if xmllint --noout "$TMP/h.xml" 2>/dev/null; then ok '(7) well-formed XML'; else no '(7) NOT well-formed XML'; fi
 else
   echo "  SKIP  (7) xmllint unavailable"
 fi

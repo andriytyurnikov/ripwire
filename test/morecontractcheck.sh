@@ -37,7 +37,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -182,9 +182,9 @@ for pair in "flagsfix --flags" "driftfix --doc-drift"; do
     set -- $pair
     "$BIN" "$TMP/$1" "$2" --no-cache >"$TMP/det1" 2>/dev/null
     "$BIN" "$TMP/$1" "$2" --no-cache >"$TMP/det2" 2>/dev/null
-    cmp -s "$TMP/det1" "$TMP/det2" && ok "$2: byte-identical run to run" || no "$2 is non-deterministic"
+    if cmp -s "$TMP/det1" "$TMP/det2"; then ok "$2: byte-identical run to run"; else no "$2 is non-deterministic"; fi
     if command -v xmllint >/dev/null 2>&1; then
-        xmllint --noout "$TMP/det1" 2>/dev/null && ok "$2: G4 xmllint clean" || no "$2: output is not well-formed XML"
+        if xmllint --noout "$TMP/det1" 2>/dev/null; then ok "$2: G4 xmllint clean"; else no "$2: output is not well-formed XML"; fi
     fi
 done
 

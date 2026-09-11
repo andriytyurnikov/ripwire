@@ -51,7 +51,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'cleanup' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 SRV_PID=""
@@ -159,7 +159,7 @@ present=""; absent=""
 for v in $GIT_ONLY; do
     case " $NOGIT_NAMES " in *" $v "*) present="$present $v";; *) absent="$absent $v";; esac
 done
-[ -z "$present" ] && ok "(A) omitted:$absent" || no "(A) still advertised on a non-git pinned root:$present"
+if [ -z "$present" ]; then ok "(A) omitted:$absent"; else no "(A) still advertised on a non-git pinned root:$present"; fi
 
 NOGIT_COUNT="$( printf '%s' "$NOGIT_NAMES" | wc -w | tr -d ' ' )"
 [ "$NOGIT_COUNT" = "28" ] && ok "(A) tools/list advertises 28 verbs (31 minus the 3 git-only)" \
@@ -314,7 +314,7 @@ gone=""
 for v in $GIT_ONLY; do
     case " $GIT_NAMES " in *" $v "*) ;; *) gone="$gone $v";; esac
 done
-[ -z "$gone" ] && ok "(G) every git verb present on a real repo" || no "(G) pruned on a REAL git repo:$gone"
+if [ -z "$gone" ]; then ok "(G) every git verb present on a real repo"; else no "(G) pruned on a REAL git repo:$gone"; fi
 GIT_IDENTITY="$( names_identical "$GIT_NAMES" "$ALL_VERBS" )"
 [ "$GIT_IDENTITY" = "OK" ] && ok "(G) the git root's 31 are EXACTLY ALL_VERBS (identity, not just count)" \
                            || no "(G) git-root retained-set identity mismatch: $GIT_IDENTITY"
@@ -323,7 +323,7 @@ import sys, json
 ins = json.load(open(sys.argv[1])).get("result", {}).get("instructions", "")
 print("QUIET" if "omit" not in ins.lower() else "FALSE_DISCLOSURE")
 ' "$TMP/git.init" > "$TMP/gdisc"
-grep -q QUIET "$TMP/gdisc" && ok "(G) no omission sentence on a git root" || no "(G) instructions claim an omission on a real git repo"
+if grep -q QUIET "$TMP/gdisc"; then ok "(G) no omission sentence on a git root"; else no "(G) instructions claim an omission on a real git repo"; fi
 stop_pinned
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════════

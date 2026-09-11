@@ -27,7 +27,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 FIX="$ROOT/test/fixture"
 TMP="$( mktemp -d )"; trap 'cleanup' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 SRV_PID=""
@@ -104,49 +104,49 @@ assert r["result"]["protocolVersion"] == "2025-11-25", r
 for version in 2025-06-18 2025-03-26 2024-11-05; do
     body="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"$version\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ripwire-test\",\"version\":\"1.0\"}}}"
     got="$( curl -s -X POST "$URL" -d "$body" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result",{}).get("protocolVersion",""))' 2>/dev/null )"
-    [ "$got" = "$version" ] && ok "initialize echoes supported $version" || no "initialize requested $version but returned '$got'"
+    if [ "$got" = "$version" ]; then ok "initialize echoes supported $version"; else no "initialize requested $version but returned '$got'"; fi
 done
 
 UNSUPPORTED='{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"ripwire-test","version":"1.0"}}}'
 got="$( curl -s -X POST "$URL" -d "$UNSUPPORTED" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result",{}).get("protocolVersion",""))' 2>/dev/null )"
-[ "$got" = "2025-11-25" ] && ok "unsupported initialize version negotiates to latest" || no "unsupported initialize version returned '$got'"
+if [ "$got" = "2025-11-25" ]; then ok "unsupported initialize version negotiates to latest"; else no "unsupported initialize version returned '$got'"; fi
 
 ORIGIN_BAD="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'Origin: https://evil.example' -d "$MCP_CURRENT_INIT" )"
 ORIGIN_NULL="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'Origin: null' -d "$MCP_CURRENT_INIT" )"
 ORIGIN_OK="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Origin: http://127.0.0.1:$PORT" -d "$MCP_CURRENT_INIT" )"
-[ "$ORIGIN_BAD" = "403" ] && ok "foreign Origin is rejected with 403" || no "foreign Origin got $ORIGIN_BAD (expected 403)"
-[ "$ORIGIN_NULL" = "403" ] && ok "Origin:null is rejected with 403" || no "Origin:null got $ORIGIN_NULL (expected 403)"
-[ "$ORIGIN_OK" = "200" ] && ok "exact loopback Origin is accepted" || no "exact loopback Origin got $ORIGIN_OK (expected 200)"
+if [ "$ORIGIN_BAD" = "403" ]; then ok "foreign Origin is rejected with 403"; else no "foreign Origin got $ORIGIN_BAD (expected 403)"; fi
+if [ "$ORIGIN_NULL" = "403" ]; then ok "Origin:null is rejected with 403"; else no "Origin:null got $ORIGIN_NULL (expected 403)"; fi
+if [ "$ORIGIN_OK" = "200" ]; then ok "exact loopback Origin is accepted"; else no "exact loopback Origin got $ORIGIN_OK (expected 200)"; fi
 
 ACCEPT_MISSING="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'Content-Type: application/json' -d "$MCP_CURRENT_INIT" )"
 ACCEPT_JSON="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$MCP_CURRENT_INIT" )"
 CTYPE_BAD="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Accept: $MCP_ACCEPT" -H 'Content-Type: text/plain' -d "$MCP_CURRENT_INIT" )"
 CTYPE_OK="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Accept: $MCP_ACCEPT" -H 'Content-Type: application/json; charset=utf-8' -d "$MCP_CURRENT_INIT" )"
-[ "$ACCEPT_MISSING" = "406" ] && ok "missing required Accept media pair is rejected with 406" || no "missing Accept got $ACCEPT_MISSING (expected 406)"
-[ "$ACCEPT_JSON" = "406" ] && ok "JSON-only Accept is rejected with 406" || no "JSON-only Accept got $ACCEPT_JSON (expected 406)"
-[ "$CTYPE_BAD" = "415" ] && ok "non-JSON Content-Type is rejected with 415" || no "text/plain Content-Type got $CTYPE_BAD (expected 415)"
-[ "$CTYPE_OK" = "200" ] && ok "application/json with charset parameter is accepted" || no "JSON charset Content-Type got $CTYPE_OK (expected 200)"
+if [ "$ACCEPT_MISSING" = "406" ]; then ok "missing required Accept media pair is rejected with 406"; else no "missing Accept got $ACCEPT_MISSING (expected 406)"; fi
+if [ "$ACCEPT_JSON" = "406" ]; then ok "JSON-only Accept is rejected with 406"; else no "JSON-only Accept got $ACCEPT_JSON (expected 406)"; fi
+if [ "$CTYPE_BAD" = "415" ]; then ok "non-JSON Content-Type is rejected with 415"; else no "text/plain Content-Type got $CTYPE_BAD (expected 415)"; fi
+if [ "$CTYPE_OK" = "200" ]; then ok "application/json with charset parameter is accepted"; else no "JSON charset Content-Type got $CTYPE_OK (expected 200)"; fi
 
 DUP_ORIGIN="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Accept: $MCP_ACCEPT" -H 'Content-Type: application/json' \
     -H "Origin: http://127.0.0.1:$PORT" -H 'Origin: https://evil.example' -d "$MCP_CURRENT_INIT" )"
 HUGE_LENGTH="$( command curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Accept: $MCP_ACCEPT" -H 'Content-Type: application/json' \
     -H 'Content-Length: 999999999999999999999999999999999999999999' -d '' )"
-[ "$DUP_ORIGIN" = "400" ] && ok "duplicate Origin headers are rejected as ambiguous framing" || no "duplicate Origin headers got $DUP_ORIGIN (expected 400)"
-[ "$HUGE_LENGTH" = "413" ] && ok "overflowing Content-Length saturates safely to 413" || no "overflowing Content-Length got $HUGE_LENGTH (expected 413)"
+if [ "$DUP_ORIGIN" = "400" ]; then ok "duplicate Origin headers are rejected as ambiguous framing"; else no "duplicate Origin headers got $DUP_ORIGIN (expected 400)"; fi
+if [ "$HUGE_LENGTH" = "413" ]; then ok "overflowing Content-Length saturates safely to 413"; else no "overflowing Content-Length got $HUGE_LENGTH (expected 413)"; fi
 
 LIST='{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 PROTO_BAD="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'MCP-Protocol-Version: 2099-01-01' -d "$LIST" )"
 PROTO_MISSING="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -d "$LIST" )"
-[ "$PROTO_BAD" = "400" ] && ok "unsupported MCP-Protocol-Version is rejected with 400" || no "unsupported protocol header got $PROTO_BAD (expected 400)"
-[ "$PROTO_MISSING" = "200" ] && ok "missing protocol header uses the 2025-03-26 compatibility default" || no "missing protocol header got $PROTO_MISSING (expected 200)"
+if [ "$PROTO_BAD" = "400" ]; then ok "unsupported MCP-Protocol-Version is rejected with 400"; else no "unsupported protocol header got $PROTO_BAD (expected 400)"; fi
+if [ "$PROTO_MISSING" = "200" ]; then ok "missing protocol header uses the 2025-03-26 compatibility default"; else no "missing protocol header got $PROTO_MISSING (expected 200)"; fi
 
 GET_CODE="$( command curl -s -o /dev/null -w '%{http_code}' -X GET "$URL" -H 'Accept: text/event-stream' )"
 ROOT_CODE="$( curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/" -d "$MCP_CURRENT_INIT" )"
 NOTIFY='{"jsonrpc":"2.0","method":"notifications/initialized"}'
 NOTIFY_SHAPE="$( curl -s -o "$TMP/notify.body" -w '%{http_code}:%{size_download}' -X POST "$URL" -H 'MCP-Protocol-Version: 2025-11-25' -d "$NOTIFY" )"
-[ "$GET_CODE" = "405" ] && ok "GET /mcp returns 405 when SSE is unsupported" || no "GET /mcp got $GET_CODE (expected 405)"
-[ "$ROOT_CODE" = "404" ] && ok "the MCP listener exposes exactly /mcp (root is 404)" || no "POST / got $ROOT_CODE (expected 404)"
-[ "$NOTIFY_SHAPE" = "202:0" ] && ok "accepted notification returns bodyless 202" || no "notification response was $NOTIFY_SHAPE (expected 202:0)"
+if [ "$GET_CODE" = "405" ]; then ok "GET /mcp returns 405 when SSE is unsupported"; else no "GET /mcp got $GET_CODE (expected 405)"; fi
+if [ "$ROOT_CODE" = "404" ]; then ok "the MCP listener exposes exactly /mcp (root is 404)"; else no "POST / got $ROOT_CODE (expected 404)"; fi
+if [ "$NOTIFY_SHAPE" = "202:0" ]; then ok "accepted notification returns bodyless 202"; else no "notification response was $NOTIFY_SHAPE (expected 202:0)"; fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
@@ -313,9 +313,9 @@ if start_server --mcp-token="$TOKEN"; then
     NO="$(   curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -d '{"jsonrpc":"2.0","id":71,"method":"initialize"}' )"
     WRONG="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'Authorization: Bearer WRONG' -d '{"jsonrpc":"2.0","id":72,"method":"initialize"}' )"
     RIGHT="$( curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Authorization: Bearer $TOKEN" -d '{"jsonrpc":"2.0","id":73,"method":"initialize"}' )"
-    [ "$NO" = "401" ]    && ok "missing bearer token → 401"           || no "missing token got $NO (expected 401)"
-    [ "$WRONG" = "401" ] && ok "wrong bearer token → 401"             || no "wrong token got $WRONG (expected 401)"
-    [ "$RIGHT" = "200" ] && ok "correct bearer token → 200"           || no "correct token got $RIGHT (expected 200)"
+    if [ "$NO" = "401" ]; then ok "missing bearer token → 401"; else no "missing token got $NO (expected 401)"; fi
+    if [ "$WRONG" = "401" ]; then ok "wrong bearer token → 401"; else no "wrong token got $WRONG (expected 401)"; fi
+    if [ "$RIGHT" = "200" ]; then ok "correct bearer token → 200"; else no "correct token got $RIGHT (expected 200)"; fi
     stop_server
 else
     no "token-guarded loopback server failed to start"

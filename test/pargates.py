@@ -404,9 +404,9 @@ def failure_report(out, logpath):
 # that does not move itself out (one that calls setsid is out of reach), and a stop signals that group: TERM first, so
 # the gate's EXIT trap still removes its temp dir -- a private checkout there is a whole tree of the repository -- then
 # KILL for whatever is still in the group KILL_GRACE_SEC later. The grace belongs to the whole group, not to the gate's
-# bash or its output pipe: a child whose output goes elsewhere can still be cleaning up after both are gone, and the
-# first version KILLed it right then (CodeRabbit on #129). A group seen empty is never signalled again. What the gate
-# printed before and during the stop is kept.
+# bash: a child whose output goes elsewhere can still be cleaning up after both are gone, and the first version KILLed
+# it right then (CodeRabbit on #129). A group seen empty is never signalled again. What the gate printed before and
+# during the stop is kept -- it is in the capture file described below, not in flight down a pipe.
 #
 # A session of its own also takes the gate out of the terminal's foreground group, so Ctrl-C would no longer reach it at
 # all. pargates therefore catches SIGINT, SIGTERM and SIGHUP -- unless it inherited one ignored -- stops every running
@@ -448,32 +448,49 @@ def _group_alive(p):
     return True
 
 
-def _read_for(p, out, secs):
-    """Read the gate's output for up to `secs` -> (everything read so far, done). done means the pipe is closed and the
-    leader reaped. `out` is what the caller already had, kept when a timeout yields nothing newer; communicate() keeps
-    what it read across calls, so retrying after a timeout loses nothing."""
+# --- a gate's stdout is a FILE, never a pipe (2026-09-11) -------------------------------------------------------
+# Whether a gate's `printf` succeeds is a property of what this harness hands it as stdout, and a verdict must never
+# depend on it. stdout used to be subprocess.PIPE: a blocking pipe with a ~16 KiB kernel buffer, drained by one Python
+# thread per gate. Let that reader stall -- GIL contention at -j 6, or the macOS runner starvation this repo has hit
+# before -- and a verbose gate fills the buffer, its next printf BLOCKS inside write(2), and because bash installs its
+# SIGCHLD handler without SA_RESTART (and every gate forks), the blocked write comes back EINTR. bash's printf then
+# reports `write error: Interrupted system call` and returns non-zero, which is how PR #126 got
+#     FAIL  B4 crossing: packet lists 12 of the map's 25 symbols in wide.md (cap 12)
+# out of an arm whose pass condition (12 == 12, 25 > 12) held. Measured on a plain blocking pipe with a stalled
+# reader: 600 arms -> 600 PASS lines AND 21 spurious FAILs, `Interrupted system call` on all 21. Contention alone did
+# not do it (1500 arms drained a byte at a time: none), so it is the BLOCKED write specifically.
+#
+# A regular file cannot block a write, so the write cannot be interrupted, and there is no reader whose absence can
+# break the descriptor -- the whole errno family goes away for every gate at once, however verbose and whatever the
+# runner is doing. stderr stays stderr=STDOUT, i.e. the SAME open file description, so the two streams still interleave
+# in real write order and a gate's stderr still lands beside the FAIL row it explains. The gate side of this is
+# test/gateexitcheck.sh arm (G); this side is pinned by test/pargatescheck.sh arm (H). Note that test/regression.sh
+# runs gates straight into CI's own pipe, where none of this applies -- which is why the gate-side contract, not this,
+# is the load-bearing fix.
+def _wait_for(p, secs):
+    """Wait up to `secs` for the gate's leader -> True once it has exited and been reaped."""
     try:
-        return p.communicate(timeout=secs)[0], True
-    except subprocess.TimeoutExpired as e:
-        return (e.stdout if e.stdout is not None else out), False
+        p.wait(timeout=secs)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
 
-def _await_group(p, out, secs):
-    """Keep reading the gate's output until its process group is empty or `secs` pass -> everything read so far."""
+def _await_group(p, secs):
+    """Wait until the gate's process group is empty or `secs` pass."""
     end = time.monotonic() + secs
     while _group_alive(p) and time.monotonic() < end:
         left = max(0.0, min(STOP_POLL_SEC, end - time.monotonic()))
-        out, done = _read_for(p, out, left)
-        if done:
-            time.sleep(left)        # the pipe is closed and the leader reaped: what is left to wait on is the group itself
-    return out
+        if _wait_for(p, left):
+            time.sleep(left)        # the leader is reaped: what is left to wait on is the group itself
 
 
-def _stop_group(p, out):
-    """TERM the gate's process group and give the WHOLE group KILL_GRACE_SEC to exit -- not only its bash, and not only
-    what holds its output pipe -- then KILL whatever is still in it and give that the same. A group seen empty is not
-    signalled again. Returns every byte the gate wrote; `out` is what the caller had read so far. A process that left
-    the group can hold the pipe open past the KILL: reading stops then."""
+def _stop_group(p):
+    """TERM the gate's process group and give the WHOLE group KILL_GRACE_SEC to exit -- not only its bash -- then KILL
+    whatever is still in it and give that the same. A group seen empty is not signalled again. Nothing the gate wrote
+    is at risk here any more: it is already in the capture file, including what the last members wrote on their way
+    out. A descendant that left the group can still be writing after this returns; the caller reads the file once,
+    so that tail is missed, exactly as the pipe version missed it."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
         if not _group_alive(p):
             break
@@ -481,25 +498,45 @@ def _stop_group(p, out):
             os.killpg(p.pid, sig)
         except OSError:
             pass
-        out = _await_group(p, out, KILL_GRACE_SEC)
-    return _read_for(p, out, STOP_POLL_SEC)[0] or b""      # plus what the last members wrote on their way out
+        _await_group(p, KILL_GRACE_SEC)
+    _wait_for(p, STOP_POLL_SEC)
+
+
+def _capture_read(path):
+    """Everything the gate and its descendants have written so far. A capture that cannot be read is empty, never a
+    crash of the harness: the rc and the budget message still stand on their own."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return b""
 
 
 def run_gate(argv, env, limit):
-    """Run one gate in a session of its own, stdout and stderr merged in write order. Returns (rc, output bytes, how):
-    how is "exited", "timeout" (rc 124, its group stopped at the budget) or "stopped" (pargates itself was signalled)."""
+    """Run one gate in a session of its own, stdout and stderr merged in write order into a regular file. Returns
+    (rc, output bytes, how): how is "exited", "timeout" (rc 124, its group stopped at the budget) or "stopped"
+    (pargates itself was signalled)."""
     deadline = time.monotonic() + limit
-    with subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          start_new_session=True) as p:
-        out = None
-        while True:
-            if stop_signal is not None:     # before every read, the first included: a gate admitted as the signal landed stops now
-                return 128 + stop_signal, _stop_group(p, out), "stopped"
-            out, done = _read_for(p, out, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
-            if done:
-                return p.returncode, out, "exited"
-            if time.monotonic() >= deadline:
-                return 124, _stop_group(p, out), "timeout"
+    fd, capture = tempfile.mkstemp(prefix="ripwire-pargates-capture-", suffix=".out")
+    os.close(fd)
+    try:
+        with open(capture, "wb") as fh, \
+             subprocess.Popen(argv, cwd=root, env=env, stdout=fh, stderr=subprocess.STDOUT,
+                              start_new_session=True) as p:
+            while True:
+                if stop_signal is not None:     # before every wait, the first included: a gate admitted as the signal landed stops now
+                    _stop_group(p)
+                    return 128 + stop_signal, _capture_read(capture), "stopped"
+                if _wait_for(p, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic()))):
+                    return p.returncode, _capture_read(capture), "exited"
+                if time.monotonic() >= deadline:
+                    _stop_group(p)
+                    return 124, _capture_read(capture), "timeout"
+    finally:
+        try:
+            os.unlink(capture)
+        except OSError:
+            pass
 
 
 def run(g):

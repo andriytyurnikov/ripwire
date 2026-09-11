@@ -56,7 +56,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -462,13 +462,13 @@ else
     ok "G3 an ordinary query pays zero bytes for the caps that did not fire"
 fi
 g1="$( run "$TMP/c10" --for="$C_Q" )"; g2="$( run "$TMP/c10" --for="$C_Q" )"
-[ "$g1" = "$g2" ] && ok "G4 a disclosed bundle is byte-identical run to run" || no "G4 the disclosed bundle is not deterministic"
+if [ "$g1" = "$g2" ]; then ok "G4 a disclosed bundle is byte-identical run to run"; else no "G4 the disclosed bundle is not deterministic"; fi
 if command -v xmllint >/dev/null 2>&1; then
     xf=0
     for doc in "$aLate" "$bWide" "$cWide" "$dWide" "$eWide"; do
         printf '%s' "$doc" | xmllint --noout - >/dev/null 2>&1 || xf=1
     done
-    [ "$xf" -eq 0 ] && ok "G5 every disclosed document is well-formed XML" || no "G5 a disclosed document is ill-formed"
+    if [ "$xf" -eq 0 ]; then ok "G5 every disclosed document is well-formed XML"; else no "G5 a disclosed document is ill-formed"; fi
 else
     ok "G5 (skipped: no xmllint)"
 fi

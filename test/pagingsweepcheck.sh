@@ -100,7 +100,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 PREBIN="${RIPWIRE_PREBIN:-}"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -225,14 +225,14 @@ page_verb(){
     # (A) --limit=3 emits EXACTLY 3 rows. This is the bug: before the fix it emitted the full capped list.
     p0="$( run "$@" --limit=3 --offset=0 )"
     n0="$( printf '%s' "$p0" | grep -oE "$rowpat" | wc -l | tr -d ' ' )"
-    [ "$n0" = 3 ] && ok "$label: --limit=3 emits exactly 3 rows" || no "$label: --limit=3 emitted $n0 rows (expected 3) — accepted-and-ignored?"
+    if [ "$n0" = 3 ]; then ok "$label: --limit=3 emits exactly 3 rows"; else no "$label: --limit=3 emitted $n0 rows (expected 3) — accepted-and-ignored?"; fi
 
     # (B) the six-attribute vocabulary, spelled as --lint spells it, plus capped=.
-    printf '%s' "$p0" | grep -q 'has_more="1"'   && ok "$label: has_more=\"1\" on a partial page"     || no "$label: missing has_more=\"1\""
-    printf '%s' "$p0" | grep -q 'next_offset="3"' && ok "$label: next_offset=\"3\" advances the loop"  || no "$label: missing next_offset=\"3\""
-    printf '%s' "$p0" | grep -q 'offset="0" limit="3"' && ok "$label: offset=/limit= echoed"          || no "$label: missing offset=\"0\" limit=\"3\""
-    printf '%s' "$p0" | grep -q "$shownattr=\"3\"" && ok "$label: $shownattr=\"3\" == rows emitted"    || no "$label: missing $shownattr=\"3\""
-    printf '%s' "$p0" | grep -qE 'total="[0-9]+"' && ok "$label: total= present"                      || no "$label: missing total="
+    if printf '%s' "$p0" | grep -q 'has_more="1"'; then ok "$label: has_more=\"1\" on a partial page"; else no "$label: missing has_more=\"1\""; fi
+    if printf '%s' "$p0" | grep -q 'next_offset="3"'; then ok "$label: next_offset=\"3\" advances the loop"; else no "$label: missing next_offset=\"3\""; fi
+    if printf '%s' "$p0" | grep -q 'offset="0" limit="3"'; then ok "$label: offset=/limit= echoed"; else no "$label: missing offset=\"0\" limit=\"3\""; fi
+    if printf '%s' "$p0" | grep -q "$shownattr=\"3\""; then ok "$label: $shownattr=\"3\" == rows emitted"; else no "$label: missing $shownattr=\"3\""; fi
+    if printf '%s' "$p0" | grep -qE 'total="[0-9]+"'; then ok "$label: total= present"; else no "$label: missing total="; fi
 
     # (C) --offset ADVANCES: page[0:3] + page[3:6] == page[0:6], no row dropped or duplicated at the seam.
     p3="$( run "$@" --limit=3 --offset=3 )"
@@ -262,9 +262,9 @@ page_verb(){
     # defect the --match arms below are deliberately shaped to flap on); two runs restoring one already-
     # primed cache would agree by construction and could not observe it.
     local d1 d2; d1="$( cold "$@" --limit=3 --offset=3 )"; d2="$( cold "$@" --limit=3 --offset=3 )"
-    [ "$d1" = "$d2" ] && ok "$label: paged page deterministic" || no "$label: paged page NOT deterministic"
+    if [ "$d1" = "$d2" ]; then ok "$label: paged page deterministic"; else no "$label: paged page NOT deterministic"; fi
     if command -v xmllint >/dev/null 2>&1; then
-        printf '%s' "$p3" | xmllint --noout - 2>/dev/null && ok "$label: xml well-formed under paging" || no "$label: xml MALFORMED under paging"
+        if printf '%s' "$p3" | xmllint --noout - 2>/dev/null; then ok "$label: xml well-formed under paging"; else no "$label: xml MALFORMED under paging"; fi
     fi
 }
 
@@ -335,8 +335,8 @@ else
 fi
 DC_P0="$( run --dead-code --limit=2 --offset=0 )"
 DC_N0="$( printf '%s' "$DC_P0" | grep -oE '<d n=' | wc -l | tr -d ' ' )"
-[ "$DC_N0" = 2 ] && ok "dead-code: --limit=2 emits exactly 2 rows" || no "dead-code: --limit=2 emitted $DC_N0 rows (expected 2)"
-printf '%s' "$DC_P0" | grep -q "total=\"$DC_TOTAL\"" && ok "dead-code: total=\"$DC_TOTAL\" present" || no "dead-code: missing total=\"$DC_TOTAL\""
+if [ "$DC_N0" = 2 ]; then ok "dead-code: --limit=2 emits exactly 2 rows"; else no "dead-code: --limit=2 emitted $DC_N0 rows (expected 2)"; fi
+if printf '%s' "$DC_P0" | grep -q "total=\"$DC_TOTAL\""; then ok "dead-code: total=\"$DC_TOTAL\" present"; else no "dead-code: missing total=\"$DC_TOTAL\""; fi
 DC_END="$( run --dead-code --limit=2 --offset=999999 )"; DC_EC=$?
 DC_NEND="$( printf '%s' "$DC_END" | grep -oE '<d n=' | wc -l | tr -d ' ' )"
 if [ "$DC_EC" = 0 ] && [ "$DC_NEND" = 0 ] && printf '%s' "$DC_END" | grep -q 'has_more="0"'; then
@@ -368,7 +368,7 @@ disclose(){   # $1=label $2=root-element $3=row-pattern $4..=verb args
     else
         ok "$label: shown=\"$shown\" == the $rows rows that follow"
     fi
-    printf '%s' "$root" | grep -qE 'capped="[01]"' && ok "$label: capped=\"0|1\" present" || no "$label: no capped= flag"
+    if printf '%s' "$root" | grep -qE 'capped="[01]"'; then ok "$label: capped=\"0|1\" present"; else no "$label: no capped= flag"; fi
 }
 disclose "hotspots" "hotspots" '<f p='   --hotspots
 disclose "cochange" "cochange" '<pair '  --cochange

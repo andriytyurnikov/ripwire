@@ -32,7 +32,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 FIX="$ROOT/test/bm25fix"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -148,7 +148,7 @@ D2="$( RIPWIRE_BM25_K1=4.2 RIPWIRE_BM25_B=0.33 candidates 40 )"
 
 # ── (7) xml well-formed under a configured (k1,b) ───────────────────────────────────────────────────────
 if command -v xmllint >/dev/null 2>&1; then
-    printf '%s' "$D1" | xmllint --noout - 2>/dev/null && ok "(7) xml well-formed under a configured (k1,b)" || no "(7) xml malformed under a configured (k1,b)"
+    if printf '%s' "$D1" | xmllint --noout - 2>/dev/null; then ok "(7) xml well-formed under a configured (k1,b)"; else no "(7) xml malformed under a configured (k1,b)"; fi
 else
     printf '  SKIP  (7) xml well-formed (no xmllint)\n'
 fi
