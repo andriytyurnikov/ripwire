@@ -15,6 +15,19 @@ and cut answers now say so, instead of returning a quiet zero.
 **[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
 contributors named there; this release is largely theirs.
 
+**Want to help?** ripwire is six weeks old and there is a lot worth doing. Most of what we know needs doing is written
+up as a starter kit: the research is done, the file and line pointers are in the prompt, and the prompt writes a plan
+and stops, so we can agree the approach before you write any code.
+
+Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
+further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a helper
+quietly reinvented — and handing that back while the code is still being written. That is the most direct lever we
+know on whether an agent writes code you would keep, and it is the part we would most like help thinking about.
+
+Browse [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) — three are marked
+[good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue). Languages, performance,
+correctness, fuzzing, docs: pick what you enjoy.
+
 # Rip'n Fast. Fewer Tokens. Better Code.
 
 **The ripgrep of AI context. Give your coding agent a map before it reads the repo.**
