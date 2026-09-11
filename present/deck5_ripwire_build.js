@@ -605,7 +605,12 @@ function qdExamples(s, entries){
   // Three defects that were measured on llvm-project, then a bar per corpus for the one no standard corpus
   // showed, then — on the right, kept to ONE callout — why that corpus, with every item verified in the notes.
   const s = p.addSlide(); bg(s);
-  kicker(s, "// Rip'n Fast, at scale — llvm-project, 182,555 files, as the instrument", CYAN);
+  // The one kicker drawn larger than kicker() draws it: the file count is this slide's claim, so it reads first.
+  s.addText([
+    { text: "// Rip'n Fast, at scale — llvm-project, " },
+    { text: "182,555", options: { bold: true } },
+    { text: " files, as the instrument" },
+  ], { x: MX, y: 0.34, w: W-2*MX, h: 0.42, fontFace: MONO, fontSize: 18, color: CYAN, margin: 0 });
   title(s, "Three bugs found at llvm-project scale", { size: 32 });
   const LW = 7.55;
   const found = [
