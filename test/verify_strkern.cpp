@@ -74,6 +74,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>          // std::move — `keep` is the one place a first-wins message is retained
 #include <vector>
 
 #if !defined( RIPWIRE_TEST_ROOT )
@@ -437,8 +438,14 @@ const Sets& sets()
 
 struct Sweep
 {
-    std::size_t bufferCount = 0;
-    std::string classFail, foldFail, eqFail, findFail, tokFail;
+    std::size_t   bufferCount = 0;
+    // The generator's state after the whole sweep — a pure function of HOW MANY draws the loop made, and
+    // therefore the fingerprint of the corpus every arm saw. It is printed and gated (strkerncheck.sh)
+    // because the sweep contract is that the corpus does NOT move when an arm fails: a build whose
+    // kernels are all broken must still have swept exactly the buffers the green build swept, or the
+    // failure it reports describes a different experiment. Pure observation — no extra draw.
+    std::uint64_t rngState    = 0;
+    std::string   classFail, foldFail, eqFail, findFail, tokFail;
 };
 
 // ── one probe per kernel ──────────────────────────────────────────────────────────────────────────────
@@ -602,25 +609,40 @@ const Sweep& sweep()
             drawBuffer( gen, alpha, n, buf );
             ++r.bufferCount;
 
-            // Each probe is skipped once its arm has already failed — the arms report the FIRST
-            // divergence, and a kernel that is broken is broken 100k times over.
-            if( r.classFail.empty() ) { r.classFail = probeClassMasks( gen, buf, iter, alpha ); }
-            if( r.foldFail.empty() )  { r.foldFail  = probeFold( buf, iter, alpha ); }
-            if( r.eqFail.empty() && n > 0 ) { r.eqFail = probeFoldedEquals( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFindByte( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFind3( gen, buf, iter ); }
-            if( r.findFail.empty() )  { r.findFail  = probeFindByteset( gen, buf, iter ); }
-            if( r.tokFail.empty() )
+            // EVERY probe runs on EVERY iteration; only the MESSAGE is first-wins. The arms report the
+            // first divergence, but the draw order is the contract: probeClassMasks, probeFoldedEquals,
+            // probeFindByte, probeFind3 and probeFindByteset each pull from `gen`, so skipping one after
+            // another arm had already failed moved every later buffer and every later probe input off the
+            // corpus the green run swept. The failing report then described a DIFFERENT sweep from the one
+            // that passed, and a second, independent divergence could be shifted out of existence by the
+            // first. `keep` is the one place first-wins lives (CodeRabbit #127 / 3985249745).
+            //
+            // On a GREEN run this is byte-for-byte the old behaviour: no arm ever holds a message, so every
+            // probe ran under the old spelling too, in this same order, off this same stream.
+            const auto keep = []( std::string& slot, std::string&& msg )
+            {
+                if( slot.empty() ) { slot = std::move( msg ); }
+            };
+            keep( r.classFail, probeClassMasks( gen, buf, iter, alpha ) );
+            keep( r.foldFail,  probeFold( buf, iter, alpha ) );
+            if( n > 0 )                                  // a PRECONDITION of the probe, not a skip-on-failure
+            {
+                keep( r.eqFail, probeFoldedEquals( gen, buf, iter ) );
+            }
+            keep( r.findFail, probeFindByte( gen, buf, iter ) );
+            keep( r.findFail, probeFind3( gen, buf, iter ) );
+            keep( r.findFail, probeFindByteset( gen, buf, iter ) );
             {
                 const std::string d = tokenizerDiff( buf );
                 if( !d.empty() )
                 {
                     char msg[ 512 ];
                     std::snprintf( msg, sizeof( msg ), "iter=%d alpha=%d %s", iter, int( alpha ), d.c_str() );
-                    r.tokFail = msg;
+                    keep( r.tokFail, msg );
                 }
             }
         }
+        r.rngState = gen.state;
         return r;
     }();
     return s;
@@ -1078,6 +1100,11 @@ TEST_CASE( "strkern: the compiled path is the one this target claims" )
     // oracle to itself and prove nothing.
     std::printf( "strkern: path=%s block=%zu root=%s\n", sk::kPathName, sk::kBlockBytes, repoRoot() );
     std::printf( "strkern path: %s\n", sk::kPathName );
+    // The sweep's draw fingerprint, on its own grep-able line. strkerncheck.sh asserts the GREEN build and
+    // the -DSTRKERN_MUTATE=1 build print the SAME value: every probe runs on every iteration, so a failing
+    // arm cannot shorten the RNG stream and move the corpus out from under the arms that come after it.
+    std::printf( "strkern sweep-rng: %016llx buffers=%zu\n",
+                 static_cast< unsigned long long >( sweep().rngState ), sweep().bufferCount );
     CHECK( sk::kBlockBytes <= sk::kMaxBlockBytes );
 }
 

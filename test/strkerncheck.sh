@@ -188,6 +188,31 @@ else
     printf '  PASS  can-go-red: -DSTRKERN_MUTATE=1 fails %s of %s assertions as designed\n' "$ASSERTS_FAIL" "$ASSERTS"
 fi
 
+# ── 2b: THE FAILING SWEEP MUST HAVE SWEPT THE SAME CORPUS (CodeRabbit #127 / 3985249745) ──────────────
+# Arm 2's red run is only evidence about the SHIPPED kernels if the broken build walked the same buffers
+# the green build walked. The sweep's probes draw from one shared DeterministicRng, so a probe skipped
+# because its arm had already failed used to shorten the stream: every later buffer and every later probe
+# input moved, and a second, independent divergence could be shifted out of the run entirely — the failure
+# report then described a sweep nobody had ever seen green. verify_strkern.cpp now runs every probe
+# unconditionally and keeps only the FIRST message per arm, which makes this comparison the proof.
+#
+# The line is `strkern sweep-rng: <state> buffers=<n>`; the state is the generator's, after the loop, so
+# it is a pure function of how many draws were made. CAN GO RED: put the `if( r.<arm>Fail.empty() )`
+# guards back and the mutated build — whose arms all fail on iteration 0 — prints a different state.
+GREEN_RNG="$(  grep -m1 '^strkern sweep-rng: ' "$WORK/out_main.log"   2>/dev/null )"
+MUTATE_RNG="$( grep -m1 '^strkern sweep-rng: ' "$WORK/out_mutate.log" 2>/dev/null )"
+if [ -z "$GREEN_RNG" ] || [ -z "$MUTATE_RNG" ]; then
+    echo "  FAIL  sweep corpus: no 'strkern sweep-rng:' line (green='$GREEN_RNG' mutated='$MUTATE_RNG')"
+    fail=1
+elif [ "$GREEN_RNG" = "$MUTATE_RNG" ]; then
+    printf '  PASS  sweep corpus: the MUTATED build swept the same buffers as the green one (%s)\n' "$GREEN_RNG"
+else
+    echo "  FAIL  sweep corpus: a failing arm moved the RNG stream — the red run is not the green run's sweep"
+    echo "        green   $GREEN_RNG"
+    echo "        mutated $MUTATE_RNG"
+    fail=1
+fi
+
 # ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
 # The x86-64 floor is -march=x86-64-v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE; CMakeLists.txt sets it
 # unconditionally for x86-64 targets). Compiled without sanitizers — the ASan runtime for a cross-arch
