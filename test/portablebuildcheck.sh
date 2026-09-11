@@ -242,6 +242,49 @@ else
     printf '  SKIP  #2d-#2g host is %s: CMAKE_OSX_ARCHITECTURES is Darwin-only (a no-op here); native Linux targets are #2b/#2c and the ubuntu CI legs\n' "$( uname -s )"
 fi
 
+# ── #2h: the release leg that CROSS-BUILDS x86_64 must run where Rosetta 2 executes the v3 floor ────────
+# #2d-#2g make the macos-x64 binary an x86-64-v3 binary, and release.yml then EXECUTES it on its arm64 runner
+# under Rosetta 2: scripts/pgobuild.sh's nine instrumented training runs, the determinism diff, --version and
+# the smoke test. Sonoma's Rosetta cannot — macos-14 runners SIGILL a -march=x86-64-v3 slice at its first
+# vector instruction (test/strkerncheck.sh, PR #127 run 4, rc 132); Rosetta gained AVX2 in macOS 15. And a
+# newer runner raises the binary's minimum macOS with it: with no deployment target clang takes the lower of
+# the runner's macOS and the SDK default (14.x on macos-14, 15.2 on macos-15 with Xcode 16.2), so the
+# deployment target must be PINNED, a decision rather than a side effect of the runner. Text-level; any host.
+cat >"$TMP/relverdict.py" <<'PY'
+import re, sys
+text = open( sys.argv[ 1 ] ).read()
+matrix = text.split( 'include:', 1 )[ 1 ].split( '\n    runs-on:', 1 )[ 0 ] if 'include:' in text else ''
+cross = [ leg for leg in re.split( r'\n\s*- name: ', matrix ) if 'CMAKE_OSX_ARCHITECTURES=x86_64' in leg ]
+if len( cross ) != 1:
+    print( 'FAIL expected exactly one release leg with CMAKE_OSX_ARCHITECTURES=x86_64, found %d — nothing was checked' % len( cross ) )
+else:
+    leg  = cross[ 0 ]
+    name = leg.split( '\n', 1 )[ 0 ].strip()
+    m    = re.search( r'^\s*os:\s*macos-(\d+)\b', leg, re.M )
+    if not m:
+        print( 'FAIL leg %s names no macos-N runner' % name )
+    elif int( m.group( 1 ) ) < 15:
+        print( 'FAIL leg %s runs on macos-%s, whose Rosetta 2 cannot execute the x86-64-v3 binary the leg builds and then runs (PGO training, determinism diff, smoke)' % ( name, m.group( 1 ) ) )
+    else:
+        print( 'PASS leg %s runs on macos-%s, where Rosetta 2 executes AVX2' % ( name, m.group( 1 ) ) )
+    # three spellings of a pin: a -D on the leg; the leg's `deployment_target:` exported by a step; a job-level env
+    pinned = ( re.search( r'CMAKE_OSX_DEPLOYMENT_TARGET=\d', leg )
+               or ( re.search( r'^\s*deployment_target:\s*"?\d', leg, re.M ) and 'MACOSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}' in text )
+               or re.search( r'^\s*MACOSX_DEPLOYMENT_TARGET:\s*\S', text, re.M ) )
+    print( 'PASS leg %s pins its macOS deployment target' % name if pinned else
+           'FAIL leg %s does not pin its macOS deployment target — the runner\'s macOS, not a decision, sets the binary\'s minimum' % name )
+print( 'DONE' )
+PY
+relVerdict="$( python3 "$TMP/relverdict.py" "$ROOT/.github/workflows/release.yml" 2>&1 )"
+while IFS= read -r row; do
+    case "$row" in
+        PASS\ *) ok "#2h ${row#PASS }" ;;
+        FAIL\ *) no "#2h ${row#FAIL }" ;;
+    esac
+done <<<"$relVerdict"
+printf '%s\n' "$relVerdict" | grep -q '^DONE$' \
+    || no "#2h the release.yml verdict never finished — no evidence either way: $( printf '%s' "$relVerdict" | tail -3 )"
+
 # ── #3: RIPWIRE_NATIVE=ON stays opt-in and unaffected by the pretend-Linux hook ─────────────────────────
 nativeFlags="$( run_probe "$TMP/native" -DRIPWIRE_NATIVE=ON -DRIPWIRE_PRETEND_LINUX=ON )"
 if printf '%s' "$nativeFlags" | grep -q -- '-march=native'; then
