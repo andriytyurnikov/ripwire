@@ -325,7 +325,11 @@ function qdExamples(s, entries){
   s.addText([{ text: "rip", options: { color: CYAN } }, { text: "wire", options: { color: AMBER } }],
     { x: MX+0.4, y: 0.95, w: 6.0, h: 1.3, fontFace: MONO, fontSize: 72, bold: true, margin: 0 });
   s.addText("The ripgrep of AI context.", { x: MX+0.42, y: 2.25, w: 6.0, h: 0.55, fontFace: SANS, fontSize: 26, bold: true, color: TEXT, margin: 0 });
-  s.addImage({ path: require("path").join(__dirname, "assets", "paddle-out.png"), x: MX+0.36, y: 2.98, w: 4.6, h: 0.94 });
+  // altText is not decoration here: pptxgenjs writes the image's own path into <p:cNvPr descr="…">, and this file
+  // builds that path from __dirname, so the default ships whatever directory the deck was generated in inside the
+  // pptx — a home path that test/ripwirepubliccheck.sh arm 2b reads out of ppt/slides/*.xml and fails on.
+  s.addImage({ path: require("path").join(__dirname, "assets", "paddle-out.png"), altText: "paddle-out wave",
+               x: MX+0.36, y: 2.98, w: 4.6, h: 0.94 });
   s.addText("A zero-runtime-dependency C++23 CLI that maps any codebase into a ranked, deterministic call graph for coding agents — and puts a tripwire on every claim it emits.",
     { x: MX+6.7, y: 1.2, w: 5.0, h: 2.6, fontFace: SANS, fontSize: 18, color: MUTED, valign: "middle", margin: 0 });
 
