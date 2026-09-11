@@ -360,7 +360,18 @@ int main( int argc, char** argv )
 }
 """ )
 PYHARNESS
-    "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra \
+    # A Release build (RIPWIRE_LTO implied ON) leaves the grammar objects and libtree-sitter.a as LTO
+    # bitcode/GIMPLE, which a plain link cannot read on Linux ("plugin needed to handle lto object" /
+    # undefined tree_sitter_* references); macOS's linker reads them transparently, which is why this gate
+    # was green on every macOS leg and red on both ubuntu Release legs of PR #127's first run. Link plainly
+    # first (the plain build's objects), and retry the same command with -flto when that fails.
+    if "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra \
+        -I "$incdir" -I "$ROOT/third_party/deps/tree_sitter/lib/include" \
+        "$TMP/harness.cpp" $GRAMMAR_OBJS "$TSLIB" -o "$out" 2>"$log"; then
+        return 0
+    fi
+    cp "$log" "$log.plain"
+    "$CXX" "$CXXSTD" -O1 -g -Wall -Wextra -flto \
         -I "$incdir" -I "$ROOT/third_party/deps/tree_sitter/lib/include" \
         "$TMP/harness.cpp" $GRAMMAR_OBJS "$TSLIB" -o "$out" 2>"$log"
 }
