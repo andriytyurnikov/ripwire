@@ -410,9 +410,11 @@ def failure_report(out, logpath):
 #
 # A session of its own also takes the gate out of the terminal's foreground group, so Ctrl-C would no longer reach it at
 # all. pargates therefore catches SIGINT, SIGTERM and SIGHUP -- unless it inherited one ignored -- stops every running
-# gate the same way within STOP_POLL_SEC, starts none after, and exits 128+signal with no summary. A second signal
-# changes nothing: the stop is bounded by 2 x (STOP_POLL_SEC + KILL_GRACE_SEC). A SIGKILL to pargates itself reaches no
-# gate. test/pargatescheck.sh runs both paths on a probe gate, beside mutants of each that must go red.
+# gate the same way within STOP_POLL_SEC, starts none after, and exits 128+signal with no summary. A gate admitted in
+# the instant the signal lands, between run()'s check and its spawn, is stopped before its first read (CodeRabbit on
+# #129); no check can close that window itself against an asynchronous signal. A second signal changes nothing: the
+# stop is bounded by 2 x (STOP_POLL_SEC + KILL_GRACE_SEC). A SIGKILL to pargates itself reaches no gate.
+# test/pargatescheck.sh runs these paths on probe gates, beside mutants of each that must go red.
 KILL_GRACE_SEC = 10
 STOP_POLL_SEC = 0.5
 stop_signal = None      # the first SIGINT/SIGTERM/SIGHUP pargates received; set only by _on_stop_signal
@@ -489,12 +491,13 @@ def run_gate(argv, env, limit):
     deadline = time.monotonic() + limit
     with subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           start_new_session=True) as p:
+        out = None
         while True:
-            out, done = _read_for(p, None, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
+            if stop_signal is not None:     # before every read, the first included: a gate admitted as the signal landed stops now
+                return 128 + stop_signal, _stop_group(p, out), "stopped"
+            out, done = _read_for(p, out, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
             if done:
                 return p.returncode, out, "exited"
-            if stop_signal is not None:
-                return 128 + stop_signal, _stop_group(p, out), "stopped"
             if time.monotonic() >= deadline:
                 return 124, _stop_group(p, out), "timeout"
 
