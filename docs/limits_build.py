@@ -213,6 +213,13 @@ def render(caps, disc, classes):
         for (n, v, rel, anchor, note), k in pinned(cells):
             w('| `%s`%s | `%s` | `%s` | %s | %s |' % (n, times(k), v, rel, anchor, note))
         w('')
+    # The per-file tables get a `##` of their own. Without one, every `### `src/…`` heading was a child of the
+    # last `##` written above it — the parameter section — so GitHub's outline and --grep's enclosing-section
+    # attribution filed every cap in this document under "Not caps" (limitstablecheck arm K). It is written
+    # unconditionally: with no parameters, the tables would fall under the refuted section instead.
+    w('## Caps, by file\n')
+    w('One table for each of the %d files that declare a cap — the %d caps counted above, and no parameter.\n'
+      % (len({c[2] for c in caps}), len(caps)))
     for rel in sorted({c[2] for c in caps}):
         rows = [c for c in caps if c[2] == rel]
         d = ', '.join('`%s_capped`' % a for a in sorted(disc.get(rel, []))) or '**none**'
