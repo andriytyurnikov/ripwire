@@ -24,6 +24,47 @@ resolution (@PollyBot13), `CLAUDE_CONFIG_DIR` support (@s0undt3ch) and the Ruby 
 (@andriytyurnikov). Outside reports caught the tool being confidently wrong (@YogevKr, @mariadb-KyleHutchinson,
 @snrmwg) and asked how to remove it (@luisdavim). Each is named below, beside the entry their work produced.
 
+### Highlights
+
+**Kotlin.** `.kt` files are indexed: classes, objects and companion objects, functions, calls, imports and
+inheritance. Calls cross the Kotlin/Java boundary in both directions, and a reference reaches the other JVM language
+only when its own defines no candidate of that name, so adding `.kt` files never moves a Java-only edge. nowinandroid
+indexes to 1,850 symbols across 384 files, ktor to 19,906 across 2,527, and retrofit's `Response.java:body` keeps its
+279 callers (@xCatG, [#126](https://github.com/redhat-et/ripwire/pull/126)).
+
+**Dart.** The 23rd grammar. On flutter/packages (3,706 `.dart` files) it indexes 71,726 Dart symbols (@calvinchengx,
+[#75](https://github.com/redhat-et/ripwire/pull/75), landed in
+[#106](https://github.com/redhat-et/ripwire/pull/106)).
+
+**Ruby: the dependencies a Rails application actually has.** A Zeitwerk application spells almost none of its
+dependencies with `require`. 0.6.0 reads the ones it does use: superclass constants, `include`/`extend`/`prepend`,
+`autoload`, and constant receivers such as `User.find` — the reference that makes the autoloader load the file, where
+nothing else in the file says so (@andriytyurnikov, [#57](https://github.com/redhat-et/ripwire/pull/57),
+[#65](https://github.com/redhat-et/ripwire/pull/65), and [#78](https://github.com/redhat-et/ripwire/pull/78) landed in
+[#91](https://github.com/redhat-et/ripwire/pull/91)).
+
+**Faster where it hurt.** Warm `--grep` on llvm-project falls from 159.7 s to 9.2 s, and the warm default map from
+248 s to 10 s ([#83](https://github.com/redhat-et/ripwire/pull/83)). The cold parse on that tree drops from 194.1 s to
+155.6 s of CPU ([#127](https://github.com/redhat-et/ripwire/pull/127),
+[#130](https://github.com/redhat-et/ripwire/pull/130)), warm `--pack-task` on go from 8.13 s to 5.88 s, and a repeated
+`--for` on llvm-project from 274 s to 26 s once the cache stopped evicting its own working root
+([#127](https://github.com/redhat-et/ripwire/pull/127)).
+
+**Answers that say where they stop.** A `std::`-qualified call no longer binds an in-repo definition, so memgraph's
+`SafeString::move` goes from 2,107 false callers to 3 ([#134](https://github.com/redhat-et/ripwire/pull/134)). A call
+the resolver declines to guess is counted and named instead of silently dropped: 65,516 of memgraph's 295,086 call
+references ([#136](https://github.com/redhat-et/ripwire/pull/136)). A parse derailed by a member macro carries
+`extent_suspect=` and leaves the `--hotspots` ranking, and a budgeted `--for` stops shipping past its allowance
+without saying so ([#135](https://github.com/redhat-et/ripwire/pull/135)). And YAML parses the same on aarch64 Linux
+as everywhere else ([#140](https://github.com/redhat-et/ripwire/pull/140)).
+
+**Agent integrations.** Initial Hermes and OpenClaw support, activated by `skills/install.sh --hermes` or `--openclaw`,
+with `ripwire wrap` printing the MCP setup ([#51](https://github.com/redhat-et/ripwire/pull/51),
+[#46](https://github.com/redhat-et/ripwire/pull/46)). `CLAUDE_CONFIG_DIR` is respected wherever ripwire looks for
+Claude Code's configuration (@s0undt3ch, [#101](https://github.com/redhat-et/ripwire/pull/101)). `INSTALL.md` lists
+every install route and how to remove all of it ([#121](https://github.com/redhat-et/ripwire/pull/121), asked for in
+[#111](https://github.com/redhat-et/ripwire/issues/111)).
+
 ### Upgrade notes
 
 - **Prebuilt x86-64 binaries now need an x86-64-v3 CPU, on Linux and on macOS.** x86-64 builds target
