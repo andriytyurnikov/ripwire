@@ -125,6 +125,58 @@ grep -q 'nearlimit\.md' "$TMP/map.err" \
     && no "unexpected stderr on the committed fixture: $( head -2 "$TMP/map.err" )" \
     || ok "clean stderr on the committed fixture (no note pollutes repo-wide runs)"
 
+# ── KNOWN GAP (help wanted: prompts/help-wanted/nesting-refusals-visible.md): the markdown twin of yamllangcheck's block ──
+# The deep-quote guard above refuses deepquote.md before the parse, and says so ONLY as one stderr line on a COLD
+# run. Measured on main:
+#   - --skipped never rows the file;
+#   - a warm run stat-hits its cache record and prints nothing;
+#   - --match parses it anyway (hits inside the refused file).
+# The KNOWN GAP arms assert TODAY's behaviour and PASS now; flipping them is the acceptance test. A FAIL on a
+# KNOWN GAP arm means the gap moved: rewrite the arm to assert the fixed behaviour, never delete it. Its own
+# generated corpus, never the committed fixture (the committed dir must stay note-free, see above).
+KGM="$TMP/kgmd"; mkdir -p "$KGM"
+cp "$DEEPFIX/deepquote.md" "$KGM/deepquote.md"
+printf '# Kg Sibling Heading\n\nzqkgsibling prose\n' > "$KGM/sibling.md"
+$BIN "$KGM" --cache="$TMP/kgmd.cache" >"$TMP/kgm_cold.xml" 2>"$TMP/kgm_cold.err"; KGM_COLD_RC=$?
+$BIN "$KGM" --cache="$TMP/kgmd.cache" >"$TMP/kgm_warm.xml" 2>"$TMP/kgm_warm.err"; KGM_WARM_RC=$?
+KGM_LIVE=0
+if [ "$KGM_COLD_RC" -eq 0 ] && [ "$KGM_WARM_RC" -eq 0 ] && grep -q 'deepquote\.md.*nesting' "$TMP/kgm_cold.err" \
+   && grep -qF 'n="Kg Sibling Heading"' "$TMP/kgm_warm.xml" && cmp -s "$TMP/kgm_cold.xml" "$TMP/kgm_warm.xml"; then
+    ok "(kg-md) presence: the cold run refuses deepquote.md on stderr; the warm run serves the same map from the cache, sibling indexed"
+    KGM_LIVE=1
+else
+    no "(kg-md) presence: expected rc=0 twice, a cold refusal note for deepquote.md and a warm map identical to the cold one (cold rc=$KGM_COLD_RC, warm rc=$KGM_WARM_RC) — the arms below would be vacuous: $( head -2 "$TMP/kgm_cold.err" )"
+fi
+if [ "$KGM_LIVE" -eq 1 ]; then
+    grep -q 'deepquote\.md' "$TMP/kgm_warm.err" \
+        && no "KNOWN GAP MOVED (prompts/help-wanted/nesting-refusals-visible.md): the warm run now names deepquote.md on stderr — rewrite this arm to assert the warm refusal is visible" \
+        || ok "KNOWN GAP (help wanted: prompts/help-wanted/nesting-refusals-visible.md): a WARM run says nothing about the refused deepquote.md — flipping this is the acceptance test"
+    for mode in cold warm; do
+        if [ "$mode" = cold ]; then
+            $BIN "$KGM" --no-cache --skipped >"$TMP/kgm_sk_$mode.xml" 2>/dev/null; SK_RC=$?
+        else
+            $BIN "$KGM" --cache="$TMP/kgmd.cache" --skipped >"$TMP/kgm_sk_$mode.xml" 2>/dev/null; SK_RC=$?
+        fi
+        if [ "$SK_RC" -ne 0 ] || ! grep -q '<skipped indexed="2"' "$TMP/kgm_sk_$mode.xml"; then
+            no "(kg-md) $mode --skipped: exit $SK_RC or no <skipped indexed=\"2\"> report — the arm cannot observe the gap"
+        elif grep -qE '<f p="[^"]*deepquote\.md"' "$TMP/kgm_sk_$mode.xml"; then
+            no "KNOWN GAP MOVED (prompts/help-wanted/nesting-refusals-visible.md): $mode --skipped now rows deepquote.md — rewrite this arm to assert the row, its why=, and its legend clause"
+        else
+            ok "KNOWN GAP (help wanted: prompts/help-wanted/nesting-refusals-visible.md): $mode --skipped has no row for the refused deepquote.md — flipping this is the acceptance test"
+        fi
+    done
+fi
+$BIN "$KGM" --no-cache --match='(block_quote)' >"$TMP/kgm_match.xml" 2>"$TMP/kgm_match.err"; KGM_M_RC=$?
+if [ "$KGM_M_RC" -ne 0 ]; then
+    no "(kg-md) --match over the refused deepquote.md exited $KGM_M_RC — a parse the guard exists to prevent went wrong (the vendored scanner clamp is --match's only layer): $( head -2 "$TMP/kgm_match.err" )"
+elif ! grep -q 'deepquote\.md.*nesting' "$TMP/kgm_match.err"; then
+    no "(kg-md) --match: the same run's ingest did not refuse deepquote.md — the arm cannot show the two paths disagree"
+elif grep -q '<m p="deepquote\.md:' "$TMP/kgm_match.xml"; then
+    ok "KNOWN GAP (help wanted: prompts/help-wanted/nesting-refusals-visible.md): --match returns hits INSIDE deepquote.md in the same run whose ingest refused it — flipping this is the acceptance test"
+else
+    no "KNOWN GAP MOVED (prompts/help-wanted/nesting-refusals-visible.md): --match no longer returns hits inside the refused deepquote.md — rewrite this arm to assert the refusal and its disclosure"
+fi
+
 sec(){ # sec NAME — the map carries a t="sec" symbol with exactly this name
     if grep -qF "<s t=\"sec\" n=\"$1\"" "$MAP"; then ok "section symbol present: $1"; else no "section symbol MISSING: $1"; fi
 }
