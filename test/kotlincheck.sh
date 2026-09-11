@@ -579,6 +579,55 @@ else
     no "mutation 12: OverCeiling.kt did not lose exactly one level — the arm would have been inert"
 fi
 
+# ESCAPES: the prescan must count what the VENDORED scanner holds, escape by escape, not what Kotlin means. Two readings of
+# scan_string_content's `\$` branch, each pinned from the side that would break it. (a) `"\$${ … }"` is ONE open string at a
+# time: after `\$` and a byte that is not a quote the loop falls through to its bottom advance, so the scanner consumes three
+# bytes and `{ … }` is string content — a prescan resuming at the second `$` would count 200 levels and refuse a file the
+# scanner parses one string deep. (b) `"""\$"${ … }"""` is one string PER LEVEL: vendored patch 002 leaves the quote after
+# `\$` to the triple-quote close test, and the prescan used to close the string at that quote instead (upstream's unpatched
+# reading), fall back into code and never count past one — so 129 levels, plain or `$$`-prefixed, went to the parse. The
+# ceiling is pinned inclusive here too (128 levels indexed). Each file stands alone in its own tree, so the counts above
+# stay exactly the section's.
+NESC="$TMP/nestesc"; mkdir -p "$NESC"
+python3 - "$NESC" <<'PYEOF'
+import os, sys
+root, B = sys.argv[1], '\\'
+def write(name, fn, depth, opener, closer, leaf):   # `depth` levels as the scanner reads them: opener^(depth-1) leaf closer^(depth-1)
+    with open(os.path.join(root, name), "w") as f:
+        f.write("package nestesc\n\nfun %s(): Int = 1\n\nval v_%s = %s\n" % (fn, fn, opener * (depth - 1) + leaf + closer * (depth - 1)))
+write("TripleEscape.kt",       "tripleEscapeFn",   129, '"""' + B + '$"${',    '}"""', '"""leaf"""')
+write("TripleEscapeAt.kt",     "tripleEscapeAtFn", 128, '"""' + B + '$"${',    '}"""', '"""leaf"""')
+write("DollarTripleEscape.kt", "dollarTripleFn",   129, '$$"""' + B + '$"$${', '}"""', '"""leaf"""')
+write("EscapedDollarRun.kt",   "escapedDollarFn",  200, '"' + B + '$${',       '}"',   '"leaf"')
+PYEOF
+[ "$( grep -oF '"""\$"${' "$NESC/TripleEscape.kt" | wc -l | tr -d ' ' )" = 128 ] && [ "$( grep -oF '"""\$"${' "$NESC/TripleEscapeAt.kt" | wc -l | tr -d ' ' )" = 127 ] \
+    && [ "$( grep -oF '$$"""\$"$${' "$NESC/DollarTripleEscape.kt" | wc -l | tr -d ' ' )" = 128 ] && [ "$( grep -oF '"\$${' "$NESC/EscapedDollarRun.kt" | wc -l | tr -d ' ' )" = 199 ] \
+    && ok "escapes presence: TripleEscape.kt 129 levels, TripleEscapeAt.kt 128, DollarTripleEscape.kt 129, EscapedDollarRun.kt 200" \
+    || no "escapes presence: the escape fixtures do not spell the depths the arms below assert"
+grep -qF 'RIPWIRE_VENDOR_PATCH(kotlin/002-triple-dollar-escape)' "$ROOT/third_party/deps/kotlin/src/scanner.c" \
+    && ok "escapes presence: the vendored scanner still carries patch 002, the scanner reading (b) mirrors" \
+    || no "escapes presence: patch 002 is gone from the vendored scanner — reading (b) no longer describes it; re-derive the arm"
+"$BIN" "$NESC" --no-cache >"$TMP/nestesc.xml" 2>/dev/null; NESC_RC=$?
+SKE="$( "$BIN" "$NESC" --skipped --no-cache 2>/dev/null )"; SKE_RC=$?
+if [ "$NESC_RC" -eq 0 ] && [ "$SKE_RC" -eq 0 ] && echo "$SKE" | grep -q '<skipped '; then
+    echo "$SKE" | grep -q '<f p="TripleEscape.kt" why="nest-refused"' && echo "$SKE" | grep -q '<f p="DollarTripleEscape.kt" why="nest-refused"' \
+        && ok "escapes (b): 129 levels of \"\"\"\\\$\"\${ … }\"\"\" are refused, plain and \$\$-prefixed — the prescan follows patch 002's triple-quote close" \
+        || no "escapes (b): TripleEscape.kt / DollarTripleEscape.kt hold 129 open strings in the scanner but were not refused: $( echo "$SKE" | grep -o '<f p="[^"]*" why="nest-refused"' | tr '\n' ' ' )"
+    grep -q 'n="tripleEscapeFn"' "$TMP/nestesc.xml" || grep -q 'n="dollarTripleFn"' "$TMP/nestesc.xml" \
+        && no "escapes (b): a 129-level triple-quoted escape file contributed symbols — it reached the parse" \
+        || ok "escapes (b): neither 129-level triple-quoted escape file contributed a symbol"
+    grep -q 'n="tripleEscapeAtFn"' "$TMP/nestesc.xml" && ! echo "$SKE" | grep -q 'p="TripleEscapeAt.kt" why="nest-refused"' \
+        && ok "escapes (b): 128 levels of the same shape are indexed — the ceiling stays inclusive" \
+        || no "escapes (b): TripleEscapeAt.kt (128 levels) was refused — the prescan over-counts the triple-quoted escape"
+    grep -q 'n="escapedDollarFn"' "$TMP/nestesc.xml" && ! echo "$SKE" | grep -q 'p="EscapedDollarRun.kt" why="nest-refused"' \
+        && ok "escapes (a): 200 levels of \"\\\$\${ … }\" stay indexed — the scanner reads \\\$\$ as three bytes and holds one string" \
+        || no "escapes (a): EscapedDollarRun.kt was refused — the prescan counted Kotlin's nesting, not the scanner's"
+    echo "$SKE" | grep -q 'nest_refused="2"' && ok 'escapes: nest_refused="2" over the escape tree' \
+        || no "escapes: expected nest_refused=\"2\": $( echo "$SKE" | grep -o '<skipped [^>]*>' )"
+else
+    no "escapes: the map (rc=$NESC_RC) or --skipped (rc=$SKE_RC) over the escape tree failed — its arms were NOT evaluated"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════
 echo
 echo "=== 13. BODYLESS KOTLIN TYPES ARE DEFINITIONS, and the decl/def collapse never crosses the Kotlin/Java line ==="
