@@ -39,21 +39,27 @@ command -v cmake >/dev/null 2>&1 || { echo "no cmake on PATH"; exit 2; }
 [ -f "$MODULE" ] || { echo "missing $MODULE"; exit 2; }
 
 # Build a tiny standalone project dir that only includes PortableFlags.cmake and prints its result.
+# $2, when given, overrides CMAKE_SYSTEM_PROCESSOR before the include — the only way this
+# Apple-Silicon machine can drive the x86-64 branch of the real module (LANGUAGES NONE means no
+# toolchain probe runs afterwards to overwrite it).
 mk_probe(){
     local dir="$1"
+    local proc="${2:-}"
     mkdir -p "$dir/src"
-    cat >"$dir/CMakeLists.txt" <<EOF
-cmake_minimum_required(VERSION 3.24)
-project(portableprobe LANGUAGES NONE)
-include("$MODULE")
-EOF
+    {
+        printf 'cmake_minimum_required(VERSION 3.24)\n'
+        printf 'project(portableprobe LANGUAGES NONE)\n'
+        [ -n "$proc" ] && printf 'set(CMAKE_SYSTEM_PROCESSOR %s)\n' "$proc"
+        printf 'include("%s")\n' "$MODULE"
+    } >"$dir/CMakeLists.txt"
 }
 
 # Configure the probe with the given extra -D args; echoes the RIPWIRE_ARCH_FLAGS line (without the
 # 'RIPWIRE_ARCH_FLAGS:' prefix), or nothing if the configure failed outright.
 run_probe(){
     local dir="$1"; shift
-    mk_probe "$dir"
+    local proc="${PROBE_PROC:-}"
+    mk_probe "$dir" "$proc"
     local log="$dir/configure.log"
     if ! cmake -S "$dir" -B "$dir/build" "$@" >"$log" 2>&1; then
         printf 'CONFIGURE_FAILED\n'
@@ -91,6 +97,37 @@ elif printf '%s' "$linuxFlags" | grep -q -- '-O2' && printf '%s' "$linuxFlags" |
     ok "RIPWIRE_PRETEND_LINUX=ON configures clean with NO Apple/host-specific flag: '$linuxFlags'"
 else
     no "RIPWIRE_PRETEND_LINUX=ON flags missing expected portable baseline: '$linuxFlags'"
+fi
+
+# ── #2b: the x86-64 FLOOR — an x86-64 target MUST carry -march=x86-64-v3 ──────────────────────────────
+# Not cosmetic: src/infra/strkern.h compiles its AVX2 mirror behind __AVX2__, which only this flag defines
+# on a portable build. Drop the flag and every x86-64 binary silently falls back to the scalar twins —
+# correct output, several times the CPU on every text-scanning verb, and nothing else in the tree notices.
+# The owner's floor is v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE, the RHEL 10 level), never v4/AVX-512.
+x86Flags="$( PROBE_PROC=x86_64 run_probe "$TMP/x86" -DRIPWIRE_PRETEND_LINUX=ON )"
+if [ "$x86Flags" = "CONFIGURE_FAILED" ]; then
+    no "#2b x86-64 probe configure failed outright: $(tail -5 "$TMP/x86/configure.log" 2>/dev/null)"
+elif ! printf '%s' "$x86Flags" | grep -q -- '-march=x86-64-v3'; then
+    no "#2b an x86-64 target did NOT get the -march=x86-64-v3 floor (strkern.h's AVX2 path would not compile): '$x86Flags'"
+elif printf '%s' "$x86Flags" | grep -qE -- '-march=x86-64-v4|-mavx512'; then
+    no "#2b x86-64 floor was raised to v4/AVX-512, which the owner decision excludes: '$x86Flags'"
+elif printf '%s' "$x86Flags" | grep -q -- '-mcpu=apple-m1'; then
+    no "#2b x86-64 target also emits -mcpu=apple-m1: '$x86Flags'"
+else
+    ok "#2b x86-64 target carries the v3 floor and nothing Apple-specific: '$x86Flags'"
+fi
+
+# ── #2c: the floor is x86-ONLY — an aarch64 Linux target must not be handed an x86 -march ─────────────
+armFlags="$( PROBE_PROC=aarch64 run_probe "$TMP/arm" -DRIPWIRE_PRETEND_LINUX=ON )"
+# The sentinel FIRST (CodeRabbit #127 / 3985249736): CONFIGURE_FAILED contains no '-march=x86' either, so
+# without this arm a broken aarch64-specific CMake path reported PASS on this portability gate — the exact
+# shape #2b above already guards against, missing on the one arm whose expectation is an ABSENCE.
+if [ "$armFlags" = "CONFIGURE_FAILED" ]; then
+    no "#2c aarch64 probe configure failed outright: $(tail -5 "$TMP/arm/configure.log" 2>/dev/null)"
+elif printf '%s' "$armFlags" | grep -q -- '-march=x86'; then
+    no "#2c an aarch64 target was handed an x86 architecture flag: '$armFlags'"
+else
+    ok "#2c aarch64 target stays generic (NEON is baseline there, no flag needed): '$armFlags'"
 fi
 
 # ── #3: RIPWIRE_NATIVE=ON stays opt-in and unaffected by the pretend-Linux hook ─────────────────────────

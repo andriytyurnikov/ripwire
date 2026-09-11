@@ -367,7 +367,8 @@ std::optional<int> runChangeViews( const MainDispatch& d )
                                           "a selector fact, not an empty diff)\n", std::string_view( cfg.situFiles.data(), cfg.situFiles.size() ), elsewhere.c_str() );
                     continue;
                 }
-                rw::writeSituation( stdout, ws[r].arg, ing, g, perRootChanged[r], r );
+                rw::writeSituation( stdout, ws[r].arg, ing, g, perRootChanged[r], r,
+                                    rw::SituPageArgs{ cfg.pageLimit, cfg.pageOffset, cfg.situFiles } );
             }
             return 0;
         }
@@ -391,7 +392,8 @@ std::optional<int> runChangeViews( const MainDispatch& d )
             if( !gitChangedFiles( root, ing, changed ) )
             { rw::emitRaw( stderr, "ripwire --situ: no files given and no git diff (use --situ=F1,F2)\n" ); return 1; }
         }
-        rw::writeSituation( stdout, root, ing, g, changed );
+        rw::writeSituation( stdout, root, ing, g, changed, UINT32_MAX,
+                            rw::SituPageArgs{ cfg.pageLimit, cfg.pageOffset, cfg.situFiles } );
         return 0;
     }
 
@@ -1384,7 +1386,7 @@ int runFlip( const MainDispatch& d )
         return 1;
     }
 
-    const flipimpact::FlipResult result = flipimpact::computeFlip( d.ing, d.g, root, d.cfg.excludes, d.cfg.flipGate );
+    const flipimpact::FlipResult result = flipimpact::computeFlip( d.ing, d.g, root, d.cfg.excludes, d.cfg.flipGate, d.cfg.pageLimit );
     if( !result.ok )
     {
         std::string msg = "ripwire: --flip: no gate named '" + std::string( d.cfg.flipGate ) + "' in " + root;
@@ -1396,12 +1398,21 @@ int runFlip( const MainDispatch& d )
                 msg += ( i ? ", '" : " '" ) + result.nearMisses[i] + "'";
             }
             msg += "?)";
+            // C1 F-07: the suggestion list is capped, and a cap nobody is told about on the one output a
+            // lost caller reads is the same silent cut this round closed in the report itself.
+            if( result.nearMissTotal > result.nearMisses.size() )
+            {
+                msg += " (showing " + std::to_string( result.nearMisses.size() ) + " of "
+                     + std::to_string( result.nearMissTotal ) + " candidates — --limit=N raises it)";
+            }
         }
         rw::emitTo( stderr, "{}\n", msg.c_str() );
         rw::emitTo( stderr, "ripwire: run `ripwire {} --flags` for the gate table\n", root.c_str() );
         return 1;
     }
-    flipimpact::writeFlip( stdout, result, d.ing, root, d.cfg.detail ? SIZE_MAX : flipimpact::kMaxFlipRows );
+    flipimpact::writeFlip( stdout, result, d.ing, root,
+                           d.cfg.detail ? SIZE_MAX : std::size_t( rw::effectiveRowCap( d.cfg.pageLimit, int( flipimpact::kMaxFlipRows ) ) ),
+                           d.cfg.pageOffset );
     return 0;
 }
 
@@ -1584,7 +1595,11 @@ std::optional<int> runCrossRef( const MainDispatch& d )
                                   "list them, e.g. --flags=RIPWIRE)\n", std::string_view( cfg.darkFlagsFilter.data(), cfg.darkFlagsFilter.size() ) );
             return 1;
         }
-        darkflags::writeFlags( stdout, result, cfg.detail ? SIZE_MAX : darkflags::kMaxSitesShown );
+        // C1 F-07: the per-gate <read> cap is a raisable DEFAULT now — --limit=N beats it through the
+        // tool-wide effectiveRowCap rule, --detail still lifts it outright, and --offset=M pages it.
+        darkflags::writeFlags( stdout, result,
+                               cfg.detail ? SIZE_MAX : std::size_t( rw::effectiveRowCap( cfg.pageLimit, int( darkflags::kMaxSitesShown ) ) ),
+                               cfg.pageOffset );
         return 0;
     }
 

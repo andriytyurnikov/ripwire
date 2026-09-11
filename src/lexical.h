@@ -9,12 +9,14 @@
 // and BODY text, so a query matches code by what it DOES, not just what it's named. Deterministic.
 
 #include "model.h"
+#include "docparse.h"            // detail::readWholeFile — THE canonical whole-file byte read (P2-4); never re-rolled
 #include "lexindex.h"            // B0: the ONE subtoken state machine + docCommentStart + persisted-stats types
 #include "sarif.h"               // rootRelativeUri — the ONE root-relative path view, included directly
                                  // rather than reached transitively (recall.h gets it via serialize.h)
                                  // because pass 1.5 SCORES the string recall.h PRINTS. A pure path helper
                                  // over model.h despite the header's name: no cycle.
 #include "infra/profileScope.h"  // PROFILE_SCOPE self-profiling — gated by PROFILE_ENABLED (off unless -DRIPWIRE_PROFILE=ON)
+#include "infra/strkern.h"      // Byteset256 — the head set below is that type, not a second bitmap
 #include "infra/sortutil.h"      // deterministic sanitizer-clean score sorting for adaptive cuts
 #include "infra/charconvcompat.h" // rw::parseFloating — envKnob's full-token finite parse of a RIPWIRE_* knob
 
@@ -26,7 +28,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <functional>
 #include <optional>
 #include <sstream>
@@ -209,6 +210,124 @@ inline double bm25ImpactBound( double idf, double T, const Bm25Params& p ) noexc
 // defined with the LB-2 anchor-plausibility machinery below; the LB-3 variant guard reuses the bound
 inline std::uint32_t routeCarrierCap( const IngestResult& ing ) noexcept;
 
+// ── P2-3: the query-side head mask + length buckets (PLAN_FULL_AUDIT_2026-09-10) ─────────────────────
+//
+// The BM25 pass-2 scan is the hottest loop in the tool — 81.7% of `--pack-task`'s busy time — because for
+// EVERY subtoken of the corpus it walked the WHOLE query match table, string-comparing as it went. That
+// inner loop is linear in the table, and the table grows with the question (and doubles again when
+// RIPWIRE_QSTEM arms its stem variants), so a longer query cost quadratically more for no retrieval gain.
+//
+// Almost every one of those comparisons was decidable from two bytes of metadata. A corpus token can only
+// match a table row of the SAME LENGTH whose FIRST byte agrees. Both facts are precomputed once per query:
+//
+//   headBits   a 256-bit set of the table's (already lowercased) first bytes. A corpus token whose head is
+//              not in the set touches NO string at all — one shift and one test, and the overwhelmingly
+//              common answer is "no".
+//   bucketIdx  the rows grouped by token length, CSR-style (bucketOff[len] .. bucketOff[len+1]), in
+//              ascending row order. A surviving token iterates only the rows that CAN match it.
+//
+// Byte-identity is structural, not measured-and-hoped. The surviving predicate at the call site is
+// character for character the one that was there before (the memcmp fast path AND the
+// lexTokenEqualsLowered acronym fallback, in that order), the rows are visited in ascending m exactly as
+// the linear scan visited them, and the table's strings are distinct so at most one row can ever match.
+// What changed is only WHICH rows are looked at, and every skipped row is one the old predicate would
+// have rejected on its length or its head.
+//
+// kMaxLen is a BUCKETING BOUND, never an answer bound: a row longer than it goes into `longRows`, which is
+// scanned in full with the length test intact. A query subtoken of 65+ bytes is a pathology, not a query,
+// and this keeps it correct rather than special-casing it out.
+struct LexHeadIndex
+{
+    static constexpr std::size_t kMaxLen = 64;
+    static constexpr std::size_t kNoRow  = ~std::size_t( 0 );
+
+    strkern::Byteset256        heads;        // the 256-bit head set — the SAME byte-set type strkern.h
+                                             // already owns, not a second hand-rolled bitmap beside it
+    std::vector<std::uint32_t> bucketOff;    // kMaxLen + 2 entries; CSR offsets by token length
+    std::vector<std::uint32_t> bucketIdx;
+    std::vector<std::uint32_t> longRows;
+
+    // The match-table row this corpus token belongs to, or kNoRow. `tokOf( m )` returns row m's
+    // all-lowercase token; the caller owns the table's storage.
+    //
+    // THE PREDICATE IS THE ORIGINAL ONE, character for character — length, then head, then the memcmp
+    // fast path, then the lexTokenEqualsLowered acronym fallback, in that order. That is what makes the
+    // whole P2-3 change byte-identical by construction rather than by hope: rows are still visited in
+    // ascending m, at most one row can match (the table's strings are distinct), and every row this
+    // skips is one the old linear scan would have rejected on its length or its head alone.
+    template<class TokOfFn>
+    std::size_t matchRow( const char* tok, std::size_t tokLen, TokOfFn&& tokOf ) const
+    {
+        const unsigned char headByte = ( tok[0] >= 'A' && tok[0] <= 'Z' ) ? static_cast<unsigned char>( tok[0] - 'A' + 'a' )
+                                                                         : static_cast<unsigned char>( tok[0] );
+        if( !heads.contains( headByte ) )
+        {
+            return kNoRow;             // no table row starts with this byte — not one string is touched
+        }
+        const char           head  = char( headByte );
+        const std::uint32_t* first = tokLen <= kMaxLen ? bucketIdx.data() + bucketOff[ tokLen ] : longRows.data();
+        const std::uint32_t* last  = tokLen <= kMaxLen ? bucketIdx.data() + bucketOff[ tokLen + 1 ] : longRows.data() + longRows.size();
+        for( ; first != last; ++first )
+        {
+            const std::size_t  m = *first;
+            const std::string& q = tokOf( m );
+            if( q.size() == tokLen && q[0] == head
+                && ( std::memcmp( q.data() + 1, tok + 1, tokLen - 1 ) == 0 || lexTokenEqualsLowered( tok, tokLen, q.data() ) ) )
+            {
+                return m;
+            }
+        }
+        return kNoRow;
+    }
+};
+
+// `tokOf( m )` returns row m's (all-lowercase) token. A template rather than a span of strings because the
+// caller's match table is an array of structs, and copying its strings out to build an index over them
+// would cost more than the index saves.
+template<class TokOfFn>
+inline LexHeadIndex buildLexHeadIndex( std::size_t rowCount, TokOfFn&& tokOf )
+{
+    LexHeadIndex ix;
+    ix.bucketOff.assign( LexHeadIndex::kMaxLen + 2, 0 );
+    for( std::size_t m = 0; m < rowCount; ++m )
+    {
+        const std::string& q = tokOf( m );
+        if( q.empty() )
+        {
+            continue;               // cannot happen (subtokens() drops < 2 bytes), but q[0] is read below
+        }
+        const unsigned char head = static_cast<unsigned char>( q[0] );
+        ix.heads.add( head );
+        if( q.size() <= LexHeadIndex::kMaxLen )
+        {
+            ++ix.bucketOff[ q.size() + 1 ];      // counts, shifted by one: the prefix sum turns them into offsets
+        }
+    }
+    for( std::size_t len = 1; len < ix.bucketOff.size(); ++len )
+    {
+        ix.bucketOff[len] += ix.bucketOff[ len - 1 ];
+    }
+    ix.bucketIdx.resize( ix.bucketOff.back() );
+    std::vector<std::uint32_t> fill( ix.bucketOff.begin(), ix.bucketOff.end() );
+    for( std::size_t m = 0; m < rowCount; ++m )
+    {
+        const std::string& q = tokOf( m );
+        if( q.empty() )
+        {
+            continue;
+        }
+        if( q.size() <= LexHeadIndex::kMaxLen )
+        {
+            ix.bucketIdx[ fill[ q.size() ]++ ] = std::uint32_t( m );   // ascending m within each bucket
+        }
+        else
+        {
+            ix.longRows.push_back( std::uint32_t( m ) );
+        }
+    }
+    return ix;
+}
+
 // THE pass-2 scan text for one file, resolved by ONE rule in ONE place: the docText override when the file
 // has one, else the file's bytes read into `scratch`. An EMPTY string means "skip this file" — what an empty
 // docText override and an unreadable file have always meant. `scratch` is the caller's reusable buffer, so
@@ -223,14 +342,16 @@ inline const std::string* lexicalScanText( const IngestResult& ing, std::size_t 
     {
         return &it->second;
     }
+    // P2-4 (PLAN_FULL_AUDIT_2026-09-10): this used to be `ifstream` + `ostringstream << rdbuf()` +
+    // `str()`, which is TWO full copies of every file in the corpus — the stream buffer's growth, then
+    // `str()`'s copy out of it — on the path that reads every indexed file once per cold query. The
+    // canonical whole-file read is docparse::detail::readWholeFile (commentcoherence.h, quality.h,
+    // renamemine.h, githarden.h, graph.h and mergescout.h all already reach for it, and mergescout's own
+    // comment records that it used to be a hand-rolled copy): one stat, one resize, one fread into the
+    // caller's buffer, zero intermediate copies. Semantics are identical here by construction — it
+    // CLEARS `out` on any failure, which is exactly the empty-string "skip this file" contract above.
     scratch.clear();
-    std::ifstream in( diskPath( ing, std::uint32_t( f ) ), std::ios::binary );
-    if( in )
-    {
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        scratch = ss.str();
-    }
+    docparse::detail::readWholeFile( diskPath( ing, std::uint32_t( f ) ), scratch );
     return &scratch;
 }
 
@@ -375,6 +496,10 @@ inline std::vector<float> lexicalScoresTiered( const IngestResult& ing, const st
     }
     const std::size_t matchCount = matchToks.size();
 
+    // P2-3: build the head mask + length buckets for THIS query's match table (see LexHeadIndex above).
+    const auto         matchTokOf = [ & ]( std::size_t m ) -> const std::string& { return matchToks[m].tok; };
+    const LexHeadIndex headIndex  = buildLexHeadIndex( matchCount, matchTokOf );
+
     // per-doc integer stats (SoA): dl[i] = weighted subtoken count, tfFlat[i*matchCount+m] = weighted term
     // frequency of match-table row m in doc i. Disarmed, matchCount == uniqueCount and the layout is the
     // historical one byte-for-byte; armed, provisional variant columns sit at m ≥ uniqueCount until the
@@ -409,17 +534,10 @@ inline std::vector<float> lexicalScoresTiered( const IngestResult& ing, const st
                 return;
             }
             fieldTokenWt += w;
-            const char* tok  = text.data() + tokStartByte;
-            const char  head = ( tok[0] >= 'A' && tok[0] <= 'Z' ) ? char( tok[0] - 'A' + 'a' ) : tok[0];
-            for( std::size_t m = 0; m < matchCount; ++m )
+            const std::size_t m = headIndex.matchRow( text.data() + tokStartByte, tokLen, matchTokOf );
+            if( m != LexHeadIndex::kNoRow )
             {
-                const std::string& q = matchToks[m].tok;
-                if( q.size() == tokLen && q[0] == head
-                    && ( std::memcmp( q.data() + 1, tok + 1, tokLen - 1 ) == 0 || lexTokenEqualsLowered( tok, tokLen, q.data() ) ) )
-                {
-                    tfRow[m] += w;                    // exact tokens own rows 0..uniqueCount (m == u there)
-                    break;                            // table strings are distinct → at most one can match
-                }
+                tfRow[m] += w;                        // exact tokens own rows 0..uniqueCount (m == u there)
             }
         } );
         wtAccum += fieldTokenWt;
