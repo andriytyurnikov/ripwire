@@ -19,7 +19,7 @@ std::string_view elixirTarget( TSNode node, std::string_view src ) noexcept
     {
         return {};
     }
-    const TSNode target = ts_node_child_by_field_name( node, "target", 6 );
+    const TSNode target = fieldChild( node, NodeField::Target );
     if( ts_node_is_null( target ) || std::strcmp( ts_node_type( target ), "identifier" ) != 0 )
     {
         return {};
@@ -47,15 +47,10 @@ TSNode elixirArguments( TSNode node ) noexcept
     {
         return {};
     }
-    for( std::uint32_t childId = 0; childId < ts_node_named_child_count( node ); ++childId )
-    {
-        const TSNode child = ts_node_named_child( node, childId );
-        if( std::strcmp( ts_node_type( child ), "arguments" ) == 0 )
-        {
-            return child;
-        }
-    }
-    return {};
+    // O(children): tree-sitter-elixir accepts comments between a call's head and its do-block and splices
+    // them into the call node itself — 16 000 of them measured 82x under elixirBody's twin of this scan
+    // (test/childwalkscalecheck.sh, arm B30, attributed by `sample`; the rule is on src/infra/tschildren.h)
+    return firstChildOfKind( node, /*namedOnly=*/true, { "arguments" } );
 }
 
 /// Return the first direct call argument, or a null node for an absent or empty argument list.
@@ -75,43 +70,45 @@ TSNode elixirKeywordValue( TSNode node, std::string_view key, std::string_view s
     {
         return {};
     }
-    for( std::uint32_t argId = 0; argId < ts_node_named_child_count( args ); ++argId )
+    // O(children) at both levels: `def f(x), # … do: x` puts the comments in the arguments (81x at 16 000,
+    // test/childwalkscalecheck.sh arm B29). Two cursors: the pair walk runs while the argument walk is open.
+    TSNode      value   = {};
+    bool        matched = false;
+    ChildCursor argCursor( args );
+    ChildCursor pairCursor( args );
+    forEachNamedChild( args, argCursor.cur, [ & ]( TSNode arg )
     {
-        const TSNode arg = ts_node_named_child( args, argId );
         if( std::strcmp( ts_node_type( arg ), "keywords" ) != 0 )
         {
-            continue;
+            return true;
         }
-        for( std::uint32_t pairId = 0; pairId < ts_node_named_child_count( arg ); ++pairId )
+        forEachNamedChild( arg, pairCursor.cur, [ & ]( TSNode pair )
         {
-            const TSNode pair = ts_node_named_child( arg, pairId );
-            auto found = nodeTextOf( ts_node_child_by_field_name( pair, "key", 3 ), src );
+            auto found = nodeTextOf( fieldChild( pair, NodeField::Key ), src );
             while( !found.empty() && std::isspace( static_cast<unsigned char>( found.back() ) ) )
             {
                 found.remove_suffix( 1 );
             }
-            if( found == key )
+            if( found != key )
             {
-                return ts_node_child_by_field_name( pair, "value", 5 );
+                return true;
             }
-        }
-    }
-    return {};
+            value   = fieldChild( pair, NodeField::Value );
+            matched = true;
+            return false;
+        } );
+        return !matched;
+    } );
+    return value;
 }
 
 /// Find a definition's direct do-block or do-keyword value without adopting an ancestor's body.
 /// node must be non-null; src must contain its source span. Return a null node when no body exists.
 TSNode elixirBody( TSNode node, std::string_view src ) noexcept
 {
-    for( std::uint32_t childId = 0; childId < ts_node_named_child_count( node ); ++childId )
-    {
-        const TSNode child = ts_node_named_child( node, childId );
-        if( std::strcmp( ts_node_type( child ), "do_block" ) == 0 )
-        {
-            return child;
-        }
-    }
-    return elixirKeywordValue( node, "do:", src );
+    // O(children) — arm B30 in test/childwalkscalecheck.sh; the note is on elixirArguments
+    const TSNode block = firstChildOfKind( node, /*namedOnly=*/true, { "do_block" } );
+    return ts_node_is_null( block ) ? elixirKeywordValue( node, "do:", src ) : block;
 }
 
 /// Count syntactic parameters in an ordinary or guarded definition head, saturating at UINT16_MAX.
@@ -121,7 +118,7 @@ std::uint16_t elixirParams( TSNode node ) noexcept
     TSNode head = elixirFirstArgument( node );
     if( !ts_node_is_null( head ) && std::strcmp( ts_node_type( head ), "binary_operator" ) == 0 )
     {
-        head = ts_node_child_by_field_name( head, "left", 4 );
+        head = fieldChild( head, NodeField::Left );
     }
     const TSNode args = elixirArguments( head );
     const auto count = ts_node_is_null( args ) ? 0u : ts_node_named_child_count( args );
@@ -137,7 +134,7 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     for( TSNode parent = ts_node_parent( role ); !ts_node_is_null( parent ); parent = ts_node_parent( parent ) )
     {
         if( elixirTarget( parent, src ) == "quote"
-            || ( std::strcmp( ts_node_type( parent ), "unary_operator" ) == 0 && nodeFieldText( parent, "operator", 8, src ) == "@" ) )
+            || ( std::strcmp( ts_node_type( parent ), "unary_operator" ) == 0 && nodeFieldText( parent, NodeField::Operator, src ) == "@" ) )
         {
             return false;
         }
@@ -152,6 +149,8 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
             {
                 return false; // only complete, ordinary string titles have a static display name here
             }
+            // indexed on purpose: a string's children come from the external scanner, which owns every byte
+            // between the quotes, so no comment token can be lexed into this list (src/infra/tschildren.h)
             for( std::uint32_t childId = 0; childId < ts_node_named_child_count( name ); ++childId )
             {
                 if( std::strcmp( ts_node_type( ts_node_named_child( name, childId ) ), "interpolation" ) == 0 )
@@ -169,10 +168,10 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     {
         return false; // the test declaration itself is not a call
     }
-    const TSNode callTarget = ts_node_child_by_field_name( role, "target", 6 );
+    const TSNode callTarget = fieldChild( role, NodeField::Target );
     if( !ts_node_is_null( callTarget ) && std::strcmp( ts_node_type( callTarget ), "dot" ) == 0 )
     {
-        const TSNode receiver = ts_node_child_by_field_name( callTarget, "left", 4 );
+        const TSNode receiver = fieldChild( callTarget, NodeField::Left );
         if( ts_node_is_null( receiver ) || std::strcmp( ts_node_type( receiver ), "alias" ) != 0 )
         {
             return false; // runtime receiver / anonymous function dispatch cannot name a module
@@ -188,9 +187,9 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
     bool inDefault = false;
     for( TSNode parent = ts_node_parent( role ); !ts_node_is_null( parent ); parent = ts_node_parent( parent ) )
     {
-        if( std::strcmp( ts_node_type( parent ), "binary_operator" ) == 0 && nodeFieldText( parent, "operator", 8, src ) == "\\\\" )
+        if( std::strcmp( ts_node_type( parent ), "binary_operator" ) == 0 && nodeFieldText( parent, NodeField::Operator, src ) == "\\\\" )
         {
-            const TSNode value = ts_node_child_by_field_name( parent, "right", 5 );
+            const TSNode value = fieldChild( parent, NodeField::Right );
             inDefault = inDefault || ( !ts_node_is_null( value ) && ts_node_start_byte( role ) >= ts_node_start_byte( value )
                                       && ts_node_end_byte( role ) <= ts_node_end_byte( value ) );
         }
@@ -201,7 +200,7 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
         TSNode head = elixirFirstArgument( parent );
         if( !ts_node_is_null( head ) && std::strcmp( ts_node_type( head ), "binary_operator" ) == 0 )
         {
-            head = ts_node_child_by_field_name( head, "left", 4 );
+            head = fieldChild( head, NodeField::Left );
         }
         if( !ts_node_is_null( head ) && ts_node_start_byte( name ) >= ts_node_start_byte( head ) && ts_node_end_byte( name ) <= ts_node_end_byte( head ) )
         {

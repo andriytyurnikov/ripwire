@@ -5,7 +5,8 @@
 
 // ingest_metrics.h — the per-definition structural metrics, moved VERBATIM from ingest.cpp in the
 // 2026-08-29 split: cyclomatic complexity (Myers' &&/|| extension), cognitive complexity with its
-// nesting/hump accounting, the O(children) child collection (ChildCursor/collectChildren), the
+// nesting/hump accounting (the O(children) child collection it used to hold, ChildCursor/collectChildren,
+// now lives in src/infra/tschildren.h so walks outside this TU can obey the same rule), the
 // essential-complexity ev(G) single-exit reduction (CtrlNode arena, EvCtx, the why-tag taxonomy),
 // the local-variable-indexing walk (ln_*), the fused complexityOf DFS, and parameter/arity counting
 // (countParams, cc_paramArityExact, callArity). Pure metric machinery: reads an AST, fills RawDef
@@ -148,8 +149,8 @@ inline bool cc_isNestingOnly( const char* t ) noexcept   // raises nesting, scor
 // preprocessor include readers did), so it lives once, here — hoisted above the first consumer rather
 // than sitting halfway down the file where three helpers ahead of it could not reach it.
 //
-// A FIELD read is the common case: nodeFieldText( n, "operator", 8, src ) is the whole of what most
-// callers want, and ts_node_child_by_field_name's length argument is the one thing easy to get wrong.
+// A FIELD read is the common case: nodeFieldText( n, NodeField::Operator, src ) is the whole of what most
+// callers want, and infra/fieldid.h is what keeps the field's id out of the per-node path (see it for why).
 inline std::string_view nodeTextOf( TSNode node, std::string_view src ) noexcept
 {
     if( ts_node_is_null( node ) )
@@ -160,28 +161,22 @@ inline std::string_view nodeTextOf( TSNode node, std::string_view src ) noexcept
     return ( a <= b && b <= src.size() ) ? src.substr( a, b - a ) : std::string_view{};
 }
 
-inline std::string_view nodeFieldText( TSNode node, const char* field, std::uint32_t fieldLen, std::string_view src ) noexcept
+inline std::string_view nodeFieldText( TSNode node, NodeField field, std::string_view src ) noexcept
 {
-    return nodeTextOf( ts_node_child_by_field_name( node, field, fieldLen ), src );
+    return nodeTextOf( fieldChild( node, field ), src );
 }
 
 // First DIRECT child of `n` whose node type is `type`, or a null node when none exists — the one
 // child-scan shape every ingest_*.h section reuses (the using-declaration keyword guard and the
 // phantom-`::` probe in ingest_names.h, the Kotlin scope walker, the Kotlin import_header reader in
 // ingest_relations.h), so they cannot drift into near-clones of each other. Lives here, beside
-// nodeTextOf, because this header is included before every section that needs it.
+// nodeTextOf, because this header is included before every section that needs it. O(children): lane W3
+// kept this indexed because "the width comes from the grammar", and `using /*…*/ namespace ns::inner;`
+// refuted that at 12.9x its control (test/childwalkscalecheck.sh, arm B22) — the comments are the
+// using_declaration's own children, like every extra (src/infra/tschildren.h).
 inline TSNode firstChildOfType( TSNode n, const char* type ) noexcept
 {
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < childCount; ++i )
-    {
-        const TSNode child = ts_node_child( n, i );
-        if( std::strcmp( ts_node_type( child ), type ) == 0 )
-        {
-            return child;
-        }
-    }
-    return TSNode {};
+    return firstChildOfKind( n, /*namedOnly=*/false, { type } );
 }
 
 // The written spelling of a node's `operator:` field, or "" when it has none / the span is out of range.
@@ -191,7 +186,7 @@ inline TSNode firstChildOfType( TSNode n, const char* type ) noexcept
 // hand-copied spans — a duplication --quality-delta scored the moment the second one grew a case.
 inline std::string_view cc_operatorText( TSNode n, std::string_view src ) noexcept
 {
-    return nodeFieldText( n, "operator", 8, src );
+    return nodeFieldText( n, NodeField::Operator, src );
 }
 
 // the boolean-operator spelling of a node, or "" if it isn't one (&&/|| for C-family, and/or for Python)
@@ -223,62 +218,25 @@ inline bool cc_isBooleanJoin( TSNode n, std::string_view src, Lang lang ) noexce
 }
 
 // ── O(children) child collection for whole-subtree walks ─────────────────────────────────────────────
-// ts_node_child( n, i ) restarts tree-sitter's child iterator from the FIRST child on every call, so an
-// indexed loop over a node's C children costs O(C²). Width is attacker-controlled: ONE 980 KB file of
-// 14 000 line comments hands the root 14 000 children and turned ingest into ~2 s of user CPU, quadratic
-// in line count (gate: test/padscalecheck.sh). Every unbounded-width walk below therefore collects the
-// child list ONCE per node with a TSTreeCursor — the same child set (named + anonymous + extras) in the
-// same left-to-right order, O(C) total. The cursor and the out vector are caller-owned and reused across
-// nodes, so a warm walk allocates nothing per node. Bounded-shape scans (base clauses, argument lists)
-// keep the indexed form — their widths come from the grammar, not from the input file.
-struct ChildCursor   // RAII — several walkers return mid-loop, so deletion must not depend on fallthrough
-{
-    TSTreeCursor cur;
-    explicit ChildCursor( TSNode n ) noexcept : cur( ts_tree_cursor_new( n ) ) {}
-    ChildCursor( const ChildCursor& ) = delete;
-    ChildCursor& operator=( const ChildCursor& ) = delete;
-    ~ChildCursor() { ts_tree_cursor_delete( &cur ); }
-};
-inline void collectChildren( TSNode n, TSTreeCursor& cur, std::vector<TSNode>& out )   // A4-F25: NOT noexcept — `out` allocates
-{
-    out.clear();
-    ts_tree_cursor_reset( &cur, n );
-    if( ts_tree_cursor_goto_first_child( &cur ) )
-    {
-        do
-        {
-            out.push_back( ts_tree_cursor_current_node( &cur ) );
-        }
-        while( ts_tree_cursor_goto_next_sibling( &cur ) );
-    }
-}
+// ChildCursor / collectChildren MOVED to src/infra/tschildren.h (audit P1-0, 2026-09-10). They were
+// defined here, inside this TU's unnamed namespace, which put them out of reach of the whole-subtree
+// walks compiled outside ingest.cpp — src/preprocdead.h kept the indexed O(C²) form for exactly that
+// reason and cost 56.67% of a cold llvm run. Unqualified lookup from this unnamed namespace still
+// finds rw::collectChildren, so every call site below is unchanged; the rule they enforce, and why a
+// bounded-shape scan keeps the indexed form, are stated in full on the new header.
 
 // bounded-depth search for a structured_binding_declarator anywhere under `n` — the vendored tree-sitter-cpp
 // grammar nests it TWO levels below the `declaration` node (declaration -> init_declarator ->
 // structured_binding_declarator for `auto [a,b] = …`; verified against the vendored grammar via a parse-tree
-// dump, not assumed), so a same-level-only child scan misses it. `declaration` subtrees are grammar-bounded
-// (a handful of children, not attacker-widenable like a comment run), so a small depth cap (not the
-// cursor/stack machinery cc_walk itself uses for the whole-function walk) is the right tool here.
-inline bool cc_declHasStructuredBinding( TSNode n, int depth ) noexcept
+// dump, not assumed), so a same-level-only child scan misses it. The DEPTH is grammar-bounded and still
+// capped here; the WIDTH is not, and an earlier revision of this comment claimed it was. A `declaration`'s
+// child list carries every comment between its type and its declarator as a direct child — extras are
+// spliced into the array, not balanced by a repeat node (src/infra/tschildren.h) — so the indexed scan this
+// used to be was O(C²) and measured 797 of the 2 956 child-iterator samples on a 16 000-comment declaration
+// (test/childwalkscalecheck.sh, arm B7). Each frame owns its cursor: the loop body recurses.
+inline bool cc_declHasStructuredBinding( TSNode n, int depth )
 {
-    if( depth <= 0 )
-    {
-        return false;   // pathological-AST guard — declaration subtrees never legitimately need this deep
-    }
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t ci = 0; ci < childCount; ++ci )
-    {
-        const TSNode child = ts_node_child( n, ci );
-        if( kindIs( ts_node_type( child ), "structured_binding_declarator" ) )
-        {
-            return true;
-        }
-        if( cc_declHasStructuredBinding( child, depth - 1 ) )
-        {
-            return true;
-        }
-    }
-    return false;
+    return anyChildBelow( n, depth, false, []( TSNode child ) { return kindIs( ts_node_type( child ), "structured_binding_declarator" ); } );
 }
 
 // Phase 1 (local-variable-indexing, docs/LOCALS_INDEXING.md): is `n` a LOCAL-VARIABLE declaration
@@ -310,10 +268,24 @@ inline bool cc_isCountableLocalDecl( TSNode n, const char* t ) noexcept
 // `ci` of `declNode` one comma-separated declarator SLOT? The vendored grammar gives every comma-separated
 // declarator its own `declarator`-FIELDED direct child of the `declaration` node (`int a=1,b=2;` has TWO) —
 // pulled out to ONE predicate so the two counting/walking loops that need it never drift on the field name.
-inline bool cc_isDeclaratorField( TSNode declNode, std::uint32_t ci ) noexcept
+// Takes the child's FIELD NAME, not its index: `ts_node_field_name_for_child( declNode, ci )` restarts
+// tree-sitter's child iterator at the first child on every call, so both loops below were O(C²) in a
+// declaration's child count — a width a comment run sets, not the grammar (arm B7). Off a cursor,
+// `ts_tree_cursor_current_field_name` answers the identical question in O(1): NULL for an extra, else the
+// non-inherited field at the child's structural index, else the name inherited through the invisible nodes
+// above it (third_party/deps/tree_sitter/lib/src/tree_cursor.c:657 vs node.c:689).
+inline bool cc_isDeclaratorFieldName( const char* fieldName ) noexcept
 {
-    const char* fieldName = ts_node_field_name_for_child( declNode, ci );
     return fieldName != nullptr && kindIs( fieldName, "declarator" );
+}
+
+// …and the ONE walk over those slots, for the same reason the predicate is shared: cc_countLocalDeclarators
+// and ln_declaratorIdentifiers ask the identical question of the identical child list and must never drift.
+template< class Fn >
+inline void forEachDeclaratorSlot( TSNode declNode, const Fn& fn )
+{
+    ChildCursor cursor( declNode );
+    forEachChild( declNode, cursor.cur, [ & ]( TSNode c ) { if( cc_isDeclaratorFieldName( ts_tree_cursor_current_field_name( &cursor.cur ) ) ) { fn( c ); } return true; } );
 }
 
 // L3 fix (2026-08-08 audit): a `declaration` node already proven countable by cc_isCountableLocalDecl can
@@ -326,17 +298,10 @@ inline bool cc_isDeclaratorField( TSNode declNode, std::uint32_t ci ) noexcept
 // type-only statement, e.g. a local `struct Foo;` forward declaration) now correctly counts as zero rather
 // than the previous "1" — a declaration that names no local was never meant to be a local, and the old
 // per-statement count silently over-counted that shape too.
-inline std::uint32_t cc_countLocalDeclarators( TSNode n ) noexcept
+inline std::uint32_t cc_countLocalDeclarators( TSNode n )
 {
     std::uint32_t count = 0;
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t ci = 0; ci < childCount; ++ci )
-    {
-        if( cc_isDeclaratorField( n, ci ) )
-        {
-            ++count;
-        }
-    }
+    forEachDeclaratorSlot( n, [ &count ]( TSNode ) { ++count; } );
     return count;
 }
 
@@ -1093,7 +1058,7 @@ inline void cc_walk( TSNode start, std::uint32_t startNesting, std::string_view 
 
         // cyclomatic (flat decision count) accumulated in the SAME DFS as cognitive — one walk, both metrics.
         // Elixir controls are ordinary calls whose target text supplies the keyword.
-        const auto elixirKeyword = lang == Lang::Elixir ? nodeFieldText( n, "target", 6, src ) : std::string_view{};
+        const auto elixirKeyword = lang == Lang::Elixir ? nodeFieldText( n, NodeField::Target, src ) : std::string_view{};
         if( elixirKeyword == "quote" )
         {
             continue; // quoted AST is not executed control flow
@@ -1275,26 +1240,17 @@ inline void ln_extractDeclaratorIdentifiers( TSNode node, std::vector<TSNode>& o
         outIdents.push_back( node );
         return;
     }
+    // Both walks below are O(children) on a cursor this frame owns (the body recurses): a declarator's own
+    // child list takes a comment between any two of its parts, so the width is input-set (arm B7).
     if( kindIs( t, "reference_declarator" ) )
     {
-        const std::uint32_t n = ts_node_child_count( node );
-        for( std::uint32_t i = 0; i < n; ++i )
-        {
-            ln_extractDeclaratorIdentifiers( ts_node_child( node, i ), outIdents, depth - 1 );
-        }
+        ChildCursor cursor( node );
+        forEachChild( node, cursor.cur, [ & ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, depth - 1 ); return true; } );
         return;
     }
     if( kindIs( t, "init_declarator" ) || kindIs( t, "pointer_declarator" ) || kindIs( t, "array_declarator" ) )
     {
-        const std::uint32_t n = ts_node_child_count( node );
-        for( std::uint32_t i = 0; i < n; ++i )
-        {
-            const char* fieldName = ts_node_field_name_for_child( node, i );
-            if( fieldName != nullptr && kindIs( fieldName, "declarator" ) )
-            {
-                ln_extractDeclaratorIdentifiers( ts_node_child( node, i ), outIdents, depth - 1 );
-            }
-        }
+        forEachDeclaratorSlot( node, [ & ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, depth - 1 ); } );
         return;
     }
     // unrecognized wrapper (incl. structured_binding_declarator, which should never reach here — Phase 1's
@@ -1310,14 +1266,7 @@ inline void ln_extractDeclaratorIdentifiers( TSNode node, std::vector<TSNode>& o
 // shared "which children are declarator slots" scan, not re-typing the field-name check.
 inline void ln_declaratorIdentifiers( TSNode declNode, std::vector<TSNode>& outIdents )
 {
-    const std::uint32_t n = ts_node_child_count( declNode );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        if( cc_isDeclaratorField( declNode, i ) )
-        {
-            ln_extractDeclaratorIdentifiers( ts_node_child( declNode, i ), outIdents, 6 );
-        }
-    }
+    forEachDeclaratorSlot( declNode, [ &outIdents ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, 6 ); } );
 }
 
 // declDepth: count of `compound_statement` ancestors from `declNode` up to and including the function's
@@ -1385,11 +1334,14 @@ inline void ln_collectLocalDecls( TSNode node, TSNode funcRoot, int depth, std::
         }
         return;   // do not descend INTO a countable declaration's own subtree again (nothing further to find)
     }
-    const std::uint32_t n = ts_node_child_count( node );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        ln_collectLocalDecls( ts_node_child( node, i ), funcRoot, depth - 1, out, defStartLine, defBytes );
-    }
+    // O(children), not O(children²): the re-parsed subtree is a whole DEFINITION, whose body node holds
+    // one child per statement AND one per comment between them (extras are spliced into the child array —
+    // src/infra/tschildren.h). A 16 000-comment body measured 15× --lint without --naming-locals before
+    // this became a cursor (test/childwalkscalecheck.sh, arm B6). The cursor is this frame's own: the
+    // loop body recurses.
+    ChildCursor cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child )
+    { ln_collectLocalDecls( child, funcRoot, depth - 1, out, defStartLine, defBytes ); return true; } );
 }
 
 // collectGatedLocalNames itself (the ingest.h-declared, EXTERNAL-linkage entry point) is defined further
@@ -1611,18 +1563,15 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
     }
 
     // find the argument container: the `arguments` field, else the first child of a known list type.
-    TSNode args = ts_node_child_by_field_name( call, "arguments", 9 );
+    TSNode args = fieldChild( call, NodeField::Arguments );
     if( ts_node_is_null( args ) )
     {
-        const std::uint32_t cc = ts_node_child_count( call );
-        for( std::uint32_t i = 0; i < cc; ++i )
-        {
-            const TSNode c = ts_node_child( call, i );
-            const char* ct = ts_node_type( c );
-            if(    kindIs( ct, "argument_list" ) || kindIs( ct, "arguments" )
-                || kindIs( ct, "value_arguments" ) )     // Swift
-            { args = c; break; }
-        }
+        ChildCursor callCursor( call );
+        forEachChild( call, callCursor.cur, [ & ]( TSNode c )
+        {   const char* ct = ts_node_type( c );
+            if( !kindIs( ct, "argument_list" ) && !kindIs( ct, "arguments" ) && !kindIs( ct, "value_arguments" ) ) { return true; }   // Swift
+            args = c;
+            return false; } );
     }
     if( ts_node_is_null( args ) )
     {
@@ -1630,28 +1579,24 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
     }
 
     // count NAMED argument children; a spread / splat / apply argument makes the count unreliable → not known.
-    std::uint16_t count = 0;
-    const std::uint32_t an = ts_node_child_count( args );
-    for( std::uint32_t i = 0; i < an; ++i )
-    {
-        const TSNode c = ts_node_child( args, i );
-        if( !ts_node_is_named( c ) )
-        {
-            continue; // skip '(' ')' ',' separators
-        }
+    // O(children): the `comment` skip below is itself the proof that this list's width is INPUT-set, and this
+    // counter runs once per CALL SITE, so the indexed form was O(calls x C²) — arm B11, 56x its control.
+    std::uint16_t count      = 0;
+    bool          unreliable = false;
+    ChildCursor   argsCursor( args );
+    forEachChild( args, argsCursor.cur, [ & ]( TSNode c )
+    {   if( !ts_node_is_named( c ) ) { return true; }                                          // '(' ')' ',' separators
         const char* ct = ts_node_type( c );
-        if( kindIs( ct, "comment" ) )
-        {
-            continue;
-        }
+        if( kindIs( ct, "comment" ) ) { return true; }
         if( std::strstr( ct, "splat" ) != nullptr || std::strstr( ct, "spread" ) != nullptr || kindIs( ct, "..." ) )
         {
-            return { 0, false };                                  // `f(*args)` / `f(...xs)` → unreliable
+            unreliable = true;                                    // `f(*args)` / `f(...xs)` → unreliable
+            return false;
         }
         ++count;
-    }
+        return true; } );
     (void)lang;
-    return { count, true };
+    return unreliable ? std::pair<std::uint16_t,bool>{ 0, false } : std::pair<std::uint16_t,bool>{ count, true };
 }
 }   // namespace — ingest_metrics.h section of ingest.cpp
 

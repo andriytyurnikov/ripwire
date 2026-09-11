@@ -13,6 +13,7 @@
 #include "quality.h"           // A5: cacheDirLadder + sweepStaleCacheBlobsOnce — the cache-dir hygiene hook (saveCache)
 #include "embedded_queries.h"  // configure-generated constexpr tags.scm table; no runtime source-tree dependency
 #include "infra/nodekind.h"    // rw::kindIs - the inline node-kind compare the per-AST-node dispatch chains run on (OPTREMARKS F3)
+#include "infra/fieldid.h"     // rw::fieldChild - the same defect one layer down: the field NAME resolved once per grammar, not per node
 #include "infra/hashutil.h"    // sanitizer-clean modulo-2^64 FNV multiplication
 #include "infra/namesplit.h"   // H4: stripTemplateArgs for the C++ qualified-call re-split (shared with tracelocus.h)
 #include "infra/jsonesc.h"     // rw::shSingleQuote - the git ignore probe quotes its root the same way every other git popen does
@@ -266,6 +267,10 @@ IngestResult ingest( const char* rootDir, const std::vector<std::string>& exclud
     // read+hash (safe). v15: result.files is passed in because the blob's offset table lets the load
     // deserialise ONLY the records for the files THIS crawl asked for — a wider configuration's blob is
     // never walked past its table (docs/EVALS.md, the offset-table retry).
+    // The [grammar][field] TSFieldId table (src/infra/fieldid.h), filled before ANY thread exists. Every
+    // AST walk downstream — the parse pool, --slice, --lint, the preprocessor reader — reads it lock-free.
+    warmFieldIdTable();
+
     CacheLoadStats cacheStats;
     HashMap<std::string, FileFacts> cache =
         cacheFile.empty() ? HashMap<std::string, FileFacts>{}

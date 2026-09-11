@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # limitstablecheck.sh — docs/LIMITS.md is a BUILD PRODUCT of src/, and this gate says so.
 #
-# WHY. A cap is a routing decision: it decides what an agent can and cannot find. This tree has 114 of
-# them across 50 files — plus 6 ranking parameters partitioned out of the same census on 2026-09-10,
-# which is why "120 constants" and "114 caps" are both right — and before 2026-09-09 nothing listed them
-# together, so kMaxExpandSibs could sit
+# WHY. A cap is a routing decision: it decides what an agent can and cannot find. Before 2026-09-09
+# nothing listed them together, so kMaxExpandSibs could sit
 # at 8, fire on 68.5% of bodies and hide 89.3% of every sibling name, justified by a cost ("~3.5 KB per
 # --pack-task bundle") that was not reproducible, because --pack-task emits no sibs= at all. Nobody was
 # wrong on purpose; the caps were simply never visible next to each other.
@@ -27,6 +25,11 @@
 #   (F) THE SIDECAR IS LIVE. Every name in docs/limits_classes.tsv must be a cap that still exists in
 #       src/. A sidecar keyed by name rots exactly this way, and a stale row is a classification applied
 #       silently to nothing. Control: a fabricated row in a COPY of the sidecar must be refused.
+#   (H) THE DECLARATION SHAPE. `inline constexpr … = N;` on ONE line was never the shape of the
+#       population, only of one habit: `inline` is optional at namespace scope and forbidden on a class
+#       member. A plain `constexpr`, a `static constexpr` member and a wrapped initializer are each
+#       planted alone in a synthetic --root tree and required to appear, with a non-cap beside them
+#       required NOT to. Control: the same arm proves the NAME filter now admits `*PerFile`.
 #   (G) THE COLUMN MATCHES THE SIDECAR. Every INDEXING/OUTPUT cell is read back out of the RENDERED
 #       document and compared against the sidecar, so a classification cannot be right in the file and
 #       wrong on the page. Control: flipping a class in a copy must move the rendered cell.
@@ -39,9 +42,14 @@
 #   (J) ONE NAME DECLARED TWICE IN ONE FILE. With no line to tell them apart, identical declarations
 #       render as ONE row marked ×2 (beside a separate row for a different value), and deleting one of
 #       them must still make --check fail: a multiplicity is part of the cap set, not a duplicate to drop.
+#   (K) THE CAP TABLES ARE NOT FILED UNDER "NOT CAPS". Read from the RENDERED outline — what GitHub's TOC
+#       and --grep's enclosing-section attribution both read — every per-file `### `src/…`` table must have
+#       a `##` above it, the same one for all, and it must not be the parameter section (found by the table
+#       only that section carries, not by its title). Control: deleting that `##` from a copy must turn the
+#       identical reading RED. It does not assert which heading it is.
 #
-# WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — 114 caps that truncate, 6
-# parameters that weight — because they need different instruments: a cap is judged by what it cuts and
+# WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — caps that truncate, parameters
+# that weight — because they need different instruments: a cap is judged by what it cuts and
 # gated by shown/total, a parameter by the eval that chose it. The split is only worth having if the
 # document cannot claim a source it does not have, and cannot claim a class the sidecar never gave it.
 set -u
@@ -269,6 +277,86 @@ else
     fi
 fi
 
+# ── (K) the per-file cap tables are not filed under "Not caps" ────────────────────────────────────────
+# WHY. render() emitted every per-file `### `src/…`` table with no `##` of its own, so in the document's
+# outline all 50 of them were children of the last `##` written before them: "Not caps — ranking and
+# apportionment parameters". (B) could not see it — the committed document matched its generator exactly.
+# A READER of the outline could: GitHub's TOC, and `ripwire . --grep=kPrDefaultBudgetTokens`, which
+# attributed its docs/LIMITS.md hit to in="Not caps — ranking and apportionment parameters::`src/prcontext.h`".
+# A cap an agent is told is not a cap is a claim this document makes, so it is gated where the claim is
+# made: the RENDERED outline, read the way (G) reads the rendered cells.
+#
+# The parameter section is found by the table only it carries, never by its title, so a retitle cannot
+# blind the arm, and a document with no such table fails as blind instead of passing on nothing. The arm
+# does not assert WHICH `##` parents the tables — naming it is render()'s job — only that there is one, it
+# is shared by all of them, and it is not the section that says its contents are not caps.
+python3 - "$DOC" "$TMP" <<'OUTLINE' || fail=1
+import os, re, sys
+DOC, TMP = sys.argv[ 1 ], sys.argv[ 2 ]
+bad = []
+def ok( m ): print( "  PASS  %s" % m )
+def no( m ): print( "  FAIL  %s" % m ); bad.append( m )
+def read( p ):
+    with open( p, encoding="utf-8" ) as fh:
+        return fh.read().split( "\n" )
+
+HEAD  = re.compile( r'^(#{1,6})[ \t]+(.+?)[ \t]*$' )
+PARAM = re.compile( r'^\| constant \| value \| site \| anchor \| note \|' )
+def title( line ):
+    return HEAD.match( line ).group( 2 )
+def outline( lines ):
+    """Each per-file `### `src/…`` heading with the index of its nearest `##` above (None: none), and the index
+    of the `##` whose body carries the parameter table (None: no such table)."""
+    tables, h2, param = [], None, None
+    for i, line in enumerate( lines ):
+        m = HEAD.match( line )
+        if m and len( m.group( 1 ) ) <= 2:
+            h2 = i if len( m.group( 1 ) ) == 2 else None
+        elif m and len( m.group( 1 ) ) == 3 and m.group( 2 ).startswith( "`src/" ):
+            tables.append( ( m.group( 2 ).strip( "`" ), h2 ) )
+        elif h2 is not None and PARAM.match( line ):
+            param = h2
+    return tables, param
+
+lines         = read( DOC )
+tables, param = outline( lines )
+parents       = sorted( { p for _, p in tables if p is not None } )
+if not tables:
+    no( "(K) parsed ZERO per-file `### `src/…`` headings out of docs/LIMITS.md — the heading shape changed and this arm is blind" )
+elif param is None:
+    no( "(K) no `##` section of docs/LIMITS.md carries the parameter table — the section this arm guards against is gone, so it is blind" )
+else:
+    orphan = [ f for f, p in tables if p is None ]
+    under  = [ f for f, p in tables if p == param ]
+    if orphan:
+        no( "(K) %d of %d per-file cap tables have no `##` above them, e.g. `%s`" % ( len( orphan ), len( tables ), orphan[ 0 ] ) )
+    if under:
+        no( "(K) %d of %d per-file cap tables are filed under the parameter section \"%s\" (line %d), e.g. `%s` — the outline tells a reader they are not caps"
+            % ( len( under ), len( tables ), title( lines[ param ] ), param + 1, under[ 0 ] ) )
+    if len( parents ) > 1:
+        no( "(K) the per-file cap tables are split across %d `##` sections: %s" % ( len( parents ), "; ".join( title( lines[ p ] ) for p in parents ) ) )
+
+if not bad:
+    ok( "(K) all %d per-file cap tables sit under one `##`, \"%s\", which is not the parameter section" % ( len( tables ), title( lines[ parents[ 0 ] ] ) ) )
+    # CONTROL: delete that `##` from a COPY and re-read it with the identical extraction. The tables must fall
+    # back under the parameter section and the reading must go RED, or this arm has never seen the nesting
+    # it exists for.
+    cut = parents[ 0 ]
+    mut = os.path.join( TMP, "outline.md" )
+    with open( mut, "w", encoding="utf-8" ) as fh:
+        fh.write( "\n".join( lines[ : cut ] + lines[ cut + 1 : ] ) )
+    back = read( mut )
+    if back.count( lines[ cut ] ) != lines.count( lines[ cut ] ) - 1:
+        no( "(K) mutation control: \"%s\" was not removed from the copy — the control would measure nothing" % title( lines[ cut ] ) )
+    else:
+        t2, p2 = outline( back )
+        if p2 is None or not [ f for f, p in t2 if p == p2 ]:
+            no( "(K) mutation control: with \"%s\" deleted, no per-file table read as filed under the parameter section — this arm cannot go red" % title( lines[ cut ] ) )
+        else:
+            ok( "(K) mutation control: deleting that `##` files the tables under the parameter section again, and the reading goes RED" )
+sys.exit( 1 if bad else 0 )
+OUTLINE
+
 # ── (D) a tree with no caps is a refusal, not an empty table ────────────────────────────────────────
 mkdir -p "$TMP/empty/src" "$TMP/empty/docs"
 cp "$GEN" "$TMP/empty/docs/limits_build.py"
@@ -336,7 +424,7 @@ for line in open( os.path.join( ROOT, "docs", "limits_classes.tsv" ), encoding="
 # The class cell is read back out of the RENDERED markdown, not out of the generator's own data
 # structures. Reading the artifact is the whole point: a column that is correct in memory and wrong on
 # the page is exactly the drift this arm exists for.
-row = re.compile( r'^\| `(k[A-Za-z0-9_]*)`(?: ×\d+)? \| `[^`]*` \| (INDEXING|OUTPUT|—) \|' )
+row = re.compile( r'^\| `(k[A-Za-z0-9_]*)`(?: ×\d+)? \| `[^`]*` \| (INDEXING|OUTPUT|BOUNDARY|—) \|' )
 got = {}
 for line in open( os.path.join( ROOT, "docs", "LIMITS.md" ), encoding="utf-8" ):
     m = row.match( line )
@@ -366,6 +454,49 @@ if re.search( r'^\| `%s`(?: ×\d+)? \| `[^`]*` \| %s \|' % ( re.escape( name ), 
     no( "(G) mutation control: flipping %s in the sidecar did NOT change the rendered column" % name )
 ok( "(G) mutation control: flipping a sidecar row moves the rendered class, so (G) is not inert" )
 CLASSCOL
+
+# ── (H) THE DECLARATION SHAPE: a plain `constexpr` and a wrapped initializer are caps too ───────────
+# The register's first line says "Every compile-time cap in src/". It used to require the literal
+# `inline constexpr` with the value on the SAME line, and 92 declarations — 81 distinct names — were
+# outside it, among them kType3MaxBucket (bounds clone DETECTION), kSkillScanFindingCap (bounds a
+# SECURITY verdict) and kChaConeCap. `inline` is optional at namespace scope and FORBIDDEN on a class
+# member, so "inline constexpr" was never the shape of the population; it was the shape of one habit.
+#
+# Three fixtures, three ways a real cap is spelled, each planted alone in a synthetic --root tree and
+# each required to appear in the generated table. A NON-cap name in the same file must NOT appear, or
+# the arm would pass on a generator that admits everything.
+for shape in plain static wrapped; do
+    d="$TMP/decl-$shape"
+    mkdir -p "$d/src" "$d/docs"
+    cp "$GEN" "$d/docs/limits_build.py"
+    case "$shape" in
+        plain)   printf 'constexpr std::size_t kProbeRowCap = 3;\n' > "$d/src/probe.h" ;;
+        static)  printf 'struct S\n{\n    static constexpr std::size_t kProbeRowCap = 3;\n};\n' > "$d/src/probe.h" ;;
+        wrapped) printf 'inline constexpr std::size_t kProbeRowCap =\n    3;\n' > "$d/src/probe.h" ;;
+    esac
+    printf 'inline constexpr double kProbePlainConstant = 3.5;\n' >> "$d/src/probe.h"
+    if ! python3 "$d/docs/limits_build.py" --root "$d" --out "$d/docs/LIMITS.md" >/dev/null 2>&1; then
+        no "(H) $shape: the generator refused a tree whose only cap is spelled that way"
+    elif ! grep -Fq '`kProbeRowCap`' "$d/docs/LIMITS.md"; then
+        no "(H) $shape: a cap declared as \`$shape constexpr\` is INVISIBLE to the register"
+    elif grep -Fq '`kProbePlainConstant`' "$d/docs/LIMITS.md"; then
+        no "(H) $shape: a NON-cap constant was admitted — the census is too greedy to mean anything"
+    else
+        ok "(H) $shape: a cap spelled that way is found, and a non-cap beside it is not"
+    fi
+done
+# and the control that (H) is measuring the DECL regex and not the KEY one: a cap-shaped name the KEY
+# vocabulary does not know must still be missed, or "the register found it" says nothing about how.
+mkdir -p "$TMP/decl-key/src" "$TMP/decl-key/docs"
+cp "$GEN" "$TMP/decl-key/docs/limits_build.py"
+printf 'constexpr std::size_t kProbeRowCap = 3;\nconstexpr std::size_t kProbeSymbolsPerFile = 4;\n' \
+    > "$TMP/decl-key/src/probe.h"
+python3 "$TMP/decl-key/docs/limits_build.py" --root "$TMP/decl-key" --out "$TMP/decl-key/docs/LIMITS.md" >/dev/null 2>&1
+if grep -Fq '`kProbeSymbolsPerFile`' "$TMP/decl-key/docs/LIMITS.md"; then
+    ok "(H) control: the NAME filter admits PerFile too — kHandoffSymbolsPerFile is no longer invisible"
+else
+    no "(H) control: a *PerFile cap is still outside the NAME filter, which is how kHandoffSymbolsPerFile"
+fi
 
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail

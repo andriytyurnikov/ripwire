@@ -21,7 +21,7 @@ section, and it is not an afterthought.
 | **Co-change / known-item evals** | `--eval`, `--eval-retrieval` (see `bench/ANSWERQUALITY.md`) | Whether the tool surfaces the other files a real historical commit touched; and known-item retrieval across four rankers. |
 | **Ensemble calibration harness** | `bench/ensemblecal/` | Whether `--ensemble`'s four evidence families are actually orthogonal, how often each fires, how stable each is across commits — and the preset ladder derived from that (§9). |
 | **Differential argv harness** | `test/argvdiffcheck.sh` | That a refactor changed *nothing observable*: two binaries, every argv vector, stdout + stderr + exit code byte-identical. |
-| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 589 gate scripts plus the determinism, cache-transparency and golden contracts. <!-- gatecount --> |
+| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 599 gate scripts plus the determinism, cache-transparency and golden contracts. <!-- gatecount --> |
 | **`--quality-delta`** | `src/quality.h` | Ten measured code-quality failure modes, reported only where a change made them worse. |
 
 ### The labeling protocol (why the held-out eval is allowed to disagree with the ranker)
@@ -2204,6 +2204,208 @@ matched the pre-existing `weakSymbolCandidate`'s stop-word check) and a `verbosi
 checks into their own `flowTaskChoice` function (mirroring the existing `instrumentedTaskChoice`
 extraction) and by inlining the small filler-word loop directly rather than introducing a shared
 helper that collided token-for-token with `weakSymbolCandidate`'s existing shape.
+
+### MCP `no_route`: the CLI's recovery from a route mis-fire, reachable from an agent (2026-09-10)
+
+**The gap (audit F-R1-07).** `for`'s header carries `route=` — WHICH ranker answered and why — and the
+tool's own description tells the agent to read it. An agent that read it and disagreed had nowhere to go:
+`tools/call {"name":"for","arguments":{...,"no_route":true}}` was refused by name, and `explore` /
+`pack_task` had no such parameter either. The CLI's own answer to a route mis-fire (`--no-route`) was
+unreachable from the MCP surface. The mis-fire is measured, not hypothetical: `--for="parse tree"` on this
+repo routes name-exact, returns three rows from `bench/` and `test/`, and misses `parseTree` entirely,
+which `--no-route` finds at rank 1 (F-R1-06; the `ImplausibleAnchor` guard scales with corpus size, so
+SMALL repos are the exposed ones).
+
+**What shipped.** One declared optional boolean, `no_route`, on `for` and `explore` (and its `pack_task`
+alias). It is the CLI flag's twin, not a near-twin: under it the router is not asked, and — exactly as
+`verbs_for.h` does under `--no-route` — the query-shape demotion, the mention anchor and the co-change
+prior are all skipped, because each is part of the routed reading. There is then no route to disclose, so
+`ctxRootOpen` emits no `route=`, byte-for-byte what the CLI does.
+
+**Gated as a parity claim, not as a feature.** `test/mcpforparitycheck.sh` gains seven arms, and each one
+is asserted against the CLI's OWN behavior rather than against a remembered rule: the CLI emits no
+`route=` under `--no-route`, so neither may the MCP twin; every CLI `--no-route` row must be present in
+the MCP `no_route` set (subset, for the same payload reason the existing arms give); a quoted `"true"` is
+a STRING and refuses by name; `pack_task` honors it; and a verb that does NOT route (`grep`) must still
+refuse it, because the declaration is per-verb. The first arm asserts the call ANSWERED — measured while
+writing the gate, two of the arms went GREEN against the pre-change binary purely on emptiness, since a
+refused call returns no content and an empty document trivially has no `route=`.
+
+**Manifest cost, attributed.** 41,220 → 41,474 B; ceiling re-anchored 41,300 → 41,650. Schemas
+17,161 → 17,415 (+254: two property stanzas at +127 each — the schema envelope plus the description every
+declared property is obliged to carry). **Descriptions are byte-identical at 19,632 B**: a first draft
+added a pointer clause to both tool descriptions and it was REMOVED rather than re-anchored around,
+because that file's own rule is that the ceiling moves for a declared argument's obliged bytes and never
+for prose. The `--quality-delta` verbosity row this change first raised on `dispatchMcpLine`
+(1,376 → 1,387 lines) was likewise fixed rather than acked: the second hand-rolled five-line boolean
+accumulate became ONE guarded `boolArg` reader that `post_check` now shares — the rule `intArg` already
+states for the numeric fields — leaving the dispatcher smaller than before the change.
+
+### `--help-task` catalog tier: the verbs and the skills with no route (2026-09-10)
+
+**Two measurements, one cause.** `--help-task` recommended on **3 of 39** phrasings of the 13 surfaces
+added since the 2026-08-28 audit (F-R1-08), and could name **8 of the 16** shipped skills (F-R1-09) —
+nine skill directories existed that no `--help-task` answer could ever point at. `--help-task` and the
+skill catalog were two routers with two vocabularies. Three of the unrouted surfaces are VERBS rather
+than shaping flags: `--handoff` (which has its own shipped skill), `--plan-lint`, and the PROSE form of
+`--from-trace` — `looksLikeTrace` matches a PASTED artifact (`AddressSanitizer:`, `#0 … in`), and "I
+have a sanitizer report" contains none of those literals, so the #108 name-ladder work was unreachable
+from prose.
+
+**Ten intents, in a `catalogTaskChoice` tier placed LAST in `directTaskChoice`** so every older, more
+specific route keeps its rows: `handoff-brief` → `--handoff`, `plan-lint` → `--plan-lint=FILE`,
+`trace-prose` → `--from-trace=-`, `scan-skills`/`scan-skill` → `--scan-skills` / `--scan-skill=FILE`,
+`opt-remark` → `--for=TASK`, `architecture-health` → `--deps`, `quality-check` → `--quality-delta`,
+`perf-symbol` → `--around=SYM`, `graph-query` → `--graph-query=EXPR`, `maintenance-risk` →
+`--hotspots`. Each takes conjunctive evidence in the shape `instrumentedTaskChoice` established, and the
+value-carrying ones fire only when the task supplies the value.
+
+Two of them are worth stating plainly rather than listing. **`opt-remark` is the one skill with no verb
+of its own** — it is a contributor workflow around clang remarks and a profiling build — so it routes to
+the ranked lens and its reason string says exactly that, instead of implying a dedicated surface exists.
+**`graph-query` composes an expression** out of what the task supplied (the symbol it named, the
+direction it asked for) with a stated default depth, the same way `--grep-context=2` and
+`--slice-flow=back` are defaults; the gate unquotes what the router emitted and runs it through the real
+verb, so a composed expression the verb would refuse fails the gate rather than the user.
+
+| measurement | before | after |
+| --- | ---: | ---: |
+| skills the router can name (of 16, `ripwire-router` excluded) | **8** | **16** |
+| audit's 39 surface phrasings, recommends | **3** | **9** |
+| corpus `split=test` (n=114) accuracy / coverage | 0.754 / 0.627 | **0.939 / 0.907** |
+| corpus `split=dev` (n=111) accuracy / coverage | — | 0.946 / 0.929 |
+| corpus `split=all` (n=225) accuracy / coverage | 0.809 / 0.730 | **0.942 / 0.918** |
+| precision / harmful / neg-specificity, every split | 1.000 / 0.000 / 1.000 | 1.000 / 0.000 / 1.000 |
+| the 189 rows that predate this tier, (status, intent, resolved_symbols) | — | **0 differing** |
+
+The remaining 30 of 39 are declined by design and are gated as such: six SHAPING flags (`--scope`,
+`--slice-depth`, `--slice-flow`, `--allow-dirty`, `--no-ignore`, `--no-post-check`) are modifiers on
+other verbs and not commands a one-command router can recommend alone; `--pin-census` is eval-only; and
+the value-carrying abstentions (`--edit-plan=FILE`, `--grep=LIT --handles`, `--plan-lint` with no file
+named) keep the 2026-08-28 rule that the router may not emit a command the verb would refuse.
+
+**Red-first is the GATE here, not the eval.** Coverage has no floor by the round-1 rule, so the eval
+exits 0 either way; eleven `taskroutecheck` arms fail against the pre-change binary (every one abstained
+with `score="0"`), plus the two execution arms, and the skill-vocabulary arm — which reads BOTH sides
+from disk, the skill directories and the names `src/taskroute.h` can emit — fails against the pre-change
+source, naming all eight unreachable skills. That arm is the durable half: a new skill that ships
+without a route now fails as loudly as a route naming a skill that does not exist.
+
+**Two corrections the pre-insertion verification caught**, recorded because "every row verified before
+insertion" is only worth something if the failures are shown too. A plan file that names ITSELF
+(`PLAN_*.md`, `DESIGN_*.md`) is now surface evidence the prose need not repeat. And `"before i commit"`
+was re-weighted below the quality-check floor: it is a TIMING word, not a quality word, and at its first
+weight it stole *"lint the plan file layout before I commit it"* from the plan-lint abstention.
+
+### The four restored stop rules become measurable (2026-09-10)
+
+**The defect (audit F-R1-03).** #112 restored four frontmatter STOP RULES to the skill descriptions —
+`before-you-build` "A small feature with an obvious home needs none of this.", `fresh-eyes` "A
+single-lens question is a single call.", `orient` "Stop at the first rung that answers.",
+`write-tests` "For one target one `--seams` or `--callers` pass suffices." — and **no row in
+`test/skillevalfix/prompts.tsv` could see any of them**. Stripping all four left `split=test` bm25-desc
+hit@1 byte-identical at 63.8% and `split=dev` **1.4pp better**, with `skillevalcheck` 15/15 green
+either way. That is the same failure #112 itself repaired: the fix restored the TEXT without adding a
+MEASUREMENT, so the next rewrite that drops a stop rule ships green.
+
+**What now measures them.** 16 rows between the `STOP-RULE ROWS (2026-09-10)` markers in the corpus
+(all `split=dev` — the test split is frozen; `test/skillevalsplitcheck.sh` confirms `split=test`
+hit@1 unchanged at 63.8%), plus a new **stop-rule arm** in `test/skillevalcheck.sh` that asserts two
+different things, because a stop rule can fail two different ways:
+
+1. **PRESENCE, exact.** Each sentence is pinned in the gate verbatim, and the arm's strip must actually
+   remove it from that skill's `SKILL.md`. A rewrite that drops OR REWORDS a rule makes its strip a
+   no-op and the gate names which rule and stops. Whitespace between words is matched as `\s+` because
+   frontmatter folds — the wrap position is formatting, not the thing being measured.
+2. **LOAD-BEARING, differential.** The 16 rows are scored against `skills/` and against a mechanically
+   stripped copy the gate builds itself; the real tree must win by ≥12.5pp.
+
+| measurement (bm25-desc hit@1) | with the four rules | stripped |
+| --- | ---: | ---: |
+| the 16 stop-rule rows | **75.0%** | 50.0% |
+| — of which the 8 that echo the rules (`desc`) | **100.0%** | 50.0% |
+| — of which the 8 written to avoid them (`judged`) | 50.0% | **50.0%** |
+| whole corpus, `split=dev` (n=99) | **76.2%** | 72.6% |
+| whole corpus, `split=test` (n=183, frozen) | 63.8% | 63.8% |
+
+**The null result is the interesting one, and it is reported rather than buried.** The audit's own
+caveat was that its 8 prompts echo the stop rules' vocabulary and are therefore `desc`-shaped, and it
+proposed rows "phrased without quoting it". Eight such rows were written and measured: **50.0% with the
+rules and 50.0% without — zero discrimination.** A BM25 arm scores description TEXT, so it can only
+detect a sentence's removal through rows that share that sentence's words. "Phrase it without quoting
+the rule" is not available to this instrument; the exact-PRESENCE assertion above is what covers the
+case a lexical corpus cannot. The 8 rows are kept as ordinary hard judged rows (4/8 route correctly —
+their misses go to `find-bug`, `write-tests`, `handoff` and `navigate`, which is its own signal about
+how the descriptions read a "one lens only" request phrased in a user's words).
+
+**Red-first.** Against a skills tree with the four sentences mechanically stripped, six arms fail
+(four PRESENCE, the absolute floor, the differential) while **all 15 pre-existing arms still pass** —
+which is precisely the F-R1-03 finding, now closed by construction.
+
+**Floors were NOT moved.** A floor move is a deliberate recalibration commit. Slack as measured after
+this round: `split=test` hit@1 63.8% vs floor 52.0 (+11.8pp), sep-auc 0.901 vs 0.83 (+0.071);
+`split=dev` hit@1 76.2% vs floor 59.0 (+17.2pp), sep-auc 0.926 vs 0.75 (+0.176). The dev pair is
+outside the gate file's own stated policy (~10pp, ~0.06–0.07) and is left as a named owner decision
+(audit F-R1-10).
+
+### `--help-task` weak-tier precision: the self-confirming gate and the config-key read (2026-09-10)
+
+**The defect, in one sentence each.** `does` was a symbol-slot cue AND `how does` is the
+`understand-symbol` gate, so *"how does &lt;indexed-word&gt; …?"* minted the very symbol the gate then
+required — **13 of 25** adversarial prose prompts recommended `--expand=&lt;English word&gt;`
+(audit F-R1-01/04; the Codex `UserPromptSubmit` hook injects that answer into a live session at
+`confidence="high"`). And `resolveTaskSymbols` had no kind filter, so **6 of those 13** names existed
+only as `t="sec"` rows — JSON keys and markdown headings — and `--expand='version'` answered with
+`"version": "1.2.3"` out of a `package.json`, exit 0, no disclosure (F-R1-02).
+
+**Why the corpus said `harmful=0.000` throughout.** `bench/taskroute_eval.py::make_repo` built a
+fixture repo whose every symbol was camelCase or Pascal. The weak tier only fires on all-lowercase
+names, so **no corpus row could reach it**: the class was invisible by construction, not by luck.
+This is the same shape as the 2026-08-28 round's own finding — a measured precision of 1.000 over a
+population that excludes the failure. The fixture repo now carries both halves of the collision
+class (nine lowercase code definitions, plus a `package.json` whose keys index as `t="sec"`), and
+the 158 pre-existing rows are **byte-identical on (status, intent, resolved_symbols)** across that
+fixture change — the new symbols are reachable only from the new rows.
+
+**The rule that shipped.** An intent word is evidence about what the user WANTS; it may never
+double as the positional evidence that they NAMED something. `cueOccurrenceIsIntentGate`
+disqualifies exactly the cue OCCURRENCE that satisfies the gate (`understand`/`understanding`
+anywhere, `does` when preceded by `how`) — never the word, so a later independent cue in the same
+task still resolves the name. Plus `weakEvidenceKind`: a weak reading must be backed by a
+non-`Section` definition; an identifier-shaped mention is untouched, because there the SHAPE is the
+evidence. Rank is deliberately NOT part of the kind test (`k` is 0.0000 for nearly every row of any
+large corpus, so gating on it would make resolution depend on corpus size).
+
+**Coverage cost, named rather than summarised.** Exactly one shape is given up: the bare
+*"How does &lt;lowercase-name&gt; work?"* spelling now abstains, and `test/taskroutecheck.sh`'s arm for it
+is inverted into an assertion of the new invariant. The same weak lowercase name still routes to
+`--expand` through any cue the gate does not consume (*"the implementation of classify"*), which is
+what makes this a rule about self-confirmation rather than a retreat from the weak tier. **No corpus
+row lost its route**: every confusion line on both splits is identical to the pre-round run.
+
+**Measured, pre-change binary → post-change binary, same corpus (189 rows), same day:**
+
+| Set | Rows | Metric | Before | After |
+| --- | ---: | --- | ---: | ---: |
+| audit set A (2026-08-28 shape) | 25 | false recommends | 0 | **0** |
+| audit set B (word after a cue) | 25 | false recommends | **13** | **0** |
+| `prompts.tsv` test | 89 | precision / harmful / neg-spec | 0.797 / 0.135 / 0.657 | **1.000 / 0.000 / 1.000** |
+| `prompts.tsv` test | 89 | accuracy / coverage | 0.787 / 0.870 | **0.921** / 0.870 |
+| `prompts.tsv` dev | 100 | precision / harmful / neg-spec | — | **1.000 / 0.000 / 1.000** |
+| `prompts.tsv` dev | 100 | accuracy / coverage | — | **0.940** / 0.920 |
+| `prompts.tsv` all | 189 | precision / harmful | 0.879 / 0.085 | **1.000 / 0.000** |
+| 158 pre-existing rows | 158 | (status, intent, resolved_symbols) diff | — | **0 differing rows** |
+
+The pre-change `split=test` run **exits 1** on the grown corpus (precision under the 0.90 floor,
+harm over 0.02, specificity under 0.90), and four `test/taskroutecheck.sh` arms are red against the
+pre-change binary — the red-first proof that the corpus and the gate can now see this class. The map
+itself is untouched: default map, `--for`, `--grep` and `--pack-task` are byte-identical between the
+two binaries on this repo, and `src/taskroute.h` is included by exactly one translation unit.
+
+**The 2026-08-28 set is not in the repo.** That round's 20 adversarial prompts were never committed
+(`git log -S`, whole-tree grep: absent). Set A above — 25 prompts of the same shape, containing that
+round's own repro string verbatim — is the stand-in, and it was 0/25 both before and after: the
+sentence-POSITION fix that round shipped did not regress; it was defeated by a phrasing it never saw.
 
 ### Skill-routing surface forms — S1b round, PRE-REGISTERED 2026-08-19 (before any skill edit)
 
@@ -5166,9 +5368,16 @@ names, while its stated cost — "~3.5 KB per `--pack-task` bundle" — was not 
 `--pack-task` emits no `sibs=` at all, before or after. Symbols-per-file here is median 4, p90 18,
 p99 85; 100 clears the tail, fires on 15.8% of bodies, costs +36% on a single-symbol `--expand` answer
 and **nothing** on `--for` or `--pack-task`, which are byte-identical at every cap. The full inventory
-of the 114 caps in `src/` — and of the 6 ranking parameters partitioned out of the same census, which
-together make the 120 cap-shaped constants the generator parses — is `docs/LIMITS.md`, generated and
-gated by `test/limitstablecheck.sh`. What each cap COSTS, measured per verb, is `docs/TUNING.md`.
+of the 205 caps in `src/` — and of the 7 ranking parameters partitioned out of the same census, which
+together make the 212 cap-shaped constants the generator parses — is `docs/LIMITS.md`, generated and
+gated by `test/limitstablecheck.sh`. Those figures were **114 / 6 / 120** until 2026-09-10, and the
+difference is not new code: `docs/limits_build.py` required the literal `inline constexpr` with the
+value on the same line, so 92 declarations under 81 distinct names — `kType3MaxBucket`, which bounds
+clone DETECTION; `kSkillScanFindingCap`, which bounds a security verdict; `kHandoffSymbolsPerFile`,
+which truncates output and discloses — were outside a register whose first line says "Every
+compile-time cap in `src/`". The old number was the size of a regex's output presented as the size of a
+population; `test/limitstablecheck.sh` arm (H) now plants a plain `constexpr`, a `static constexpr`
+member and a wrapped initializer in a synthetic tree and requires each to appear. What each cap COSTS, measured per verb, is `docs/TUNING.md`.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the
@@ -5625,7 +5834,7 @@ copy here would be exactly the dialect divergence that gate exists to catch. Com
 tags, wrap, stable-order defaults), seven individually invoked standalone gates (`g1freshcheck`,
 `skillscan`, `htmlexport`, `compresscheck`, `handoffcheck`, `releaseinstallcheck`,
 `taskroutecheck`), and a single loop
-naming **589 gate scripts**, all of which exist on disk. <!-- gatecount -->
+naming **599 gate scripts**, all of which exist on disk. <!-- gatecount -->
 
 `python3 test/pargates.py . ./build/ripwire -j 6` runs the same scripts in parallel so a full
 verification fits in one sitting. It does not modify `regression.sh`.
@@ -6637,7 +6846,7 @@ Listed because the reason is more useful than the silence.
   shipped**. See `bench/locbench/anchorhop_calib.json`. The mention anchor's reproducible numbers are
   the ablations in §4.
 - **A single round gate-count.** Two in-tree numbers disagree (`test/pargates.py`'s docstring says
-  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 589. The <!-- gatecount -->
+  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 599. The <!-- gatecount -->
   loop is the authority; the stale docstrings are a known drift. Since 2026-09-10 the number is not
   written by hand anywhere: `docs/gatecount_build.py` derives it from the loop and rewrites every
   published site, `test/gatecountcheck.sh` fails if any of them drifts, and `test/manifestcheck.sh`

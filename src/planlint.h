@@ -530,8 +530,8 @@ inline LintResult computePlanLint( const std::string& fileArg )
         return res;
     }
 
-    std::string bytes;
-    if( !darkflags::readWhole( fileArg, bytes ) )
+    const std::optional<std::string> bytes = darkflags::readWhole( fileArg );
+    if( !bytes )
     {
         res.ok = false;
         return res;
@@ -539,7 +539,7 @@ inline LintResult computePlanLint( const std::string& fileArg )
 
     std::vector<std::string_view> lines;
     lines.reserve( 256 );
-    res.totalLines = darkflags::forEachLine( bytes, [ & ]( std::string_view line, std::uint32_t ) { lines.push_back( line ); } );
+    res.totalLines = darkflags::forEachLine( *bytes, [ & ]( std::string_view line, std::uint32_t ) { lines.push_back( line ); } );
 
     // The enclosing git repo is resolved from FILE's OWN directory, never from a caller-supplied root: a
     // plan file handed to this verb need not live inside any indexed root at all (the whole point of taking

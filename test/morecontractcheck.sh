@@ -80,7 +80,10 @@ FL="$( cat "$TMP/flags" )"
 # assertions go through this; a gate row and a doc row differ only in which open tag names them.
 element(){ printf '%s' "$1" | tr '>' '\n' | sed -n "/$2/,/<\/$3/p"; }
 gate(){ element "$FL" "<gate name=\"$1\"" gate; }
-gate_reads_attr(){ gate "$1" | sed -n 's/.*reads="\([0-9]*\)".*/\1/p' | head -1; }
+# ` reads="` with the LEADING SPACE, not `reads="`: the greedy .* takes the LAST match on the tag, and the
+# element now also carries shown_reads=/reads_capped= when a gate was cut (C1 F-07's disclosure), so the
+# space-anchored form is what still names the TOTAL rather than the window.
+gate_reads_attr(){ gate "$1" | sed -n 's/.* reads="\([0-9]*\)".*/\1/p' | head -1; }
 gate_rows(){ gate "$1" | grep -c '<read p=' || true; }
 gate_more(){ gate "$1" | sed -n 's/.*<more reads="\([0-9]*\)".*/\1/p' | head -1; }
 

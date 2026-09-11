@@ -367,7 +367,8 @@ std::optional<int> runChangeViews( const MainDispatch& d )
                                           "a selector fact, not an empty diff)\n", std::string_view( cfg.situFiles.data(), cfg.situFiles.size() ), elsewhere.c_str() );
                     continue;
                 }
-                rw::writeSituation( stdout, ws[r].arg, ing, g, perRootChanged[r], r );
+                rw::writeSituation( stdout, ws[r].arg, ing, g, perRootChanged[r], r,
+                                    rw::SituPageArgs{ cfg.pageLimit, cfg.pageOffset, cfg.situFiles } );
             }
             return 0;
         }
@@ -391,7 +392,8 @@ std::optional<int> runChangeViews( const MainDispatch& d )
             if( !gitChangedFiles( root, ing, changed ) )
             { rw::emitRaw( stderr, "ripwire --situ: no files given and no git diff (use --situ=F1,F2)\n" ); return 1; }
         }
-        rw::writeSituation( stdout, root, ing, g, changed );
+        rw::writeSituation( stdout, root, ing, g, changed, UINT32_MAX,
+                            rw::SituPageArgs{ cfg.pageLimit, cfg.pageOffset, cfg.situFiles } );
         return 0;
     }
 
@@ -603,10 +605,11 @@ std::optional<int> runChangeViews( const MainDispatch& d )
 // from_trace verb (mcpverbs.h's fromTraceText()). Only readTraceText (stdin/file reading — a CLI-only
 // concern; the MCP verb takes the trace text as a request argument) stays here.
 
-// read the --from-trace source into `text` — a FILE, or '-' for stdin (the --batch precedent). Returns false
-// (after printing the reason) only when a NAMED file cannot be opened; '-' and an empty file are fine.
-bool readTraceText( const std::string& src, std::string& text )
+// read the --from-trace source — a FILE, or '-' for stdin (the --batch precedent). nullopt (after printing the
+// reason) only when a NAMED file cannot be opened; '-' and an empty file are fine.
+std::optional<std::string> readTraceText( const std::string& src )
 {
+    std::string text;
     if( src == "-" )
     {
         // R4: the same byte-safe reader the --mcp loop runs on. A stack trace / sanitizer report carries
@@ -614,17 +617,17 @@ bool readTraceText( const std::string& src, std::string& text )
         // aborted the sanitizer build on the first such byte — see stdinline.h. Parity is exact.
         std::string l;
         while( rw::readByteSafeLine( stdin, l ) ) { text += l; text += '\n'; }
-        return true;
+        return text;
     }
     std::FILE* f = std::fopen( src.c_str(), "rb" );
-    if( !f ) { rw::emitTo( stderr, "ripwire: --from-trace: cannot open '{}'\n", src.c_str() ); return false; }
+    if( !f ) { rw::emitTo( stderr, "ripwire: --from-trace: cannot open '{}'\n", src.c_str() ); return std::nullopt; }
     char buf[ 4096 ]; std::size_t n;
     while( ( n = std::fread( buf, 1, sizeof buf, f ) ) > 0 )
     {
         text.append( buf, n );
     }
     std::fclose( f );
-    return true;
+    return text;
 }
 
 // L2 — --from-trace=FILE ('-'=stdin): trace-to-locus. Reads a stack trace /
@@ -644,9 +647,9 @@ std::optional<int> runFromTrace( const MainDispatch& d )
         return std::nullopt;
     }
 
-    const std::string src( cfg.fromTrace );
-    std::string       text;
-    if( !readTraceText( src, text ) )
+    const std::string                src( cfg.fromTrace );
+    const std::optional<std::string> text = readTraceText( src );
+    if( !text )
     {
         return 1;
     }
@@ -669,7 +672,7 @@ std::optional<int> runFromTrace( const MainDispatch& d )
     in.rootArg  = ( ing.realPaths.empty() && cfg.roots.size() == 1 ) ? std::string_view( cfg.roots[0] )
                                                                     : std::string_view();   // R-R
 
-    const FromTraceResult res = fromTraceBundleText( ing, g, text, src == "-" ? "<stdin>" : src, in );
+    const FromTraceResult res = fromTraceBundleText( ing, g, *text, src == "-" ? "<stdin>" : src, in );
     if( !res.ok )
     {
         rw::emitTo( stderr, "ripwire: --from-trace: no stack-trace / sanitizer / compiler frames found in '{}' — nothing to map\n",
@@ -1384,7 +1387,7 @@ int runFlip( const MainDispatch& d )
         return 1;
     }
 
-    const flipimpact::FlipResult result = flipimpact::computeFlip( d.ing, d.g, root, d.cfg.excludes, d.cfg.flipGate );
+    const flipimpact::FlipResult result = flipimpact::computeFlip( d.ing, d.g, root, d.cfg.excludes, d.cfg.flipGate, d.cfg.pageLimit );
     if( !result.ok )
     {
         std::string msg = "ripwire: --flip: no gate named '" + std::string( d.cfg.flipGate ) + "' in " + root;
@@ -1396,12 +1399,21 @@ int runFlip( const MainDispatch& d )
                 msg += ( i ? ", '" : " '" ) + result.nearMisses[i] + "'";
             }
             msg += "?)";
+            // C1 F-07: the suggestion list is capped, and a cap nobody is told about on the one output a
+            // lost caller reads is the same silent cut this round closed in the report itself.
+            if( result.nearMissTotal > result.nearMisses.size() )
+            {
+                msg += " (showing " + std::to_string( result.nearMisses.size() ) + " of "
+                     + std::to_string( result.nearMissTotal ) + " candidates — --limit=N raises it)";
+            }
         }
         rw::emitTo( stderr, "{}\n", msg.c_str() );
         rw::emitTo( stderr, "ripwire: run `ripwire {} --flags` for the gate table\n", root.c_str() );
         return 1;
     }
-    flipimpact::writeFlip( stdout, result, d.ing, root, d.cfg.detail ? SIZE_MAX : flipimpact::kMaxFlipRows );
+    flipimpact::writeFlip( stdout, result, d.ing, root,
+                           d.cfg.detail ? SIZE_MAX : std::size_t( rw::effectiveRowCap( d.cfg.pageLimit, int( flipimpact::kMaxFlipRows ) ) ),
+                           d.cfg.pageOffset );
     return 0;
 }
 
@@ -1584,7 +1596,11 @@ std::optional<int> runCrossRef( const MainDispatch& d )
                                   "list them, e.g. --flags=RIPWIRE)\n", std::string_view( cfg.darkFlagsFilter.data(), cfg.darkFlagsFilter.size() ) );
             return 1;
         }
-        darkflags::writeFlags( stdout, result, cfg.detail ? SIZE_MAX : darkflags::kMaxSitesShown );
+        // C1 F-07: the per-gate <read> cap is a raisable DEFAULT now — --limit=N beats it through the
+        // tool-wide effectiveRowCap rule, --detail still lifts it outright, and --offset=M pages it.
+        darkflags::writeFlags( stdout, result,
+                               cfg.detail ? SIZE_MAX : std::size_t( rw::effectiveRowCap( cfg.pageLimit, int( darkflags::kMaxSitesShown ) ) ),
+                               cfg.pageOffset );
         return 0;
     }
 

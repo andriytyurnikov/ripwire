@@ -2364,12 +2364,16 @@ inline constexpr char kHelpTail[] =
         "                               --zoom --external-surface --dead-code --mentions --graph-query --stray-content\n"
         "                               --test-gate --readability --ensemble --quality-panel --context-ratio\n"
         "                               --nonlocal-state --comment-coherence --naming-consistency --safe-delete --pr-context\n"
-        "                               --edit-check.\n"
+        "                               --edit-check --flags --situ.\n"
         "                               Emit at most N rows, skipping the first M; N overrides the verb's own display cap\n"
         "                               (40 hotspot files, 30 co-change pairs, 60 whereis hits, 100 grep/match hits, 40\n"
         "                               impact rows, 20 seam pairs, 40 readability rows, 40 ensemble symbol rows, 40 context-ratio\n"
         "                               symbol rows, 40 nonlocal-state rows, 200 graph-query rows / --top-k, 40\n"
-        "                               unflagged --edit-check caller rows).\n"
+        "                               unflagged --edit-check caller rows, 8 --flags read sites per gate, 25 --flip\n"
+        "                               context rows per listing, 8 --situ blast-radius files and 8 co-change partners).\n"
+        "                               A verb NEVER pages the rows that ARE its answer: --edit-check's flagged callers,\n"
+        "                               --flip's and --situ's tests-to-run rows and --flags' gate rows ride every page in\n"
+        "                               full, and every verdict/count attribute is computed over the full set first.\n"
         "                               With --offset alone (no --limit) the verb's own default page size applies and\n"
         "                               the root discloses limit=\"0\" — on OUTPUT that 0 means 'no explicit --limit',\n"
         "                               never a zero-row page (the flag itself refuses --limit=0). A BARE run whose\n"
@@ -3373,12 +3377,18 @@ inline void validatePlanLanes( Config& c ) noexcept
 // 25-row literal cap (situ.h kMaxUntestedRows) with no shown=/capped= and a refusal on --limit that FALSELY
 // claimed "no page to walk" (there were 41 more rows). It now windows through pageview.h like every verb
 // above, so it belongs in the honoring set, not the refusing one.
+// 2026-09-10 (C1 F-07/F-10): --flags (with its --flip mode) and --situ join. Both were listing verbs whose
+// row caps no flag could reach: --flags cut the <read> sites under a gate at 8, --flip cut six listings at
+// 25, and --situ cut its blast-radius and co-change sections at 8 while REFUSING --limit outright. All of
+// those listings run through pageWindow() now, which is what membership in this set means. --situ is the
+// first PROSE member — it has no XML root, so it spells the same shown=/total=/capped= facts in its section
+// headers (situ.h) and test/pagingsweepcheck.sh (L) reads it as prose rather than parsing a root element.
 constexpr const char* kPagingHonoringVerbs =
     "--lint --hotspots --callers --callees --tree --deps --cochange --owners --clones --doc-drift "
     "--communities --community --whereis --grep/--regex --match --pattern --impact --uses --exercises "
     "--seams --zoom --external-surface --dead-code --mentions --graph-query --stray-content --test-gate "
     "--readability --ensemble --quality-panel --context-ratio --nonlocal-state --comment-coherence "
-    "--naming-consistency --safe-delete --pr-context --edit-check";
+    "--naming-consistency --safe-delete --pr-context --edit-check --flags --situ";
 
 inline bool honorsPaging( const Config& c ) noexcept
 {
@@ -3390,7 +3400,9 @@ inline bool honorsPaging( const Config& c ) noexcept
         || !c.graphQuery.empty() || ( c.strayContent && !c.landingPlan && !c.abiFlag ) || c.testGate
         || c.readability || c.ensemble || c.qualityPanel || c.contextRatio || c.nonlocalState || c.commentCoherence
         || c.namingConsistency || !c.safeDeleteSym.empty() || c.prContext   // P4 (L7): the changed-file window
-        || !c.editCheckSym.empty();   // 2026-09-10: --edit-check windows its UNFLAGGED caller rows (editcheck.h)
+        || !c.editCheckSym.empty()    // 2026-09-10: --edit-check windows its UNFLAGGED caller rows (editcheck.h)
+        || c.darkFlags                // 2026-09-10 (C1 F-07): --flags' per-gate <read> sites, and --flip's six listings
+        || c.situ || !c.situFiles.empty();   // 2026-09-10 (C1 F-10): --situ sections [1] and [3] (section [2] is the answer)
 }
 
 // --limit/--offset on a verb that windows NOTHING. Same accept-then-silently-ignore class as every guard in
@@ -3643,8 +3655,11 @@ struct ShapingVerb
 //   HONOURS --top-k       default map (+ the same riders), --query, --format=candidates, --recall,
 //                         --graph-query, and the MCP/batch/--listen pass-throughs
 //   IGNORES both          --pack-task, --exemplar, --around, --path, --lego, --report,
-//                         --situ, --scan-skills, --merge-scout, and --for for --top-k (R12's residual)
-//                         (--edit-check LEFT this class on 2026-09-10: it joined honorsPaging when its
+//                         --scan-skills, --merge-scout, and --for for --top-k (R12's residual)
+//                         (--situ and --flags LEFT this class on 2026-09-10 (C1 F-07/F-10), the way
+//                         --edit-check did: their row listings became windowable, so they joined
+//                         honorsPaging and refuse all three like every other member.)
+//                         (--edit-check LEFT this class the same day: it joined honorsPaging when its
 //                         unflagged caller rows became windowable, so it refuses all three like every
 //                         other paging member instead of accepting them and ignoring them. A verb cannot
 //                         hold a row in BOTH tables — the header sentence above is the invariant.)
@@ -3673,7 +3688,6 @@ inline constexpr ShapingVerb kShapingVerbs[] = {
     { "--report",       &Config::report,       nullptr },
     { "--slice",        nullptr, &Config::sliceSpec    },
     { "--at",           nullptr, &Config::atSpec       },
-    { "--situ",         &Config::situ,         nullptr },
     { "--handoff",      &Config::handoff,      nullptr, false, false, true },   // writeHandoffPacket takes the budget
     { "--scan-skills",  &Config::scanSkills,   nullptr },
     { "--merge-scout",  &Config::mergeScoutFlag, nullptr },
@@ -3690,7 +3704,6 @@ inline constexpr ShapingVerb kShapingVerbs[] = {
     // which rides the default map's serialize path and honours --top-k/--max-tokens like the map does.
     { "--html",              &Config::html,               nullptr, true, true },
     { "--verify",            nullptr, &Config::verifyClaim },
-    { "--flags",             &Config::darkFlags,          nullptr },
     { "--layout",            &Config::layoutFlag,         nullptr },
     { "--field-affinity",    &Config::fieldAffinity,      nullptr },
     { "--naming-calibration",&Config::namingCalibration,  nullptr },
