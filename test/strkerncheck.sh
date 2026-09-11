@@ -124,6 +124,38 @@ if [ -n "$WANT" ]; then
     fi
 fi
 
+# ── COMPILER PORTABILITY, read off the SOURCE (CodeRabbit #127 / 3985249663) ─────────────────────────
+# The scalar twins are ALWAYS compiled and the vector paths compile under MSVC's /arch:AVX2, so no path in
+# this header may use a GCC/Clang-only builtin. `__builtin_ctzll` was the whole population: MSVC has no
+# such intrinsic, and the pending Windows port (PR #44) would not have compiled the file at all. The
+# portable spelling is <bit>'s std::countr_zero, which is the same instruction everywhere and is DEFINED
+# at zero where the builtin is undefined.
+#
+# This is a SOURCE arm, not a build arm, and deliberately so: the only compiler on this box accepts both
+# spellings, so no local build can tell them apart — the difference is visible in the text or nowhere.
+# CAN GO RED: put `__builtin_ctzll` back on any one of the eight sites and this arm fires.
+# CODE lines only: the prose above names the retired builtin on purpose, and a gate that cannot tell a
+# comment from a call site would forbid writing down what the rule is.
+HDR="$ROOT/src/infra/strkern.h"
+code_hits(){ grep -n "$1" "$HDR" 2>/dev/null | grep -vE '^[0-9]+: *(//|\*|/\*)'; }
+BUILTINS="$( code_hits '__builtin_' | wc -l | tr -d ' ' )"
+CTZ="$( grep -c 'std::countr_zero(' "$HDR" 2>/dev/null || echo 0 )"
+if [ "$BUILTINS" != "0" ]; then
+    echo "  FAIL  portability: src/infra/strkern.h uses $BUILTINS GCC/Clang-only __builtin_ — MSVC cannot compile it:"
+    code_hits '__builtin_' | sed 's/^/        /' | head -10
+    fail=1
+elif [ "$CTZ" -lt 8 ]; then
+    echo "  FAIL  portability: only $CTZ std::countr_zero( call sites in strkern.h — the eight trailing-zero"
+    echo "        counts (2 scalar twins + 6 vector) are the population this arm is non-vacuous over"
+    fail=1
+else
+    printf '  PASS  portability: 0 __builtin_ in strkern.h, %s std::countr_zero( sites (MSVC-compilable; <bit> included)\n' "$CTZ"
+fi
+if ! grep -q '^#include <bit>' "$HDR"; then
+    echo "  FAIL  portability: strkern.h calls std::countr_zero without including <bit>"
+    fail=1
+fi
+
 # compile one flavour of the target directly; $1 = label, remaining args = extra compile flags. Echoes the
 # binary path on success, nothing on failure (the caller decides whether a compile failure is fatal).
 compile_direct()
