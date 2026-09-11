@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rubyargcheck.sh — parser version 89 gate: a Ruby CONSTANT ARGUMENT (`raise Errors::Boom`, `validates_with
+# rubyargcheck.sh — parser version 93 gate: a Ruby CONSTANT ARGUMENT (`raise Errors::Boom`, `validates_with
 # Validator`, `delegate :x, to: Helper`, `obj.is_a?(User)`, `super(Validator)`, `yield User`) and a RESCUE CLASS
 # (`rescue Errors::Boom => e`) are dependency directives — round three of the Ruby constant work, on the same
 # corpus-own index as round one (superclass, mixins, autoload; test/rubyconstcheck.sh) and round two (constant
@@ -34,6 +34,18 @@
 #   6. RESOLUTION is round one's, unchanged — Module.nesting innermost-first then Object, `::` absolute, a
 #      wrapper defines nothing, an out-of-tree name is shown and edges nowhere. The STRUCTURE vs USE cut is
 #      round two's, unchanged: lazy pairs are in --impact's importer tier and the rows, not in ccd/godfiles.
+#
+#   7. NOT IMPORT EVIDENCE (PR #139 review; Include::isValueUse, kCacheVersion 21). A value-position constant is a
+#      dependency of the FILE — --deps, --impact's importer tier, the lazy-pair count all keep it — but it says
+#      nothing about the receiver of a bare call beside it: `notify(Dev::Config)` does not make `record` a
+#      Dev::Config. Left in buildGraph's include narrow it did exactly that: on discourse 1,017 call sites newly
+#      bound or narrowed, 19 of 20 sampled wrong. buildGraph's fileIncludes now skips value-use records
+#      (buildPreciseIncludeAdjWithContext's forCallNarrow); every other consumer reads them as before. The bit is
+#      the AND over occurrences like the lazy bit: one receiver occurrence of the same name keeps the record as
+#      import evidence. Fixture test/rubyargnarrowfix (the review's repro): two `update!` definitions in different
+#      directories, a caller in a third directory that passes `Dev::Config` as an argument and then calls
+#      `record.update!`. main declines that call (two global candidates, no evidence); the pre-fix branch bound it
+#      to Config#update!; the branch declines it again, and dev/config.rb keeps its importer.
 #
 # DISCLOSED FLOOR of this round (floor.rb, pinned to yield NOTHING): a constant in any OTHER value position —
 # a `when` pattern (Ruby evaluates it eagerly; the next round's first candidate), an array or hash-literal
@@ -172,7 +184,7 @@ printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfil
     || no "structure: godfiles: $( printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfiles>.*||' )"
 # lazy_edges= counts DISTINCT (file, target) pairs. service.rb's Errors::Boom, ::App::Errors::Boom and Errors::Bust all
 # resolve to errors.rb with user.rb and mailer.rb resolved BETWEEN them in directive order — the shape under which the
-# pre-89 count (a run-of-equal-ids shortcut over an adjacency that is in directive order, not sorted) read 4 for 3 pairs.
+# pre-93 count (a run-of-equal-ids shortcut over an adjacency that is in directive order, not sorted) read 4 for 3 pairs.
 [ "$( frow lib/app/service.rb )" = '<f p="lib/app/service.rb" includes="7" lazy_edges="3" afferent="0" instab="1.00" transitive="3">' ] \
     && ok 'structure: service.rb — Validator and Helper are load-time (transitive 3); errors, user and mailer are 3 lazy pairs — three spellings onto errors.rb interleaved with two other files count ONE pair' \
     || no "structure: service.rb row: $( frow lib/app/service.rb )"
@@ -195,7 +207,27 @@ printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfil
     && ok 'structure: admin/audit.rb — one lazy pair onto admin/errors.rb' \
     || no "structure: admin/audit.rb row: $( frow lib/app/admin/audit.rb )"
 
-# ── 5. root spelling, determinism, warm == cold, well-formed XML ─────────────────────────────────────
+# ── 5. NOT IMPORT EVIDENCE: the review's repro (test/rubyargnarrowfix) — a value-use record never narrows a call ──
+NFIX="$ROOT/test/rubyargnarrowfix"
+[ -d "$NFIX" ] || { echo "no test/rubyargnarrowfix — fixture missing"; exit 2; }
+grep -q 'notify(Dev::Config)' "$NFIX/lib/app/notify/notifier.rb" && grep -q 'record.update!' "$NFIX/lib/app/notify/notifier.rb" \
+    && ok 'presence: the narrow fixture spells the argument and the bare call the arms below depend on' \
+    || no 'presence: the narrow fixture is missing its argument or its bare call'
+callersTag(){ "$BIN" "$NFIX" --callers="$1" --no-cache --legend=compact 2>/dev/null | sed 's/<!--[^>]*-->//g' | grep -oE '<callers [^>]*>' | grep -oE ' count="[0-9]+"| declined_calls="[0-9]+"' | tr -d '\n'; }
+[ "$( callersTag lib/app/dev/config.rb:update! )" = ' count="0" declined_calls="1"' ] \
+    && ok 'narrow: `record.update!` beside `notify(Dev::Config)` does NOT bind to Config#update! — 0 callers, the call declined (the pre-fix branch reported 1 false caller)' \
+    || no "narrow: Config#update! callers tag: $( callersTag lib/app/dev/config.rb:update! )"
+[ "$( callersTag lib/app/ledger.rb:update! )" = ' count="0" declined_calls="1"' ] \
+    && ok 'narrow: Ledger#update! has no caller either — two global candidates, no evidence, declined (as main)' \
+    || no "narrow: Ledger#update! callers tag: $( callersTag lib/app/ledger.rb:update! )"
+"$BIN" "$NFIX" --deps --limit=1000 --no-cache 2>/dev/null | grep -q '<f p="lib/app/notify/notifier.rb" includes="1" lazy_edges="1" afferent="0" instab="0.00" transitive="1"><inc t="Dev::Config"/>' \
+    && ok 'narrow: the DEPENDENCY stays — notifier.rb still carries `Dev::Config` as a resolved lazy pair in --deps' \
+    || no "narrow: notifier.rb --deps row lost the argument directive: $( "$BIN" "$NFIX" --deps --limit=1000 --no-cache 2>/dev/null | grep -oE '<f p="lib/app/notify/notifier.rb"[^>]*>' )"
+"$BIN" "$NFIX" --impact=lib/app/dev/config.rb:Config --no-cache 2>/dev/null | sed 's/<!--[^>]*-->//g' | grep -q '<f via="import" p="lib/app/notify/notifier.rb" lazy="1"/>' \
+    && ok 'narrow: --impact still names notifier.rb as a lazy importer of dev/config.rb — the value use is a use, not evidence' \
+    || no 'narrow: --impact lost notifier.rb as an importer of dev/config.rb'
+
+# ── 6. root spelling, determinism, warm == cold, well-formed XML ─────────────────────────────────────
 ( cd "$FIX" && "$BIN" . --deps --limit=100000 --no-cache 2>/dev/null ) | sed 's/ root="[^"]*"//' >"$TMP/dots"
 "$BIN" "$FIX" --deps --limit=100000 --no-cache 2>/dev/null | sed 's/ root="[^"]*"//' >"$TMP/abs"
 cmp -s "$TMP/dots" "$TMP/abs" \

@@ -116,6 +116,18 @@ constexpr std::uint32_t kMaxYamlNestDepth = 64u;
 // deepest real nesting in this repo's own docs is 4.
 constexpr std::uint32_t kMaxMdBlockDepth = 200u;
 
+// Kotlin-lane string-template nesting ceiling (companion prescan: kotlinStringsNestTooDeep in ingest_crawl.h) —
+// PROCESS-SURVIVAL load-bearing, the yaml/markdown posture on a different upstream defect. tree-sitter-kotlin's external
+// scanner keeps one 2-byte stack entry per OPEN string literal (a string nests inside another only through a `${ … }`
+// interpolation), and upstream bounded that stack with abort(): measured on the vendored 1852ea17 with
+// `"a${"a${ … "leaf" … }"}"`, 512 open strings parse and 513 end the process (SIGABRT, rc=134) — so one such .kt file
+// silently killed the index of every tree that contained it, with no output at all. The vendored scanner now refuses
+// the push instead (third_party/patches/kotlin/001-stack-push-no-abort.patch; vendorpatchcheck arms B and J),
+// and this prescan refuses the FILE before any parse and rows it in --skipped (why="nest-refused") — two independent
+// layers, the yaml pair's shape. 128 is 4x under the cliff and ~60x over real code: across the 2 741 .kt files of
+// nowinandroid, ktor and retrofit the deepest nesting is 2 (61 files; every other file is at 0 or 1).
+constexpr std::uint32_t kMaxKotlinStringNestDepth = 128u;
+
 // ── §L1 skip taxonomy / parse health ────────────────────────────────────────────────────────────────
 // How many ROWS --skipped will itemize per drop class before it stops collecting them. The COUNTS
 // beside the rows stay exact (they are incremented past the cap); only the itemization is bounded, and

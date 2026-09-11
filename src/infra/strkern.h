@@ -42,9 +42,9 @@
 // ── PORTABILITY ──────────────────────────────────────────────────────────────────────────────────────
 // arm64 has NEON in the baseline (`__ARM_NEON` is defined by every arm64 toolchain). x86-64 builds carry
 // `-march=x86-64-v3` unconditionally (CMakeLists.txt; owner decision 2026-09-10 — AVX2 + BMI1/2 + FMA +
-// LZCNT + MOVBE, the RHEL 10 floor), so `__AVX2__` is defined on every shipped x86-64 binary. Anything
-// else — a cross build, a hand-configured toolchain that overrides the arch flags — compiles the scalar
-// twins, which are the same functions with the same contracts and no ISA requirement at all.
+// LZCNT + MOVBE, the RHEL 10 floor), so `__AVX2__` is defined on every shipped x86-64 binary, the macOS one
+// cross-built on arm64 included (the floor keys on the TARGET arch). Anything else — a target that is neither,
+// a hand-configured toolchain that overrides the arch flags — compiles the scalar twins: same contracts, no ISA.
 //
 // The scalar twins are ALWAYS compiled, so nothing in them may be a GCC/Clang extension: the trailing-zero
 // count is `std::countr_zero` (<bit>, C++20) and not `__builtin_ctzll`, which MSVC — a supported compiler,

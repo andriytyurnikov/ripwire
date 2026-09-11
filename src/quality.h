@@ -1792,11 +1792,25 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // lines too. Bumping kParserVer without updating these two lines is a hard gate failure, not a silent miss.
 // FOLLOW-UP for whoever owns ingest.{h,cpp}: promote the two constants into ingest.h and turn the gate into a
 // `static_assert` — this lane's file boundary forbade editing those files.
-constexpr std::uint32_t kIngestCacheVersionMirror   = 18;   // MUST equal ingest.cpp's kCacheVersion (gated)
-constexpr std::uint32_t kIngestParserVerMirror    = 89;   // MUST equal ingest.cpp's kParserVer   (gated)
-                                                          // 89 = 2026-09-11 (Ruby argument + rescue constants): a
+constexpr std::uint32_t kIngestCacheVersionMirror   = 21;   // MUST equal ingest.cpp's kCacheVersion (gated)
+constexpr std::uint32_t kIngestParserVerMirror    = 93;   // MUST equal ingest.cpp's kParserVer   (gated)
+                                                          // 93 = 2026-09-11 (Ruby argument + rescue constants): a
                                                           //    constant argument of a call/super/yield and a rescue
                                                           //    class are directives. See ingest_cache.h's note.
+                                                          // 92 = 2026-09-11 (yaml unsigned-char, PR #140): the yaml scanner's
+                                                          //    status type. SCN_FAIL (-1) returned through plain `char` came
+                                                          //    back as 255 wherever `char` is unsigned (aarch64 Linux, the
+                                                          //    linux-arm64 release asset), parsing a malformed %-escape in a
+                                                          //    tag differently from every signed-`char` build. See
+                                                          //    ingest_cache.h's kParserVer note.
+                                                          // 91 = 2026-09-11 (Kotlin, PR #126): a twenty-fourth grammar, its
+                                                          //    extraction arms, two scanner patches that change a parse, and the
+                                                          //    string-nesting refusal. See ingest_cache.h's kParserVer note.
+                                                          // 90 = 2026-09-11 (member-macro re-parse): a C-family file
+                                                          //    whose first parse holds error bytes may be extracted from
+                                                          //    a re-parse with its member macro invocations blanked.
+                                                          // 89 = 2026-09-11 (extent honesty): each def carries the
+                                                          //    `recovered` extraction bit. See ingest_cache.h's note.
                                                           // 78 = 2026-09-07 (Elixir): a twenty-second grammar and its
                                                           //    definition/call filters.
                                                           // 79 = 2026-09-07 (ES import facts): named import aliases and

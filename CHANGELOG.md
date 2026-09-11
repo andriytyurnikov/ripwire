@@ -15,7 +15,7 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
-### Added — a Ruby constant argument and a rescue class are dependencies; `lazy_edges=` counts distinct pairs (parser version 89)
+### Added — a Ruby constant argument and a rescue class are dependencies; `lazy_edges=` counts distinct pairs (parser version 93)
 
 Round three of the Ruby constant work, on the same corpus-own index as round one (superclass, mixins, autoload —
 parser version 82) and round two (constant receivers — 83). Ruby's rule is that EVALUATING a constant is what makes
@@ -46,17 +46,33 @@ name is one load-time directive.
 and a row's `lazy_edges=` are documented as DISTINCT (file, target) pairs, but the count walked an un-deduped
 adjacency that is in directive order, not sorted, and counted a pair once per run of equal ids: `Errors::Boom`,
 `User`, `Errors::Bust` in one method resolve to errors.rb, user.rb, errors.rb and read as 3 for 2 pairs. It now
-sorts the dropped ids and counts unique ones. At parser version 89 the old count read 1 546 / 1 147 / 6 398 / 2 549
+sorts the dropped ids and counts unique ones. At this round's parser version the old count read 1 546 / 1 147 / 6 398 / 2 549
 on the four corpora below against the distinct 1 381 / 1 015 / 6 342 / 2 519; every other byte of `--deps` is
 identical between the two counts (checked on activerecord). Round two's own fixture never interleaved two spellings
 of one file with another target, so its pins were right by shape rather than by the count.
+
+**A value-position constant is a dependency, not import evidence — and the call graph is byte-identical to main.**
+The first cut of this round let the new records feed buildGraph's include narrow, which reads a file's resolved
+includes as evidence for which definition a bare call means. That is wrong for a value position: `notify(Dev::Config)`
+beside `record.update!` says nothing about what `record` is, and the narrow bound `update!` to `Config#update!` on that
+reading — on discourse 1,017 call sites newly bound or narrowed, 19 of 20 sampled wrong (the PR #139 review). `Include`
+gains `isValueUse` (cache format 21), set for argument and rescue records and cleared by any receiver occurrence of the
+same name, and `buildPreciseIncludeAdjWithContext( …, forCallNarrow=true )` — called only for buildGraph's
+`fileIncludes` — leaves those records out; `--deps`, `--impact`'s importer tier and the lazy-pair count read them as
+before. Measured against main's binary, built from the same merge base: the default map is **byte-identical** on the
+four corpora below and on this repository, and `--report`'s totals match to the unit (activesupport 3 650 edges /
+410 modules, activerecord 8 638 / 912, the Rails apps 23 784 / 2 067 and 12 108 / 1 384). The pre-fix branch had moved
+every one of them (23 447 / 2 030 and 55 more isolated symbols on the first app). Gate: the review's own repro,
+`test/rubyargnarrowfix` — two `update!` definitions in different directories, a caller in a third that passes
+`Dev::Config` and then calls `record.update!` — declines the call as main does (0 callers, `declined_calls="1"`) while
+`dev/config.rb` keeps notifier.rb as a lazy importer; red on the pre-fix binary (1 false caller).
 
 **Disclosed floor, pinned to yield nothing** (`test/rubyargfix/lib/app/floor.rb`): a `when` pattern (evaluated
 eagerly by Ruby — the next round's first candidate), an array or hash-literal element, a splat, an assignment's
 right-hand side, string interpolation, a binary operand. Each is an evaluation Ruby performs that this round does
 not read.
 
-Measured (`--deps --limit=100000 --no-cache`, parser version 88 → 89; the gems are Rails 7.2.3.2, the apps the same
+Measured (`--deps --limit=100000 --no-cache`, parser version 88 → 93, measured on the branch's pre-merge binaries; the gems are Rails 7.2.3.2, the apps the same
 two Rails apps as rounds one and two, aggregates only):
 
 | corpus | ccd | nccd | shape | load-time importees | lazy_edges | bytes |
@@ -76,9 +92,53 @@ of this repository (no Ruby) is byte-identical before and after.
 Gate `test/rubyargcheck.sh` + fixture `test/rubyargfix/` (19 files, written RED against the parser-88 binary: 22
 arms red, every control green); `test/rubyrecvcheck.sh`'s floor arm inverts and its report.rb pins move by the one
 `raise`/`rescue` directive; `test/rubyrequirecheck.sh`'s main.rb counts its `rescue LoadError` as a shown,
-out-of-tree row (12 → 13). `kParserVer` 88 → 89 with the mirror; record shape and cache format 18 unchanged;
+out-of-tree row (12 → 13). `kParserVer` 92 → 93 with the mirror (the branch spent 89 while main spent 89..92 on the extent detector, Kotlin and the yaml patch); cache format 20 → 21 (`Include::isValueUse`);
 re-pins with reasons in-file: `test/qschemetrip.hash`, `test/printf_parity.manifest` (the `--impact` help and
-legend name the two new closure kinds). `docs/COMMANDS.md` regenerated (2026-09-11).
+legend name the two new closure kinds; the `--deps` legend's lazy definition gains the rescue class). `docs/COMMANDS.md`
+regenerated (2026-09-11).
+### Fixed — a call the resolver declined to guess at no longer reads as "no caller exists" (`declined=`, `declined_calls=`)
+
+Tier 3 of the name-based resolver refuses a call whose candidates are two or more same-language definitions, none
+in the caller's file or directory, and that no qualifier or receiver rule pins. That rule stands: guessing among
+cross-directory same-named definitions is how false edges are born. But the refusal was silent — no edge, no `amb=`,
+and `ambiguous=`/`unresolved=`/`external=` unmoved — so `--callers` on either definition answered `count="0"` about
+a call the resolver had seen, and nothing said how often. On the default map it is 22.4% of memgraph's call
+references (66,015 declined calls), 8.6% of retrofit's, 5.4% of ripwire's own and 0.15% of llvm `lib/Support`'s.
+
+The decline is now counted and shown, and no edge moves:
+
+- The map header carries `declined=N` (JSON `"declined":N`), absent at zero; its legend entry appears only on a map
+  that carries the attribute.
+- `--callers`, `--callees` and `--impact` carry `declined_calls="K"` in XML, `--json` and `--format=columnar`, as do
+  their MCP twins `find_referencing_symbols`, `find_symbol` and `impact`: declined calls that could have meant the
+  selector's definitions (callers), that those definitions make (callees), or that could reach SYM or its radius
+  (impact), counted once per call. Absent at zero, defined in the legend when present.
+- `--pin-census` ends with a conservation line, `# dispositions calls=N …`: every call reference lands in exactly one
+  of bound, self, external, unresolved, undefined, other_root, qualified_external, declined, file_scope or
+  unaccounted, and `calls=` is re-derived from the references. A resolver exit that names no bucket lands in
+  `unaccounted` and raises a degrade alert on plain builds, so the next silent `continue` is caught, not shipped.
+
+Measured with the pre-change binary (5c808487) against this change on the `--no-cache` default map. Each map's byte
+diff is exactly the new `declined=N` plus one legend comment (+245 to +248 B); `edges=`, `ambiguous=`, `unresolved=`,
+`locality_pinned=` and `external=` are identical on every corpus.
+
+| corpus | call references | `declined=` | share |
+| --- | ---: | ---: | ---: |
+| memgraph | 295,086 | 66,015 | 22.4% |
+| retrofit | 29,983 | 2,587 | 8.6% |
+| ripwire (the 5c808487 source tree) | 134,739 | 7,279 | 5.4% |
+| llvm `lib/Support` | 20,425 | 30 | 0.15% |
+
+memgraph peak RSS 621 → 630 MB (+1.5%, the candidate index behind `declined_calls=`); wall time unchanged (0.76 s →
+0.75 s). A cache written by the pre-change binary reads back warm to output byte-identical with `--no-cache`, so no
+cache or parser version moves. Gate `test/declinecheck.sh` covers 17 languages and was red on the pre-change binary
+(50 FAIL / 38 PASS as first committed); `test/resolverhonestycheck.sh` F5 now requires the decline to be disclosed,
+not merely edge-free.
+
+On main after the `std::`-qualified call guard, which refuses some `std::` sites before they reach tier 3, the same
+`--no-cache` map declines 65,516 of memgraph's 295,086 call references (22.2%) and 6,263 of ripwire's 135,449 (4.6%).
+The `# dispositions` line balances with `unaccounted=0` on both; the guard's refusals count as `external`, and
+`test/declinecheck.sh` runs the guard's own fixture (`test/stdqualfix`) to keep them there.
 
 ### Fixed — the super-linear warm floor under every graph-building verb (`--grep`, `--callers`, the map)
 

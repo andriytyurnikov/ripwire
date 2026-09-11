@@ -297,7 +297,7 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 // Capture base classes for the inheritance/Lego view: walk a class node's base clause and emit an
 // inherit RawRef per base (derived → base). startByte sits inside the class header, so the enclosing
 // attribution assigns fromSymbol = the derived class. Explicit-syntax langs: C++/TS/JS/Java/Python/Swift/
-// C#/PHP. Lua is deliberately absent and it is a DISCLOSED non-goal, not an omission: Lua inheritance IS
+// C#/PHP/Kotlin. Lua is deliberately absent and it is a DISCLOSED non-goal, not an omission: Lua inheritance IS
 // `setmetatable( Derived, { __index = Base } )`, an ordinary runtime call over an ordinary table, so there
 // is no syntax to read and a Lua corpus correctly reports no inheritance edges at all.
 //
@@ -316,6 +316,9 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 //               Java super_interfaces → type_list → type_identifier
 //               C# base_list → primary_constructor_base_type → (its `type` field child) — a record's
 //               base with constructor args (`record Foo(int X) : Base(X)`)
+//               Kotlin delegation_specifier → constructor_invocation → user_type (`class Foo : Bar(args)`);
+//               a bare interface (`class Foo : Baz`, no call) hits DIRECT instead — user_type sits right
+//               under delegation_specifier with no constructor_invocation wrapper.
 // So after matching a clause we scan its children for type nodes AND recurse one level into any wrapper
 // child, collecting type nodes at both depths (Rust is a separate pass — impl Trait for T is a sibling).
 void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
@@ -338,7 +341,8 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
                                 || kindIs( ct, "inheritance_specifier" ) // Swift  : Protocol
                                 || kindIs( ct, "base_list" )             // C#     : Base, IBar
                                 || kindIs( ct, "base_clause" )           // PHP    extends Base
-                                || kindIs( ct, "class_interface_clause" ); // PHP  implements I, J
+                                || kindIs( ct, "class_interface_clause" ) // PHP  implements I, J
+                                || kindIs( ct, "delegation_specifier" ); // Kotlin : Base(), Interface (one per base)
         if( !isClause )
         {
             return true;
@@ -1172,7 +1176,7 @@ inline bool rubyIsConstantChain( TSNode n ) noexcept
 // reference. The target is the receiver chain AS WRITTEN (`::Time` and `Time` are two spellings, two
 // directives); a receiver that is not a constant chain — an identifier, `self.class`, an ivar, `repo::Finder`
 // — yields nothing. A constant used as an ARGUMENT (`raise Errors::Boom`, `validates_with Foo`) or as a
-// rescue class is NOT a receiver: that was round two's disclosed floor, and parser version 89 lifted it —
+// rescue class is NOT a receiver: that was round two's disclosed floor, and parser version 93 lifted it —
 // rubyArgumentTargets / rubyRescueTargets below, test/rubyargcheck.sh.
 inline std::string rubyReceiverTarget( TSNode n, std::string_view src )
 {
@@ -1184,7 +1188,7 @@ inline std::string rubyReceiverTarget( TSNode n, std::string_view src )
     return std::string( nodeTextOf( recv, src ) );
 }
 
-// Parser version 89 (test/rubyargcheck.sh): a CONSTANT ARGUMENT — `raise Errors::Boom`, `validates_with Validator`,
+// Parser version 93 (test/rubyargcheck.sh): a CONSTANT ARGUMENT — `raise Errors::Boom`, `validates_with Validator`,
 // `delegate :x, to: Helper`, `obj.is_a?(User)`, `super(Validator)`, `yield User` — is evaluated when the call runs,
 // and evaluating a constant is what makes the autoloader load its file: the same dependency a receiver is, in the
 // OTHER position Ruby evaluates constants in. The `argument_list` is the grammar's one node for the arguments of a
@@ -1217,7 +1221,7 @@ inline std::vector<std::string> rubyArgumentTargets( TSNode argList, std::string
     return out;
 }
 
-// Parser version 89: a RESCUE CLASS — every constant chain in a `rescue` clause's exception list (`rescue A, B => e`);
+// Parser version 93: a RESCUE CLASS — every constant chain in a `rescue` clause's exception list (`rescue A, B => e`);
 // a bare `rescue => e` names no class and yields nothing, and so does an identifier there (`rescue klass`). Ruby
 // evaluates the exception list only when an exception is being MATCHED against the clause, never when the clause is
 // loaded (`class X; begin; 1; rescue Nope; end; end` is silent; the same begin with a `raise` inside names Nope in a
@@ -1485,6 +1489,13 @@ inline constexpr std::array<std::string_view, 6> kElixirImportContainers = {
     "call", "do_block", "stab_clause", "body", "arguments", "keywords"
 };
 
+// KOTLIN. Unlike every other language in this table, an `import` is not a general statement that CAN
+// appear inside a function/class body — the language itself only allows it at file top level, before
+// any other declaration. Empirically confirmed (not assumed from the grammar): every import_header in
+// two real corpora (Nanidroid, the socialite sample app), across single- and multi-import files, has
+// the SAME two-deep parent chain with no variation — `import_list -> source_file`. One entry.
+inline constexpr std::array<std::string_view, 1> kKotlinImportContainers = { "import_list" };
+
 // The FUNCTION-BODY node kinds — read off real parses, not predicted. Entering ANY one of these means
 // everything inside it is written INSIDE a function's body, so a require()/import() found there only runs
 // when and if that function runs: a real dependency (kParserVer 72's whole point — the importer tier must
@@ -1502,7 +1513,7 @@ inline constexpr std::array<std::string_view, 6> kJsFunctionContainers = {
 // own closure grammar. A receiver at class-body or file level runs at load and is not lazy. A `do`-block passed
 // to a class-level macro (`included do`, `after_commit do`) is lazy under this rule even when the callee runs it
 // at load: the tool cannot see the callee, and a block is a closure the callee may or may not run.
-// A RESCUE class (parser version 89, rubyRescueTargets) is lazy without any of these around it: Ruby evaluates a
+// A RESCUE class (parser version 93, rubyRescueTargets) is lazy without any of these around it: Ruby evaluates a
 // rescue clause's exception list only while matching an exception, so the closure that defers it is the clause.
 inline constexpr std::array<std::string_view, 5> kRubyClosureContainers = {
     "method", "singleton_method", "lambda", "block", "do_block"
@@ -1577,7 +1588,7 @@ inline constexpr std::array<std::string_view, 34> kJsImportContainers = {
 // language has is DATA, and a language absent from the table simply has none.
 struct LangImportContainers { Lang lang; std::span<const std::string_view> nodes; };
 
-inline constexpr std::array<LangImportContainers, 8> kImportContainersByLang = { {
+inline constexpr std::array<LangImportContainers, 9> kImportContainersByLang = { {
     { Lang::Python,     kPythonImportContainers },
     { Lang::Rust,       kRustImportContainers   },
     { Lang::CSharp,     kCsharpImportContainers },
@@ -1585,7 +1596,8 @@ inline constexpr std::array<LangImportContainers, 8> kImportContainersByLang = {
     { Lang::JavaScript, kJsImportContainers     },
     { Lang::Bash,       kBashImportContainers   },
     { Lang::Lua,        kLuaImportContainers    },
-    { Lang::Elixir,     kElixirImportContainers }
+    { Lang::Elixir,     kElixirImportContainers },
+    { Lang::Kotlin,     kKotlinImportContainers }
 } };
 
 inline bool isImportContainer( Lang lang, const char* type ) noexcept
@@ -1727,6 +1739,22 @@ DirectiveTarget directiveTargetOf( TSNode n, const char* t, std::string_view src
         // call_expression branch above. The `MyApp.{A, B}` group form returns empty here and is emitted
         // by captureIncludes through elixirAliasGroup, one Include per member.
         target = elixirDirectiveTarget( n, src );
+    }
+    else if( kindIs( t, "import_header" ) && lang == Lang::Kotlin )   // Kotlin `import a.b.C` / `import a.b.*`
+    {
+        // No `source:`/`name:` field (this grammar exposes none on import_header — verified against
+        // node-types.json, same reason kotlinEnclosingScopeOf walks positionally): find the flat
+        // `identifier` child and take its WHOLE span, mirroring Python's dotted-module-head branch
+        // above. That span already covers every dotted segment (`kotlin.math.max`), including the
+        // wildcard case (`import a.b.*` has `identifier`="a.b" plus a separate wildcard_import
+        // sibling this branch does not need to read) and the aliased case (`import a.b.C as D` has
+        // `identifier`="a.b.C" plus a separate import_alias sibling naming "D" — the alias is not
+        // resolved here, matching every other language's import branch above: none of them resolve
+        // a rename either, they all just name the imported target).
+        if( const TSNode id = firstChildOfType( n, "identifier" );  !ts_node_is_null( id ) )
+        {
+            target = importSpecifierText( id, src );
+        }
     }
     else if( kindIs( t, "use_declaration" ) )                  // Rust `use crate::a::b;`
     {
@@ -1999,7 +2027,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
         // rather than the straight-line block it used to be for exactly one reason: an Elixir
         // `alias MyApp.{Bar, Baz}` is ONE directive node naming N modules, so N records come off it and
         // the second one cannot be written by falling through this code once.
-        const auto emitDirective = [ & ]( std::string tgt, bool symbolic, bool lazy )
+        const auto emitDirective = [ & ]( std::string tgt, bool symbolic, bool lazy, bool valueUse )
         {
             // import-role use-site ref: name = the importable final segment (skip when the target has no
             // identifier head, e.g. a relative `../x` whose head strips to empty → nothing to resolve).
@@ -2020,40 +2048,51 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
             // is strict at the start, so that byte reads as outside the class — the nesting Ruby actually uses.
             const bool          superclassSite = ( lang == Lang::Ruby && kindIs( t, "superclass" ) );
             const std::uint32_t siteByte       = superclassSite ? ts_node_start_byte( ts_node_parent( n ) ) : ts_node_start_byte( n );
-            incs.push_back( { fileId, isAngle, lazy, symbolic, siteByte, std::move( tgt ) } );
+            incs.push_back( { fileId, isAngle, lazy, symbolic, siteByte, valueUse, std::move( tgt ) } );
         };
-        // The constant-USE dedupe (parser version 83 for receivers; arguments and rescue classes joined at 89). Key =
+        // The constant-USE dedupe (parser version 83 for receivers; arguments and rescue classes joined at 93). Key =
         // innermost open + the name as written; the FIRST occurrence in source order carries the byte. The lazy bit is
         // the AND over every occurrence (parser version 86): a receiver inside a method written ABOVE the same receiver
         // at class-body level used to leave the directive lazy, and resolve.h's pair rule — one load-time directive
         // makes the pair load-time — then never saw the load-time site, so the structure lost a real dependency and
         // the answer depended on statement order. A later load-time site clears the retained record's bit — and since
-        // 89 the site may be of a different KIND: a `rescue Errors::Bust` (always lazy) above an `Errors::Bust.new` at
+        // 93 the site may be of a different KIND: a `rescue Errors::Bust` (always lazy) above an `Errors::Bust.new` at
         // class-body level is one load-time directive. Declarative directives never come through here: each
         // `include`/`< Base`/`autoload` IS a statement, one record per occurrence.
-        const auto emitConstUse = [ & ]( std::string tgt, bool lazy )
+        // `valueUse` (Include::isValueUse) is the AND over occurrences too, in the other direction: a record stays
+        // import evidence for the call narrow only while EVERY occurrence is a receiver; one argument or rescue
+        // site beside a receiver of the same name leaves the receiver's evidence standing (the bit clears), and a
+        // value-only record never gains it.
+        const auto emitConstUse = [ & ]( std::string tgt, bool lazy, bool valueUse )
         {
             std::string key = std::to_string( frame.openIdx );
             key += '\x1f';
             key += tgt;
             if( auto [ it, fresh ] = seenConstUses.try_emplace( std::move( key ), 0u ); fresh )
             {
-                emitDirective( std::move( tgt ), true, lazy );
+                emitDirective( std::move( tgt ), true, lazy, valueUse );
                 it->second = static_cast<std::uint32_t>( incs.size() - 1 );
             }
-            else if( !lazy )
+            else
             {
-                incs[ it->second ].isLazy = false;
+                if( !lazy )
+                {
+                    incs[ it->second ].isLazy = false;
+                }
+                if( !valueUse )
+                {
+                    incs[ it->second ].isValueUse = false;
+                }
             }
         };
 
         if( !target.empty() && isReceiver )
         {
-            emitConstUse( std::move( target ), isLazy );
+            emitConstUse( std::move( target ), isLazy, false );
         }
         else if( !target.empty() )
         {
-            emitDirective( std::move( target ), isSymbolic, isLazy );
+            emitDirective( std::move( target ), isSymbolic, isLazy, false );
         }
         else if( lang == Lang::Ruby && kindIs( t, "call" ) )
         {
@@ -2061,24 +2100,24 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
             // SOURCE order, each a symbolic Include — the Ruby twin of the Elixir alias group below.
             for( std::string& member : rubyMixinTargets( n, src ) )
             {
-                emitDirective( std::move( member ), true, isLazy );
+                emitDirective( std::move( member ), true, isLazy, false );
             }
         }
         else if( lang == Lang::Ruby && kindIs( t, "argument_list" ) )
         {
-            // Parser version 89: the constant ARGUMENTS of a call / super / yield — lazy exactly when a receiver on
+            // Parser version 93: the constant ARGUMENTS of a call / super / yield — lazy exactly when a receiver on
             // this frame would be (inside a kRubyClosureContainers kind), load-time at class-body or file level.
             for( std::string& constant : rubyArgumentTargets( n, src ) )
             {
-                emitConstUse( std::move( constant ), frame.insideFn );
+                emitConstUse( std::move( constant ), frame.insideFn, true );
             }
         }
         else if( lang == Lang::Ruby && kindIs( t, "rescue" ) )
         {
-            // Parser version 89: the RESCUE classes — lazy whatever the frame says (see rubyRescueTargets).
+            // Parser version 93: the RESCUE classes — lazy whatever the frame says (see rubyRescueTargets).
             for( std::string& constant : rubyRescueTargets( n, src ) )
             {
-                emitConstUse( std::move( constant ), true );
+                emitConstUse( std::move( constant ), true, true );
             }
         }
         else if( lang == Lang::Elixir && kindIs( t, "call" ) )
@@ -2088,7 +2127,7 @@ void captureIncludes( TSNode root, Lang lang, std::uint32_t fileId, std::string_
             // holds exactly as it does for the single-target path.
             for( std::string& member : elixirAliasGroup( n, src ) )
             {
-                emitDirective( std::move( member ), false, isLazy );
+                emitDirective( std::move( member ), false, isLazy, false );
             }
         }
     }

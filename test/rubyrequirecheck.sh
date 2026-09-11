@@ -55,7 +55,7 @@ for t in './sib' 'json' 'tool.rb' 'shared' 'optional_gem'; do
         || no "capture: no <inc t=\"$t\"/> row"
 done
 printf '%s' "$DEPS" | grep -q '<f p="main.rb" includes="13"' \
-    && ok 'capture: exactly 13 directives — `require some_variable` is NOT invented; `autoload :Late, "lib/helper"` IS a directive (parser version 82); `rescue LoadError` is a shown, out-of-tree rescue class (parser version 89)' \
+    && ok 'capture: exactly 13 directives — `require some_variable` is NOT invented; `autoload :Late, "lib/helper"` IS a directive (parser version 82); `rescue LoadError` is a shown, out-of-tree rescue class (parser version 93)' \
     || no "capture: directive count wrong: $( printf '%s' "$DEPS" | grep -oE '<f p="main.rb" includes="[0-9]*"' )"
 
 # ── 2. RESOLUTION ─────────────────────────────────────────────────────────────────────────────────────

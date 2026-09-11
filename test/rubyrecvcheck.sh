@@ -16,7 +16,7 @@
 #      `::A::B`), spelled AS WRITTEN. A receiver whose chain head is not a constant (`repo::Finder`,
 #      `self.class`, an identifier, an ivar) is nothing. A constant that is an ARGUMENT (`raise Errors::Boom`,
 #      `validates_with Foo`) or a RESCUE class is NOT a receiver — it was this round's DISCLOSED FLOOR, and parser
-#      version 89 (test/rubyargcheck.sh) lifted it: both are directives now, sharing this gate's dedupe key.
+#      version 93 (test/rubyargcheck.sh) lifted it: both are directives now, sharing this gate's dedupe key.
 #   2. DEDUPE at extraction, per (file, innermost nesting open, written name): Zeitwerk loads a constant ONCE per
 #      process, on its first reference; the second `User.find` in the same body is not a new dependency. The
 #      FIRST occurrence in source order carries the byte; the lazy bit is the AND over every occurrence — one
@@ -50,7 +50,7 @@
 #
 # Fixture test/rubyrecvfix (crawl root = the fixture; 18 .rb files under lib/):
 #   lib/app/report.rb         Helper (class body, lazy=0), User ×2 (deduped), App::Mailer, Time ×2 (deduped),
-#                             ::Time (own spelling), `raise Errors::Boom` + `rescue Errors::Boom` (one row since 89) → 6 rows
+#                             ::Time (own spelling), `raise Errors::Boom` + `rescue Errors::Boom` (one row since 93) → 6 rows
 #   lib/app/two_scopes.rb     `User.find` under App::Sync AND under App::Admin::Resync — same file, same written
 #                             name, two nestings → TWO directives, to lib/app/user.rb and lib/app/admin/user.rb
 #   lib/app/lazy_levels.rb    Helper at class-body level (lazy=0); Mailer in a lambda, User in a singleton method,
@@ -64,7 +64,7 @@
 #                             constant receiver in it (`Object`) is its one row
 #   lib/app/point.rb          `Point = Struct.new` — the alias is still not indexed (floor), `Struct` is a shown row
 #   lib/decoy/user.rb         Decoy::User — same basename as app/user.rb and user.rb; nothing names it
-#   lib/app/errors.rb         App::Errors::Boom — named only as an argument and a rescue class → report.rb imports it, lazy (89)
+#   lib/app/errors.rb         App::Errors::Boom — named only as an argument and a rescue class → report.rb imports it, lazy (93)
 #
 # Usage:  test/rubyrecvcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyrecvcheck.sh
 # Exit:   0 = clean · 1 = an arm failed · 2 = usage / missing prerequisite
@@ -92,7 +92,7 @@ incs(){ printf '%s' "$DEPS" | grep -oE "<f p=\"$1\" includes=[^>]*>.*" | sed -E 
 
 # ── 1. CAPTURE + DEDUPE: what is a receiver directive, spelled as written, once per (file, nesting, name) ──
 [ "$( incs lib/app/report.rb )" = '<inc t="Helper"/> <inc t="User"/> <inc t="App::Mailer"/> <inc t="Time"/> <inc t="::Time"/> <inc t="Errors::Boom"/> ' ] \
-    && ok 'capture: report.rb = Helper User App::Mailer Time ::Time Errors::Boom — source order, AS WRITTEN, each constant ONCE (User ×2, Time ×2, and since 89 the raise+rescue Errors::Boom ×2 deduped), `::Time` its own spelling' \
+    && ok 'capture: report.rb = Helper User App::Mailer Time ::Time Errors::Boom — source order, AS WRITTEN, each constant ONCE (User ×2, Time ×2, and since 93 the raise+rescue Errors::Boom ×2 deduped), `::Time` its own spelling' \
     || no "capture: report.rb rows: $( incs lib/app/report.rb )"
 printf '%s' "$DEPS" | grep -q '<f p="lib/app/report.rb" includes="6"' \
     && ok 'dedupe: report.rb counts 6 directives, not the 7 receiver sites plus 2 argument/rescue sites it has' \
@@ -136,7 +136,7 @@ expect Mailer \
     'lazy: a receiver inside a LAMBDA (lazy_levels `-> { Mailer.deliver }`) and inside a method body (report) is lazy="1"'
 expect lib/decoy/user.rb:User '' 'mutation control: Decoy::User (same basename as two other User files) has no importer — no basename fallback, no bare-name fallback'
 expect lib/app.rb:App '' 'mutation control: `App::Mailer` is a receiver chain, not a reference to App — lib/app.rb receives nothing'
-expect Boom '<f via="import" p="lib/app/report.rb" lazy="1"/> ' 'floor LIFTED (parser version 89): App::Errors::Boom, named only as a `raise` argument and a `rescue` class inside a method, is a lazy importer edge from report.rb'
+expect Boom '<f via="import" p="lib/app/report.rb" lazy="1"/> ' 'floor LIFTED (parser version 93): App::Errors::Boom, named only as a `raise` argument and a `rescue` class inside a method, is a lazy importer edge from report.rb'
 printf '%s' "$DEPS" | grep -q '<f p="lib/app/self_use.rb" includes="1" afferent="0"' \
     && ok 'mutation control: `Cache.get` inside App::Cache is shown as a directive and dropped as a self-include' \
     || no "mutation control: self_use.rb row wrong: $( frow lib/app/self_use.rb )"
@@ -161,7 +161,7 @@ printf '%s' "$DEPS" | grep -q '<health files="18" dep_files="18" ccd="22" acd="1
     && ok 'structure: ccd counts the 4 load-time edges only — 22 over 18 files, acd 1.2 (with the 9 lazy edges in it would be one tangle)' \
     || no "structure: health: $( printf '%s' "$DEPS" | grep -oE '<health [^/]*/>' )"
 printf '%s' "$DEPS" | grep -qE '<health [^>]*shape="horizontal" lazy_edges="10" dep_langs=' \
-    && ok 'structure: <health lazy_edges="10"> discloses the resolved pairs the structure leaves out (9, plus report.rb→errors.rb since 89); the shape stays horizontal' \
+    && ok 'structure: <health lazy_edges="10"> discloses the resolved pairs the structure leaves out (9, plus report.rb→errors.rb since 93); the shape stays horizontal' \
     || no "structure: lazy_edges=/shape= wrong: $( printf '%s' "$DEPS" | grep -oE '<health [^/]*/>' )"
 [ "$( printf '%s' "$DEPS" | grep -oE '<godfiles [^>]*>.*</godfiles>' | sed 's|</godfiles>.*||' )" = '<godfiles total="2" shown="2" capped="0"><f p="lib/app/helper.rb" afferent="3"/><f p="lib/user.rb" afferent="1"/>' ] \
     && ok 'structure: godfiles = the two load-time importees (helper.rb ×3, lib/user.rb ×1); App::User with its 4 lazy importers is not a god file' \

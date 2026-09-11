@@ -97,13 +97,16 @@ HS="$( "$BIN" "$ROOT" --hotspots 2>/dev/null | grep -oE '<hotspots [^>]*' )"
 hsattr(){ printf '%s' "$HS" | grep -oE " $1=\"[0-9]+\"" | grep -oE '[0-9]+'; }
 HS_FILES="$( hsattr files )"; HS_RANKED="$( hsattr ranked )"
 HS_NOCHURN="$( hsattr unranked_no_churn )"; HS_NOCX="$( hsattr unranked_no_complexity )"
+# extent honesty (test/extentcheck.sh arm G): a FOURTH bucket, absent when 0 — files whose every scorable function
+# failed a containment check. This repo holds two such fixtures (test/extentfix), so the identity needs the term.
+HS_SUSPECT="$( hsattr unranked_extent_suspect )"; HS_SUSPECT="${HS_SUSPECT:-0}"
 if [ -z "$HS_FILES" ] || [ -z "$HS_RANKED" ] || [ -z "$HS_NOCHURN" ] || [ -z "$HS_NOCX" ]; then
     no "--hotspots does not carry the ranked= denominator + both exclusion counts: $HS"
 else
-    SUM=$(( HS_RANKED + HS_NOCHURN + HS_NOCX ))
+    SUM=$(( HS_RANKED + HS_NOCHURN + HS_NOCX + HS_SUSPECT ))
     [ "$SUM" = "$HS_FILES" ] \
-        && ok "--hotspots: ranked($HS_RANKED) + no_churn($HS_NOCHURN) + no_complexity($HS_NOCX) = files($HS_FILES) — the partition is exact" \
-        || no "--hotspots partition does not reconcile: $HS_RANKED + $HS_NOCHURN + $HS_NOCX = $SUM, files=$HS_FILES"
+        && ok "--hotspots: ranked($HS_RANKED) + no_churn($HS_NOCHURN) + no_complexity($HS_NOCX) + extent_suspect($HS_SUSPECT) = files($HS_FILES) — the partition is exact" \
+        || no "--hotspots partition does not reconcile: $HS_RANKED + $HS_NOCHURN + $HS_NOCX + $HS_SUSPECT = $SUM, files=$HS_FILES"
     MAP_FILES="$( "$BIN" "$ROOT" --top-k=1 2>/dev/null | grep -oE 'files=[0-9]+' | head -1 | grep -oE '[0-9]+' )"
     [ -n "$MAP_FILES" ] && [ "$MAP_FILES" = "$HS_FILES" ] \
         && ok "--hotspots files=\"$HS_FILES\" is the same denominator the default map reports" \

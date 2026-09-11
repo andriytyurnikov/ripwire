@@ -242,9 +242,9 @@ inline bool cliRefusesFileList( const IngestResult& ing, std::string_view flag, 
 // version matched on (scope, name) alone under a majority guard, and `--situ` on this repo's own 17-file
 // diff answered `test/w2verbscheck.sh (10 shared symbols)` — every shell gate here defines `ok`, `no`,
 // `fail`, `run`. Those files all DEFINE those names; none DECLARES them, so they are not a decl/def pair and
-// the corrected rule drops them to zero shared. A symbol is a DEFINITION when its span carries a body
-// (`sigEndByte < endByte`, the same test quality.h's body-shaped checks use) and a pure DECLARATION when it
-// does not; a shared name counts only when the two sides disagree about which it is.
+// the corrected rule drops them to zero shared. A symbol is a DEFINITION when model.h's isDefinitionNotDeclaration
+// says so — its span carries a body, or it is a Kotlin type, which has no forward declaration to pair with — and a
+// pure DECLARATION otherwise; a shared name counts only when the two sides disagree about which it is.
 //
 // THE SECOND GUARD is a MAJORITY test, per (changed file, partner) PAIR and never in aggregate — the same
 // dogfooding run showed why: an aggregate `min()` taken against the LARGEST changed file makes the bar
@@ -270,9 +270,9 @@ inline std::vector<DeclDefPartner> declDefPartners( const IngestResult& ing, con
         ++symsPerFile[ s.fileId ];
     }
 
-    // a symbol whose span carries a body is a DEFINITION; one whose span ends at its signature is a pure
-    // DECLARATION. The one test, spelled once, so both passes below cannot read it differently.
-    const auto isDefinition = []( const Symbol& s ) { return s.sigEndByte < s.endByte; };
+    // the house definition test (model.h isDefinitionNotDeclaration), spelled once, so both passes below cannot read it
+    // differently.
+    const auto isDefinition = []( const Symbol& s ) { return isDefinitionNotDeclaration( s ); };
 
     // Every CHANGED symbol, indexed by its (scope \x1f name) identity. \x1f cannot occur in an identifier,
     // so the join is exact and needs no second field.
