@@ -47,15 +47,10 @@ TSNode elixirArguments( TSNode node ) noexcept
     {
         return {};
     }
-    for( std::uint32_t childId = 0; childId < ts_node_named_child_count( node ); ++childId )
-    {
-        const TSNode child = ts_node_named_child( node, childId );
-        if( std::strcmp( ts_node_type( child ), "arguments" ) == 0 )
-        {
-            return child;
-        }
-    }
-    return {};
+    // O(children): tree-sitter-elixir accepts comments between a call's head and its do-block and splices
+    // them into the call node itself — 16 000 of them measured 82x under elixirBody's twin of this scan
+    // (test/childwalkscalecheck.sh, arm B30, attributed by `sample`; the rule is on src/infra/tschildren.h)
+    return firstChildOfKind( node, /*namedOnly=*/true, { "arguments" } );
 }
 
 /// Return the first direct call argument, or a null node for an absent or empty argument list.
@@ -75,43 +70,45 @@ TSNode elixirKeywordValue( TSNode node, std::string_view key, std::string_view s
     {
         return {};
     }
-    for( std::uint32_t argId = 0; argId < ts_node_named_child_count( args ); ++argId )
+    // O(children) at both levels: `def f(x), # … do: x` puts the comments in the arguments (81x at 16 000,
+    // test/childwalkscalecheck.sh arm B29). Two cursors: the pair walk runs while the argument walk is open.
+    TSNode      value   = {};
+    bool        matched = false;
+    ChildCursor argCursor( args );
+    ChildCursor pairCursor( args );
+    forEachNamedChild( args, argCursor.cur, [ & ]( TSNode arg )
     {
-        const TSNode arg = ts_node_named_child( args, argId );
         if( std::strcmp( ts_node_type( arg ), "keywords" ) != 0 )
         {
-            continue;
+            return true;
         }
-        for( std::uint32_t pairId = 0; pairId < ts_node_named_child_count( arg ); ++pairId )
+        forEachNamedChild( arg, pairCursor.cur, [ & ]( TSNode pair )
         {
-            const TSNode pair = ts_node_named_child( arg, pairId );
             auto found = nodeTextOf( fieldChild( pair, NodeField::Key ), src );
             while( !found.empty() && std::isspace( static_cast<unsigned char>( found.back() ) ) )
             {
                 found.remove_suffix( 1 );
             }
-            if( found == key )
+            if( found != key )
             {
-                return fieldChild( pair, NodeField::Value );
+                return true;
             }
-        }
-    }
-    return {};
+            value   = fieldChild( pair, NodeField::Value );
+            matched = true;
+            return false;
+        } );
+        return !matched;
+    } );
+    return value;
 }
 
 /// Find a definition's direct do-block or do-keyword value without adopting an ancestor's body.
 /// node must be non-null; src must contain its source span. Return a null node when no body exists.
 TSNode elixirBody( TSNode node, std::string_view src ) noexcept
 {
-    for( std::uint32_t childId = 0; childId < ts_node_named_child_count( node ); ++childId )
-    {
-        const TSNode child = ts_node_named_child( node, childId );
-        if( std::strcmp( ts_node_type( child ), "do_block" ) == 0 )
-        {
-            return child;
-        }
-    }
-    return elixirKeywordValue( node, "do:", src );
+    // O(children) — arm B30 in test/childwalkscalecheck.sh; the note is on elixirArguments
+    const TSNode block = firstChildOfKind( node, /*namedOnly=*/true, { "do_block" } );
+    return ts_node_is_null( block ) ? elixirKeywordValue( node, "do:", src ) : block;
 }
 
 /// Count syntactic parameters in an ordinary or guarded definition head, saturating at UINT16_MAX.
@@ -152,6 +149,8 @@ bool elixirKeepCapture( TSNode role, TSNode name, bool isDef, SymKind kind, std:
             {
                 return false; // only complete, ordinary string titles have a static display name here
             }
+            // indexed on purpose: a string's children come from the external scanner, which owns every byte
+            // between the quotes, so no comment token can be lexed into this list (src/infra/tschildren.h)
             for( std::uint32_t childId = 0; childId < ts_node_named_child_count( name ); ++childId )
             {
                 if( std::strcmp( ts_node_type( ts_node_named_child( name, childId ) ), "interpolation" ) == 0 )

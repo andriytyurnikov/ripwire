@@ -339,10 +339,12 @@ cmp -s "$TMP/d1" "$TMP/d2" && ok "determinism: two runs byte-identical" || no "d
 hr="$( hitsOf "$TMP/d1" )"
 [ "${hr:-0}" -ge 1 ] 2>/dev/null && ok "found ts_node_child(\$A, \$B) in ripwire's own src (hits=$hr)" \
     || no "ts_node_child(\$A, \$B) found nothing in src/ — it is called there (presence guard below)"
-# (the 2026-08-29 split moved ingest.cpp's tree walkers into its ingest_*.h sections — the probe's
-# ground truth lives in ingest_sidecap.h now)
-grep -qF 'ts_node_child(' "$ROOT/src/ingest_sidecap.h" && ok "presence guard: src/ingest_sidecap.h really calls ts_node_child(" \
-    || no "presence guard: src/ingest_sidecap.h no longer calls ts_node_child( — pick another probe"
+# (the 2026-08-29 split moved ingest.cpp's tree walkers into its ingest_*.h sections; the 2026-09-10
+# child-walk lanes then converted every UNBOUNDED indexed call in ingest_sidecap.h to a cursor, so the
+# probe's ground truth is ingest_binds.h now — its fixed-index probes such as `ts_node_child( value, 0 )`
+# are the form src/infra/tschildren.h keeps, and they stay)
+grep -qF 'ts_node_child(' "$ROOT/src/ingest_binds.h" && ok "presence guard: src/ingest_binds.h really calls ts_node_child(" \
+    || no "presence guard: src/ingest_binds.h no longer calls ts_node_child( — pick another probe"
 if command -v xmllint >/dev/null 2>&1; then
     xmllint --noout "$TMP/d1" 2>"$TMP/xmlerr" && ok "output is well-formed XML" || no "xmllint rejected the output: $( head -c 200 "$TMP/xmlerr" )"
 else

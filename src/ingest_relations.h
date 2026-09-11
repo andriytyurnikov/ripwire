@@ -198,10 +198,12 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
     std::vector<std::string> params;
     if( const TSNode paramsNode = fieldChild( defineNode, NodeField::Parameters ); !ts_node_is_null( paramsNode ) )
     {
-        const uint32_t pc = ts_node_child_count( paramsNode );
-        for( uint32_t i = 0; i < pc; ++i )
+        // O(children): a preproc_params list holds every block comment written between its names — extras
+        // land in the child array (src/infra/tschildren.h); 16 000 of them measured 60x the identical flood
+        // outside the #define (test/childwalkscalecheck.sh, arm B13).
+        ChildCursor cursor( paramsNode );
+        forEachChild( paramsNode, cursor.cur, [ & ]( TSNode ch )
         {
-            const TSNode ch = ts_node_child( paramsNode, i );
             if( kindIs( ts_node_type( ch ), "identifier" ) )
             {
                 const uint32_t pa = ts_node_start_byte( ch );
@@ -211,7 +213,8 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
                     params.emplace_back( src.substr( pa, pb - pa ) );
                 }
             }
-        }
+            return true;
+        } );
     }
     const auto isParam = [ & ]( std::string_view w ) noexcept
     {
@@ -492,17 +495,19 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             {
                 // Not a plain type_identifier type — could be template, qualified, etc.
                 // Walk the type node's children looking for the innermost type_identifier.
+                // O(children): a qualified_identifier `ns /*…*/ ::T` owns every comment between its tokens —
+                // 16 000 of them measured 16x the identical flood after the field (childwalkscalecheck B14).
+                // `cursor` is free here: the enclosing loops walk materialised vectors, not the cursor.
                 bool found = false;
-                const uint32_t tc2 = ts_node_child_count( typeNode );
-                for( uint32_t k = 0; k < tc2 && !found; ++k )
+                forEachChild( typeNode, cursor.cur, [ & ]( TSNode tc3 )
                 {
-                    const TSNode tc3 = ts_node_child( typeNode, k );
                     if( kindIs( ts_node_type( tc3 ), "type_identifier" ) )
                     {
                         const uint32_t ta = ts_node_start_byte( tc3 ), tb = ts_node_end_byte( tc3 );
                         if( ta < tb && tb <= src.size() ) { typeName = std::string( src.substr( ta, tb - ta ) ); found = true; }
                     }
-                }
+                    return !found;
+                } );
                 if( !found )
                 {
                     continue;
@@ -546,17 +551,17 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             else if( kindIs( dt, "reference_declarator" ) || kindIs( dt, "pointer_declarator" ) )
             {
                 declIsRefOrPtr = true;
-                // Walk the declarator's children to find the field_identifier
-                const uint32_t dc = ts_node_child_count( decl );
-                for( uint32_t k = 0; k < dc; ++k )
+                // Walk the declarator's children to find the field_identifier — O(children): `T & /*…*/ m` puts
+                // the comments in the reference_declarator (14x at 16 000, childwalkscalecheck B15)
+                forEachChild( decl, cursor.cur, [ & ]( TSNode dchild )
                 {
-                    const TSNode dchild = ts_node_child( decl, k );
                     if( kindIs( ts_node_type( dchild ), "field_identifier" ) )
                     {
                         const uint32_t da = ts_node_start_byte( dchild ), db = ts_node_end_byte( dchild );
-                        if( da < db && db <= src.size() ) { fieldName = std::string( src.substr( da, db - da ) ); break; }
+                        if( da < db && db <= src.size() ) { fieldName = std::string( src.substr( da, db - da ) ); return false; }
                     }
-                }
+                    return true;
+                } );
             }
             else
             {
@@ -651,21 +656,10 @@ inline std::string csharpUsingTarget( TSNode usingNode, std::string_view src )
         return importSpecifierText( aliasType, src );
     }
 
-    const uint32_t cc = ts_node_child_count( usingNode );
-    for( uint32_t k = 0; k < cc; ++k )
-    {
-        const TSNode c = ts_node_child( usingNode, k );
-        if( !ts_node_is_named( c ) )
-        {
-            continue;
-        }
-        const char* ct = ts_node_type( c );
-        if( kindIs( ct, "qualified_name" ) || kindIs( ct, "identifier" ) || kindIs( ct, "generic_name" ) || kindIs( ct, "alias_qualified_name" ) )
-        {
-            return importSpecifierText( c, src );
-        }
-    }
-    return {};
+    // O(children): `using /*…*/ System.Text;` puts the comments in the using_directive itself — 16 000 of
+    // them measured 36x the identical flood inside a method body (test/childwalkscalecheck.sh, arm B16)
+    const TSNode c = firstChildOfKind( usingNode, /*namedOnly=*/true, { "qualified_name", "identifier", "generic_name", "alias_qualified_name" } );
+    return ts_node_is_null( c ) ? std::string {} : importSpecifierText( c, src );
 }
 
 // csharpUsingTarget's PHP sibling: the written specifier of a `use` statement. Node shapes read off
@@ -688,39 +682,39 @@ inline std::string csharpUsingTarget( TSNode usingNode, std::string_view src )
 // is top-level and unaffected). Both are misses, never wrong answers.
 inline std::string phpUseTarget( TSNode useNode, std::string_view src )
 {
-    const uint32_t cc = ts_node_child_count( useNode );
-    for( uint32_t k = 0; k < cc; ++k )
+    // O(children) at both levels: `use /*…*/ Foo\Bar;` floods the namespace_use_declaration (54x at 16 000,
+    // test/childwalkscalecheck.sh arm B17), and the same comments inside a `{A, B}` group would flood the
+    // clause. Two cursors, because the clause walk runs while the declaration walk is mid-iteration.
+    std::string target;
+    ChildCursor clauses( useNode );
+    ChildCursor names( useNode );
+    forEachNamedChild( useNode, clauses.cur, [ & ]( TSNode c )
     {
-        const TSNode c = ts_node_child( useNode, k );
-        if( !ts_node_is_named( c ) )
-        {
-            continue;
-        }
         const char* ct = ts_node_type( c );
         if( kindIs( ct, "namespace_name" ) )      // the `use Foo\{A, B}` group prefix
         {
-            return importSpecifierText( c, src );
+            target = importSpecifierText( c, src );
+            return false;
         }
         if( !kindIs( ct, "namespace_use_clause" ) )
         {
-            continue;
+            return true;
         }
-        const uint32_t gc = ts_node_child_count( c );
-        for( uint32_t j = 0; j < gc; ++j )
+        bool hit = false;
+        forEachNamedChild( c, names.cur, [ & ]( TSNode g )
         {
-            const TSNode g = ts_node_child( c, j );
-            if( !ts_node_is_named( g ) )
-            {
-                continue;
-            }
             const char* gt = ts_node_type( g );
             if( kindIs( gt, "qualified_name" ) || kindIs( gt, "name" ) )
             {
-                return importSpecifierText( g, src );
+                target = importSpecifierText( g, src );
+                hit    = true;
+                return false;
             }
-        }
-    }
-    return {};
+            return true;
+        } );
+        return !hit;
+    } );
+    return target;
 }
 
 // TS/JS `require("./x")` and dynamic `import("./x")` → the written specifier, or empty when this call
@@ -750,16 +744,10 @@ inline std::string jsModuleLoadTarget( TSNode n, std::string_view src )
         return {};
     }
 
-    TSNode   only  = { };
-    uint32_t named = 0;
-    for( uint32_t k = 0, cc = ts_node_child_count( ar ); k < cc; ++k )
-    {
-        if( const TSNode c = ts_node_child( ar, k );  ts_node_is_named( c ) )
-        {
-            only = c;
-            ++named;
-        }
-    }
+    TSNode      only  = { };
+    uint32_t    named = 0;
+    ChildCursor cursor( ar );   // O(children): `require( /*…*/ 'x' )` — 54x at 16 000 (childwalkscalecheck B18)
+    forEachNamedChild( ar, cursor.cur, [ & ]( TSNode c ) { only = c; ++named; return true; } );
     if( named != 1 || !kindIs( ts_node_type( only ), "string" ) )
     {
         return {};
@@ -902,6 +890,8 @@ inline std::string stringLiteralText( TSNode str, std::string_view src )
     {
         return {};   // `require(mod)`, `require("a" .. b)`, `require "#{x}"` — no single literal to read
     }
+    // Indexed on purpose: a string's children come from the external scanner, which owns every byte between
+    // the delimiters, so no comment token is ever lexed into this list (src/infra/tschildren.h's one-line test).
     for( std::uint32_t i = 0; i < ts_node_named_child_count( str ); ++i )
     {
         const TSNode kid = ts_node_named_child( str, i );
@@ -1001,21 +991,26 @@ inline bool rubyNamespaceOnly( TSNode defNode ) noexcept
     {
         return false;   // an empty open defines its constant
     }
-    bool nestedOpen = false;
-    const std::uint32_t n = ts_node_named_child_count( body );
-    for( std::uint32_t i = 0; i < n; ++i )
+    // O(children): the scan already skips `comment` by kind, which is the author knowing they land in this
+    // list — 16 000 of them measured 58x the identical flood after the class (childwalkscalecheck B19)
+    bool        nestedOpen = false;
+    bool        ownBody    = false;
+    ChildCursor cursor( body );
+    forEachNamedChild( body, cursor.cur, [ & ]( TSNode c )
     {
-        const char* ct = ts_node_type( ts_node_named_child( body, i ) );
+        const char* ct = ts_node_type( c );
         if( kindIs( ct, "class" ) || kindIs( ct, "module" ) )
         {
             nestedOpen = true;
         }
         else if( !kindIs( ct, "comment" ) )
         {
-            return false;   // a method, a call, a constant, `class << self` — a body of its own
+            ownBody = true;   // a method, a call, a constant, `class << self` — a body of its own
+            return false;
         }
-    }
-    return nestedOpen;
+        return true;
+    } );
+    return !ownBody && nestedOpen;
 }
 
 // The text of a constant-shaped node — `constant` (`Base`) or `scope_resolution` (`A::B`, `::Top`) — or
@@ -1118,14 +1113,15 @@ inline std::vector<std::string> rubyMixinTargets( TSNode n, std::string_view src
     {
         return out;
     }
-    const std::uint32_t count = ts_node_named_child_count( args );
-    for( std::uint32_t i = 0; i < count; ++i )
+    ChildCursor cursor( args );   // O(children): `include A, # … B` — 58x at 16 000 (childwalkscalecheck B20)
+    forEachNamedChild( args, cursor.cur, [ & ]( TSNode a )
     {
-        if( std::string c = rubyConstantText( ts_node_named_child( args, i ), src ); !c.empty() )
+        if( std::string c = rubyConstantText( a, src ); !c.empty() )
         {
             out.push_back( std::move( c ) );
         }
-    }
+        return true;
+    } );
     return out;
 }
 
@@ -1260,20 +1256,19 @@ inline std::vector<std::string> elixirAliasGroup( TSNode n, std::string_view src
         return out;
     }
     const std::string_view prefix = nodeTextOf( left, src );
-    for( std::uint32_t i = 0; i < ts_node_named_child_count( right ); ++i )
+    ChildCursor            cursor( right );   // O(children): `{A, # … B}` — 86x at 16 000 (childwalkscalecheck B21)
+    forEachNamedChild( right, cursor.cur, [ & ]( TSNode member )
     {
-        const TSNode member = ts_node_named_child( right, i );
-        if( !kindIs( ts_node_type( member ), "alias" ) )
+        if( kindIs( ts_node_type( member ), "alias" ) )
         {
-            continue;
+            const std::string_view name = nodeTextOf( member, src );
+            if( !prefix.empty() && !name.empty() )
+            {
+                out.emplace_back( std::string( prefix ) + "." + std::string( name ) );
+            }
         }
-        const std::string_view name = nodeTextOf( member, src );
-        if( prefix.empty() || name.empty() )
-        {
-            continue;
-        }
-        out.emplace_back( std::string( prefix ) + "." + std::string( name ) );
-    }
+        return true;
+    } );
     return out;
 }
 
