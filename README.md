@@ -7,32 +7,6 @@
 [![Runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-none-blue.svg)](THIRD_PARTY.md)
 [![Slides](https://img.shields.io/badge/slides-the%20showcase%20deck-56d6e8.svg)](present/ripwire-showcase.pdf)
 
-**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
-Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
-through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s. Declined calls, derailed parses
-and cut answers now say so, instead of returning a quiet zero.
-
-**[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
-contributors named there; this release is largely theirs.
-
----
-
-> **Want to help?** ripwire is six weeks old and there is a lot worth doing. Some of what we know needs doing is
-> written up as a starter kit: the research is done, the file and line pointers are in the prompt, and the prompt
-> writes a plan and stops, so we can agree the approach before you write any code.
->
-> Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
-> further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a
-> helper quietly reinvented — and handing that back while the code is still being written. That is the most direct
-> lever we know on whether an agent writes code you would keep, and it is the part we would most like help thinking
-> about.
->
-> Browse [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) — three are marked
-> [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue). Languages, performance,
-> correctness, fuzzing, docs: pick what you enjoy.
-
----
-
 # Rip'n Fast. Fewer Tokens. Better Code.
 
 **The ripgrep of AI context. Give your coding agent a map before it reads the repo.**
@@ -71,6 +45,37 @@ claim cannot quietly drift. The row-by-row ledger is
 **Languages:** Rust · C++ · Objective-C/C++ · C · Metal · CUDA · Python · Go · Swift · TypeScript ·
 JavaScript · Java · Ruby · PHP · Lua · Elixir · Dart · Kotlin · Bash · C# · JSON · TOML · YAML · Markdown — see
 [language support and limits](#languages).
+
+**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
+Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
+through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s. Declined calls, derailed parses
+and cut answers now say so, instead of returning a quiet zero.
+
+**[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
+contributors named there; this release is largely theirs.
+
+*The first commit, on 2026-06-19, was 34 files: a tree-sitter ingest, a symbol graph, Personalized PageRank, a
+minified XML map, and a gate that demanded two runs be byte-identical. It shipped three MCP verbs that day —
+`analyze`, `find_symbol`, `find_referencing_symbols` — and all three are still here, among 31.*
+
+---
+
+> **Want to help?** ripwire is twelve weeks old — first commit 2026-06-19, public since 2026-07-31 — and there is a
+> lot worth doing. Some of what we know needs doing is written up as a starter kit: the research is done, the file
+> and line pointers are in the prompt, and the prompt writes a plan and stops, so we can agree the approach before
+> you write any code.
+>
+> Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
+> further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a
+> helper quietly reinvented — and handing that back while the code is still being written. That is the most direct
+> lever we know on whether an agent writes code you would keep, and it is the part we would most like help thinking
+> about.
+>
+> Browse [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) — three are marked
+> [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue). Languages, performance,
+> correctness, fuzzing, docs: pick what you enjoy.
+
+---
 
 <p align="center"><img src="docs/assets/no-deps.svg"
   alt="No API key. No embeddings. No index server. No daemon." width="470"></p>
