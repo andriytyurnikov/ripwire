@@ -1793,7 +1793,13 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // FOLLOW-UP for whoever owns ingest.{h,cpp}: promote the two constants into ingest.h and turn the gate into a
 // `static_assert` — this lane's file boundary forbade editing those files.
 constexpr std::uint32_t kIngestCacheVersionMirror   = 20;   // MUST equal ingest.cpp's kCacheVersion (gated)
-constexpr std::uint32_t kIngestParserVerMirror    = 91;   // MUST equal ingest.cpp's kParserVer   (gated)
+constexpr std::uint32_t kIngestParserVerMirror    = 92;   // MUST equal ingest.cpp's kParserVer   (gated)
+                                                          // 92 = 2026-09-11 (yaml unsigned-char, PR #140): the yaml scanner's
+                                                          //    status type. SCN_FAIL (-1) returned through plain `char` came
+                                                          //    back as 255 wherever `char` is unsigned (aarch64 Linux, the
+                                                          //    linux-arm64 release asset), parsing a malformed %-escape in a
+                                                          //    tag differently from every signed-`char` build. See
+                                                          //    ingest_cache.h's kParserVer note.
                                                           // 91 = 2026-09-11 (Kotlin, PR #126): a twenty-fourth grammar, its
                                                           //    extraction arms, two scanner patches that change a parse, and the
                                                           //    string-nesting refusal. See ingest_cache.h's kParserVer note.
