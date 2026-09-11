@@ -357,6 +357,13 @@ struct Symbol
     // signal is the other half, and filter.h::isTestSymbol is the ONE predicate that ORs them — every
     // symbol-keyed consumer of the test partition must route through it so the two halves cannot drift.
     std::uint8_t  testScope     = 0;
+    // EXTENT HONESTY (src/extentsuspect.h, gate test/extentcheck.sh): the containment rules this def's extent,
+    // scope or recovered kind FAILED, as extent::kSuspect* bits (name/head/scope/error); 0 ⇒ every rule held.
+    // Computed at LOAD from facts the cache already carries (the extents, the name byte, the `recovered`
+    // extraction bit), in ingest_model.h::markExtentSuspects — never persisted itself, so a rule change needs no
+    // parser bump. Rows stay; surfaces DISCLOSE it as extent_suspect="name,head,scope,error" and --hotspots keeps
+    // a flagged def's complexity out of its ranking. Takes the last free pad byte (the static_assert below holds).
+    std::uint8_t  extentSuspect = 0;
     std::string   name;                // final identifier segment
     std::string   scope;               // enclosing class/namespace name (C++), for canonical scope::name resolution; "" if none
 };
@@ -902,6 +909,9 @@ struct FileHealth
                                     // one byte per invalid UTF-8 sequence start, same caveat as errNodes
     std::uint32_t fileBytes = 0;   // the parsed byte length; 0 ⇒ NOT MEASURED (see above)
     std::uint32_t wsBytes   = 0;   // whitespace bytes in the leading min(fileBytes, 4096) sample
+    std::uint32_t macroBlanked = 0;   // member-macro re-parse (src/macroreparse.h): invocations blanked for the ADOPTED
+                                      // parse this file's symbols came from; 0 ⇒ the first parse was kept. errNodes and
+                                      // errBytes above always describe the parse extraction actually read.
 };
 
 // Output of ingestion. Deterministic: files sorted lexicographically, symbol ids assigned
@@ -998,6 +1008,19 @@ inline bool fileParseDegraded( const IngestResult& ing, std::size_t fileIndex ) 
     return fileIndex < ing.fileHealth.size()
         && ing.fileHealth[ fileIndex ].fileBytes > 0
         && ing.fileHealth[ fileIndex ].errNodes  > 0;
+}
+
+// The member-macro re-parse's ONE per-file predicate (src/macroreparse.h): this file's symbols come from a re-parse with
+// member macro invocations blanked. The skipped verb rows it (why=macro-blanked); every count below is of this.
+inline bool isMacroBlankedHealth( const FileHealth& health ) noexcept
+{
+    return health.macroBlanked > 0;
+}
+
+// ...and its corpus count: macro_blanked_files= on the map and --json headers (the skipped verb's root counts the same rows).
+inline std::size_t macroBlankedFileCount( const IngestResult& ing ) noexcept
+{
+    return std::size_t( std::ranges::count_if( ing.fileHealth, isMacroBlankedHealth ) );
 }
 
 // The macro-edges round's honesty post-pass: a call-SHAPED reference (bare name, no receiver, no explicit
