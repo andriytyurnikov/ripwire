@@ -7,6 +7,32 @@
 [![Runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-none-blue.svg)](THIRD_PARTY.md)
 [![Slides](https://img.shields.io/badge/slides-the%20showcase%20deck-56d6e8.svg)](present/ripwire-showcase.pdf)
 
+**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
+Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
+through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s. Declined calls, derailed parses
+and cut answers now say so, instead of returning a quiet zero.
+
+**[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
+contributors named there; this release is largely theirs.
+
+---
+
+> **Want to help?** ripwire is six weeks old and there is a lot worth doing. Some of what we know needs doing is
+> written up as a starter kit: the research is done, the file and line pointers are in the prompt, and the prompt
+> writes a plan and stops, so we can agree the approach before you write any code.
+>
+> Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
+> further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a
+> helper quietly reinvented — and handing that back while the code is still being written. That is the most direct
+> lever we know on whether an agent writes code you would keep, and it is the part we would most like help thinking
+> about.
+>
+> Browse [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) — three are marked
+> [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue). Languages, performance,
+> correctness, fuzzing, docs: pick what you enjoy.
+
+---
+
 # Rip'n Fast. Fewer Tokens. Better Code.
 
 **The ripgrep of AI context. Give your coding agent a map before it reads the repo.**
