@@ -541,6 +541,12 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 continue;
             }
 
+            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing, and itemized in --skipped (ingest_prewarm.h)
+            if( refuseKotlinNesting( *le, bytes, path.c_str(), fileId, scan ) )
+            {
+                continue;
+            }
+
             if( le->lang == Lang::Markdown )
             {
                 // hostile/degenerate markdown guard — MEMORY-SAFETY load-bearing, the yaml pair's
@@ -866,6 +872,7 @@ inline RawFacts runParsePool( IngestResult& result, const char* rootDir, std::st
         // Skips the ~11ms / 7 MB serialization+write on a no-change warm run.
         if( !cacheFile.empty() && dirty.load() )
         {
+            forgetNestRefusalsForCache( scan );   // a refused file is written UNKNOWN, so a warm run re-refuses it (ingest_prewarm.h)
             saveCache( std::string( cacheFile ), rootDir, result.files, scan.hash, scan.statSize, scan.statMtime, scan.statCtime, scan.health, raw.defs, raw.refs, raw.incs, raw.binds, raw.ffis, raw.routeDefs, raw.routeUses, raw.constOpens, captureValueUses );
         }
     }

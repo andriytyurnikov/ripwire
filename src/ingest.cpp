@@ -163,6 +163,7 @@ extern "C"
     const TSLanguage* tree_sitter_lua( void );
     const TSLanguage* tree_sitter_elixir( void );
     const TSLanguage* tree_sitter_dart( void );
+    const TSLanguage* tree_sitter_kotlin( void );
 }
 
 // ── the ingest-family sections (2026-08-29 split; ingest() phases followed 2026-08-30) ──────────────
@@ -291,6 +292,7 @@ IngestResult ingest( const char* rootDir, const std::vector<std::string>& exclud
     RawFacts raw = runParsePool( result, rootDir, cacheFile, captureValueUses, cache, cacheStats, scan, prewarm );
 
     result.fileHealth = std::move( scan.health );   // §L1: after saveCache, before the (unmeasured) doc pass
+    collectNestRefusals( scan, result );             // the Kotlin nesting guard's refusals, as --skipped rows (ingest_prewarm.h)
 
     // ── doc post-pass (P1-B): every collected document file (notebook/html/csv/…) becomes a docText
     //    override + one whole-file Section node — parallel extract, deterministic ascending-fileId merge

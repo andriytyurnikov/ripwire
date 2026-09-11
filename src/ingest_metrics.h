@@ -36,6 +36,11 @@ inline bool isDecisionType( const char* t, Lang lang ) noexcept
            || kindIs( t, "for_in_statement" )   || kindIs( t, "for_expression" )
            || kindIs( t, "while_statement" )    || kindIs( t, "while_expression" )
            || ( kindIs( t, "do_statement" ) && lang != Lang::Lua ) || kindIs( t, "loop_expression" )
+           || ( lang == Lang::Kotlin && kindIs( t, "do_while_statement" ) )   // Kotlin's own do/while spelling —
+                                                                             // lang test first so every other
+                                                                             // language short-circuits on one
+                                                                             // byte compare (this chain runs per
+                                                                             // named node of every def body)
            // Lua: `repeat … until c` is a real post-test loop, and `elseif c then` is the flat +1 arm of
            // an if-chain (a SIBLING statement in this grammar, not a child clause, so cc_walk's else-if
            // flattening below never sees it and it must be counted here).
@@ -49,6 +54,18 @@ inline bool isDecisionType( const char* t, Lang lang ) noexcept
            || kindIs( t, "catch_clause" )       || kindIs( t, "except_clause" )
            || kindIs( t, "conditional_expression" ) || kindIs( t, "ternary_expression" )
            || kindIs( t, "boolean_operator" )    // Python `and`/`or`
+           // Kotlin: each `when { }` arm is a `when_entry`, the per-arm decision — matching how C#'s
+           // switch_expression_arm and Ruby's `when` are counted, NOT the `when_expression` head (that is
+           // a nesting container, see cc_isNestingControl, the same split as Ruby's case/case_match vs
+           // when/in_clause). `catch_block` is this grammar's OWN spelling of a catch handler (not
+           // `catch_clause`) — but `catch_block` is ALSO a real node-type spelling in the vendored Swift
+           // and Elixir grammars, where it is a PRE-EXISTING, disclosed gap (neither language's catch is
+           // counted today, matching how Elixir's try/rescue routes entirely through the separate
+           // elixirDecision keyword channel below, not through this predicate). Un-guarded, this string
+           // would silently start counting Swift's and Elixir's catch too — an undisclosed behavior change
+           // to two already-shipped languages, out of scope for the Kotlin port. `lang` scopes it to Kotlin
+           // only, same carve-out shape as the Lua `do_statement` guard above.
+           || ( lang == Lang::Kotlin && ( kindIs( t, "when_entry" ) || kindIs( t, "catch_block" ) ) )
            // Ruby (tree-sitter-ruby node kinds): block `if`/`elsif`/`unless`/`while`/`until`/`for`, the
            // trailing modifier forms (`x if a`), each `when`/`in_clause` arm, `rescue`, and the `? :`
            // `conditional`. Ruby's `case`/`case_match` head is a nesting container (see cc_isNestingControl),
@@ -90,6 +107,7 @@ inline bool cc_isNestingControl( const char* t, Lang lang ) noexcept
            || kindIs( t, "for_in_statement" )  || kindIs( t, "for_expression" )
            || kindIs( t, "while_statement" )   || kindIs( t, "while_expression" )
            || ( kindIs( t, "do_statement" ) && lang != Lang::Lua ) || kindIs( t, "loop_expression" )
+           || ( lang == Lang::Kotlin && kindIs( t, "do_while_statement" ) )   // Kotlin's own do/while spelling (lang test first, see isDecisionType)
            // Lua `repeat … until c` opens a nested body and scores, exactly like `while`. Lua's
            // `elseif_statement` is deliberately absent for the C-family else-if reason: flat +1, no deeper
            // nesting — and because it is a SIBLING here, cc_walk's else-if detector cannot flatten it, so
@@ -99,6 +117,13 @@ inline bool cc_isNestingControl( const char* t, Lang lang ) noexcept
            || kindIs( t, "match_expression" )
            || kindIs( t, "catch_clause" )      || kindIs( t, "except_clause" )
            || kindIs( t, "conditional_expression" ) || kindIs( t, "ternary_expression" )
+           // Kotlin: `when_expression` is the switch-equivalent CONTAINER (flat +1, arms score via
+           // isDecisionType's when_entry) — mirrors switch_statement/case_match above. `catch_block` is
+           // this grammar's own spelling of a catch handler (own nested body, scores like catch_clause) —
+           // but it is ALSO a real node-type spelling in the vendored Swift/Elixir grammars (a PRE-EXISTING,
+           // disclosed gap there, out of scope for the Kotlin port — see isDecisionType's matching comment),
+           // so `lang` scopes it to Kotlin only.
+           || ( lang == Lang::Kotlin && ( kindIs( t, "when_expression" ) || kindIs( t, "catch_block" ) ) )
            // Ruby (tree-sitter-ruby): the block control forms each open a nested body, so they raise nesting
            // AND score. `case`/`case_match` is the switch-equivalent container (flat +1, arms score via
            // isDecisionType — mirrors switch_statement). The trailing MODIFIER forms (`x if a`) have no nested
@@ -139,6 +164,19 @@ inline std::string_view nodeTextOf( TSNode node, std::string_view src ) noexcept
 inline std::string_view nodeFieldText( TSNode node, NodeField field, std::string_view src ) noexcept
 {
     return nodeTextOf( fieldChild( node, field ), src );
+}
+
+// First DIRECT child of `n` whose node type is `type`, or a null node when none exists — the one
+// child-scan shape every ingest_*.h section reuses (the using-declaration keyword guard and the
+// phantom-`::` probe in ingest_names.h, the Kotlin scope walker, the Kotlin import_header reader in
+// ingest_relations.h), so they cannot drift into near-clones of each other. Lives here, beside
+// nodeTextOf, because this header is included before every section that needs it. O(children): lane W3
+// kept this indexed because "the width comes from the grammar", and `using /*…*/ namespace ns::inner;`
+// refuted that at 12.9x its control (test/childwalkscalecheck.sh, arm B22) — the comments are the
+// using_declaration's own children, like every extra (src/infra/tschildren.h).
+inline TSNode firstChildOfType( TSNode n, const char* type ) noexcept
+{
+    return firstChildOfKind( n, /*namedOnly=*/false, { type } );
 }
 
 // The written spelling of a node's `operator:` field, or "" when it has none / the span is out of range.
@@ -1329,7 +1367,8 @@ inline bool cc_isParamList( const char* t ) noexcept
            || kindIs( t, "method_parameters" )       // Ruby `def f(a, b)`
            || kindIs( t, "block_parameters" )        // Ruby `{ |x, y| ... }`
            || kindIs( t, "lambda_parameters" )       // Ruby `->(n) { ... }`
-           || kindIs( t, "formal_parameter_list" );  // Dart (NOT TS/JS's formal_parameters)
+           || kindIs( t, "formal_parameter_list" )   // Dart (NOT TS/JS's formal_parameters)
+           || kindIs( t, "function_value_parameters" );   // Kotlin `fun f(a: Int, b: String)` — counted by `parameter` kind, see countParams
 }
 // a named parameter node (skip `self`/`this`-only? no — count as written, deterministic). Anonymous separators
 // (',', '(', ')') are unnamed → excluded by ts_node_is_named.
@@ -1357,6 +1396,11 @@ inline std::uint16_t countParams( TSNode defNode )   // A4-F25: NOT noexcept —
         collectChildren( f.n, cursor.cur, kids );           // one collection serves both arms below
         if( f.n.id != defNode.id && cc_isParamList( t ) )   // don't treat the def node itself as a param list
         {
+            // Kotlin's function_value_parameters counts `parameter` children ONLY: a parameter's own
+            // modifiers (`vararg`) and its default-value expression are SIBLINGS of the `parameter` node in
+            // this grammar, not nested inside it, so the generic "every named child" rule reads 3 real
+            // params as 5 (verified on a real parse before this branch was written).
+            const bool kotlinList = kindIs( t, "function_value_parameters" );
             std::uint16_t count = 0;
             for( const TSNode c : kids )
             {
@@ -1365,7 +1409,14 @@ inline std::uint16_t countParams( TSNode defNode )   // A4-F25: NOT noexcept —
                     continue; // skip '(', ')', ',' separators
                 }
                 const char* ct = ts_node_type( c );
-                if( kindIs( ct, "comment" ) )
+                if( kotlinList )
+                {
+                    if( !kindIs( ct, "parameter" ) )   // Kotlin: only `parameter` counts — its modifiers
+                    {                                   // and default value are siblings, not nested
+                        continue;
+                    }
+                }
+                else if( kindIs( ct, "comment" ) )
                 {
                     continue; // a comment inside the list is not a parameter
                 }

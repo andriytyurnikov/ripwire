@@ -97,7 +97,7 @@ printf '%s' "$DEPS" | grep -q '<f p="lib/my_app/nestedcall.ex" includes="3"' \
 printf '%s' "$DEPS" | grep -q '<health files="9" dep_files="9"' \
     && ok 'capability: all 9 .ex files are dependency-capable (dep_files == files)' \
     || no "capability: dep_files wrong: $( printf '%s' "$DEPS" | grep -oE '<health [^/]*/>' )"
-printf '%s' "$DEPS" | grep -qE 'dep_langs="[^"]*,ex"' \
+printf '%s' "$DEPS" | grep -qE 'dep_langs="[^"]*,ex[,"]' \
     && ok 'capability: <health dep_langs=> discloses ex in the capable set' \
     || no "capability: dep_langs= does not name ex"
 

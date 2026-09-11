@@ -1719,7 +1719,7 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
                 }
             }
 
-            // ObjC-only body-field fallback for the grammar that exposes a body as an unnamed CHILD, not a
+            // ObjC/Kotlin body-field fallback for the grammars that expose a body as an unnamed CHILD, not a
             // named "body" field. C++ function_definition owns a "body" field (found above); the ObjC grammar
             // never does, so the field lookup returns null and bodyByte would stay 0 for a real definition —
             // making an @implementation def indistinguishable from its @interface DECL (both bodyByte==0). That
@@ -1730,16 +1730,27 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             //   - an ObjC CLASS: an @implementation carries `implementation_definition` member children; the
             //     matching @interface carries only `method_declaration`s → so an `implementation_definition`
             //     child is exactly "this is the class's definition, not its forward @interface".
+            //   - Kotlin: `function_body` / `class_body` / `enum_class_body` are positional children too
+            //     (function_declaration's only named field is `receiver`), and the cost of missing them is
+            //     the same collapse bug in the other direction — a Kotlin definition read as bodyless is
+            //     deleted from the candidate pool as a forward declaration whenever a same-named Java
+            //     definition exists (test/kotlincheck.sh §5). `enum_class_body` (`enum class Status { … }`)
+            //     was the one omission a second-opinion review caught: `class_declaration`'s enum-class form
+            //     nests its members under that node, not `class_body` — verified via a raw parse of
+            //     `enum class Status { READY, DONE }` → `(class_declaration (type_identifier)
+            //     (enum_class_body (enum_entry …) (enum_entry …)))`.
             // A bodyLESS declaration (@interface method / @interface class) has none of these children →
-            // bodyByte stays 0 → it stays a decl (the discriminant the collapse needs). GATED to Lang::ObjC so
-            // C++/Python/Rust/Go/TS/Swift bodyByte — and therefore their sigEndByte, spans, and node/edge
-            // output — are BYTE-for-byte unchanged (a .mm's C++ functions take the C "body"-field path above
-            // and never reach here). See test/langcheck.sh c.m and the byte-identical src/ regression gate.
-            if( ts_node_is_null( body ) && le.lang == Lang::ObjC )
+            // bodyByte stays 0 → it stays a decl (a bodyless KOTLIN TYPE does too, and is still a definition: model.h isDefinitionNotDeclaration). GATED to ObjC and
+            // Kotlin so C++/Python/Rust/Go/TS/Swift bodyByte — and therefore their sigEndByte, spans, and
+            // node/edge output — are BYTE-for-byte unchanged (a .mm's C++ functions take the C "body"-field
+            // path above and never reach here). See test/langcheck.sh c.m and the byte-identical src/
+            // regression gate.
+            if( ts_node_is_null( body ) && ( le.lang == Lang::ObjC || le.lang == Lang::Kotlin ) )
             {
                 // O(children): `- (void) m /*…*/ { }` puts the comments in the method_definition, before its
                 // body — 24x at 16 000 (test/childwalkscalecheck.sh, arm B35)
-                body = firstChildOfKind( defNode, /*namedOnly=*/false, { "compound_statement", "function_body", "block", "implementation_definition" } );
+                body = firstChildOfKind( defNode, /*namedOnly=*/false,
+                                         { "compound_statement", "function_body", "block", "implementation_definition", "class_body", "enum_class_body" } );
             }
 
             // Dart's body is a SIBLING of the signature, so neither defBodyNodeOf nor the climb above can
@@ -1834,6 +1845,13 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             else if( le.lang == Lang::Ruby )
             { // enclosing class/module → id= addressability, per-class overload sets, editCheckImplicitReceiver
                 d.scope = rubyEnclosingScopeOf( nameNode, src );   // (test/rubyscopecheck.sh)
+            }
+            else if( le.lang == Lang::Kotlin )
+            { // enclosing class/object/companion-object → same P2-D Rule-1 narrowing Python/Ruby get;
+              // ALSO what keeps two classes' same-named methods from colliding under the new
+              // Kotlin<->Java langCompatible bridge (graph.h) — an unqualified name-only match is
+              // exactly the false-candidate risk that bridge's own comment names.
+                d.scope = kotlinEnclosingScopeOf( nameNode, src );
             }
             // extent honesty: did the parse RECOVER this def's container or kind? Only asked in a file whose root
             // holds an error (fileHasError, one O(1) flag test per file) — see parseRecoveredBits.

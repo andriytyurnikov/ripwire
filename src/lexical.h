@@ -1482,8 +1482,8 @@ inline std::vector<float> lexicalScoresNameExact( const IngestResult& ing, std::
 // through all of them would let one emitter acquire the fix and another not, and an incoherent bundle
 // (signatures ordered one way, bodies another) is a worse failure than the defect. One seam, one order.
 //
-// The bodyless predicate is the house one, shared verbatim with graph.h's decl/def collapse and arch.h's
-// pure-interface detection: `endByte > sigEndByte`. Deterministic — integer bit patterns, fixed doc
+// The bodyless predicate is the house one, shared with graph.h's decl/def collapse: model.h
+// isDefinitionNotDeclaration (`endByte > sigEndByte`, and a Kotlin type). Deterministic — integer bit patterns, fixed doc
 // order, no float arithmetic beyond one nextafter. Returns the number of rows demoted; 0 means the call
 // was inert and the vector is byte-identical to what the scorer produced.
 inline std::size_t applyDefOverDeclTiebreak( const IngestResult& ing, std::vector<float>& score )
@@ -1494,7 +1494,7 @@ inline std::size_t applyDefOverDeclTiebreak( const IngestResult& ing, std::vecto
         return 0;
     }
 
-    const auto hasBody = [ & ]( std::size_t i ) noexcept { return ing.symbols[i].endByte > ing.symbols[i].sigEndByte; };
+    const auto hasBody = [ & ]( std::size_t i ) noexcept { return isDefinitionNotDeclaration( ing.symbols[ i ] ); };
     const auto scored  = [ & ]( std::size_t i ) noexcept { return score[i] > 0.f && std::isfinite( score[i] ); };
 
     // the distinct POSITIVE scores actually present, ascending. For positive finite floats the IEEE bit
@@ -1843,9 +1843,10 @@ inline std::string routeLower( std::string_view w )
 // duckdb: `--for="ClientContext"` ranked src/include/duckdb/main/client_context.hpp:65 first and served
 // the body of `class ClientContext;` in extension/parquet/include/geo_parquet.hpp.
 //
-// So the claim passes to the first BODY-CARRYING definition in NodeId order, using the house bodyless
-// predicate shared with graph.h's decl/def collapse, arch.h's pure-interface detection and the ranked-side
-// tiebreak: `endByte > sigEndByte`. Three things about the shape are load-bearing:
+// So the claim passes to the first BODY-CARRYING definition in NodeId order, using the plain span test
+// `endByte > sigEndByte` — a body to SERVE, which is why it is not model.h's isDefinitionNotDeclaration (that
+// predicate also counts a bodyless Kotlin type, a definition with nothing to serve). Three things about the
+// shape are load-bearing:
 //
 //   1. it is a PREFERENCE, not a filter. A name no definition gives a body to — a type this corpus only
 //      ever forward-declares — keeps the first-in-NodeId anchor it always had. There is no case in which

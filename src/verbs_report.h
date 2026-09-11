@@ -1685,8 +1685,9 @@ constexpr const char* kSkippedLegend =
                  " .json/.yaml config ceilings that flag does not raise, json_ceiling=), excluded (matched an exclude substring; ext= is"
                  " its extension), or unsupported-ext (ext= has no grammar and no doc handler in this build — the class that hides a whole"
                  " LANGUAGE). <h p= why= .../> = a file that IS indexed and stays indexed, flagged for the reader: why=degraded-parse means"
-                 " the parse contains ERROR/MISSING nodes (err= counts them, err_ratio= is the share of the file's bytes covered by top-most"
-                 " ERROR spans) and is a PARSER-STATE fact, never a syntax verdict — a valid file in a dialect this grammar predates reads"
+                 " the parse contains ERROR/MISSING nodes, or invalid UTF-8 in the leading sample (err= counts both, err_ratio= is the share"
+                 " of the file's bytes covered by top-most ERROR spans plus one byte per bad UTF-8 sequence) and is a PARSER-STATE fact, never"
+                 " a syntax verdict — a valid file in a dialect this grammar predates reads"
                  " degraded too; why=minified-suspect means whitespace frequency ws_freq= is under 0.070 across the leading 4096 bytes"
                  " (files under 256 bytes are never flagged — too little text to judge). Nothing here is dropped by these two flags."
                  " <lang n= files= symbols=/> = corpus composition BY LANGUAGE: one row per language this build extracted at"
@@ -1723,6 +1724,25 @@ constexpr const char* kSkippedLegend =
                  " nesting guard refusal, a read failure) — they are absent from the health counts, not clean. rows_capped=\"1\" means a row"
                  " list hit its 500-row ceiling, so the rows are a SAMPLE of the count beside them; every count stays exact. A zero means"
                  " none found. -->";
+
+// The nest-refused clause of the legend, written ONLY into a document that carries nest-refused rows — the same
+// absent-means-nothing-happened rule nest_refused= itself follows — so every other --skipped document stays byte-identical.
+void writeNestRefusedLegend( rw::XmlWriter& w, const rw::CrawlSkips& cs )
+{
+    if( cs.nestRefusedFiles == 0 )
+    {
+        return;
+    }
+    char clause[ 1024 ];
+    rw::formatTo( clause, sizeof( clause ),
+                  "<!-- nest_refused= counts indexed files a pre-parse nesting guard REFUSED so that parsing them could not take the"
+                  " process down: a .kt file whose string templates nest more than {} levels deep (the vendored Kotlin scanner's"
+                  " string stack gives out near 512). Each is one <f why=\"nest-refused\" bytes= ext=/> row. Such a file IS inside"
+                  " indexed= and unmeasured=, contributes no symbols, and is not one of the accounting invariant's drop classes."
+                  " The json, yaml and markdown nesting guards refuse the same way but are counted in unmeasured= only, without a row. -->",
+                  rw::kMaxKotlinStringNestDepth );
+    w.write( clause );
+}
 
 // MEMBER-MACRO RE-PARSE (src/macroreparse.h, gate test/macroreparsecheck.sh) — the reading of why=macro-blanked,
 // macro_blanked= and macro_blanked_files=, written only into a report that carries them, so a corpus with no re-parsed
@@ -2031,6 +2051,41 @@ void writeLangRows( rw::XmlWriter& w, std::vector<char>& esc, const std::vector<
     }
 }
 
+// §L1 — the <skipped …> open tag's counters, up to (not including) root= and the closing '>'; runSkipped writes those two,
+// because root= is unbounded and must never enter this fixed buffer (the V1-1 truncation class). Every value here is an
+// integer or a closed-vocabulary literal, so the bound is arithmetic — test/fixedbufsweep.sh rows `hdr` and `nestAttr`.
+void writeSkippedHeader( rw::XmlWriter& w, const rw::IngestResult& ing, const SkipHealthReport& health, std::size_t maxFileBytes )
+{
+    using namespace rw;
+    const CrawlSkips& cs = ing.crawlSkips;
+    char hdr[ 768 ];   // seventeen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
+    // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
+    const std::size_t effectiveMax = maxFileBytes == 0 ? kDefaultMaxFileBytes : maxFileBytes;
+    const bool        rowsCapped   = cs.excluded.size() < cs.excludedFiles || cs.unsupported.size() < cs.unsupportedFiles
+                                  || cs.ignored.size() < cs.ignoredFiles || cs.ignoredDirRows.size() < cs.ignoredDirs   // §N6-C
+                                  || cs.nestRefused.size() < cs.nestRefusedFiles;
+    char nestAttr[ 48 ] = "";   // absent when zero, like every attribute that only a rare corpus can make non-zero
+    if( cs.nestRefusedFiles > 0 )
+    {
+        rw::formatTo( nestAttr, sizeof( nestAttr ), " nest_refused=\"{}\"", ( unsigned long long ) cs.nestRefusedFiles );
+    }
+    rw::formatTo( hdr, sizeof( hdr ),
+                   "<skipped indexed=\"{}\" oversize=\"{}\" excluded=\"{}\" unsupported_ext=\"{}\" excluded_dirs=\"{}\""
+                   " pruned_dirs=\"{}\" ignored=\"{}\" ignored_dirs=\"{}\" ignore_mode=\"{}\""
+                   " degraded_parse=\"{}\" minified_suspect=\"{}\"{} unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
+                   " yaml_ceiling=\"{}\"{}{}",
+                   ing.files.size(), ing.skippedOversize.size(),
+                   ( unsigned long long ) cs.excludedFiles, ( unsigned long long ) cs.unsupportedFiles,
+                   ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
+                   ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
+                   health.degraded, health.minified,
+                   skippedHealthRootAttrs( health ),   // extent_suspect_files= then macro_blanked_files=, each absent at 0
+                   health.unmeasured,
+                   effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
+                   std::string_view( nestAttr ), rowsCapped ? " rows_capped=\"1\"" : "" );
+    w.write( hdr );
+}
+
 // §P0.5d / §L1 — --skipped: WHY the index does not contain a file, and which files it DOES contain but
 // cannot vouch for. The disclosure doctrine ("every truncation is disclosed") applied to the corpus itself.
 //
@@ -2076,27 +2131,9 @@ std::optional<int> runSkipped( const MainDispatch& d )
 
         w.write( kSkippedLegend );
         writeSkippedHealthLegends( w, health );
-        char hdr[ 768 ];   // fourteen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
-        // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
-        const std::size_t effectiveMax = cfg.maxFileBytes == 0 ? kDefaultMaxFileBytes : cfg.maxFileBytes;
-        const CrawlSkips& cs           = ing.crawlSkips;
-        const bool        rowsCapped   = cs.excluded.size() < cs.excludedFiles || cs.unsupported.size() < cs.unsupportedFiles
-                                      || cs.ignored.size() < cs.ignoredFiles || cs.ignoredDirRows.size() < cs.ignoredDirs;   // §N6-C
-        rw::formatTo( hdr, sizeof( hdr ),
-                       "<skipped indexed=\"{}\" oversize=\"{}\" excluded=\"{}\" unsupported_ext=\"{}\" excluded_dirs=\"{}\""
-                       " pruned_dirs=\"{}\" ignored=\"{}\" ignored_dirs=\"{}\" ignore_mode=\"{}\""
-                       " degraded_parse=\"{}\" minified_suspect=\"{}\"{} unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
-                       " yaml_ceiling=\"{}\"{}",
-                       ing.files.size(), ing.skippedOversize.size(),
-                       ( unsigned long long ) cs.excludedFiles, ( unsigned long long ) cs.unsupportedFiles,
-                       ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
-                       ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
-                       health.degraded, health.minified,
-                       skippedHealthRootAttrs( health ),   // extent_suspect_files= then macro_blanked_files=, each absent at 0
-                       health.unmeasured,
-                       effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
-                       rowsCapped ? " rows_capped=\"1\"" : "" );
-        w.write( hdr );
+        const CrawlSkips& cs = ing.crawlSkips;
+        writeNestRefusedLegend( w, cs );                            // only into a document that has nest-refused rows
+        writeSkippedHeader( w, ing, health, cfg.maxFileBytes );    // the <skipped …> counters, up to root=
         // R-E: root= is unbounded (a deep absolute path), so it is NOT folded into the fixed `hdr` buffer
         // above (the V1-1 truncation class main.cpp's own history warns about) — written separately as the
         // std::string it already is, then the tag is closed.
@@ -2108,6 +2145,7 @@ std::optional<int> runSkipped( const MainDispatch& d )
         writeDropRows( w, esc, cs.unsupported, "unsupported-ext", skRootPrefix );
         writeDropRows( w, esc, cs.ignored,        "ignored",     skRootPrefix );   // §N6-C: the files git's rules covered
         writeDropRows( w, esc, cs.ignoredDirRows, "ignored-dir", skRootPrefix );   // §N6-C: the subtrees they pruned
+        writeDropRows( w, esc, cs.nestRefused,    "nest-refused", skRootPrefix );  // indexed, then refused by the Kotlin nesting guard
         writeUnindexedExtRows( w, esc, cs.unindexedExts );
         writeHealthRows( w, esc, ing, health.findings, skRootPrefix );
         writeLangRows( w, esc, computeLangCounts( ing ) );   // W3-S item 3: corpus composition by language
