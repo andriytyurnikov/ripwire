@@ -207,18 +207,28 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
 constexpr std::uint32_t kParserVer    = 91;           // bump on any grammar/.scm/extraction change
-                                                      // 91 = 2026-09-10 (Kotlin, post-PR review): vendor patch
-                                                      //    kotlin/002-triple-dollar-escape fixes a real mis-tokenization
-                                                      //    on real input (a triple-quoted string ending right after an
-                                                      //    escaped `\$`, e.g. """a\$""", lost its first closing quote) —
-                                                      //    a cached extraction from before this version predates the
-                                                      //    fix. kotlin/001-stack-push-no-abort (same review round,
-                                                      //    same commit) does NOT bump this: it only changes behavior
-                                                      //    on previously-ABORTING input (deep interpolation nesting),
-                                                      //    never on anything that used to parse and cache successfully
-                                                      //    — the yaml/001 and markdown/001 precedent for this class of
-                                                      //    fix. See third_party/patches/kotlin/.
-                                                      // 90 = 2026-09-08 (Kotlin, adversarial-corpus follow-up):
+                                                      // 91 = 2026-09-11 (Kotlin, PR #126): a 24th grammar joins kLangTable
+                                                      //    (.kt), so the crawl admits files a v88 blob never saw — ABSENT,
+                                                      //    not stale, and only the header version can reject that blob.
+                                                      //    91 and not 89/90: main stood at 88, and #135 reserves 90. Also
+                                                      //    under 91: vendor patch kotlin/002-triple-dollar-escape changes a
+                                                      //    real parse (a triple-quoted string ending right after an escaped
+                                                      //    `\$`, e.g. """a\$""", lost its first closing quote);
+                                                      //    kotlin/003-dollar-run-saturate changes the parse of a run of
+                                                      //    65,536 or more `$`, where upstream's counter wrapped; and the
+                                                      //    ingest nesting guard refuses a .kt file whose string templates
+                                                      //    nest past kMaxKotlinStringNestDepth before the parse, which
+                                                      //    changes WHICH .kt files are extracted. kotlin/001-stack-push-
+                                                      //    no-abort alone would not need a bump: it only changes input that
+                                                      //    used to abort (the yaml/001 and markdown/001 precedent). A
+                                                      //    refused file's cache record is written UNKNOWN with the existing
+                                                      //    hash-0 encoding, so record SHAPES are unchanged and kCacheVersion
+                                                      //    stays 18. The bodyless-Kotlin-type and own-JVM-language rules
+                                                      //    live in graph.h and are recomputed every run. quality.h's
+                                                      //    kIngestParserVerMirror carries the same value (gated). The
+                                                      //    branch's two earlier steps, folded in under their branch numbers
+                                                      //    so no 89/90 label collides with #135:
+                                                      //    (branch 90, 2026-09-08, adversarial-corpus follow-up)
                                                       //    measureFileHealth now also validates UTF-8 in the leading
                                                       //    sample (a file that only trips this check needs a cold
                                                       //    re-measure to pick up the new degraded-parse disclosure —
@@ -233,7 +243,7 @@ constexpr std::uint32_t kParserVer    = 91;           // bump on any grammar/.sc
                                                       //    EXACTLY with this branch's own prior use of those numbers.
                                                       //    quality.h's kIngestParserVerMirror bumped in the SAME
                                                       //    commit.
-                                                      // 89 = 2026-09-08 (Kotlin): grammar + queries/kotlin/tags.scm;
+                                                      //    (branch 89, 2026-09-08) grammar + queries/kotlin/tags.scm;
                                                       //    positional body/scope lookups (function_body, class_body and
                                                       //    type_identifier are children, not fields — a def read as
                                                       //    bodyless is deleted by graph.h's decl/def collapse);

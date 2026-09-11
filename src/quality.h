@@ -1794,6 +1794,9 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // `static_assert` — this lane's file boundary forbade editing those files.
 constexpr std::uint32_t kIngestCacheVersionMirror   = 18;   // MUST equal ingest.cpp's kCacheVersion (gated)
 constexpr std::uint32_t kIngestParserVerMirror    = 91;   // MUST equal ingest.cpp's kParserVer   (gated)
+                                                          // 91 = 2026-09-11 (Kotlin, PR #126): a twenty-fourth grammar, its
+                                                          //    extraction arms, two scanner patches that change a parse, and the
+                                                          //    string-nesting refusal. See ingest_cache.h's kParserVer note.
                                                           // 78 = 2026-09-07 (Elixir): a twenty-second grammar and its
                                                           //    definition/call filters.
                                                           // 79 = 2026-09-07 (ES import facts): named import aliases and
