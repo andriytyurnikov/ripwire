@@ -1902,18 +1902,13 @@ std::string healthWhyList( const SkipHealthFinding& hr )
     return why;
 }
 
-// extent honesty + member-macro re-parse — ` name="N"`, or nothing at 0: every absent-at-zero count this verb adds to a
-// row or to its root (composed, never the fixed `row`/`hdr` buffers, so the fixed-buffer sweep's population is unchanged).
-std::string countAttrOrEmpty( std::string_view name, std::size_t count )
-{
-    return count > 0 ? " " + std::string( name ) + "=\"" + std::to_string( count ) + "\"" : std::string();
-}
-
 // The root's absent-at-zero health counts, in their fixed order: extent_suspect_files= (h rows carrying
-// why=extent-suspect), then macro_blanked_files= (h rows carrying why=macro-blanked).
+// why=extent-suspect), then macro_blanked_files= (h rows carrying why=macro-blanked). Every absent-at-zero count this
+// verb adds to a row or to its root spells through rw::countAttrXmlOrEmpty (graphlegend.h, shared with declined_calls=):
+// composed, never the fixed `row`/`hdr` buffers, so the fixed-buffer sweep's population is unchanged.
 std::string skippedHealthRootAttrs( const SkipHealthReport& health )
 {
-    return countAttrOrEmpty( "extent_suspect_files", health.extentSuspectFiles ) + countAttrOrEmpty( "macro_blanked_files", health.macroBlankedFiles );
+    return rw::countAttrXmlOrEmpty( "extent_suspect_files", health.extentSuspectFiles ) + rw::countAttrXmlOrEmpty( "macro_blanked_files", health.macroBlankedFiles );
 }
 
 // extent honesty + member-macro re-parse — each reading rides ONLY a report that carries its rows, so a corpus with
@@ -1949,8 +1944,8 @@ void writeHealthRows( rw::XmlWriter& w, std::vector<char>& esc, const rw::Ingest
         rw::formatTo( row, sizeof( row ), "\" why=\"{}\" err=\"{}\" err_ratio=\"{:.3f}\" ws_freq=\"{:.3f}\" bytes=\"{}\"",
                        healthWhyList( hr ), h.errNodes, errFrac, wsFrac, h.fileBytes );
         w.write( row );
-        w.write( countAttrOrEmpty( "extent_suspect_syms", hr.extentSuspectSyms ) );
-        w.write( countAttrOrEmpty( "macro_blanked", hr.macroBlanked ) );
+        w.write( rw::countAttrXmlOrEmpty( "extent_suspect_syms", hr.extentSuspectSyms ) );
+        w.write( rw::countAttrXmlOrEmpty( "macro_blanked", hr.macroBlanked ) );
         w.write( "/>" );
     }
 }
