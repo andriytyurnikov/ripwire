@@ -301,7 +301,7 @@ moving. Re-run `prepare|screen|sweep` to refresh them.
 
 ### `kBatchCap` = `16`
 
-`src/mcpverbs.h` — discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped` — probe value `128` — **1 verb(s) respond**
+`src/mcpverbs.h` — discloses: `blast_radius_capped`, `coboost_commits_capped`, `forgotten_capped`, `hits_capped`, `unindexed_candidates_capped` — probe value `128` — **1 verb(s) respond**
 
 | invocation | default | at probe | delta |
 | --- | --- | --- | --- |
