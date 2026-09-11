@@ -7,9 +7,10 @@
 [![Runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-none-blue.svg)](THIRD_PARTY.md)
 [![Slides](https://img.shields.io/badge/slides-the%20showcase%20deck-56d6e8.svg)](present/ripwire-showcase.pdf)
 
-**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars. On llvm-project — 182,555 files —
-the cold parse drops from 194 s to 156 s. Declined calls, derailed parses and cut answers now say so, instead of
-returning a quiet zero.
+**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
+Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
+through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s. Declined calls, derailed parses
+and cut answers now say so, instead of returning a quiet zero.
 
 **[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
 contributors named there; this release is largely theirs.
