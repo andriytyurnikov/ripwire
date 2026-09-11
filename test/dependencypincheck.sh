@@ -83,6 +83,23 @@ else
     ok "every vendored dependency ships its compiled sources and its LICENSE"
 fi
 
+# ── (A') attribution: every vendored tree has its THIRD_PARTY.md row ────────────────────────────────
+# The list is the POPULATION under third_party/deps/, never a hand-kept name list — a hand list is how
+# deps/markdown came to ship with its sources, its LICENSE and its CMake pin but no attribution row.
+THIRD="$ROOT/THIRD_PARTY.md"
+norow=""
+for d in "$DEPS"/*/; do
+    name="$( basename "$d" )"
+    grep -q "^| \`deps/$name\` |" "$THIRD" || norow="$norow$name
+"
+done
+if [ -n "$norow" ]; then
+    no "vendored dependency with no THIRD_PARTY.md row (its licence attribution is missing):"
+    printf '%s' "$norow" | sed 's/^/          /'
+else
+    ok "every vendored dependency under third_party/deps/ has its THIRD_PARTY.md row"
+fi
+
 # ── (B') the hermeticity proof: a real disconnected configure ─────────────────────────────────────
 if ! command -v cmake >/dev/null 2>&1; then
     no "cmake not found — the disconnected-configure proof cannot run (a skip here would be a green lie)"
