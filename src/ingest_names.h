@@ -52,19 +52,13 @@ inline bool isCppCastKeyword( std::string_view name ) noexcept
 
 // First DIRECT child of `n` whose node type is `type`, or a null node when none exists — the one
 // child-scan shape shared by the using-declaration keyword guard below and the phantom-`::` probe
-// (hasPhantomScopeSeparator), so the two cannot drift into near-clones of each other.
+// (hasPhantomScopeSeparator), so the two cannot drift into near-clones of each other. O(children): lane W3
+// kept this indexed because "the width comes from the grammar", and `using /*…*/ namespace ns::inner;`
+// refuted that at 12.9x its control (test/childwalkscalecheck.sh, arm B22) — the comments are the
+// using_declaration's own children, like every extra (src/infra/tschildren.h).
 inline TSNode firstChildOfType( TSNode n, const char* type ) noexcept
 {
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t i = 0; i < childCount; ++i )
-    {
-        const TSNode child = ts_node_child( n, i );
-        if( std::strcmp( ts_node_type( child ), type ) == 0 )
-        {
-            return child;
-        }
-    }
-    return TSNode {};
+    return firstChildOfKind( n, /*namedOnly=*/false, { type } );
 }
 
 // using-declaration re-exports (r9 loss bucket 1): TRUE when a C++ `using_declaration` node is a grammar
@@ -617,14 +611,19 @@ inline bool rustItemCarriesTestAttr( TSNode item, std::string_view src ) noexcep
         const char* t = ts_node_type( prev );
         if( kindIs( t, "attribute_item" ) )
         {
-            const std::uint32_t childCount = ts_node_child_count( prev );
-            for( std::uint32_t ci = 0; ci < childCount; ++ci )
+            // O(children): `#[ /*…*/ test ]` puts the comments in the attribute_item — 56x at 16 000
+            // (test/childwalkscalecheck.sh, arm B23). The sibling climb this sits in is a different scan:
+            // ts_node_prev_sibling restarts from the parent's first child too (the parent-chain family).
+            bool        marked = false;
+            ChildCursor cursor( prev );
+            forEachChild( prev, cursor.cur, [ & ]( TSNode ch )
             {
-                const TSNode ch = ts_node_child( prev, ci );
-                if( kindIs( ts_node_type( ch ), "attribute" ) && rustAttrIsTestMarker( nodeTextOf( ch, src ) ) )
-                {
-                    return true;
-                }
+                marked = kindIs( ts_node_type( ch ), "attribute" ) && rustAttrIsTestMarker( nodeTextOf( ch, src ) );
+                return !marked;
+            } );
+            if( marked )
+            {
+                return true;
             }
             continue;
         }
@@ -667,26 +666,28 @@ inline bool csharpAttrIsTestMarker( std::string_view name ) noexcept
 // they decorate (the mirror image of Rust's sibling placement — again verified by --match probe).
 inline bool csharpNodeCarriesTestAttr( TSNode n, std::string_view src ) noexcept
 {
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t ci = 0; ci < childCount; ++ci )
+    // O(children) at both levels — and this runs on every ANCESTOR of a def (anySelfOrAncestor), so the
+    // declaration_list and the compilation_unit scan their whole child lists too: `public /*…*/ void M()`
+    // measured 37x its control at 16 000 comments (test/childwalkscalecheck.sh, arm B24). Two cursors:
+    // the attribute_list walk runs while the declaration walk is mid-iteration.
+    bool        marked = false;
+    ChildCursor lists( n );
+    ChildCursor attrs( n );
+    forEachChild( n, lists.cur, [ & ]( TSNode list )
     {
-        const TSNode list = ts_node_child( n, ci );
         if( !kindIs( ts_node_type( list ), "attribute_list" ) )
         {
-            continue;
+            return true;
         }
-        const std::uint32_t attrCount = ts_node_child_count( list );
-        for( std::uint32_t ai = 0; ai < attrCount; ++ai )
+        forEachChild( list, attrs.cur, [ & ]( TSNode attr )
         {
-            const TSNode attr = ts_node_child( list, ai );
-            if(    kindIs( ts_node_type( attr ), "attribute" )
-                && csharpAttrIsTestMarker( nodeTextOf( fieldChild( attr, NodeField::Name ), src ) ) )
-            {
-                return true;
-            }
-        }
-    }
-    return false;
+            marked =    kindIs( ts_node_type( attr ), "attribute" )
+                     && csharpAttrIsTestMarker( nodeTextOf( fieldChild( attr, NodeField::Name ), src ) );
+            return !marked;
+        } );
+        return !marked;
+    } );
+    return marked;
 }
 
 // Python's rule, written as its own pass because the two halves are ORDERED: a `def test_*` counts
@@ -829,17 +830,12 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
         return {};
     }
 
-    // the MISSING ";" — the one structural mark separating a macro-with-block from a real statement
-    bool hasMissingSemicolon = false;
-    const std::uint32_t childCount = ts_node_child_count( exprStmtNode );
-    for( std::uint32_t childIx = 0; childIx < childCount; ++childIx )
-    {
-        if( ts_node_is_missing( ts_node_child( exprStmtNode, childIx ) ) )
-        {
-            hasMissingSemicolon = true;
-            break;
-        }
-    }
+    // the MISSING ";" — the one structural mark separating a macro-with-block from a real statement.
+    // O(children): the recovered expression_statement owns every comment between `)` and the block —
+    // 16 000 of them measured 29x the identical flood after the block (childwalkscalecheck B26)
+    bool        hasMissingSemicolon = false;
+    ChildCursor cursor( exprStmtNode );
+    forEachChild( exprStmtNode, cursor.cur, [ & ]( TSNode c ) { hasMissingSemicolon = ts_node_is_missing( c ); return !hasMissingSemicolon; } );
     if( !hasMissingSemicolon )
     {
         return {};
@@ -872,18 +868,23 @@ inline TestMacroBlockParts testMacroBlockPartsOf( TSNode exprStmtNode, std::stri
         return {};
     }
 
-    // the FIRST string literal among the arguments is the title
-    const TSNode args = fieldChild( call, NodeField::Arguments );
-    const std::uint32_t argCount = ts_node_is_null( args ) ? 0u : ts_node_named_child_count( args );
-    for( std::uint32_t argIx = 0; argIx < argCount; ++argIx )
+    // the FIRST string literal among the arguments is the title — O(children): `TEST_CASE( /*…*/ "t" )`
+    // measured 28x at 16 000 (childwalkscalecheck B25); the cursor above is free again, its walk is done
+    const TSNode args  = fieldChild( call, NodeField::Arguments );
+    TSNode       title = {};
+    if( !ts_node_is_null( args ) )
     {
-        const TSNode arg = ts_node_named_child( args, argIx );
-        if( kindIs( ts_node_type( arg ), "string_literal" ) && ts_node_end_byte( arg ) > ts_node_start_byte( arg ) + 2 )   // "" is not a name
+        forEachNamedChild( args, cursor.cur, [ & ]( TSNode arg )
         {
-            return { true, body, arg };
-        }
+            if( kindIs( ts_node_type( arg ), "string_literal" ) && ts_node_end_byte( arg ) > ts_node_start_byte( arg ) + 2 )   // "" is not a name
+            {
+                title = arg;
+                return false;
+            }
+            return true;
+        } );
     }
-    return {};
+    return ts_node_is_null( title ) ? TestMacroBlockParts {} : TestMacroBlockParts { true, body, title };
 }
 
 // the title text: the string_literal's content with the delimiting quotes stripped. Escape sequences
@@ -974,35 +975,35 @@ inline bool nameBoundByInitDeclarator( TSNode nameNode, TSNode declNode ) noexce
 // and returns the first child whose source text is one of `tokens` ("" = none).
 inline std::string_view childTokenAmong( TSNode node, std::string_view src, const char* namedChildType, bool acceptAnonymousToken, std::initializer_list<std::string_view> tokens ) noexcept
 {
-    const std::uint32_t childCount = ts_node_child_count( node );
-    for( std::uint32_t childIx = 0; childIx < childCount; ++childIx )
+    // O(children): a declaration with no `static` scans its whole child list, comments included — `int /*…*/ m;`
+    // measured 16x its control at 16 000 (test/childwalkscalecheck.sh, arm B27)
+    std::string_view hit;
+    ChildCursor      cursor( node );
+    forEachChild( node, cursor.cur, [ & ]( TSNode child )
     {
-        const TSNode child   = ts_node_child( node, childIx );
-        const bool   isNamed = ts_node_is_named( child );
-        if( isNamed && std::strcmp( ts_node_type( child ), namedChildType ) != 0 )
+        const bool isNamed = ts_node_is_named( child );
+        if( ( isNamed && std::strcmp( ts_node_type( child ), namedChildType ) != 0 ) || ( !isNamed && !acceptAnonymousToken ) )
         {
-            continue;
-        }
-        if( !isNamed && !acceptAnonymousToken )
-        {
-            continue;
+            return true;
         }
         const std::uint32_t beginByte = ts_node_start_byte( child );
         const std::uint32_t endByte   = ts_node_end_byte( child );
         if( endByte > src.size() || beginByte >= endByte )
         {
-            continue;
+            return true;
         }
         const std::string_view text = src.substr( beginByte, endByte - beginByte );
         for( const std::string_view token : tokens )
         {
             if( text == token )
             {
-                return text;
+                hit = text;
+                return false;
             }
         }
-    }
-    return {};
+        return true;
+    } );
+    return hit;
 }
 
 // CUDA memory-space qualifier of a module-scope declaration ("" = none). The uninitialized-declaration
@@ -1342,31 +1343,31 @@ inline bool isPyEnumMemberTarget( TSNode nameNode, std::string_view src ) noexce
     {
         return false;
     }
-    const std::uint32_t baseCount = ts_node_named_child_count( bases );
-    for( std::uint32_t baseIndex = 0; baseIndex < baseCount; ++baseIndex )
+    // O(children): the superclasses argument_list owns every comment between its names — `class C( # …
+    // Enum ):` measured 54x its control at 16 000 (test/childwalkscalecheck.sh, arm B28)
+    bool        isEnum = false;
+    ChildCursor cursor( bases );
+    forEachNamedChild( bases, cursor.cur, [ & ]( TSNode base )
     {
-        TSNode base = ts_node_named_child( bases, baseIndex );
         if( kindIs( ts_node_type( base ), "attribute" ) )                      // models.TextChoices → TextChoices
         {
             base = fieldChild( base, NodeField::Attribute );
             if( ts_node_is_null( base ) )
             {
-                continue;
+                return true;
             }
         }
         if( !kindIs( ts_node_type( base ), "identifier" ) )
         {
-            continue;
-        }
-        const std::string_view baseName = nodeTextOf( base, src );
-        if( baseName == "Enum" || baseName == "IntEnum" || baseName == "StrEnum"
-         || baseName == "Flag" || baseName == "IntFlag" || baseName == "ReprEnum"
-         || baseName == "Choices" || baseName == "TextChoices" || baseName == "IntegerChoices" )
-        {
             return true;
         }
-    }
-    return false;
+        const std::string_view baseName = nodeTextOf( base, src );
+        isEnum =    baseName == "Enum" || baseName == "IntEnum" || baseName == "StrEnum"
+                 || baseName == "Flag" || baseName == "IntFlag" || baseName == "ReprEnum"
+                 || baseName == "Choices" || baseName == "TextChoices" || baseName == "IntegerChoices";
+        return !isEnum;
+    } );
+    return isEnum;
 }
 }   // namespace — ingest_names.h section of ingest.cpp
 
