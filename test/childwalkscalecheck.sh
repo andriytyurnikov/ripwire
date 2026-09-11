@@ -301,8 +301,11 @@ for n in ( 1000, 16000 ):
     # captureTagsFacts, the ObjC body fallback — a method_definition's own children before its `{`
     w( "objcbody/n%d/big.m" % n, [ "@interface Foo", "@end", "@implementation Foo", "- (void) m" ] + [ C ] * n + [ "{ }", "@end" ] )
     w( "objcbody_off/n%d/big.m" % n, [ "@interface Foo", "@end", "@implementation Foo", "- (void) m { }" ] + [ C ] * n + [ "@end" ] )
-    # nodesMatchExactly — two flooded argument_lists joined by a repeated metavariable (`$X == $X`)
+    # nodesMatchExactly — two flooded argument_lists joined by a repeated metavariable (`$X == $X`); its
+    # control runs the SAME --pattern over the same two floods placed in the body OUTSIDE both argument
+    # lists, so both sides execute nodesMatchExactly and only the flooded list differs (CodeRabbit, #130)
     w( "patmeta/n%d/big.c" % n, [ "int a( int x );", "int f( void )", "{", "    return a(" ] + [ C ] * n + [ "    1 ) == a(" ] + [ C ] * n + [ "    1 );", "}" ] )
+    w( "patmeta_off/n%d/big.c" % n, [ "int a( int x );", "int f( void )", "{", "    return a( 1 ) == a( 1 );" ] + [ C ] * n + [ C ] * n + [ "}" ] )
 PY
 
 # user-CPU seconds (user+sys) of one cold run of "$@" against corpus $1
@@ -520,9 +523,9 @@ pair "(B32) ffiVisitNode/linkage"       externc      externc_off     "a linkage_
 pair "(B33) pyMethodsKeyword"           pyroute      pyroute_off     "a route decorator's argument_list 16000 children wide vs the identical flood after the def"
 pair "(B34) jsMethodProperty"           jsfetch      jsfetch_off     "fetch()'s options object 16000 children wide vs the identical flood after the call"
 pair "(B35) captureTagsFacts/objc-body" objcbody     objcbody_off    "an ObjC method_definition 16000 children wide vs the identical flood after the method"
-b_pm_map="$(  usercpu "$TMP/patmeta/n16000" "$BIN" --top-k=100000 )"
-b_pm_walk="$( usercpu "$TMP/patmeta/n16000" "$BIN" --pattern='$X == $X' )"
-arm "(B36) nodesMatchExactly" "$b_pm_map" "$b_pm_walk" 8 0.30 "--pattern='\$X == \$X' over two 16000-comment argument lists vs the plain map"
+b_pm_off="$(  usercpu "$TMP/patmeta_off/n16000" "$BIN" --pattern='$X == $X' )"
+b_pm_walk="$( usercpu "$TMP/patmeta/n16000"     "$BIN" --pattern='$X == $X' )"
+arm "(B36) nodesMatchExactly" "$b_pm_off" "$b_pm_walk" 8 0.30 "--pattern='\$X == \$X' over two 16000-comment argument lists vs the same pattern with the floods outside both lists"
 
 # ── (C) byte-identical against a reference binary ────────────────────────────────────────────────────
 echo
@@ -552,10 +555,11 @@ else
                  phpuse phpuse_off jsrequire jsrequire_off rubyns rubyns_off rubymixin rubymixin_off exalias exalias_off \
                  cppusing cppusing_off rustattr rustattr_off csattr csattr_off testmacro testmacrosemi testmacro_off \
                  fieldstatic fieldstatic_off pyenum pyenum_off exkw exkw_off excall excall_off pybind pybind_off \
-                 externc externc_off pyroute pyroute_off jsfetch jsfetch_off objcbody objcbody_off patmeta; do
+                 externc externc_off pyroute pyroute_off jsfetch jsfetch_off objcbody objcbody_off patmeta patmeta_off; do
             cmp_pair "$TMP/$d/$n" --top-k=100000
         done
-        cmp_pair "$TMP/patmeta/$n" --pattern='$X == $X'
+        cmp_pair "$TMP/patmeta/$n"     --pattern='$X == $X'
+        cmp_pair "$TMP/patmeta_off/$n" --pattern='$X == $X'
         cmp_pair "$TMP/slicew/$n"  --slice=target
         cmp_pair "$TMP/slicepp/$n" --slice=target
         cmp_pair "$TMP/span/$n"    --grep=needle_marker
