@@ -78,6 +78,8 @@ cd your-repo
 ripwire . --for="<the change you are about to make, in words>"
 ```
 
+Every install route (prebuilt, from source, per-agent skills, hooks, the MCP server) is in [INSTALL.md](INSTALL.md).
+
 **Reach for the CLI first — it is the cheaper interface.** The MCP server is the optional second
 way in, and its convenience has a cost the shell pipe does not carry: its verb schemas sit in your
 agent's context every session, whether or not it calls them.
