@@ -140,7 +140,9 @@ fi
 HDR="$ROOT/src/infra/strkern.h"
 code_hits(){ grep -n "$1" "$HDR" 2>/dev/null | grep -vE '^[0-9]+: *(//|\*|/\*)'; }
 BUILTINS="$( code_hits '__builtin_' | wc -l | tr -d ' ' )"
-CTZ="$( grep -c 'std::countr_zero(' "$HDR" 2>/dev/null || echo 0 )"
+# `grep -c … || echo 0` printed "0" TWICE on a zero count (grep prints 0 AND exits 1), a two-line value
+# `-lt` cannot compare — so the arm could PASS on the very count it exists to refuse (CodeRabbit on #127).
+CTZ="$( grep -o 'std::countr_zero(' "$HDR" 2>/dev/null | wc -l | tr -d ' ' )"
 if [ "$BUILTINS" != "0" ]; then
     echo "  FAIL  portability: src/infra/strkern.h uses $BUILTINS GCC/Clang-only __builtin_ — MSVC cannot compile it:"
     code_hits '__builtin_' | sed 's/^/        /' | head -10
@@ -214,6 +216,14 @@ else
     fail=1
 fi
 
+# A cross-arch slice that Rosetta 2 cannot run fails at EXEC (rc 126, "Bad CPU type in executable",
+# "cannot execute binary file", "Exec format error"); that — and only that — is the environment saying
+# no. A slice that RAN and exited nonzero (a doctest assertion, an abort) is a red, never a SKIP
+# (CodeRabbit on #127: the old branch read every nonzero exit as "no Rosetta").
+exec_unavailable(){   # $1 = rc, $2 = output log
+    [ "$1" = 126 ] || grep -qE 'Bad CPU type|cannot execute binary file|Exec format error' "$2"
+}
+
 # ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
 # The x86-64 floor is -march=x86-64-v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE; CMakeLists.txt sets it
 # unconditionally for x86-64 targets). Compiled without sanitizers — the ASan runtime for a cross-arch
@@ -221,7 +231,8 @@ fi
 # memory safety arm 1 already did.
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
     if X86BIN="$( compile_direct x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
-        if RIPWIRE_ROOT="$ROOT" "$X86BIN" > "$WORK/out_x86.log" 2>&1; then
+        RIPWIRE_ROOT="$ROOT" "$X86BIN" > "$WORK/out_x86.log" 2>&1; rc_x86=$?
+        if [ "$rc_x86" = 0 ]; then
             read_counts "$WORK/out_x86.log"
             if grep -q '^strkern path: AVX2$' "$WORK/out_x86.log"; then
                 printf '  PASS  x86_64/AVX2 mirror runs green under Rosetta 2 (%s assertions)\n' "$ASSERTS"
@@ -229,9 +240,12 @@ if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
                 echo "  FAIL  x86_64 slice built but did NOT compile the AVX2 path: $( grep '^strkern path: ' "$WORK/out_x86.log" )"
                 fail=1
             fi
+        elif exec_unavailable "$rc_x86" "$WORK/out_x86.log"; then
+            printf '  SKIP  x86_64 slice built but cannot execute here (no Rosetta 2); CI ubuntu-24.04 is the AVX2 proof: %s\n' \
+                   "$( tail -1 "$WORK/out_x86.log" )"
         else
-            printf '  SKIP  x86_64 slice built but did not run here (no Rosetta 2, or it aborted); CI ubuntu-24.04 is the AVX2 proof: %s\n' \
-                   "$( tail -2 "$WORK/out_x86.log" | tr '\n' ' ' )"
+            echo "  FAIL  x86_64/AVX2 mirror RAN and exited $rc_x86: $( tail -2 "$WORK/out_x86.log" | tr '\n' ' ' )"
+            fail=1
         fi
     else
         printf '  SKIP  no x86_64 cross slice on this toolchain (no macOS x86_64 SDK); CI ubuntu-24.04 is the AVX2 proof\n'
@@ -248,14 +262,31 @@ fi
 # all (no Rosetta 2) is a SKIP, as in arm 3.
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
     if X86UB="$( compile_direct x86ub -arch x86_64 -march=x86-64-v3 -fsanitize=undefined,integer -fno-sanitize-recover=all )" && [ -n "$X86UB" ]; then
-        if RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; then
+        RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; rc_ub=$?
+        if [ "$rc_ub" = 0 ]; then
             read_counts "$WORK/out_x86ub.log"
             printf '  PASS  x86_64/AVX2 mirror is clean under -fsanitize=undefined,integer (%s assertions)\n' "$ASSERTS"
         elif grep -q 'runtime error' "$WORK/out_x86ub.log"; then
             echo "  FAIL  x86_64/AVX2 mirror trips UBSan integer checks: $( grep -m1 'runtime error' "$WORK/out_x86ub.log" | sed 's|.*/src/|src/|' )"
             fail=1
+        elif exec_unavailable "$rc_ub" "$WORK/out_x86ub.log"; then
+            printf '  SKIP  x86_64 UBSan slice built but cannot execute here (no Rosetta 2): %s\n' "$( tail -1 "$WORK/out_x86ub.log" )"
         else
-            printf '  SKIP  x86_64 UBSan slice built but did not run here (no Rosetta 2): %s\n' "$( tail -1 "$WORK/out_x86ub.log" )"
+            echo "  FAIL  x86_64 UBSan slice RAN and exited $rc_ub without a sanitizer report: $( tail -2 "$WORK/out_x86ub.log" | tr '\n' ' ' )"
+            fail=1
+        fi
+        # 3c CONTROL — a slice that runs and FAILS must read as FAIL, never as "no Rosetta": the x86_64 build
+        # of the mutation (arm 2's -DSTRKERN_MUTATE=1) is exactly that binary.
+        if X86MUT="$( compile_direct x86mut -arch x86_64 -march=x86-64-v3 -DSTRKERN_MUTATE=1 )" && [ -n "$X86MUT" ]; then
+            RIPWIRE_ROOT="$ROOT" "$X86MUT" > "$WORK/out_x86mut.log" 2>&1; rc_mut=$?
+            if [ "$rc_mut" != 0 ] && ! exec_unavailable "$rc_mut" "$WORK/out_x86mut.log"; then
+                echo "  PASS  3c control: the mutated x86_64 slice RAN and failed (rc=$rc_mut) — a red, classified as a red, not a SKIP"
+            elif exec_unavailable "$rc_mut" "$WORK/out_x86mut.log"; then
+                echo "  SKIP  3c control: the mutated x86_64 slice cannot execute here either (no Rosetta 2)"
+            else
+                echo "  FAIL  3c control: the mutated x86_64 slice exited 0 — the mutation is not visible on the AVX2 path"
+                fail=1
+            fi
         fi
     else
         printf '  SKIP  no x86_64 UBSan cross slice on this toolchain; CI ubuntu-24.04 asan is the proof\n'
