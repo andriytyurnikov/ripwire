@@ -505,10 +505,7 @@ struct FileBytesCache
         if( !loaded[fileId] )
         {
             loaded[fileId] = 1;
-            if( !docparse::detail::readWholeFile( diskPath( ing, fileId ), bytes[fileId] ) )
-            {
-                bytes[fileId].clear();
-            }
+            bytes[fileId] = docparse::detail::readWholeFile( diskPath( ing, fileId ) ).value_or( std::string() );   // unreadable ⇒ empty
         }
         return bytes[fileId];
     }

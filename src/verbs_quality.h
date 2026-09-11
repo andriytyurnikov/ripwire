@@ -830,8 +830,7 @@ inline std::string registerMacroConfigWarningAttr( const rw::quality::RegisterMa
 int ackNothingToAccept( const std::string& acksFile, const gtl::btree_map<std::string, rw::quality::AckRecord>& acks,
                         const rw::quality::Scope& scope, std::size_t outOfScopeCount )
 {
-    std::string onDisk;
-    rw::docparse::detail::readWholeFile( acksFile, onDisk );   // absent file ⇒ "" ⇒ never equal to a rendered ledger
+    const std::string onDisk = rw::docparse::detail::readWholeFile( acksFile ).value_or( std::string() );   // absent file ⇒ "" ⇒ never equal to a rendered ledger
     if( acks.empty() || rw::quality::renderAckRecords( acks ) == onDisk )
     {
         if( scope.active() && outOfScopeCount > 0 )

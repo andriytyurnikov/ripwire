@@ -3415,12 +3415,13 @@ inline AtSeed resolveAtSeed( const IngestResult& ing, std::string_view spec )
     if( r.fileMatches.size() > 1 )  { r.fault = AtFault::FileAmbiguous;  return r; }
     r.fileId = r.fileMatches[0];
 
-    std::string text;
-    if( !docparse::detail::readWholeFile( diskPath( ing, r.fileId ), text ) )
+    const std::optional<std::string> onDisk = docparse::detail::readWholeFile( diskPath( ing, r.fileId ) );
+    if( !onDisk )
     {
         r.fault = AtFault::FileUnreadable;   // indexed but gone from disk — say that, never "0 lines"
         return r;
     }
+    const std::string& text = *onDisk;
     r.lineStarts.push_back( 0 );
     for( std::size_t byteIndex = 0; byteIndex < text.size(); ++byteIndex )
     {
