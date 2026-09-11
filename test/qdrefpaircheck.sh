@@ -11,7 +11,7 @@
 # ── THE ORACLE, AND WHY IT IS INDEPENDENT ────────────────────────────────────────────────────────────────
 # Arm (E) does NOT trust a number this lane wrote down. It RE-RUNS the hand-built overlay recipe above, live,
 # with the same binary, and requires the new code path to agree with it row for row. The overlay reaches its
-# answer through a completely different mechanism — a real checked-out git worktree, a serialized
+# answer through a completely different mechanism — a real checked-out git tree, a serialized
 # `.ripwire_quality_baseline` sidecar round-tripped through disk, and the ordinary working-tree comparison —
 # and shares no code with the ref-pair path beyond computeDelta itself. It also cannot go stale, because it
 # is recomputed on every run rather than pinned as a literal.
@@ -26,7 +26,7 @@
 #
 #   The churn kind needs git history AT THE TREE BEING JUDGED — it counts commits per file in a recent
 #   window and compares body hashes against a window-reference commit. The overlay's judged tree is a real
-#   worktree with a real .git, so churn evaluates there (against HEAD = the BASE commit, which is itself a
+#   checkout with a real .git, so churn evaluates there (against HEAD = the BASE commit, which is itself a
 #   quirk of the overlay: the window is anchored at the wrong end of the range). The ref-pair form
 #   materializes BOTH trees out of the object store into temp dirs that are not repositories at all, so the
 #   kind cannot be computed and the report says so — `churn="unavailable"` on the root element, which arm
@@ -44,10 +44,8 @@ set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
-TMP="$( mktemp -d )"
-WT=""
-cleanup(){ [ -n "$WT" ] && git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1; rm -rf "$TMP"; git -C "$ROOT" worktree prune >/dev/null 2>&1; }
-trap cleanup EXIT
+. "$ROOT/test/lib/headbinlib.sh"                       # ripwire_private_checkout, for arm (E)'s scratch tree
+TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT        # (E)'s tree is a private clone in here: nothing registered, nothing to prune
 fail=0
 ok(){ printf '  PASS  %s\n' "$*"; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
@@ -180,10 +178,9 @@ if ! git -C "$ROOT" rev-parse -q --verify "$WAVE_A^{commit}" >/dev/null 2>&1 \
    || ! git -C "$ROOT" rev-parse -q --verify "$WAVE_B^{commit}" >/dev/null 2>&1; then
     skip "(E) $WAVE_A..$WAVE_B not in this checkout (shallow clone or foreign repo) — the wave-level arm needs ripwire's own history"
 else
-    WT="$TMP/wave"
-    if ! git -C "$ROOT" worktree add --detach "$WT" "$WAVE_A" >/dev/null 2>&1; then
-        WT=""
-        skip "(E) could not create a scratch worktree at $WAVE_A"
+    WT="$TMP/wave"                                  # a private clone, never a registered worktree (test/worktreeleakcheck.sh)
+    if ! ripwire_private_checkout "$ROOT" "$WAVE_A" "$WT" >/dev/null 2>&1; then
+        skip "(E) could not check out a scratch tree at $WAVE_A"
     else
         # --- the INDEPENDENT oracle: the hand-built overlay, recomputed here, sharing no code path with A..B
         "$BIN" "$WT" --quality-baseline >/dev/null 2>&1
@@ -241,7 +238,8 @@ else
         #
         # GIT_CONFIG_* is the non-destructive way to say "a developer had this configured" — it injects
         # config for the spawned git without writing to $ROOT's real config file, which a `git config` call
-        # in a gate would clobber (the worktree shares its repo's config with the developer's own checkout).
+        # in a gate would clobber (it did while this scratch tree was a worktree sharing the developer's config; as
+        # a private clone it has its own, and GIT_CONFIG_* still writes no config file at all).
         # Both directions are pinned: pointing AT this repo's ignore list (the exact value that caused the
         # incident) and at an empty list (the CI-shaped value). RED BEFORE GREEN: against a binary built
         # before the pin, the first of the two differs from the unconfigured run by exactly the one

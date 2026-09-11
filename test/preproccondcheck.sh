@@ -311,10 +311,9 @@ monotonicity_check()
     ( cd "$ROOT" && git rev-parse --verify HEAD >/dev/null 2>&1 ) || { skip "monotonicity: not a git repo"; return; }
     . "$ROOT/test/lib/headbinlib.sh"                   # sha-keyed cache — shared with the other monotonicity gates
 
-    local WT="$TMP/head"
-    ( cd "$ROOT" && git worktree add -q --detach "$WT" HEAD ) 2>"$TMP/wt.err" \
-        || { skip "monotonicity: cannot create HEAD worktree ($( head -1 "$TMP/wt.err" ))"; return; }
-    trap '( cd "$ROOT" && git worktree remove --force "'"$WT"'" >/dev/null 2>&1 ); rm -rf "$TMP"' EXIT
+    local WT="$TMP/head"                               # a private clone, never a registered worktree (test/worktreeleakcheck.sh)
+    ripwire_private_checkout "$ROOT" HEAD "$WT" 2>"$TMP/wt.err" \
+        || { skip "monotonicity: cannot check out HEAD ($( head -1 "$TMP/wt.err" ))"; return; }
 
     local OLDBIN
     OLDBIN="$( ripwire_head_binary "$ROOT" "$TMP" )" || { headbin_refusal $? "monotonicity"; return; }

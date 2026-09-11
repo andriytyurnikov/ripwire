@@ -83,13 +83,13 @@ monotonic_check()
     command -v cmake >/dev/null 2>&1 || { skip "monotonicity: cmake absent"; return; }
     ( cd "$ROOT" && git rev-parse --verify HEAD >/dev/null 2>&1 ) || { skip "monotonicity: not a git repo"; return; }
 
+    # HEAD's tree as a private clone inside $TMP, removed by $TMP's own trap — never a registered worktree, which a
+    # gate killed before its cleanup would leave in every session's shared .git (test/worktreeleakcheck.sh).
     local WT="$TMP/head"
-    ( cd "$ROOT" && git worktree add -q --detach "$WT" HEAD ) 2>"$TMP/wt.err" \
-        || { skip "monotonicity: cannot create HEAD worktree ($(head -1 "$TMP/wt.err"))"; return; }
-    # ensure cleanup of the worktree
-    trap '( cd "$ROOT" && git worktree remove --force "'"$WT"'" >/dev/null 2>&1 ); rm -rf "$TMP"' EXIT
+    ripwire_private_checkout "$ROOT" HEAD "$WT" 2>"$TMP/wt.err" \
+        || { skip "monotonicity: cannot check out HEAD ($(head -1 "$TMP/wt.err"))"; return; }
 
-    # pre-change binary from the shared sha-keyed cache (test/lib/headbinlib.sh); the worktree above is
+    # pre-change binary from the shared sha-keyed cache (test/lib/headbinlib.sh); the checkout above is
     # still needed as the held-constant INPUT corpus (HEAD's src/), but no longer as a build tree.
     local OLDBIN
     OLDBIN="$( ripwire_head_binary "$ROOT" "$TMP" )" \
