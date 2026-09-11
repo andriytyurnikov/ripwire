@@ -216,7 +216,26 @@ constexpr std::uint32_t kCacheVersion = 20;           // 20: the member-macro re
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 91;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 92;           // bump on any grammar/.scm/extraction change
+                                                      // 92 = 2026-09-11 (yaml unsigned-char, PR #140): vendor patch
+                                                      //    yaml/003-scan-status-enum gives tree-sitter-yaml's scan status
+                                                      //    (SCN_SUCC 1, SCN_STOP 0, SCN_FAIL -1) a real `ScanStatus` enum
+                                                      //    type instead of returning it through plain `char`. `char` is
+                                                      //    UNSIGNED on aarch64 Linux — the platform the linux-arm64 release
+                                                      //    asset is built for — and there SCN_FAIL came back as 255, which
+                                                      //    no `case SCN_FAIL:` label matched: a malformed %-escape in a tag
+                                                      //    or a %TAG prefix was swallowed into the token rather than ending
+                                                      //    it, so `a: !<tag:x%zz> b` parsed as ERROR under a signed `char`
+                                                      //    and as a clean tagged scalar under an unsigned one. The patch
+                                                      //    makes the unsigned-`char` build parse as the signed one always
+                                                      //    did — byte-identical on a signed-`char` host, CHANGED on an
+                                                      //    unsigned one. kArtifactArch cannot tell an aarch64 cache blob
+                                                      //    from an x86-64 one, so only this version can reject a blob
+                                                      //    written by the pre-patch unsigned-`char` binary. Record shapes
+                                                      //    are untouched, so kCacheVersion stays #135's 20. quality.h's
+                                                      //    kIngestParserVerMirror carries the same value (gated). Live
+                                                      //    tripwire: vendorpatchcheck arm K, which compiles the vendored
+                                                      //    grammar -fsigned-char and -funsigned-char on any host.
                                                       // 91 = 2026-09-11 (Kotlin, PR #126): a 24th grammar joins kLangTable
                                                       //    (.kt), so the crawl admits files a v90 blob never saw — ABSENT,
                                                       //    not stale, and only the header version can reject that blob.
