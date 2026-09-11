@@ -48,7 +48,7 @@
 // */src/parser.c), not assumed from upstream docs.
 
 #include "preprocdead.h"   // #62: the ONE literal `#if 0`/`#if 1` rule, shared with the ingest call-ref pass
-#include "infra/tschildren.h"   // ChildCursor/forEachChild — both walks below descend from the FILE root
+#include "infra/tschildren.h"   // ChildCursor/forEachChild/forEachNamedChild — every walk below descends from the FILE root
 #include "infra/sortutil.h"
 #include "model.h"
 #include "ingest.h"        // sliceGrammarForFile — path → grammar, ingest's one table
@@ -1321,13 +1321,22 @@ struct SliceRdWalker
     }
 
     // ── a block: its named children in order, each in statement position ─────────────────────────
-    void seq( TSNode n, SliceRdState& state )
+    // O(children), not O(children²): a block's named child list is every statement AND every COMMENT
+    // between them — a comment is a named extra, spliced into the array itself (src/infra/tschildren.h).
+    // A 16 000-comment definition body measured 87× the plain map of the same file before this walk
+    // became a cursor (test/childwalkscalecheck.sh, arm B8). Every loop in this walker owns its own
+    // cursor: each of them recurses, and a nested call would reset a shared one out from under it.
+    void seq( TSNode n, SliceRdState& state ) { seqSkipping( n, state, TSNode{} ); }
+
+    // the same walk with ONE named child passed over — a `case_statement`'s `value` is its label, not a
+    // statement. switchC calls this instead of owning a second copy of the loop.
+    void seqSkipping( TSNode n, SliceRdState& state, TSNode skip )
     {
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount && !state.dead; ++childIndex )
-        {
-            stmt( ts_node_named_child( n, childIndex ), state );
-        }
+        ChildCursor cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
+        {   if( state.dead ) { return false; }
+            if( ts_node_is_null( skip ) || !ts_node_eq( c, skip ) ) { stmt( c, state ); }
+            return true; } );
     }
 
     bool isContainer( TSNode n ) const noexcept
@@ -1336,18 +1345,9 @@ struct SliceRdWalker
     }
 
     // does the subtree hold a block or (cfg) a control construct? — the structure walk's "recurse or unit" test
-    bool hasStructureBelow( TSNode n ) const noexcept
+    bool hasStructureBelow( TSNode n ) const
     {
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
-        {
-            const TSNode c = ts_node_named_child( n, childIndex );
-            if( isContainer( c ) || ( cfg && isControlKind( c ) ) || hasStructureBelow( c ) )
-            {
-                return true;
-            }
-        }
-        return false;
+        return anyChildBelow( n, -1, true, [ & ]( TSNode c ) { return isContainer( c ) || ( cfg && isControlKind( c ) ); } );
     }
 
     bool isControlKind( TSNode n ) const noexcept
@@ -1394,11 +1394,8 @@ struct SliceRdWalker
             unit( n, state );
             return;
         }
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount && !state.dead; ++childIndex )
-        {
-            structure( ts_node_named_child( n, childIndex ), state );
-        }
+        ChildCursor cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c ) { if( state.dead ) { return false; } structure( c, state ); return true; } );
     }
 
     // ── statement position: the control table, a block, or ONE unit (the fold rule) ──────────────
@@ -1454,11 +1451,8 @@ struct SliceRdWalker
         }
         if( sliceKindIs( c, "condition_clause" ) )
         {
-            const std::uint32_t childCount = ts_node_named_child_count( c );
-            for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
-            {
-                unit( ts_node_named_child( c, childIndex ), state );
-            }
+            ChildCursor cursor( c );
+            forEachNamedChild( c, cursor.cur, [ & ]( TSNode part ) { unit( part, state ); return true; } );
             return;
         }
         unit( c, state );
@@ -1623,37 +1617,32 @@ struct SliceRdWalker
         SliceRdState       brk = dead(), fall = dead();
         bool               hasDefault = false;
         breakAcc.push_back( &brk );
-        const TSNode        body       = sliceField( n, NodeField::Body );
-        const std::uint32_t childCount = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+        const TSNode body = sliceField( n, NodeField::Body );
+        if( !ts_node_is_null( body ) )
         {
-            const TSNode c = ts_node_named_child( body, childIndex );
-            if( !sliceKindIs( c, "case_statement" ) )
+            ChildCursor bodyCursor( body );
+            forEachNamedChild( body, bodyCursor.cur, [ & ]( TSNode c )
             {
-                stmt( c, fall );   // a statement between cases — reachable only by fall-through
-                continue;
-            }
-            SliceRdState s = in;
-            sliceRdJoin( s, fall );
-            const TSNode value = sliceField( c, NodeField::Value );
-            if( ts_node_is_null( value ) )
-            {
-                hasDefault = true;
-            }
-            else
-            {
-                unit( value, s );
-            }
-            const std::uint32_t caseChildCount = ts_node_named_child_count( c );
-            for( std::uint32_t caseChildIndex = 0; caseChildIndex < caseChildCount && !s.dead; ++caseChildIndex )
-            {
-                const TSNode cc = ts_node_named_child( c, caseChildIndex );
-                if( ts_node_is_null( value ) || !ts_node_eq( cc, value ) )
+                if( !sliceKindIs( c, "case_statement" ) )
                 {
-                    stmt( cc, s );
+                    stmt( c, fall );   // a statement between cases — reachable only by fall-through
+                    return true;
                 }
-            }
-            fall = s;
+                SliceRdState s = in;
+                sliceRdJoin( s, fall );
+                const TSNode value = sliceField( c, NodeField::Value );
+                if( ts_node_is_null( value ) )
+                {
+                    hasDefault = true;
+                }
+                else
+                {
+                    unit( value, s );
+                }
+                seqSkipping( c, s, value );   // the case's statements; its `value` label is not one
+                fall = s;
+                return true;
+            } );
         }
         breakAcc.pop_back();
         SliceRdState out = brk;
@@ -1674,20 +1663,20 @@ struct SliceRdWalker
         SliceRdState tryOut = state;
         stmt( sliceField( n, NodeField::Body ), tryOut );
         tryAcc.pop_back();
-        SliceRdState        out        = tryOut;
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+        SliceRdState out = tryOut;
+        ChildCursor  cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
         {
-            const TSNode c = ts_node_named_child( n, childIndex );
             if( !sliceKindIs( c, "catch_clause" ) )
             {
-                continue;
+                return true;
             }
             SliceRdState h = handlerIn;
             unit( sliceField( c, NodeField::Parameters ), h );
             stmt( sliceField( c, NodeField::Body ), h );
             sliceRdJoin( out, h );
-        }
+            return true;
+        } );
         state = out;
     }
 
@@ -1701,17 +1690,21 @@ struct SliceRdWalker
         const TSNode macroName   = sliceField( n, NodeField::Name );
         const TSNode alternative = sliceField( n, NodeField::Alternative );
         SliceRdState bodyOut = bodyState == SlicePp::Dead ? dead() : state;
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount && !bodyOut.dead; ++childIndex )
+        ChildCursor  cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
         {
-            const TSNode c = ts_node_named_child( n, childIndex );
-            const bool   skip = ( !ts_node_is_null( condition ) && ts_node_eq( c, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( c, macroName ) )
-                              || ( !ts_node_is_null( alternative ) && ts_node_eq( c, alternative ) );
+            if( bodyOut.dead )
+            {
+                return false;
+            }
+            const bool skip = ( !ts_node_is_null( condition ) && ts_node_eq( c, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( c, macroName ) )
+                            || ( !ts_node_is_null( alternative ) && ts_node_eq( c, alternative ) );
             if( !skip )
             {
                 stmt( c, bodyOut );
             }
-        }
+            return true;
+        } );
         SliceRdState altOut = dead();
         if( !ts_node_is_null( alternative ) )
         {
@@ -1761,11 +1754,10 @@ struct SliceRdWalker
         }
         if( sliceKindIs( n, "with_statement" ) )
         {
-            const TSNode        body       = sliceField( n, NodeField::Body );
-            const std::uint32_t childCount = ts_node_named_child_count( n );
-            for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+            const TSNode body = sliceField( n, NodeField::Body );
+            ChildCursor  cursor( n );
+            forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
             {
-                const TSNode c = ts_node_named_child( n, childIndex );
                 if( !ts_node_is_null( body ) && ts_node_eq( c, body ) )
                 {
                     stmt( c, state );
@@ -1774,7 +1766,8 @@ struct SliceRdWalker
                 {
                     unit( c, state );   // the with_clause: the context expressions, then the `as` targets
                 }
-            }
+                return true;
+            } );
             return true;
         }
         if( sliceKindIs( n, "match_statement" ) )
@@ -1810,11 +1803,10 @@ struct SliceRdWalker
             stmt( sliceField( n, NodeField::Consequence ), t );
             sliceRdJoin( out, t );
         }
-        bool                hasElse    = false;
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+        bool        hasElse = false;
+        ChildCursor cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
         {
-            const TSNode c = ts_node_named_child( n, childIndex );
             if( sliceKindIs( c, "elif_clause" ) )
             {
                 unit( sliceField( c, NodeField::Condition ), falseS );
@@ -1829,7 +1821,8 @@ struct SliceRdWalker
                 sliceRdJoin( out, t );
                 hasElse = true;
             }
-        }
+            return true;
+        } );
         if( !hasElse )
         {
             sliceRdJoin( out, falseS );
@@ -1847,19 +1840,17 @@ struct SliceRdWalker
         SliceRdState tryOut = state;
         stmt( sliceField( n, NodeField::Body ), tryOut );
         tryAcc.pop_back();
-        SliceRdState        handlersOut = dead(), normalOut = tryOut;
-        TSNode              finallyClause{};
-        const std::uint32_t childCount = ts_node_named_child_count( n );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+        SliceRdState handlersOut = dead(), normalOut = tryOut;
+        TSNode       finallyClause{};
+        ChildCursor  cursor( n );
+        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
         {
-            const TSNode c = ts_node_named_child( n, childIndex );
             if( sliceKindIs( c, "except_clause" ) || sliceKindIs( c, "except_group_clause" ) )
             {
-                SliceRdState        h          = handlerIn;
-                const std::uint32_t partCount = ts_node_named_child_count( c );
-                for( std::uint32_t partIndex = 0; partIndex < partCount; ++partIndex )
+                SliceRdState h = handlerIn;
+                ChildCursor  partCursor( c );
+                forEachNamedChild( c, partCursor.cur, [ & ]( TSNode part )
                 {
-                    const TSNode part = ts_node_named_child( c, partIndex );
                     if( sliceKindIs( part, "block" ) )
                     {
                         stmt( part, h );
@@ -1868,7 +1859,8 @@ struct SliceRdWalker
                     {
                         unit( part, h );   // the exception expression and the `as` name
                     }
-                }
+                    return true;
+                } );
                 sliceRdJoin( handlersOut, h );
             }
             else if( sliceKindIs( c, "else_clause" ) )
@@ -1879,7 +1871,8 @@ struct SliceRdWalker
             {
                 finallyClause = c;
             }
-        }
+            return true;
+        } );
         if( ts_node_is_null( finallyClause ) )
         {
             sliceRdJoin( normalOut, handlersOut );
@@ -1899,29 +1892,32 @@ struct SliceRdWalker
     void matchPy( TSNode n, SliceRdState& state )
     {
         unit( sliceField( n, NodeField::Subject ), state );
-        const TSNode        body       = sliceField( n, NodeField::Body );
-        SliceRdState        out        = state;
-        const std::uint32_t childCount = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body );
-        for( std::uint32_t childIndex = 0; childIndex < childCount; ++childIndex )
+        const TSNode body = sliceField( n, NodeField::Body );
+        SliceRdState out  = state;
+        if( !ts_node_is_null( body ) )
         {
-            const TSNode c = ts_node_named_child( body, childIndex );
-            if( !sliceKindIs( c, "case_clause" ) )
+            ChildCursor bodyCursor( body );
+            forEachNamedChild( body, bodyCursor.cur, [ & ]( TSNode c )
             {
-                continue;
-            }
-            SliceRdState        s           = state;
-            const TSNode        consequence = sliceField( c, NodeField::Consequence );
-            const std::uint32_t partCount   = ts_node_named_child_count( c );
-            for( std::uint32_t partIndex = 0; partIndex < partCount; ++partIndex )
-            {
-                const TSNode part = ts_node_named_child( c, partIndex );
-                if( ts_node_is_null( consequence ) || !ts_node_eq( part, consequence ) )
+                if( !sliceKindIs( c, "case_clause" ) )
                 {
-                    unit( part, s );   // patterns (capture defs) and the guard
+                    return true;
                 }
-            }
-            stmt( consequence, s );
-            sliceRdJoin( out, s );
+                SliceRdState s           = state;
+                const TSNode consequence = sliceField( c, NodeField::Consequence );
+                ChildCursor  partCursor( c );
+                forEachNamedChild( c, partCursor.cur, [ & ]( TSNode part )
+                {
+                    if( ts_node_is_null( consequence ) || !ts_node_eq( part, consequence ) )
+                    {
+                        unit( part, s );   // patterns (capture defs) and the guard
+                    }
+                    return true;
+                } );
+                stmt( consequence, s );
+                sliceRdJoin( out, s );
+                return true;
+            } );
         }
         state = out;
     }

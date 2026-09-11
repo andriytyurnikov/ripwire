@@ -317,11 +317,15 @@ void captureMacroBodyCalls( TSNode defineNode, std::uint32_t fileId, Lang lang, 
 // child, collecting type nodes at both depths (Rust is a separate pass — impl Trait for T is a sibling).
 void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
 {
-    const uint32_t cc = ts_node_child_count( classNode );
-    for( uint32_t i = 0; i < cc; ++i )
+    // O(children) at all three levels. These child lists LOOK grammar-bounded — a class node's clauses, a
+    // clause's base types — and the earlier class-3 reasoning said so, but EXTRAS refute it: a comment run
+    // between two base types is spliced straight into the clause's own child array (src/infra/tschildren.h),
+    // and 16 000 of them measured 118× the same file with the flood outside the clause
+    // (test/childwalkscalecheck.sh, arm B10). Each level owns its cursor — the loops nest.
+    ChildCursor classCursor( classNode );
+    forEachChild( classNode, classCursor.cur, [ & ]( TSNode clause )
     {
-        const TSNode clause = ts_node_child( classNode, i );
-        const char*  ct     = ts_node_type( clause );
+        const char* ct = ts_node_type( clause );
         const bool   isClause =    kindIs( ct, "base_class_clause" )     // C++    : public Base
                                 || kindIs( ct, "class_heritage" )        // TS/JS  extends / implements (wraps clauses)
                                 || kindIs( ct, "superclasses" )          // Python class X(Base):   (field)
@@ -334,32 +338,33 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
                                 || kindIs( ct, "class_interface_clause" ); // PHP  implements I, J
         if( !isClause )
         {
-            continue;
+            return true;
         }
 
-        const uint32_t bc = ts_node_child_count( clause );
-        for( uint32_t j = 0; j < bc; ++j )
+        ChildCursor clauseCursor( clause );
+        forEachChild( clause, clauseCursor.cur, [ & ]( TSNode bn )
         {
-            const TSNode bn = ts_node_child( clause, j );
-            const char*  bt = ts_node_type( bn );
+            const char* bt = ts_node_type( bn );
             if( isBaseTypeNode( bt ) )                 // DIRECT: type node right under the clause
             {
                 emitBaseRef( bn, fileId, lang, src, refs );
-                continue;
+                return true;
             }
             // WRAPPED: descend ONE level into a wrapper (extends_clause / implements_clause / type_list)
             // and emit each type node it holds. One level is enough for every measured grammar shape.
-            const uint32_t wc = ts_node_child_count( bn );
-            for( uint32_t w = 0; w < wc; ++w )
+            ChildCursor wrapCursor( bn );
+            forEachChild( bn, wrapCursor.cur, [ & ]( TSNode wn )
             {
-                const TSNode wn = ts_node_child( bn, w );
                 if( isBaseTypeNode( ts_node_type( wn ) ) )
                 {
                     emitBaseRef( wn, fileId, lang, src, refs );
                 }
-            }
-        }
-    }
+                return true;
+            } );
+            return true;
+        } );
+        return true;
+    } );
 }
 
 // Rust inheritance capture (separate pass — different shape). `impl Trait for T { … }` is a top-level

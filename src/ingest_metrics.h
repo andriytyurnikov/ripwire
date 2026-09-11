@@ -190,29 +190,15 @@ inline bool cc_isBooleanJoin( TSNode n, std::string_view src, Lang lang ) noexce
 // bounded-depth search for a structured_binding_declarator anywhere under `n` — the vendored tree-sitter-cpp
 // grammar nests it TWO levels below the `declaration` node (declaration -> init_declarator ->
 // structured_binding_declarator for `auto [a,b] = …`; verified against the vendored grammar via a parse-tree
-// dump, not assumed), so a same-level-only child scan misses it. `declaration` subtrees are grammar-bounded
-// (a handful of children, not attacker-widenable like a comment run), so a small depth cap (not the
-// cursor/stack machinery cc_walk itself uses for the whole-function walk) is the right tool here.
-inline bool cc_declHasStructuredBinding( TSNode n, int depth ) noexcept
+// dump, not assumed), so a same-level-only child scan misses it. The DEPTH is grammar-bounded and still
+// capped here; the WIDTH is not, and an earlier revision of this comment claimed it was. A `declaration`'s
+// child list carries every comment between its type and its declarator as a direct child — extras are
+// spliced into the array, not balanced by a repeat node (src/infra/tschildren.h) — so the indexed scan this
+// used to be was O(C²) and measured 797 of the 2 956 child-iterator samples on a 16 000-comment declaration
+// (test/childwalkscalecheck.sh, arm B7). Each frame owns its cursor: the loop body recurses.
+inline bool cc_declHasStructuredBinding( TSNode n, int depth )
 {
-    if( depth <= 0 )
-    {
-        return false;   // pathological-AST guard — declaration subtrees never legitimately need this deep
-    }
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t ci = 0; ci < childCount; ++ci )
-    {
-        const TSNode child = ts_node_child( n, ci );
-        if( kindIs( ts_node_type( child ), "structured_binding_declarator" ) )
-        {
-            return true;
-        }
-        if( cc_declHasStructuredBinding( child, depth - 1 ) )
-        {
-            return true;
-        }
-    }
-    return false;
+    return anyChildBelow( n, depth, false, []( TSNode child ) { return kindIs( ts_node_type( child ), "structured_binding_declarator" ); } );
 }
 
 // Phase 1 (local-variable-indexing, docs/LOCALS_INDEXING.md): is `n` a LOCAL-VARIABLE declaration
@@ -244,10 +230,24 @@ inline bool cc_isCountableLocalDecl( TSNode n, const char* t ) noexcept
 // `ci` of `declNode` one comma-separated declarator SLOT? The vendored grammar gives every comma-separated
 // declarator its own `declarator`-FIELDED direct child of the `declaration` node (`int a=1,b=2;` has TWO) —
 // pulled out to ONE predicate so the two counting/walking loops that need it never drift on the field name.
-inline bool cc_isDeclaratorField( TSNode declNode, std::uint32_t ci ) noexcept
+// Takes the child's FIELD NAME, not its index: `ts_node_field_name_for_child( declNode, ci )` restarts
+// tree-sitter's child iterator at the first child on every call, so both loops below were O(C²) in a
+// declaration's child count — a width a comment run sets, not the grammar (arm B7). Off a cursor,
+// `ts_tree_cursor_current_field_name` answers the identical question in O(1): NULL for an extra, else the
+// non-inherited field at the child's structural index, else the name inherited through the invisible nodes
+// above it (third_party/deps/tree_sitter/lib/src/tree_cursor.c:657 vs node.c:689).
+inline bool cc_isDeclaratorFieldName( const char* fieldName ) noexcept
 {
-    const char* fieldName = ts_node_field_name_for_child( declNode, ci );
     return fieldName != nullptr && kindIs( fieldName, "declarator" );
+}
+
+// …and the ONE walk over those slots, for the same reason the predicate is shared: cc_countLocalDeclarators
+// and ln_declaratorIdentifiers ask the identical question of the identical child list and must never drift.
+template< class Fn >
+inline void forEachDeclaratorSlot( TSNode declNode, const Fn& fn )
+{
+    ChildCursor cursor( declNode );
+    forEachChild( declNode, cursor.cur, [ & ]( TSNode c ) { if( cc_isDeclaratorFieldName( ts_tree_cursor_current_field_name( &cursor.cur ) ) ) { fn( c ); } return true; } );
 }
 
 // L3 fix (2026-08-08 audit): a `declaration` node already proven countable by cc_isCountableLocalDecl can
@@ -260,17 +260,10 @@ inline bool cc_isDeclaratorField( TSNode declNode, std::uint32_t ci ) noexcept
 // type-only statement, e.g. a local `struct Foo;` forward declaration) now correctly counts as zero rather
 // than the previous "1" — a declaration that names no local was never meant to be a local, and the old
 // per-statement count silently over-counted that shape too.
-inline std::uint32_t cc_countLocalDeclarators( TSNode n ) noexcept
+inline std::uint32_t cc_countLocalDeclarators( TSNode n )
 {
     std::uint32_t count = 0;
-    const std::uint32_t childCount = ts_node_child_count( n );
-    for( std::uint32_t ci = 0; ci < childCount; ++ci )
-    {
-        if( cc_isDeclaratorField( n, ci ) )
-        {
-            ++count;
-        }
-    }
+    forEachDeclaratorSlot( n, [ &count ]( TSNode ) { ++count; } );
     return count;
 }
 
@@ -1209,26 +1202,17 @@ inline void ln_extractDeclaratorIdentifiers( TSNode node, std::vector<TSNode>& o
         outIdents.push_back( node );
         return;
     }
+    // Both walks below are O(children) on a cursor this frame owns (the body recurses): a declarator's own
+    // child list takes a comment between any two of its parts, so the width is input-set (arm B7).
     if( kindIs( t, "reference_declarator" ) )
     {
-        const std::uint32_t n = ts_node_child_count( node );
-        for( std::uint32_t i = 0; i < n; ++i )
-        {
-            ln_extractDeclaratorIdentifiers( ts_node_child( node, i ), outIdents, depth - 1 );
-        }
+        ChildCursor cursor( node );
+        forEachChild( node, cursor.cur, [ & ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, depth - 1 ); return true; } );
         return;
     }
     if( kindIs( t, "init_declarator" ) || kindIs( t, "pointer_declarator" ) || kindIs( t, "array_declarator" ) )
     {
-        const std::uint32_t n = ts_node_child_count( node );
-        for( std::uint32_t i = 0; i < n; ++i )
-        {
-            const char* fieldName = ts_node_field_name_for_child( node, i );
-            if( fieldName != nullptr && kindIs( fieldName, "declarator" ) )
-            {
-                ln_extractDeclaratorIdentifiers( ts_node_child( node, i ), outIdents, depth - 1 );
-            }
-        }
+        forEachDeclaratorSlot( node, [ & ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, depth - 1 ); } );
         return;
     }
     // unrecognized wrapper (incl. structured_binding_declarator, which should never reach here — Phase 1's
@@ -1244,14 +1228,7 @@ inline void ln_extractDeclaratorIdentifiers( TSNode node, std::vector<TSNode>& o
 // shared "which children are declarator slots" scan, not re-typing the field-name check.
 inline void ln_declaratorIdentifiers( TSNode declNode, std::vector<TSNode>& outIdents )
 {
-    const std::uint32_t n = ts_node_child_count( declNode );
-    for( std::uint32_t i = 0; i < n; ++i )
-    {
-        if( cc_isDeclaratorField( declNode, i ) )
-        {
-            ln_extractDeclaratorIdentifiers( ts_node_child( declNode, i ), outIdents, 6 );
-        }
-    }
+    forEachDeclaratorSlot( declNode, [ &outIdents ]( TSNode c ) { ln_extractDeclaratorIdentifiers( c, outIdents, 6 ); } );
 }
 
 // declDepth: count of `compound_statement` ancestors from `declNode` up to and including the function's
@@ -1538,15 +1515,12 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
     TSNode args = fieldChild( call, NodeField::Arguments );
     if( ts_node_is_null( args ) )
     {
-        const std::uint32_t cc = ts_node_child_count( call );
-        for( std::uint32_t i = 0; i < cc; ++i )
-        {
-            const TSNode c = ts_node_child( call, i );
-            const char* ct = ts_node_type( c );
-            if(    kindIs( ct, "argument_list" ) || kindIs( ct, "arguments" )
-                || kindIs( ct, "value_arguments" ) )     // Swift
-            { args = c; break; }
-        }
+        ChildCursor callCursor( call );
+        forEachChild( call, callCursor.cur, [ & ]( TSNode c )
+        {   const char* ct = ts_node_type( c );
+            if( !kindIs( ct, "argument_list" ) && !kindIs( ct, "arguments" ) && !kindIs( ct, "value_arguments" ) ) { return true; }   // Swift
+            args = c;
+            return false; } );
     }
     if( ts_node_is_null( args ) )
     {
@@ -1554,28 +1528,24 @@ inline std::pair<std::uint16_t, bool> callArity( TSNode nameNode, Lang lang, std
     }
 
     // count NAMED argument children; a spread / splat / apply argument makes the count unreliable → not known.
-    std::uint16_t count = 0;
-    const std::uint32_t an = ts_node_child_count( args );
-    for( std::uint32_t i = 0; i < an; ++i )
-    {
-        const TSNode c = ts_node_child( args, i );
-        if( !ts_node_is_named( c ) )
-        {
-            continue; // skip '(' ')' ',' separators
-        }
+    // O(children): the `comment` skip below is itself the proof that this list's width is INPUT-set, and this
+    // counter runs once per CALL SITE, so the indexed form was O(calls x C²) — arm B11, 56x its control.
+    std::uint16_t count      = 0;
+    bool          unreliable = false;
+    ChildCursor   argsCursor( args );
+    forEachChild( args, argsCursor.cur, [ & ]( TSNode c )
+    {   if( !ts_node_is_named( c ) ) { return true; }                                          // '(' ')' ',' separators
         const char* ct = ts_node_type( c );
-        if( kindIs( ct, "comment" ) )
-        {
-            continue;
-        }
+        if( kindIs( ct, "comment" ) ) { return true; }
         if( std::strstr( ct, "splat" ) != nullptr || std::strstr( ct, "spread" ) != nullptr || kindIs( ct, "..." ) )
         {
-            return { 0, false };                                  // `f(*args)` / `f(...xs)` → unreliable
+            unreliable = true;                                    // `f(*args)` / `f(...xs)` → unreliable
+            return false;
         }
         ++count;
-    }
+        return true; } );
     (void)lang;
-    return { count, true };
+    return unreliable ? std::pair<std::uint16_t,bool>{ 0, false } : std::pair<std::uint16_t,bool>{ count, true };
 }
 }   // namespace — ingest_metrics.h section of ingest.cpp
 
