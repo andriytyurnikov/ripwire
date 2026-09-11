@@ -180,6 +180,30 @@ if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
     fi
 fi
 
+# ── 3b: the x86_64 slice under UBSan's integer checks — the arm that CI's ubuntu ASan leg is ────────────
+# The 32-byte AVX2 block fills every bit of a uint32 mask, so a `<< 1` that is harmless on a 16-byte NEON
+# mask (top half always zero) DROPS a set bit on AVX2, and -fsanitize=integer's unsigned-shift-base check
+# aborts on exactly that (PR #127's first CI run: lexindex.h:186 on --for/--pack-task, clean on every arm64
+# ASan run). Arm 3 compiled without sanitizers and could not see it. UBSan's runtime is a universal dylib
+# in the Apple toolchain, so the cross slice CAN carry -fsanitize=undefined,integer; ASan stays off here
+# (arm 1 owns memory safety on the host ISA). A sanitizer report is a FAIL; a slice that will not run at
+# all (no Rosetta 2) is a SKIP, as in arm 3.
+if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+    if X86UB="$( compile_direct x86ub -arch x86_64 -march=x86-64-v3 -fsanitize=undefined,integer -fno-sanitize-recover=all )" && [ -n "$X86UB" ]; then
+        if RIPWIRE_ROOT="$ROOT" UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$X86UB" > "$WORK/out_x86ub.log" 2>&1; then
+            read_counts "$WORK/out_x86ub.log"
+            printf '  PASS  x86_64/AVX2 mirror is clean under -fsanitize=undefined,integer (%s assertions)\n' "$ASSERTS"
+        elif grep -q 'runtime error' "$WORK/out_x86ub.log"; then
+            echo "  FAIL  x86_64/AVX2 mirror trips UBSan integer checks: $( grep -m1 'runtime error' "$WORK/out_x86ub.log" | sed 's|.*/src/|src/|' )"
+            fail=1
+        else
+            printf '  SKIP  x86_64 UBSan slice built but did not run here (no Rosetta 2): %s\n' "$( tail -1 "$WORK/out_x86ub.log" )"
+        fi
+    else
+        printf '  SKIP  no x86_64 UBSan cross slice on this toolchain; CI ubuntu-24.04 asan is the proof\n'
+    fi
+fi
+
 if [ "$fail" = 0 ]; then
     echo "strkerncheck: PASS"
 else
