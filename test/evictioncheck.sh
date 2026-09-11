@@ -301,7 +301,12 @@ R3="$TMP3/repo"; mkdir -p "$R3"
 printf 'int pinme( void )\n{\n    return 1;\n}\n' > "$R3/f.cpp"
 
 env -u XDG_CACHE_HOME TMPDIR="$CB3" "$BIN" "$R3" >/dev/null 2>"$TMP3/prime.err"
-OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*.bin' 2>/dev/null | head -1 )"
+# -name 'ripwire-*-lean.bin', not 'ripwire-*.bin' (CodeRabbit #127 / 3985249724): the sed below only
+# matches the LEAN basename, and the priming run can leave a -rich.bin beside it. `head -1` over the wider
+# glob then returns whichever the filesystem happens to list first, ROOTHEX3 keeps the whole basename, and
+# the 16-hex check goes red for a directory-ordering reason. Arm (k) at the bottom of this file already
+# uses the precise pattern for the same job.
+OWN3="$( find "$CD3" -mindepth 1 -maxdepth 2 -name 'ripwire-*-lean.bin' 2>/dev/null | head -1 )"
 ROOTHEX3="$( basename "${OWN3:-none}" | sed -E 's/^ripwire-([0-9a-f]{16})-lean\.bin$/\1/' )"
 if printf '%s' "$ROOTHEX3" | grep -qE '^[0-9a-f]{16}$'; then
     ok "(h) primed: this root's lean blob names root key $ROOTHEX3"
