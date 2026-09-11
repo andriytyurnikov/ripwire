@@ -856,9 +856,11 @@ enum class KotlinStringEvent : std::uint8_t { None, OpenInterpolation, CloseStri
 // One step of the vendored scanner's scan_string_content at bytes[ i ], inside an open string of the given shape: the
 // index after the bytes it consumes, and whether those bytes opened an interpolation or closed the string.
 //   `$`  a run of at least the string's `$` prefix followed by `{` opens an interpolation; any other run is content.
-//   `\`  skips the byte after it — except that `\$` directly before a quote CLOSES the string, triple-quoted or not
-//        (upstream's own reading, mirrored because the stack follows it), and in a triple-quoted string `\` before
-//        a quote is no escape at all, so the quote is read again.
+//   `\`  skips the byte after it, and `\$` the byte after the `$` too: the scanner's loop falls through to its bottom
+//        advance, so `\$${` is content, never an interpolation. Before a quote the string's shape decides. In a
+//        single-quoted string `\$"` CLOSES it (upstream's own reading, mirrored because the stack follows it) and `\"` is
+//        content. In a triple-quoted string `\` is no escape before a quote, bare or as `\$` (vendored patch 002), so the
+//        quote is read again by the triple-quote close test.
 //   `"`  closes a single-quoted string; a run of three or more closes a triple-quoted one, and shorter runs are content.
 inline std::pair<std::size_t, KotlinStringEvent> kotlinStringStep( std::string_view bytes, std::size_t i, bool tripleQuoted,
                                                                    std::size_t dollars ) noexcept
@@ -884,13 +886,15 @@ inline std::pair<std::size_t, KotlinStringEvent> kotlinStringStep( std::string_v
         }
         case '\\':
         {
-            if( byteAt( i + 1 ) == '$' )
+            const bool        escapesDollar = byteAt( i + 1 ) == '$';
+            const std::size_t quoteAt       = i + ( escapesDollar ? 2u : 1u );
+            if( tripleQuoted && byteAt( quoteAt ) == '"' )
+            {
+                return { quoteAt, KotlinStringEvent::None };   // the triple-quote close test reads this quote again
+            }
+            if( escapesDollar )
             {
                 return { i + 3, byteAt( i + 2 ) == '"' ? KotlinStringEvent::CloseString : KotlinStringEvent::None };
-            }
-            if( tripleQuoted && byteAt( i + 1 ) == '"' )
-            {
-                return { i + 1, KotlinStringEvent::None };
             }
             return { i + 2, KotlinStringEvent::None };
         }
