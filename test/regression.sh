@@ -25,7 +25,7 @@ esac
 GOLD="$ROOT/test/golden.xml"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -56,13 +56,13 @@ fi
 rm -f "$TMP/cache.bin"
 "$BIN" "$CORPUS" --cache="$TMP/cache.bin" >"$TMP/cold" 2>/dev/null
 "$BIN" "$CORPUS" --cache="$TMP/cache.bin" >"$TMP/warm" 2>/dev/null
-diff -q "$TMP/cold" "$TMP/warm" >/dev/null && ok "cache transparency (warm == cold)" || { no "cache transparency (--cache changes output)"; diff "$TMP/cold" "$TMP/warm" | head -4; }
+if diff -q "$TMP/cold" "$TMP/warm" >/dev/null; then ok "cache transparency (warm == cold)"; else { no "cache transparency (--cache changes output)"; diff "$TMP/cold" "$TMP/warm" | head -4; }; fi
 
 # 2b) warm-BY-DEFAULT transparency — the auto-cache path (no flag) must equal a cold --no-cache run
 "$BIN" "$CORPUS" >/dev/null 2>&1                                 # populate the per-root TMPDIR auto-cache
 "$BIN" "$CORPUS"            >"$TMP/autowarm" 2>/dev/null         # warm via auto-cache (default behavior)
 "$BIN" "$CORPUS" --no-cache >"$TMP/autocold" 2>/dev/null
-diff -q "$TMP/autowarm" "$TMP/autocold" >/dev/null && ok "warm-by-default == cold (auto-cache)" || { no "warm-by-default differs from cold"; diff "$TMP/autocold" "$TMP/autowarm" | head -4; }
+if diff -q "$TMP/autowarm" "$TMP/autocold" >/dev/null; then ok "warm-by-default == cold (auto-cache)"; else { no "warm-by-default differs from cold"; diff "$TMP/autocold" "$TMP/autowarm" | head -4; }; fi
 
 # 2c) incremental MUTATION transparency (the P1-A gate). #2/#2b prove warm==cold on a STATIC tree; the harder
 #     contract is that after an EDIT or a REMOVAL the warm cache (which re-parses only the changed files and
@@ -105,20 +105,20 @@ if [ -d "$DOCFIX" ]; then
         || { no "doc ingest (.ipynb not recalled / raw JSON leaked / nondeterministic)"; head -6 "$TMP/doc1"; }
     # the .html doc node appears in the default map (extracted prose, not <tags>)
     "$BIN" "$DOCFIX" --no-cache >"$TMP/docmap" 2>/dev/null
-    grep -q 'page.html' "$TMP/docmap" && ok "doc ingest (.html node in map)" || no "doc ingest (.html missing from map)"
+    if grep -q 'page.html' "$TMP/docmap"; then ok "doc ingest (.html node in map)"; else no "doc ingest (.html missing from map)"; fi
     # warm == cold on the doc corpus (extraction is cache-transparent)
     rm -f "$TMP/doc.cache"
     "$BIN" "$DOCFIX" --cache="$TMP/doc.cache" >/dev/null 2>&1
     "$BIN" "$DOCFIX" --cache="$TMP/doc.cache" >"$TMP/docwarm" 2>/dev/null
     "$BIN" "$DOCFIX" --no-cache               >"$TMP/doccold" 2>/dev/null
-    diff -q "$TMP/docwarm" "$TMP/doccold" >/dev/null && ok "doc ingest (warm == cold)" || { no "doc ingest (warm != cold)"; diff "$TMP/doccold" "$TMP/docwarm" | head -6; }
+    if diff -q "$TMP/docwarm" "$TMP/doccold" >/dev/null; then ok "doc ingest (warm == cold)"; else { no "doc ingest (warm != cold)"; diff "$TMP/doccold" "$TMP/docwarm" | head -6; }; fi
 else
     printf '  SKIP  doc ingest (no test/docfix)\n'
 fi
 
 # 3) well-formed XML (G4)
 if command -v xmllint >/dev/null 2>&1; then
-    "$BIN" "$CORPUS" 2>/dev/null | xmllint --noout - 2>/dev/null && ok "xml well-formed" || no "xml malformed"
+    if "$BIN" "$CORPUS" 2>/dev/null | xmllint --noout - 2>/dev/null; then ok "xml well-formed"; else no "xml malformed"; fi
 else
     printf '  SKIP  xml well-formed (no xmllint)\n'
 fi
@@ -130,44 +130,44 @@ fi
 rc_lint=$?
 "$BIN" "$CORPUS" --match='(function_definition) @f' --no-cache >/dev/null 2>&1
 rc_match=$?
-{ [ $rc_lint -eq 0 ] && [ $rc_match -eq 0 ]; } && ok "--lint / --match run (no crash)" || no "--lint(rc=$rc_lint) / --match(rc=$rc_match) crashed"
+if { [ $rc_lint -eq 0 ] && [ $rc_match -eq 0 ]; }; then ok "--lint / --match run (no crash)"; else no "--lint(rc=$rc_lint) / --match(rc=$rc_match) crashed"; fi
 
 # 3c) --recall (memory-as-graph doc retrieval) — deterministic, non-empty, non-crashing on the corpus docs.
 "$BIN" "$CORPUS" --recall="geometry distance" --no-cache >"$TMP/r1" 2>/dev/null; rc_recall=$?
 "$BIN" "$CORPUS" --recall="geometry distance" --no-cache >"$TMP/r2" 2>/dev/null
-{ [ $rc_recall -eq 0 ] && diff -q "$TMP/r1" "$TMP/r2" >/dev/null && [ -s "$TMP/r1" ]; } && ok "--recall deterministic + non-empty" || no "--recall(rc=$rc_recall) nondeterministic/empty/crashed"
+if { [ $rc_recall -eq 0 ] && diff -q "$TMP/r1" "$TMP/r2" >/dev/null && [ -s "$TMP/r1" ]; }; then ok "--recall deterministic + non-empty"; else no "--recall(rc=$rc_recall) nondeterministic/empty/crashed"; fi
 
 # 3d) --seams (untested cross-module integration seams) — deterministic, non-crashing (may be empty on a tiny corpus).
 "$BIN" "$CORPUS" --seams --no-cache >"$TMP/sm1" 2>/dev/null; rc_seams=$?
 "$BIN" "$CORPUS" --seams --no-cache >"$TMP/sm2" 2>/dev/null
-{ [ $rc_seams -eq 0 ] && diff -q "$TMP/sm1" "$TMP/sm2" >/dev/null; } && ok "--seams deterministic (no crash)" || no "--seams(rc=$rc_seams) nondeterministic/crashed"
+if { [ $rc_seams -eq 0 ] && diff -q "$TMP/sm1" "$TMP/sm2" >/dev/null; }; then ok "--seams deterministic (no crash)"; else no "--seams(rc=$rc_seams) nondeterministic/crashed"; fi
 
 # 3e) --mermaid (module dependency diagram) — deterministic, non-crashing, emits a flowchart.
 "$BIN" "$CORPUS" --mermaid --no-cache >"$TMP/mm1" 2>/dev/null; rc_mm=$?
 "$BIN" "$CORPUS" --mermaid --no-cache >"$TMP/mm2" 2>/dev/null
-{ [ $rc_mm -eq 0 ] && diff -q "$TMP/mm1" "$TMP/mm2" >/dev/null && grep -q '^flowchart' "$TMP/mm1"; } && ok "--mermaid deterministic (flowchart)" || no "--mermaid(rc=$rc_mm) nondeterministic/crashed/no-flowchart"
+if { [ $rc_mm -eq 0 ] && diff -q "$TMP/mm1" "$TMP/mm2" >/dev/null && grep -q '^flowchart' "$TMP/mm1"; }; then ok "--mermaid deterministic (flowchart)"; else no "--mermaid(rc=$rc_mm) nondeterministic/crashed/no-flowchart"; fi
 
 # 3f) --situ (situational awareness for an explicit change set) — deterministic, non-crashing.
 "$BIN" "$CORPUS" --situ=geometry.cpp --no-cache >"$TMP/si1" 2>/dev/null; rc_si=$?
 "$BIN" "$CORPUS" --situ=geometry.cpp --no-cache >"$TMP/si2" 2>/dev/null
-{ [ $rc_si -eq 0 ] && diff -q "$TMP/si1" "$TMP/si2" >/dev/null; } && ok "--situ deterministic (no crash)" || no "--situ(rc=$rc_si) nondeterministic/crashed"
+if { [ $rc_si -eq 0 ] && diff -q "$TMP/si1" "$TMP/si2" >/dev/null; }; then ok "--situ deterministic (no crash)"; else no "--situ(rc=$rc_si) nondeterministic/crashed"; fi
 
 # 3g) --mentions (doc<->code links) — deterministic; fixture notes.md names `distance` in a backtick.
 "$BIN" "$CORPUS" --mentions=distance --no-cache >"$TMP/mt1" 2>/dev/null; rc_mt=$?
 "$BIN" "$CORPUS" --mentions=distance --no-cache >"$TMP/mt2" 2>/dev/null
-{ [ $rc_mt -eq 0 ] && diff -q "$TMP/mt1" "$TMP/mt2" >/dev/null && grep -q 'notes.md' "$TMP/mt1"; } && ok "--mentions deterministic (doc<->code link found)" || no "--mentions(rc=$rc_mt) nondeterministic/crashed/no-link"
+if { [ $rc_mt -eq 0 ] && diff -q "$TMP/mt1" "$TMP/mt2" >/dev/null && grep -q 'notes.md' "$TMP/mt1"; }; then ok "--mentions deterministic (doc<->code link found)"; else no "--mentions(rc=$rc_mt) nondeterministic/crashed/no-link"; fi
 
 # 3h) wrap (adoption recipes) — deterministic, known agent → exit 0 + MCP wiring; unknown agent → exit 2.
 "$BIN" wrap claude >"$TMP/wr1" 2>/dev/null; rc_wr=$?
 "$BIN" wrap claude >"$TMP/wr2" 2>/dev/null
 "$BIN" wrap no-such-agent >/dev/null 2>&1; rc_wrbad=$?
-{ [ $rc_wr -eq 0 ] && diff -q "$TMP/wr1" "$TMP/wr2" >/dev/null && grep -q 'claude mcp add' "$TMP/wr1" && [ $rc_wrbad -eq 2 ]; } && ok "wrap deterministic (recipe + unknown→exit 2)" || no "wrap(rc=$rc_wr,bad=$rc_wrbad) nondeterministic/no-recipe"
+if { [ $rc_wr -eq 0 ] && diff -q "$TMP/wr1" "$TMP/wr2" >/dev/null && grep -q 'claude mcp add' "$TMP/wr1" && [ $rc_wrbad -eq 2 ]; }; then ok "wrap deterministic (recipe + unknown→exit 2)"; else no "wrap(rc=$rc_wr,bad=$rc_wrbad) nondeterministic/no-recipe"; fi
 
 # 3i) --stable: deterministic, path-ordered (order=stable), and OMITS the globally-volatile k= rank so the
 #     emitted prefix is byte-stable across edits (provider KV-cache hits). default keeps k= (golden below).
 "$BIN" "$CORPUS" --stable --no-cache >"$TMP/st1" 2>/dev/null; rc_st=$?
 "$BIN" "$CORPUS" --stable --no-cache >"$TMP/st2" 2>/dev/null
-{ [ $rc_st -eq 0 ] && diff -q "$TMP/st1" "$TMP/st2" >/dev/null && grep -q 'order=stable' "$TMP/st1" && ! grep -q ' k="' "$TMP/st1"; } && ok "--stable deterministic (path order, no volatile k=)" || no "--stable(rc=$rc_st) nondeterministic/has-k=/no-order"
+if { [ $rc_st -eq 0 ] && diff -q "$TMP/st1" "$TMP/st2" >/dev/null && grep -q 'order=stable' "$TMP/st1" && ! grep -q ' k="' "$TMP/st1"; }; then ok "--stable deterministic (path order, no volatile k=)"; else no "--stable(rc=$rc_st) nondeterministic/has-k=/no-order"; fi
 
 # 3k) --stable is the MCP default (P2-C): an --mcp `analyze` response is path-ordered (order=stable) by
 #     default — KV-cache-friendly for MCP callers without their having to pass the flag; --no-stable opts out.
@@ -318,7 +318,7 @@ done
 if [ "${UPDATE_GOLDEN:-0}" = "1" ]; then
     cp "$TMP/cur" "$GOLD"; printf '  WROTE golden (%s B)\n' "$(wc -c <"$GOLD" | tr -d ' ')"
 elif [ -f "$GOLD" ]; then
-    diff -q "$GOLD" "$TMP/cur" >/dev/null && ok "golden ($(wc -c <"$GOLD" | tr -d ' ') B)" || { no "golden drift — review, then UPDATE_GOLDEN=1 if intended"; diff "$GOLD" "$TMP/cur" | head -8; }
+    if diff -q "$GOLD" "$TMP/cur" >/dev/null; then ok "golden ($(wc -c <"$GOLD" | tr -d ' ') B)"; else { no "golden drift — review, then UPDATE_GOLDEN=1 if intended"; diff "$GOLD" "$TMP/cur" | head -8; }; fi
 else
     printf '  SKIP  golden (none yet; create with UPDATE_GOLDEN=1)\n'
 fi

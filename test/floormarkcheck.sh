@@ -61,7 +61,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -667,7 +667,7 @@ done
 if command -v xmllint >/dev/null 2>&1; then
     for f in path9 connect9 affected9 exercises9 seams9 deadcode9 communities9 community9 zoom9 lego9 mcp_path9 mcp_connect9 mcp_lego9; do
         [ -s "$TMP/$f.xml" ] || { no "(9) $f.xml is empty — nothing was validated"; continue; }
-        xmllint --noout "$TMP/$f.xml" 2>"$TMP/xl9.err" && ok "(9) $f.xml is well-formed" || no "(9) $f.xml FAILED xmllint: $( head -1 "$TMP/xl9.err" )"
+        if xmllint --noout "$TMP/$f.xml" 2>"$TMP/xl9.err"; then ok "(9) $f.xml is well-formed"; else no "(9) $f.xml FAILED xmllint: $( head -1 "$TMP/xl9.err" )"; fi
     done
 fi
 

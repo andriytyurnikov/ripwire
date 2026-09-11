@@ -34,7 +34,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"          # allow a repo-relative RIPWIRE_BIN
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -97,7 +97,7 @@ printf '%s' "$E_BARE" | grep -q 'defs_of_name=' && no "unqualified --uses=empty 
 # ── (c) a genuinely-unknown file:name selector refuses honestly — no false 'no reference site' claim, ───
 #    and the suggestion is a real name, not the constant srcmut_sigchange bug.
 OUT="$( "$BIN" "$ROOT" --uses='src/graph.h:nosuchfn' --no-cache 2>"$TMP/err" )"; RC=$?
-[ "$RC" -eq 1 ] && ok "--uses=src/graph.h:nosuchfn refuses (exit 1)" || no "--uses=src/graph.h:nosuchfn exit $RC (expected 1)"
+if [ "$RC" -eq 1 ]; then ok "--uses=src/graph.h:nosuchfn refuses (exit 1)"; else no "--uses=src/graph.h:nosuchfn exit $RC (expected 1)"; fi
 grep -qi 'no reference site' "$TMP/err" && no "refusal still falsely claims 'no reference site': $( cat "$TMP/err" )" \
     || ok "refusal does not claim 'no reference site' (states only what defs.empty() proves)"
 grep -q 'srcmut_sigchange' "$TMP/err" && no "the constant nonsense suggestion (srcmut_sigchange) is back: $( cat "$TMP/err" )" \
@@ -126,9 +126,9 @@ CANON_ID="$( "$BIN" "$ROOT" --outline='src/notes.h:empty' --no-cache 2>/dev/null
 [ -n "$CANON_ID" ] || { no "could not look up NoteIndex::empty's canonical id via --outline"; CANON_ID="./src/notes.h::NoteIndex::empty"; }
 BARE_A="$( uses_elem 'buildGraph' )"
 BARE_B="$( uses_elem 'buildGraph' )"
-[ "$BARE_A" = "$BARE_B" ] && ok "bare-name form is stable/reproducible: $BARE_A" || no "bare-name form not reproducible"
+if [ "$BARE_A" = "$BARE_B" ]; then ok "bare-name form is stable/reproducible: $BARE_A"; else no "bare-name form not reproducible"; fi
 CANON_A="$( uses_elem "$CANON_ID" )"
-[ -n "$CANON_A" ] && ok "canonical-id form still resolves: $CANON_A" || no "canonical-id form stopped resolving: $CANON_ID"
+if [ -n "$CANON_A" ]; then ok "canonical-id form still resolves: $CANON_A"; else no "canonical-id form stopped resolving: $CANON_ID"; fi
 # KNOWN GAP (help wanted: prompts/help-wanted/uses-qualified-selector.md). This arm used to call the zero below
 # "documented, unchanged behaviour". It is the gap section (f) pins on fixtures: the canonical id resolves defs="1",
 # then the site scan compares the WHOLE spelling with reference names, which are always bare, so count="0" while

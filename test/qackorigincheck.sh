@@ -47,7 +47,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ echo "  PASS  $1"; }
+ok(){ echo "  PASS  $1" || { fail=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -119,7 +119,7 @@ cp "$ACKED_FILE" "$ACKS"
 # shape. Same canonId ⇒ same identity key as the ack taken in (b).
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "add freshOrphan" >/dev/null
 run --quality-baseline >/dev/null 2>&1
-[ -s "$BASE" ] && ok "pinned a baseline sidecar for the contract-change phase" || no "no baseline sidecar written"
+if [ -s "$BASE" ]; then ok "pinned a baseline sidecar for the contract-change phase"; else no "no baseline sidecar written"; fi
 grep -v '^dead ' "$BASE" > "$TMP/base_nodead" && cp "$TMP/base_nodead" "$BASE"
 
 run --quality-delta >"$TMP/p2" 2>/dev/null; rc2=$?

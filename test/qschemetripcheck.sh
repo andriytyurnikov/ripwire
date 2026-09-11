@@ -327,7 +327,7 @@ PIN="$ROOT/test/qschemetrip.hash"
 #   This is an EXTRACTION change, not a Snapshot-SEMANTICS change: what a cached Snapshot MEANS (dead set,
 #   clone-group identity, blob shape) is untouched, so kQSnapCacheScheme deliberately did NOT move.
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -f "$SRC" ] || { echo "no $SRC — run from the repo"; exit 2; }

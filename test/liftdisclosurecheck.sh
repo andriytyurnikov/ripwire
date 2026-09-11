@@ -40,7 +40,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -209,7 +209,7 @@ except Exception as e:
 v = d.get("siblift", "")
 print("C1 %s --json carries \"siblift\" naming a promotion (got %r)" % ("OK" if "promoted" in v and "sibling lift" in v else "NO", v))
 PY
-grep -qE '^C1 OK' "$TMP/c1.res" && ok "$( grep '^C1' "$TMP/c1.res" | cut -d' ' -f3- )" || no "$( cat "$TMP/c1.res" )"
+if grep -qE '^C1 OK' "$TMP/c1.res"; then ok "$( grep '^C1' "$TMP/c1.res" | cut -d' ' -f3- )"; else no "$( cat "$TMP/c1.res" )"; fi
 
 BASE_SIB_JSON="$( "$BIN" "$SIB" --for="$SIBQ" --json --no-cache 2>/dev/null )"
 printf '%s' "$BASE_SIB_JSON" | grep -q '"siblift"' \
@@ -226,7 +226,7 @@ except Exception as e:
 v = d.get("expand", "")
 print("C3 %s --json carries \"expand\" naming a promotion (got %r)" % ("OK" if "promoted" in v and "structural expansion" in v else "NO", v))
 PY
-grep -qE '^C3 OK' "$TMP/c3.res" && ok "$( grep '^C3' "$TMP/c3.res" | cut -d' ' -f3- )" || no "$( cat "$TMP/c3.res" )"
+if grep -qE '^C3 OK' "$TMP/c3.res"; then ok "$( grep '^C3' "$TMP/c3.res" | cut -d' ' -f3- )"; else no "$( cat "$TMP/c3.res" )"; fi
 
 # ===================================================================================================
 # (D) rejected env values — SET but malformed/out-of-range degrades to OFF and SAYS SO (stderr), never
@@ -276,16 +276,16 @@ grep -qi 'RIPWIRE_EXPAND' "$TMP/good_exp.err" \
 echo "-- (E) determinism + well-formedness"
 run_sib_env "1,1" >"$TMP/e_a.xml"
 run_sib_env "1,1" >"$TMP/e_b.xml"
-cmp -s "$TMP/e_a.xml" "$TMP/e_b.xml" && ok "E1 RIPWIRE_SIBLIFT=1,1 output is deterministic" || no "E1 RIPWIRE_SIBLIFT=1,1 output is non-deterministic"
+if cmp -s "$TMP/e_a.xml" "$TMP/e_b.xml"; then ok "E1 RIPWIRE_SIBLIFT=1,1 output is deterministic"; else no "E1 RIPWIRE_SIBLIFT=1,1 output is non-deterministic"; fi
 run_exp_env "1,1" >"$TMP/e_c.xml"
 run_exp_env "1,1" >"$TMP/e_d.xml"
-cmp -s "$TMP/e_c.xml" "$TMP/e_d.xml" && ok "E2 RIPWIRE_EXPAND=1,1 output is deterministic" || no "E2 RIPWIRE_EXPAND=1,1 output is non-deterministic"
+if cmp -s "$TMP/e_c.xml" "$TMP/e_d.xml"; then ok "E2 RIPWIRE_EXPAND=1,1 output is deterministic"; else no "E2 RIPWIRE_EXPAND=1,1 output is non-deterministic"; fi
 if command -v xmllint >/dev/null 2>&1; then
     xmlfail=0
     for f in "$TMP/e_a.xml" "$TMP/e_c.xml"; do
         xmllint --noout "$f" >/dev/null 2>&1 || { xmlfail=1; echo "      ill-formed: $f"; }
     done
-    [ "$xmlfail" -eq 0 ] && ok "E3 every lifted document is well-formed XML" || no "E3 a lifted document is ill-formed"
+    if [ "$xmlfail" -eq 0 ]; then ok "E3 every lifted document is well-formed XML"; else no "E3 a lifted document is ill-formed"; fi
 else
     ok "E3 (skipped: no xmllint)"
 fi

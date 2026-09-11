@@ -58,7 +58,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"      # BOTH seams: positional ar
 # `p="buffers.h:21"` and the literals below stay writable.
 FIX="test/stdqualfix"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -399,7 +399,7 @@ cmp -s "$TMP/ncold.xml" "$TMP/nwarm.xml" \
     && ok "§11 warm == cold on the nested fixture (a new per-reference field must survive the cache round-trip)" \
     || no "§11 warm != cold on the nested fixture"
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/nmap.xml" 2>/dev/null && ok "§11 xml well-formed (nested fixture map)" || no "§11 nested fixture map is malformed XML"
+    if xmllint --noout "$TMP/nmap.xml" 2>/dev/null; then ok "§11 xml well-formed (nested fixture map)"; else no "§11 nested fixture map is malformed XML"; fi
 else
     no "§11 cannot verify G4: xmllint is NOT INSTALLED — this check did not run (install libxml2)"
 fi

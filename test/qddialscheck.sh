@@ -25,7 +25,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"   # BOTH seams: positional AND env (a red-first run hands the pre-change binary in)
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "  SKIP  qddialscheck (git not available)"; exit 0; }
@@ -72,7 +72,7 @@ row "$OCH" short-horizon-churn once | grep -q 'gating="1"' \
 row "$OCH" short-horizon-churn once | grep -q 'sev="minor"' \
     && ok "churn: once() carries sev=minor" \
     || no "churn: once() should be sev=minor"
-[ "$ECH" = 2 ] && ok "churn: exit 2 (the gating twice() row fires it)" || no "churn: expected exit 2, got $ECH"
+if [ "$ECH" = 2 ]; then ok "churn: exit 2 (the gating twice() row fires it)"; else no "churn: expected exit 2, got $ECH"; fi
 [ "$OCH" = "$( cd "$CH" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
     && ok "churn: byte-identical run to run (deterministic)" || no "churn: non-deterministic delta"
 
@@ -195,8 +195,8 @@ vrow verbosity doubler | grep -q 'gating="1"' \
     && no "verbosity: a sub-bar row must never gate — nothing is over the bar yet" \
     || ok "verbosity: the sub-bar row does not gate"
 # bar= semantics are unchanged: it still names the kind's own threshold.
-vrow verbosity crosser | grep -q 'bar="60"' && ok "verbosity: bar=60 unchanged" || no "verbosity: bar= moved"
-vrow complexity cxCrosser | grep -q 'bar="15"' && ok "complexity: bar=15 unchanged" || no "complexity: bar= moved"
+if vrow verbosity crosser | grep -q 'bar="60"'; then ok "verbosity: bar=60 unchanged"; else no "verbosity: bar= moved"; fi
+if vrow complexity cxCrosser | grep -q 'bar="15"'; then ok "complexity: bar=15 unchanged"; else no "complexity: bar= moved"; fi
 [ "$OVB" = "$( cd "$VB" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
     && ok "verbosity/complexity: byte-identical run to run (deterministic)" || no "verbosity/complexity: non-deterministic delta"
 

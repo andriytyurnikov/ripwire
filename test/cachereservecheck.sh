@@ -43,7 +43,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ echo "  PASS  $1"; }
+ok(){ echo "  PASS  $1" || { fail=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -152,7 +152,7 @@ env -u XDG_CACHE_HOME TMPDIR="$C_CB" "$BIN" "$C_REPO" --top-k=100000 >"$TMP/c_wa
 cmp -s "$TMP/c_warm.xml" "$TMP/c_warm2.xml" && ok "(E) two warm runs are byte-identical (determinism)" \
     || no "(E) two warm runs differ — the warm path is not deterministic"
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/c_warm.xml" 2>/dev/null && ok "(E) warm map is well-formed XML" || no "(E) warm map is malformed XML"
+    if xmllint --noout "$TMP/c_warm.xml" 2>/dev/null; then ok "(E) warm map is well-formed XML"; else no "(E) warm map is malformed XML"; fi
 fi
 
 [ "$fail" -eq 0 ] && echo "cachereservecheck: ALL PASS" || { echo "cachereservecheck: SOME CHECKS FAILED"; exit 1; }

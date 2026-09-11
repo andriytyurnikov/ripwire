@@ -67,7 +67,7 @@ FIXTURE="$ROOT/test/fixture"
 TMP="$( mktemp -d )"; trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 note(){ printf '  NOTE  %s\n' "$*"; }
 skip(){ printf '  SKIP  %s\n' "$*"; }   # an ABSENT PRECONDITION with a named reason — never a silent pass
@@ -656,7 +656,7 @@ PYEOF
             fi
             cp "$TMP/q_good.bin" "$QBLOB"
         done
-        [ "$asanq_fail" -eq 0 ] && ok "qsnap ASan sweep: no sanitizer report" || no "qsnap ASan sweep: sanitizer report fired"
+        if [ "$asanq_fail" -eq 0 ]; then ok "qsnap ASan sweep: no sanitizer report"; else no "qsnap ASan sweep: sanitizer report fired"; fi
     else
         # same absent precondition as Part 1's sweep — but this arm used to vanish in SILENCE, which reads
         # identically to "ran and passed" in a log. Name the reason instead.

@@ -14,7 +14,7 @@ BIN="${1:-${RIPWIRE_BIN:-./build/ripwire}}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/lb3name.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 FAIL=0
-ok(){ echo "  PASS  $1"; }
+ok(){ echo "  PASS  $1" || { FAIL=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; FAIL=1; }
 
 REPO="$TMP/corpus"

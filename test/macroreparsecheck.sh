@@ -51,7 +51,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -203,8 +203,8 @@ defines "$TMP/c.xml" macro_blanked && defines "$TMP/c.xml" macro_blanked_files &
 # ── (D) the map header and its --json twin ────────────────────────────────────────────────────────────────────
 hdrK="$( grep -oE '<!-- files=[^>]*-->' "$TMP/a_map.xml" | grep -oE ' macro_blanked_files=[0-9]+' | sed 's/.*=//' )"
 nLeaks=$( printf '%s\n' $LEAKS | wc -l | tr -d ' ' )
-[ "$hdrK" = "$nLeaks" ] && ok "(D) map header macro_blanked_files=$hdrK" || no "(D) map header macro_blanked_files='${hdrK:-absent}' (want $nLeaks)"
-defines "$TMP/a_map.xml" macro_blanked_files && ok "(D) the map legend defines macro_blanked_files=" || no "(D) the map legend does not define macro_blanked_files="
+if [ "$hdrK" = "$nLeaks" ]; then ok "(D) map header macro_blanked_files=$hdrK"; else no "(D) map header macro_blanked_files='${hdrK:-absent}' (want $nLeaks)"; fi
+if defines "$TMP/a_map.xml" macro_blanked_files; then ok "(D) the map legend defines macro_blanked_files="; else no "(D) the map legend does not define macro_blanked_files="; fi
 "$BIN" "$TMP/leak" --no-cache --json >"$TMP/d.json" 2>/dev/null
 python3 - "$TMP/d.json" "$nLeaks" > "$TMP/d.out" <<'PY'
 import json, sys
@@ -296,11 +296,11 @@ fi
 # ── (H) determinism, and the per-file count across the cache ──────────────────────────────────────────────────
 "$BIN" "$TMP/leak" --no-cache --skipped >"$TMP/h1.xml" 2>/dev/null
 "$BIN" "$TMP/leak" --no-cache --skipped >"$TMP/h2.xml" 2>/dev/null
-cmp -s "$TMP/h1.xml" "$TMP/h2.xml" && ok "(H) two cold --skipped runs are byte-identical" || no "(H) two cold --skipped runs differ"
+if cmp -s "$TMP/h1.xml" "$TMP/h2.xml"; then ok "(H) two cold --skipped runs are byte-identical"; else no "(H) two cold --skipped runs differ"; fi
 "$BIN" "$TMP/leak" --cache="$TMP/lean.cache" --skipped >"$TMP/h_cold.xml" 2>/dev/null
 "$BIN" "$TMP/leak" --cache="$TMP/lean.cache" --skipped >"$TMP/h_warm.xml" 2>/dev/null
 XMLS+=( "$TMP/h1.xml" "$TMP/h_cold.xml" "$TMP/h_warm.xml" )
-cmp -s "$TMP/h_cold.xml" "$TMP/h_warm.xml" && ok "(H) lean: the cache-writing run and the warm read are byte-identical" || no "(H) lean: cold and warm cache runs differ"
+if cmp -s "$TMP/h_cold.xml" "$TMP/h_warm.xml"; then ok "(H) lean: the cache-writing run and the warm read are byte-identical"; else no "(H) lean: cold and warm cache runs differ"; fi
 grep -q 'macro_blanked="4"' "$TMP/h_warm.xml" && ok "(H) the warm read still carries macro_blanked= (the count rides the cache record)" \
     || no "(H) the warm read lost macro_blanked= — the per-file count did not survive the cache"
 "$BIN" "$TMP/leak" --cache="$TMP/rich.cache" --uses=NAME_OF >"$TMP/h_rcold.xml" 2>/dev/null

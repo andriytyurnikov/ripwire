@@ -31,7 +31,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){   printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){   printf '  FAIL  %s\n' "$*"; fail=1; }
 skip(){ printf '  SKIP  %s\n' "$*"; }
 
@@ -318,7 +318,7 @@ if command -v xmllint >/dev/null 2>&1; then
         # wrapped in <ctx> by the binary itself; xmllint sees one root either way.
         xmllint --noout "$TMP/$label.out" 2>/dev/null || { echo "    $label: xmllint rejected"; g4=0; }
     done
-    [ "$g4" = 1 ] && ok "#8 all payload shapes well-formed XML" || no "#8 a payload shape is malformed XML"
+    if [ "$g4" = 1 ]; then ok "#8 all payload shapes well-formed XML"; else no "#8 a payload shape is malformed XML"; fi
 else
     printf '  SKIP  #8 xmllint not installed\n'
 fi
@@ -1073,7 +1073,7 @@ printf '<handoff budget="100" withheld="12">' >"$TMP/p15_mut.xml"
 if command -v xmllint >/dev/null 2>&1; then
     for f in p15_pt p15_pt50 p15_ft p15_ft50 p15_ho100 p15_hobig p15_ex; do
         [ -s "$TMP/$f.xml" ] || continue
-        xmllint --noout "$TMP/$f.xml" 2>/dev/null && ok "#15 $f.xml is well-formed" || no "#15 $f.xml FAILED xmllint"
+        if xmllint --noout "$TMP/$f.xml" 2>/dev/null; then ok "#15 $f.xml is well-formed"; else no "#15 $f.xml FAILED xmllint"; fi
     done
 fi
 
@@ -1121,7 +1121,7 @@ else
     "$BIN" "$ROOT" --for="rank graph teleport" --no-cache >"$TMP/f5_cli.xml" 2>/dev/null
     band15 "CLI --for (same task, same repo)" "$TMP/f5_cli.xml" ctx 320 "#16"
     if command -v xmllint >/dev/null 2>&1; then
-        xmllint --noout "$TMP/f5_mcp.xml" 2>/dev/null && ok "#16 the priced MCP for bundle is well-formed XML" || no "#16 the priced MCP for bundle is malformed XML"
+        if xmllint --noout "$TMP/f5_mcp.xml" 2>/dev/null; then ok "#16 the priced MCP for bundle is well-formed XML"; else no "#16 the priced MCP for bundle is malformed XML"; fi
     fi
 fi
 

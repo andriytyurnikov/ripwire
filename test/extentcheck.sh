@@ -72,7 +72,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -156,15 +156,15 @@ done
 cap "$TMP/d.xml" "$TMP/leak" --no-cache --for=clampQuantity
 drow="$( grep -oE '<d [^>]*n="clampQuantity"[^>]*>' "$TMP/d.xml" | head -1 )"
 brow="$( grep -oE '<b [^>]*n="clampQuantity"[^>]*>' "$TMP/d.xml" | head -1 )"
-[ -n "$( reasonOf "$drow" )" ] && ok "(D) --for <d> row carries extent_suspect=\"$( reasonOf "$drow" )\"" || no "(D) --for <d> row lacks extent_suspect=: ${drow:-no <d> row}"
-[ -n "$( reasonOf "$brow" )" ] && ok "(D) --for <b> row carries extent_suspect=\"$( reasonOf "$brow" )\"" || no "(D) --for <b> row lacks extent_suspect=: ${brow:-no <b> row}"
-defines "$TMP/d.xml" extent_suspect && ok "(D) --for legend defines extent_suspect=" || no "(D) --for legend does not define extent_suspect="
+if [ -n "$( reasonOf "$drow" )" ]; then ok "(D) --for <d> row carries extent_suspect=\"$( reasonOf "$drow" )\""; else no "(D) --for <d> row lacks extent_suspect=: ${drow:-no <d> row}"; fi
+if [ -n "$( reasonOf "$brow" )" ]; then ok "(D) --for <b> row carries extent_suspect=\"$( reasonOf "$brow" )\""; else no "(D) --for <b> row lacks extent_suspect=: ${brow:-no <b> row}"; fi
+if defines "$TMP/d.xml" extent_suspect; then ok "(D) --for legend defines extent_suspect="; else no "(D) --for legend does not define extent_suspect="; fi
 
 # ── (E) --expand ──────────────────────────────────────────────────────────────────────────────────────
 cap "$TMP/e.xml" "$TMP/leak" --no-cache --expand=clampQuantity
 erow="$( grep -oE '<b [^>]*n="clampQuantity"[^>]*>' "$TMP/e.xml" | head -1 )"
-[ -n "$( reasonOf "$erow" )" ] && ok "(E) --expand <b> row carries extent_suspect=\"$( reasonOf "$erow" )\"" || no "(E) --expand <b> row lacks extent_suspect=: ${erow:-no <b> row}"
-defines "$TMP/e.xml" extent_suspect && ok "(E) --expand legend defines extent_suspect=" || no "(E) --expand legend does not define extent_suspect="
+if [ -n "$( reasonOf "$erow" )" ]; then ok "(E) --expand <b> row carries extent_suspect=\"$( reasonOf "$erow" )\""; else no "(E) --expand <b> row lacks extent_suspect=: ${erow:-no <b> row}"; fi
+if defines "$TMP/e.xml" extent_suspect; then ok "(E) --expand legend defines extent_suspect="; else no "(E) --expand legend does not define extent_suspect="; fi
 
 # ── (F) --skipped: the file is findable, with its count ───────────────────────────────────────────────
 cap "$TMP/f.xml" "$TMP/hot" --no-cache --skipped
@@ -291,7 +291,7 @@ ctlLeak=0
 for n in $SWALLOWED; do
     row "$TMP/h_map.xml" "$n" | grep -q 'IndiaError::' && ctlLeak=$(( ctlLeak + 1 ))
 done
-[ "$ctlLeak" -eq 0 ] && ok "(H) mutation: with the semicolons, 0/4 functions leak into IndiaError::" || no "(H) the control still leaks $ctlLeak/4 — it is not a control"
+if [ "$ctlLeak" -eq 0 ]; then ok "(H) mutation: with the semicolons, 0/4 functions leak into IndiaError::"; else no "(H) the control still leaks $ctlLeak/4 — it is not a control"; fi
 if grep -l 'extent_suspect\|extent-suspect' "$TMP"/h_* >/dev/null 2>&1; then
     no "(H) the control carries the new vocabulary: $( grep -l 'extent_suspect\|extent-suspect' "$TMP"/h_* | xargs -n1 basename | tr '\n' ' ' )"
 else
@@ -311,11 +311,11 @@ fi
 # ── (I) determinism, and the extraction bit across the cache ──────────────────────────────────────────
 "$BIN" "$TMP/leak" --no-cache --metrics >"$TMP/i1.xml" 2>/dev/null
 "$BIN" "$TMP/leak" --no-cache --metrics >"$TMP/i2.xml" 2>/dev/null
-cmp -s "$TMP/i1.xml" "$TMP/i2.xml" && ok "(I) two cold runs are byte-identical" || no "(I) two cold runs differ"
+if cmp -s "$TMP/i1.xml" "$TMP/i2.xml"; then ok "(I) two cold runs are byte-identical"; else no "(I) two cold runs differ"; fi
 "$BIN" "$TMP/leak" --cache="$TMP/ext.cache" --metrics >"$TMP/i_cold.xml" 2>/dev/null
 "$BIN" "$TMP/leak" --cache="$TMP/ext.cache" --metrics >"$TMP/i_warm.xml" 2>/dev/null
 XMLS+=( "$TMP/i1.xml" "$TMP/i_cold.xml" "$TMP/i_warm.xml" )
-cmp -s "$TMP/i_cold.xml" "$TMP/i_warm.xml" && ok "(I) the cache-writing run and the warm read are byte-identical" || no "(I) cold and warm cache runs differ"
+if cmp -s "$TMP/i_cold.xml" "$TMP/i_warm.xml"; then ok "(I) the cache-writing run and the warm read are byte-identical"; else no "(I) cold and warm cache runs differ"; fi
 grep -q 'extent_suspect="error"' "$TMP/i_warm.xml" && ok "(I) the warm read still carries extent_suspect=\"error\" (the recovered bit rides the cache record)" \
     || no "(I) the warm read lost the error reason — the recovered bit did not survive the cache"
 

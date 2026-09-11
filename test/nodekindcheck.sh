@@ -43,7 +43,7 @@ CXX="${CXX:-c++}"
 CXXSTD="$( ripwire_cxx_std_flag "$CXX" )"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 HDR="$ROOT/src/infra/nodekind.h"
