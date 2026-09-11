@@ -5,20 +5,26 @@
 # WHY A HARNESS AND NOT A GOLDEN DIFF. The rewrite is "find the next byte in the special set with
 # strkern::findByteset, memcpy the clean run, handle that one byte with the SAME switch". Nothing in a
 # golden map exercises the inputs that shape gets wrong — an escaper is only interesting on the bytes a
-# repo does not normally contain. So the harness (test/emitescape_harness.cpp) keeps the ORIGINAL
-# per-byte loops verbatim as `*Ref` and asserts byte-identity over an adversarial corpus: every one of
-# the 256 byte values; a special byte at EVERY offset of a filler run up to two 32-byte AVX2 blocks
+# repo does not normally contain. So the `escape:` TEST_CASEs of test/verify_strkern.cpp keep the
+# ORIGINAL per-byte loops verbatim as `*Ref` and assert byte-identity over an adversarial corpus: every
+# one of the 256 byte values; a special byte at EVERY offset of a filler run up to two 32-byte AVX2 blocks
 # (the block-boundary sweep a SIMD run loop plus its scalar tail must survive); overlongs, surrogate
 # halves, >U+10FFFF, truncated sequences, a lone continuation byte as the final byte of the buffer, a
 # BOM; "]]>" at the start/middle/end and "]]]]>"; all eight escapeInto flag combinations; and 200k
 # deterministic fuzz strings over an alphabet biased to the special set.
 #
+# The arms live in the SAME doctest target as the strkern kernel arms (CMake `ripwire_test_strkern`,
+# 2026-09-10) because they test the same header from the other side: the escapers are findByteset's only
+# shipped callers, and a set bug and a scan bug are indistinguishable from a diff. This gate selects them
+# with doctest's own filter (`-tc=escape:*`); test/strkerncheck.sh runs the whole target, which is why
+# the sanitized build lives there and this gate does not pay for a second copy of it.
+#
 # ARMS
-#   (A) harness compiles and passes — the shipped escapers agree with the frozen references.
-#   (B) CAN-GO-RED: the same harness recompiled with -DEMITESCAPE_MUTATE_BYTESET=1, which adds a
-#       byteset with '<' DROPPED. That build asserts the mutant DISAGREES with the reference. A
-#       comparison that could not see a missing set member would report zero differences and this arm
-#       would fail — which is the point: it proves arm (A) is looking at what it claims to.
+#   (A) the target's escape: arms pass — the shipped escapers agree with the frozen per-byte references.
+#   (B) CAN-GO-RED: the same target recompiled with -DEMITESCAPE_MUTATE_BYTESET=1, which adds a byteset
+#       with '<' DROPPED. That build asserts the mutant DISAGREES with the reference. A comparison that
+#       could not see a missing set member would report zero differences and this arm would fail — which
+#       is the point: it proves arm (A) is looking at what it claims to.
 #   (C) END TO END: a fixture tree (in a temp dir, NEVER inside the repo — see the
 #       "gate fixture is the live repo" trap) whose doc-comment carries every byte value 0x01..0xFF
 #       except '\n'. The map of that tree must pipe clean through `xmllint --noout` (G4), and the
@@ -38,34 +44,53 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 . "$ROOT/scripts/cxxstd.sh"
 CXXSTD="$( ripwire_cxx_std_flag "$CXX" )"
-HARNESS="$ROOT/test/emitescape_harness.cpp"
+SRC="$ROOT/test/verify_strkern.cpp"
 WORK="$( mktemp -d )"; trap 'rm -rf "$WORK"' EXIT
 
-echo "emitescapecheck: CXX=$CXX  BIN=$BIN"
+echo "emitescapecheck: CXX=$CXX  BIN=$BIN  target=ripwire_test_strkern -tc=escape:*"
 
-compile_arm()   # $1=output  $2...=extra flags
+# doctest's own tally line is the arm count. LEGACY_ESCAPE_ARMS is what the standalone
+# test/emitescape_harness.cpp carried before it became TEST_CASEs (2026-09-10); the gate prints both so a
+# lost arm is arithmetic, not a feeling.
+LEGACY_ESCAPE_ARMS=4
+read_counts()   # $1 = log; sets CASES, ASSERTS, ASSERTS_FAIL
 {
-    local out="$1"; shift
-    "$CXX" "$CXXSTD" -O2 -g -Wall -Wextra "$@" \
-        -I"$ROOT/src/infra" -I"$ROOT/third_party" -I"$ROOT/src" \
-        "$HARNESS" "$ROOT/src/infra/diagnostics.cpp" -o "$out" 2> "$WORK/cc.log"
+    CASES="$(   sed -n 's/^\[doctest\] test cases: *\([0-9][0-9]*\) .*/\1/p' "$1" | tail -1 )"
+    ASSERTS="$( sed -n 's/^\[doctest\] assertions: *\([0-9][0-9]*\) .*/\1/p' "$1" | tail -1 )"
+    ASSERTS_FAIL="$( sed -n 's/.*| *\([0-9][0-9]*\) failed |$/\1/p'            "$1" | tail -1 )"
+    : "${CASES:=0}" "${ASSERTS:=0}" "${ASSERTS_FAIL:=1}"
 }
 
-# ── (A) the shipped escapers vs the frozen per-byte references ────────────────────────────────────────
-if compile_arm "$WORK/plain"; then
-    if "$WORK/plain" > "$WORK/plain.out" 2>&1; then
-        ok "escapers byte-identical to the frozen per-byte references over the adversarial corpus"
-        sed -n 's/^/    /p' "$WORK/plain.out" | head -4
+# ── (A) the shipped escapers vs the frozen per-byte references, through the CMake target ──────────────
+# FETCHCONTENT_FULLY_DISCONNECTED=ON because every dependency is vendored: a gate must not reach the
+# network. No -DRIPWIRE_ASAN=ON here — test/strkerncheck.sh builds this same TU under the complete G1
+# stack and runs every one of its test cases, so a second sanitized copy would re-prove that at the price
+# of another build.
+if ! cmake -S "$ROOT" -B "$WORK/cmb" -DRIPWIRE_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+        > "$WORK/cfg.log" 2>&1; then
+    no "cmake configure (-DRIPWIRE_TESTS=ON) failed"; tail -20 "$WORK/cfg.log" | sed 's/^/    /'
+elif ! cmake --build "$WORK/cmb" --target ripwire_test_strkern -j 2 > "$WORK/build.log" 2>&1; then
+    no "ripwire_test_strkern failed to build"; tail -30 "$WORK/build.log" | sed 's/^/    /'
+elif RIPWIRE_ROOT="$ROOT" "$WORK/cmb/ripwire_test_strkern" -tc="escape:*" > "$WORK/plain.out" 2>&1; then
+    read_counts "$WORK/plain.out"
+    if [ "$ASSERTS" -lt "$LEGACY_ESCAPE_ARMS" ]; then
+        no "only $ASSERTS escape: assertions ran; the harness this replaced carried $LEGACY_ESCAPE_ARMS — an arm was lost"
     else
-        no "harness reported a mismatch"; sed 's/^/    /' "$WORK/plain.out" | head -20
+        ok "escapers byte-identical to the frozen per-byte references over the adversarial corpus ($CASES test cases / $ASSERTS assertions; was $LEGACY_ESCAPE_ARMS standalone arms)"
     fi
+    grep -E '^\[doctest\] (test cases|assertions):' "$WORK/plain.out" | sed 's/^/    /'
 else
-    no "harness failed to compile"; sed 's/^/    /' "$WORK/cc.log" | head -20
+    no "the escape: arms reported a mismatch"; sed 's/^/    /' "$WORK/plain.out" | head -30
 fi
 
 # ── (B) can-go-red: a byteset with '<' dropped must be VISIBLE to the comparison ───────────────────────
-if compile_arm "$WORK/mut" -DEMITESCAPE_MUTATE_BYTESET=1; then
-    if "$WORK/mut" > "$WORK/mut.out" 2>&1; then
+# A compile flag, not a build type: a second CMake configure to pass one -D would cost a configure to say
+# nothing extra, so this arm compiles the same source directly the way the pre-doctest gate did.
+if "$CXX" "$CXXSTD" -O2 -g -Wall -Wextra -DEMITESCAPE_MUTATE_BYTESET=1 \
+        -I"$ROOT/src/infra" -I"$ROOT/third_party" -I"$ROOT/src" -I"$ROOT/third_party/deps/doctest" \
+        -DRIPWIRE_TEST_ROOT="\"$ROOT\"" \
+        "$SRC" "$ROOT/src/infra/diagnostics.cpp" -o "$WORK/mut" 2> "$WORK/cc.log"; then
+    if RIPWIRE_ROOT="$ROOT" "$WORK/mut" -tc="escape:*" > "$WORK/mut.out" 2>&1; then
         ok "MUT arm: a byteset missing '<' is detected (the comparison can go red)"
         grep -n 'MUT:' "$WORK/mut.out" | sed 's/^/    /'
     else

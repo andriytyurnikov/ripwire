@@ -640,6 +640,19 @@ if(RIPWIRE_TESTS)
     src/infra/diagnostics.cpp)
   target_include_directories(ripwire_test_radix PRIVATE src/infra third_party src)
   add_test(NAME ripwire.radix COMMAND ripwire_test_radix)
+
+  # src/infra/strkern.h's SIMD-vs-scalar parity, src/lexindex.h's tokenizer equivalence, and the three
+  # emit escapers' byte-identity — one target, driven by test/strkerncheck.sh and test/emitescapecheck.sh
+  # (each adds its own mutation and cross-arch arms, which are compile flags a second configure cannot
+  # express in this tree). RIPWIRE_TEST_ROOT is the repo whose src/ and docs/ the real-text arms read, so
+  # a bare `ctest` is as honest as a gate run; the gates override it with RIPWIRE_ROOT in the environment.
+  add_executable(ripwire_test_strkern
+    test/verify_strkern.cpp
+    src/infra/diagnostics.cpp)
+  target_include_directories(ripwire_test_strkern PRIVATE src/infra third_party src)
+  target_compile_definitions(ripwire_test_strkern PRIVATE RIPWIRE_TEST_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(ripwire_test_strkern PRIVATE doctest::doctest)
+  add_test(NAME ripwire.strkern COMMAND ripwire_test_strkern)
 endif()
 
 # ---- self-profiling build (src/infra/profileScope.h): -DRIPWIRE_PROFILE=ON ----
@@ -726,9 +739,9 @@ set(RIPWIRE_RUNTIME_LINK_TARGETS ripwire_probe ripwire)
 # the only ones the libstdc++ header exemption below has anything to say about (the grammars are C).
 set(RIPWIRE_OWNED_CXX_TARGETS ripwire_probe ripwire)
 if(RIPWIRE_TESTS)
-  list(APPEND RIPWIRE_RUNTIME_COMPILE_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix)
-  list(APPEND RIPWIRE_RUNTIME_LINK_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix)
-  list(APPEND RIPWIRE_OWNED_CXX_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix)
+  list(APPEND RIPWIRE_RUNTIME_COMPILE_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix ripwire_test_strkern)
+  list(APPEND RIPWIRE_RUNTIME_LINK_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix ripwire_test_strkern)
+  list(APPEND RIPWIRE_OWNED_CXX_TARGETS ripwire_test_csr ripwire_test_pagerank ripwire_test_radix ripwire_test_strkern)
 endif()
 # G1's `integer` is a CLANG-ONLY UBSan group (unsigned-integer-overflow, implicit-*-truncation,
 # implicit-integer-sign-change — the defined-but-suspicious conversions, not UB). GCC has no such group

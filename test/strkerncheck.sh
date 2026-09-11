@@ -2,25 +2,34 @@
 # strkerncheck.sh — SIMD-vs-scalar parity gate for src/infra/strkern.h, and the tokenizer equivalence
 # gate for the mask-driven walkers in src/lexindex.h.
 #
-# Compiles test/strkern_harness.cpp under the FULL G1 sanitizer set and runs it against (a) 100k
-# fixed-seed random buffers over four alphabets, lengths 0..300, and (b) every byte of this repo's src/
-# and docs/. The harness restates each kernel's contract as an independent scalar oracle; the shipped
-# vector path (NEON on arm64, AVX2 on x86-64, the scalar twins elsewhere) must match it exactly, and the
-# rewritten tokenizer must reproduce the pre-2026-09-10 byte-at-a-time walkers' spans AND fused hashes.
+# It drives the CMake target `ripwire_test_strkern` (test/verify_strkern.cpp), the repo's doctest form —
+# DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN, one TEST_CASE per kernel, one CHECK/REQUIRE per assertion, built
+# beside ripwire_test_csr / ripwire_test_pagerank / ripwire_test_radix. Until 2026-09-10 the same arms
+# lived in a standalone test/strkern_harness.cpp (14 `checkf` arms) and test/emitescape_harness.cpp (4);
+# the doctest target carries all 18 plus one — a compiled-path assertion — and this gate prints both
+# counts so a lost arm is arithmetic, not a feeling.
 #
-# THREE THINGS THIS GATE PROVES, in the order they can go wrong:
-#   1  PARITY      — vector == scalar == the definition, on random and on real text.
-#   2  NON-VACUITY — on arm64 the banner must say NEON, on x86-64 AVX2. A scalar-only build on those
-#                    arches would compare the oracle to itself and pass while proving nothing.
-#   3  CAN GO RED  — a second build with -DSTRKERN_MUTATE=1 flips one bit of the SIMD-only nibble table,
-#                    narrows the fold's range by one and drops findByteset's high half. That build MUST
-#                    fail. If it passes, the parity assertions above are not binding and this gate is
-#                    decoration.
+# THE TARGET IS BUILT THREE TIMES, and each build is a different question:
 #
-# A FOURTH, BEST-EFFORT ARM: on Apple Silicon the AVX2 path is compiled with `-arch x86_64
-# -march=x86-64-v3` and run under Rosetta 2, so the x86 mirror is exercised on this machine rather than
-# only on CI's ubuntu legs. It is a SKIP, never a failure, when the SDK or Rosetta is unavailable — the
-# authoritative AVX2 proof is the ubuntu-24.04 CI leg.
+#   1  CMAKE, FULL G1 SANITIZERS.  `cmake -DRIPWIRE_TESTS=ON -DRIPWIRE_ASAN=ON` in a scratch dir, then
+#      `--target ripwire_test_strkern`. This is the arm that proves the SHIPPED target builds and runs —
+#      the same target `ctest` runs — under -fsanitize=address,undefined,integer,float-* with
+#      -fno-sanitize-recover=all, so a nibble-table read one lane past the end ABORTS rather than
+#      reporting and exiting 0. It runs EVERY test case in the TU (kernels and escapers both): this is
+#      the G1 arm for the whole file, which is why test/emitescapecheck.sh does not build a second
+#      sanitized copy of the same source to re-prove it.
+#   2  DIRECT $CXX, -DSTRKERN_MUTATE=1.  CAN GO RED. The mutation flips one bit of the SIMD-only nibble
+#      table, narrows the fold's range by one, drops findByteset's high half, and drops the high half of
+#      the set from Byteset256::words. That build MUST fail. If it passes, every parity assertion above
+#      is unbinding and this gate is decoration. A compile flag, not a build type — a second CMake
+#      configure to pass one -D would cost a configure to say nothing extra.
+#   3  DIRECT $CXX, `-arch x86_64 -march=x86-64-v3`, run under Rosetta 2.  BEST EFFORT. CMake cannot
+#      express a second architecture for one target inside this tree, so this arm compiles the same
+#      source the way the pre-doctest gate did. It is a SKIP, never a failure, when the SDK or Rosetta is
+#      unavailable — the authoritative AVX2 proof is the ubuntu-24.04 CI leg.
+#
+# NON-VACUITY sits between 1 and 2: on arm64 the banner must say NEON, on x86-64 AVX2. A scalar-only
+# build on those arches would compare the oracle to itself and pass while proving nothing.
 #
 # Independent of the ripwire binary and of main.cpp (pinned in test/binoverridecheck.sh's EXEMPT dict).
 # Usage:  bash test/strkerncheck.sh            (compiles with c++/clang++)
@@ -33,54 +42,72 @@ CXX="${CXX:-c++}"
 # ask THIS front end how it spells C++23 (see scripts/cxxstd.sh — AppleClang 15 rejects -std=c++23)
 . "$ROOT/scripts/cxxstd.sh"
 CXXSTD="$( ripwire_cxx_std_flag "$CXX" )"
-HARNESS="$ROOT/test/strkern_harness.cpp"
+SRC="$ROOT/test/verify_strkern.cpp"
 WORK="$( mktemp -d )"; trap 'rm -rf "$WORK"' EXIT
 ARCH="$( uname -m )"
 fail=0
 
-echo "strkerncheck: CXX=$CXX arch=$ARCH"
+# The arm counts the two standalone harnesses carried before 2026-09-10, kept here so this gate can state
+# the before/after rather than assert the after alone. 14 + 4; the doctest target adds the compiled-path
+# assertion, so 19 is the floor below.
+LEGACY_STRKERN_ARMS=14
+LEGACY_ESCAPE_ARMS=4
+MIN_ASSERTIONS=19
 
-# G1's 'integer' / float-cast groups are Clang spellings; GCC only has the address,undefined core.
-# Probe THIS front end rather than guessing from its name (same posture as scripts/cxxstd.sh).
-SAN="-fsanitize=address,undefined,integer,float-divide-by-zero,float-cast-overflow"
-printf 'int main(){return 0;}\n' > "$WORK/probe.cpp" 2>/dev/null || true
-if ! "$CXX" $SAN -fsyntax-only "$WORK/probe.cpp" 2>/dev/null; then
-    SAN="-fsanitize=address,undefined"
+echo "strkerncheck: CXX=$CXX arch=$ARCH  target=ripwire_test_strkern"
+
+# ── 1: the CMake target, under the complete G1 sanitizer stack ────────────────────────────────────────
+# FETCHCONTENT_FULLY_DISCONNECTED=ON because every dependency is vendored: a gate must not reach the
+# network, and if one ever tries, this is where it fails loudly instead of hanging.
+if ! cmake -S "$ROOT" -B "$WORK/cmb" -DRIPWIRE_TESTS=ON -DRIPWIRE_ASAN=ON \
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON > "$WORK/cfg.log" 2>&1; then
+    echo "  FAIL  cmake configure (-DRIPWIRE_TESTS=ON -DRIPWIRE_ASAN=ON) failed"
+    tail -20 "$WORK/cfg.log" | sed 's/^/    /'
+    exit 2
+fi
+if ! cmake --build "$WORK/cmb" --target ripwire_test_strkern -j 2 > "$WORK/build.log" 2>&1; then
+    echo "  FAIL  ripwire_test_strkern failed to build under the G1 sanitizers"
+    tail -30 "$WORK/build.log" | sed 's/^/    /'
+    exit 2
 fi
 
-# compile one flavour of the harness; $1 = label, remaining args = extra compile flags. Echoes the binary
-# path on success, nothing on failure (the caller decides whether a compile failure is fatal).
-compile_harness()
+# Apple's arm64 runtime rejects LeakSanitizer at startup; mirror CMakeLists.txt's platform policy rather
+# than claiming a leak check that cannot run (see the note beside ripwire_asan_fixture there).
+if [ "$( uname -s )" = "Darwin" ]; then
+    ASAN_OPTS="detect_leaks=0:halt_on_error=1:abort_on_error=1"
+else
+    ASAN_OPTS="detect_leaks=1:halt_on_error=1:abort_on_error=1"
+fi
+ASAN_OPTIONS="$ASAN_OPTS" UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+    LSAN_OPTIONS="suppressions=$ROOT/lsan_suppressions.txt" RIPWIRE_ROOT="$ROOT" \
+    "$WORK/cmb/ripwire_test_strkern" > "$WORK/out_main.log" 2>&1
+rc=$?
+
+# doctest's own tally line is the arm count: "[doctest] assertions: N | N passed | K failed |"
+read_counts()   # $1 = log; sets CASES, CASES_PASS, ASSERTS, ASSERTS_FAIL
 {
-    local LABEL="$1"; shift
-    local BIN="$WORK/harness_$LABEL"
-    if ! "$CXX" "$CXXSTD" -O2 -g -Wall -Wextra "$@" \
-            -I"$ROOT/src/infra" -I"$ROOT/src" -I"$ROOT/third_party" \
-            "$HARNESS" "$ROOT/src/infra/diagnostics.cpp" -o "$BIN" 2> "$WORK/cc_$LABEL.log"; then
-        return 1
-    fi
-    printf '%s\n' "$BIN"
+    CASES="$(      sed -n 's/^\[doctest\] test cases: *\([0-9][0-9]*\) .*/\1/p'                "$1" | tail -1 )"
+    CASES_PASS="$( sed -n 's/^\[doctest\] test cases: *[0-9][0-9]* | *\([0-9][0-9]*\) passed.*/\1/p' "$1" | tail -1 )"
+    ASSERTS="$(    sed -n 's/^\[doctest\] assertions: *\([0-9][0-9]*\) .*/\1/p'                "$1" | tail -1 )"
+    ASSERTS_FAIL="$( sed -n 's/.*| *\([0-9][0-9]*\) failed |$/\1/p'                            "$1" | tail -1 )"
+    : "${CASES:=0}" "${CASES_PASS:=0}" "${ASSERTS:=0}" "${ASSERTS_FAIL:=0}"
 }
+read_counts "$WORK/out_main.log"
 
-# ── 1 + 2: the shipped path, sanitized, must pass and must not be vacuous ─────────────────────────────
-# -fno-sanitize-recover=all is the linchpin: a nibble-table read one lane past the end, or an unaligned
-# load the compiler was allowed to assume away, must ABORT rather than report and exit 0.
-BIN="$( compile_harness main $SAN -fno-sanitize-recover=all )"
-if [ -z "$BIN" ]; then
-    echo "  FAIL  harness failed to compile"; sed 's/^/    /' "$WORK/cc_main.log" | head -40; exit 2
-fi
-
-if ! "$BIN" "$ROOT" > "$WORK/out_main.log" 2>&1; then
-    echo "  FAIL  parity/equivalence assertion failed:"
-    grep -A 2 'FAIL' "$WORK/out_main.log" | sed 's/^/    /' | head -30
+if [ "$rc" -ne 0 ] || [ "${ASSERTS_FAIL:-1}" != "0" ]; then
+    echo "  FAIL  parity/equivalence assertion failed (exit $rc, $ASSERTS_FAIL failed):"
+    grep -B 2 -A 6 'ERROR\|FAILED' "$WORK/out_main.log" | sed 's/^/    /' | head -40
     exit 2
 fi
-if ! grep -q '^ALL PASS$' "$WORK/out_main.log"; then
-    echo "  FAIL  harness did not reach its ALL PASS line (truncated run?)"
-    tail -5 "$WORK/out_main.log" | sed 's/^/    /'
+if [ "$ASSERTS" -lt "$MIN_ASSERTIONS" ]; then
+    echo "  FAIL  the doctest target ran $ASSERTS assertions; the two harnesses it replaced carried"
+    echo "        $LEGACY_STRKERN_ARMS + $LEGACY_ESCAPE_ARMS = $(( LEGACY_STRKERN_ARMS + LEGACY_ESCAPE_ARMS )), and the target must be >= $MIN_ASSERTIONS."
+    echo "        An arm was deleted, or a TEST_CASE stopped being registered."
     exit 2
 fi
-printf '  PASS  %s harness arms green (%s)\n' "$( grep -c '  PASS  ' "$WORK/out_main.log" )" "$( head -1 "$WORK/out_main.log" | sed 's/strkern: //' )"
+printf '  PASS  %s test cases / %s assertions green under the full G1 sanitizers (was %s + %s arms in two standalone harnesses) (%s)\n' \
+       "$CASES" "$ASSERTS" "$LEGACY_STRKERN_ARMS" "$LEGACY_ESCAPE_ARMS" \
+       "$( grep '^strkern: path=' "$WORK/out_main.log" | sed 's/strkern: //' )"
 
 WANT=""
 case "$ARCH" in
@@ -89,8 +116,7 @@ case "$ARCH" in
 esac
 if [ -n "$WANT" ]; then
     if grep -q "^strkern path: $WANT$" "$WORK/out_main.log"; then
-        ok_path="$( grep '^strkern path: ' "$WORK/out_main.log" )"
-        printf '  PASS  non-vacuity: %s on %s\n' "$ok_path" "$ARCH"
+        printf '  PASS  non-vacuity: %s on %s\n' "$( grep '^strkern path: ' "$WORK/out_main.log" )" "$ARCH"
     else
         echo "  FAIL  non-vacuity ($ARCH must compile the $WANT path; banner says '$( grep '^strkern path: ' "$WORK/out_main.log" )')"
         echo "        a scalar-only build here compares the oracle to itself — the parity arms prove nothing"
@@ -98,31 +124,49 @@ if [ -n "$WANT" ]; then
     fi
 fi
 
-# ── 3: CAN GO RED ─────────────────────────────────────────────────────────────────────────────────────
-# The mutation touches ONLY code inside `#if defined( STRKERN_MUTATE )` in the SIMD branches, never the
-# scalar oracle — so a red run here is the parity assertion biting, not a broken build. Sanitizers are
-# off for this arm: it is expected to fail, and we want it to fail on the assertion, not on a slow abort.
-REDBIN="$( compile_harness mutate -DSTRKERN_MUTATE=1 )"
+# compile one flavour of the target directly; $1 = label, remaining args = extra compile flags. Echoes the
+# binary path on success, nothing on failure (the caller decides whether a compile failure is fatal).
+compile_direct()
+{
+    local LABEL="$1"; shift
+    local BIN="$WORK/verify_$LABEL"
+    if ! "$CXX" "$CXXSTD" -O2 -g -Wall -Wextra "$@" \
+            -I"$ROOT/src/infra" -I"$ROOT/src" -I"$ROOT/third_party" -I"$ROOT/third_party/deps/doctest" \
+            -DRIPWIRE_TEST_ROOT="\"$ROOT\"" \
+            "$SRC" "$ROOT/src/infra/diagnostics.cpp" -o "$BIN" 2> "$WORK/cc_$LABEL.log"; then
+        return 1
+    fi
+    printf '%s\n' "$BIN"
+}
+
+# ── 2: CAN GO RED ─────────────────────────────────────────────────────────────────────────────────────
+# The mutation touches ONLY code inside `#if defined( STRKERN_MUTATE )` in src/infra/strkern.h, so a red
+# run here is a parity assertion biting, not a broken build. Sanitizers are off for this arm: it is
+# expected to fail, and we want it to fail on the assertion, not on a slow abort.
+REDBIN="$( compile_direct mutate -DSTRKERN_MUTATE=1 )"
 if [ -z "$REDBIN" ]; then
     echo "  FAIL  can-go-red arm failed to COMPILE (the mutation must build, then fail at runtime)"
     sed 's/^/    /' "$WORK/cc_mutate.log" | head -20
     fail=1
-elif "$REDBIN" "$ROOT" > "$WORK/out_mutate.log" 2>&1; then
+elif RIPWIRE_ROOT="$ROOT" "$REDBIN" > "$WORK/out_mutate.log" 2>&1; then
     echo "  FAIL  can-go-red: -DSTRKERN_MUTATE=1 build PASSED — the parity assertions are not binding"
     fail=1
 else
-    printf '  PASS  can-go-red: -DSTRKERN_MUTATE=1 fails %s arm(s) as designed\n' "$( grep -c '  FAIL  ' "$WORK/out_mutate.log" )"
+    read_counts "$WORK/out_mutate.log"
+    printf '  PASS  can-go-red: -DSTRKERN_MUTATE=1 fails %s of %s assertions as designed\n' "$ASSERTS_FAIL" "$ASSERTS"
 fi
 
-# ── 4: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
-# COMMON_RULES for this round: the x86-64 floor is -march=x86-64-v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE).
-# Compiled without sanitizers — the ASan runtime for a cross-arch slice is not reliably present, and this
-# arm's job is to run the AVX2 kernels at all, not to re-prove memory safety the native arm already did.
+# ── 3: best-effort x86_64 / AVX2 mirror under Rosetta 2 ───────────────────────────────────────────────
+# The x86-64 floor is -march=x86-64-v3 (AVX2 + BMI1/2 + FMA + LZCNT + MOVBE; CMakeLists.txt sets it
+# unconditionally for x86-64 targets). Compiled without sanitizers — the ASan runtime for a cross-arch
+# slice is not reliably present, and this arm's job is to run the AVX2 kernels at all, not to re-prove
+# memory safety arm 1 already did.
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-    if X86BIN="$( compile_harness x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
-        if "$X86BIN" "$ROOT" > "$WORK/out_x86.log" 2>&1 && grep -q '^ALL PASS$' "$WORK/out_x86.log"; then
+    if X86BIN="$( compile_direct x86 -arch x86_64 -march=x86-64-v3 )" && [ -n "$X86BIN" ]; then
+        if RIPWIRE_ROOT="$ROOT" "$X86BIN" > "$WORK/out_x86.log" 2>&1; then
+            read_counts "$WORK/out_x86.log"
             if grep -q '^strkern path: AVX2$' "$WORK/out_x86.log"; then
-                printf '  PASS  x86_64/AVX2 mirror runs green under Rosetta 2 (%s arms)\n' "$( grep -c '  PASS  ' "$WORK/out_x86.log" )"
+                printf '  PASS  x86_64/AVX2 mirror runs green under Rosetta 2 (%s assertions)\n' "$ASSERTS"
             else
                 echo "  FAIL  x86_64 slice built but did NOT compile the AVX2 path: $( grep '^strkern path: ' "$WORK/out_x86.log" )"
                 fail=1

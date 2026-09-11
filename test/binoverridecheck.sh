@@ -110,7 +110,7 @@ EXEMPT = {
     "portablebuildcheck.sh":     "CMake-configure-level gate only; the gate's own banner says 'no ripwire binary needed'",
     "qschemetripcheck.sh":       "greps src/quality.h's tripwire comment against the test/*.sh manifest; pure file check",
     "radixsimdcheck.sh":         "builds its OWN standalone harness binaries per SIMD arm, independent of build/ripwire",
-    "strkerncheck.sh":           "builds its OWN standalone harness binaries per SIMD arm (native, mutated, x86_64 cross), independent of build/ripwire",
+    "strkerncheck.sh":           "drives the CMake target ripwire_test_strkern (test/verify_strkern.cpp) and two direct-compiled SIMD arms (mutated, x86_64 cross) — never invokes build/ripwire",
     "releaseinstallcheck.sh":    "tests install.sh against a FABRICATED release asset/stub server; independent of build/ripwire",
     "reusefirstworkflowcheck.sh":"checks skills/ripwire-reuse-first/SKILL.md content; pure file check",
     "ripwirepubliccheck.sh":     "checks git-tracked files for leaked private content; pure file/grep check",
