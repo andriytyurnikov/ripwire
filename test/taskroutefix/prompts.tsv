@@ -191,9 +191,9 @@ test	clean	understand-symbol	instrumented-cli	how does classify work? show me th
 dev	clean	handoff-brief	instrumented-cli	I am going on leave next week - put together a brief on the scheduler for whoever takes it over
 test	clean	handoff-brief	instrumented-cli	hand this area off to the next session with the entry points and the risky bits
 test	clean	handoff-brief	instrumented-cli	my teammate is picking this up tomorrow, write the handover for the ingest path
-test	clean	plan-lint	instrumented-cli	does PLAN_CACHE_ROUND.md have the structure a plan file is supposed to have?
-dev	clean	plan-lint	instrumented-cli	lint the shape of DESIGN_NOTES.md before I circulate it
-test	clean	plan-lint	instrumented-cli	check that docs/PLAN_NEXT.md is well-formed as a plan document
+test	clean	plan-lint	instrumented-cli	does docs/cache-round-plan.md have the structure a plan file is supposed to have?
+dev	clean	plan-lint	instrumented-cli	lint the shape of docs/design-notes.md before I circulate it
+test	clean	plan-lint	instrumented-cli	check that docs/next-plan.md is well-formed as a plan document
 dev	clean	trace-prose	instrumented-cli	I have a sanitizer report from last night - map it onto the indexed symbols
 test	clean	trace-prose	instrumented-cli	here is a compiler error from the build, which of my symbols does it name
 test	clean	trace-prose	instrumented-cli	got a crash log with frames in it, translate it into symbols I can read

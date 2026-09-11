@@ -737,7 +737,7 @@ inline std::optional<RouteChoice> catalogTaskChoice( std::string_view task, std:
     // there, so the route fires only when the task names one.
     const std::string planDoc  = firstPathTokenWithSuffix( task, { ".md", ".markdown" } );
     const std::string planDocL = lowerAscii( planDoc );
-    // The file may name ITSELF as the plan (PLAN_CACHE.md, DESIGN_NOTES.md) — that is surface evidence
+    // The file may name ITSELF as the plan (docs/cache-plan.md, docs/design-notes.md) — that is surface evidence
     // the task's prose does not have to repeat.
     if( ( has( lower, "plan" ) || has( lower, "design doc" ) || has( lower, "design document" )
        || has( planDocL, "plan" ) || has( planDocL, "design" ) )

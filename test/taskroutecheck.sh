@@ -233,8 +233,8 @@ HO="$( route 'I am going on leave next week - put together a brief on the schedu
 case "$HO" in *'status="recommend"'*'intent="handoff-brief"'*'skill="ripwire-handoff"'*'--handoff'*) ok "briefing a second party -> --handoff";; *) no "handoff route wrong: $HO";; esac
 HO0="$( route 'we handed the account off to support last week, any update on the customer?' )"
 case "$HO0" in *'--handoff'*) no "an account handover minted a --handoff route: $HO0";; *) ok "prose about handing over anything else mints no --handoff";; esac
-PL="$( route 'check that docs/PLAN_NEXT.md is well-formed as a plan document' )"
-case "$PL" in *'status="recommend"'*'intent="plan-lint"'*'--plan-lint='*'docs/PLAN_NEXT.md'*) ok "plan-structure wording + a named markdown file -> --plan-lint=FILE";; *) no "plan-lint route wrong: $PL";; esac
+PL="$( route 'check that docs/next-plan.md is well-formed as a plan document' )"
+case "$PL" in *'status="recommend"'*'intent="plan-lint"'*'--plan-lint='*'docs/next-plan.md'*) ok "plan-structure wording + a named markdown file -> --plan-lint=FILE";; *) no "plan-lint route wrong: $PL";; esac
 # Value-carrying, like --edit-plan: the verb refuses a file that is not there, so no file, no command.
 PL0="$( route 'can you lint the structure of our planning docs in general?' )"
 case "$PL0" in *'--plan-lint='*) no "plan-lint invented a file the task never named: $PL0";; *) ok "plan-lint abstains rather than invent a plan document";; esac
@@ -269,11 +269,11 @@ GQRUN="$( "$BIN" "$REPO" --no-cache --graph-query="$GQEXPR" )"; rc=$?
 { [ $rc -eq 0 ] && printf '%s' "$GQRUN" | grep -q '<query expr='; } \
     && ok "the emitted --graph-query expression runs and returns a <query> root" \
     || no "the emitted --graph-query expression failed to run (rc=$rc, expr=[$GQEXPR])"
-printf '# A plan\n\n## Goal\n\nship it\n' >"$REPO/PLAN_GATE.md"
-PLRUN="$( "$BIN" "$REPO" --no-cache --plan-lint=PLAN_GATE.md )"; rc=$?
+printf '# A plan\n\n## Goal\n\nship it\n' >"$REPO/plan-gate.md"
+PLRUN="$( "$BIN" "$REPO" --no-cache --plan-lint=plan-gate.md )"; rc=$?
 [ $rc -le 2 ] && ok "the emitted --plan-lint=FILE command runs against a real plan file (rc=$rc)" \
               || no "the emitted --plan-lint=FILE command failed to run (rc=$rc)"
-rm -f "$REPO/PLAN_GATE.md"
+rm -f "$REPO/plan-gate.md"
 # ── two routers, ONE vocabulary: every shipped skill must be nameable by --help-task ──────────────────
 # F-R1-09 measured 8 of 16. This arm reads BOTH sides from disk — the skill directories that exist, and
 # the skill= names src/taskroute.h can emit — so it fails when a NEW skill ships with no route as much as

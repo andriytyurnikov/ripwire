@@ -257,7 +257,7 @@ inherited a support queue, a profiler vendor selling licences, a quarterly summa
 
 **Two corrections the pre-insertion verification caught, recorded rather than smoothed over:**
 
-- *"lint the shape of DESIGN_NOTES.md before I circulate it"* abstained: the surface test wanted the
+- *"lint the shape of docs/design-notes.md before I circulate it"* abstained: the surface test wanted the
   words "plan"/"design doc" in the PROSE. A file that names ITSELF a plan (`PLAN_*.md`, `DESIGN_*.md`) is
   surface evidence the prose need not repeat, so the check now reads the named file's own name too.
 - *"lint the plan file layout before I commit it"* routed to `quality-check`. `"before i commit"` is a
