@@ -1,8 +1,8 @@
 diff --git a/third_party/deps/kotlin/src/scanner.c b/third_party/deps/kotlin/src/scanner.c
-index b88dcf53..6c6f0dca 100644
+index 267c8377..ed6b9609 100644
 --- a/third_party/deps/kotlin/src/scanner.c
 +++ b/third_party/deps/kotlin/src/scanner.c
-@@ -190,6 +199,17 @@ static bool scan_string_content(TSLexer *lexer, Stack *stack,
+@@ -202,6 +202,17 @@ static bool scan_string_content(TSLexer *lexer, Stack *stack,
          // however this leaves an edgecase where an escaped dollar sign could
          // appear at the end of a string (e.g "aa\$") which isn't handled
          // correctly; if we were at the end of the string, terminate properly

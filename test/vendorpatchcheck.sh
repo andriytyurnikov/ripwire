@@ -68,6 +68,9 @@
 #      mis-tokenization from an escaped `$` right before a triple-quoted string's closing delimiter
 #      (test/vendorpatchfix/tripledollar.kt, committed like arm F's fixture) — checked via
 #      degraded_parse=0 and that the symbol declared right after the tricky string still extracts.
+#      kotlin/003: arm I's narrow-counter class at uint16_t — a run of 65,536 `$` inside a string truncates
+#      `additional_dollars`. A static check that the saturation guard is in the counting loop, and a
+#      generated 65,537-`$` run (closed by a quote, so the scan stays linear) that is the ASan tripwire.
 #
 # Usage:
 #   test/vendorpatchcheck.sh
@@ -491,6 +494,42 @@ if echo "$TDOLLAR_SK" | grep -q 'degraded_parse="0"'; then
     ok "J: kotlin/002 fixture — degraded_parse=\"0\" (no ERROR/MISSING nodes from the escaped-dollar edge case)"
 else
     no "J: kotlin/002 fixture — degraded_parse is non-zero: $( echo "$TDOLLAR_SK" | grep -o 'degraded_parse="[^"]*"' )"
+fi
+
+# kotlin/003: the uint16_t dollar-run counter saturates. STATIC half: the guard sits inside the loop that counts the run.
+# RUNTIME half: a generated run of 65,537 `$` reaches both truncation sites (`1 + additional_dollars` at 65,536, and `++`
+# one step later), so the ASan flavour aborts without the patch. The run is closed by a quote on purpose: a run followed
+# by `{` or an identifier is re-read once per excess `$` (upstream's design, quadratic in the run), which is where the
+# plain-build wrong parse at 65,536 lives, and seconds per file is too slow for this arm. So on the plain build this half
+# proves only that the file and the symbol after it survive; the ASan leg is the tripwire.
+ktDollarLoop="$( awk '/uint16_t additional_dollars = 0;/,/uint16_t total_dollars/' "$KT_SCANNER" 2>/dev/null )"
+if printf '%s\n' "$ktDollarLoop" | grep -q "while (lexer->lookahead == '\\$')"; then
+    ok "J: presence — the kotlin scanner's dollar-run counting loop extracted"
+    if printf '%s\n' "$ktDollarLoop" | grep -F -q 'if (additional_dollars < 256) additional_dollars = (uint16_t)(additional_dollars + 1);' \
+       && ! printf '%s\n' "$ktDollarLoop" | grep -F -q 'additional_dollars++'; then
+        ok "J: kotlin/003 — the dollar-run counter saturates at 256 (no bare additional_dollars++ left)"
+    else
+        no "J: kotlin/003 — the dollar-run counter is not saturated — re-apply third_party/patches/kotlin/003-dollar-run-saturate.patch"
+    fi
+else
+    no "J: presence — no dollar-run counting loop found in $KT_SCANNER (renamed on a bump?) — the kotlin/003 arm would pass while inert"
+fi
+KTDOLLAR="$TMP/ktdollar"; mkdir -p "$KTDOLLAR"
+python3 - "$KTDOLLAR/Dollars.kt" <<'PYEOF'
+import sys
+with open( sys.argv[1], 'w' ) as f:
+    f.write( 'package dollars\n\nval run = "' + '$' * 65537 + '"\n\nfun afterDollarRun(n: Int): Int = n + 1\n' )
+PYEOF
+ktDollarRun="$( awk '{ while( match( $0, /[$]+/ ) ) { if( RLENGTH > mx ) { mx = RLENGTH } $0 = substr( $0, RSTART + RLENGTH ) } } END { print mx + 0 }' "$KTDOLLAR/Dollars.kt" )"
+if [ "$ktDollarRun" = 65537 ]; then
+    "$BIN" "$KTDOLLAR" --no-cache > "$TMP/ktdollar.xml" 2> "$TMP/ktdollar.err"; ktDollarRc=$?
+    if [ "$ktDollarRc" -eq 0 ] && grep -q '"afterDollarRun"' "$TMP/ktdollar.xml"; then
+        ok "J: kotlin/003 — a 65,537-dollar run exits 0 and afterDollarRun still extracts"
+    else
+        no "J: kotlin/003 — a 65,537-dollar run exited $ktDollarRc (134 = the uint16_t truncation abort on asan) or lost afterDollarRun: $( grep -m1 'runtime error' "$TMP/ktdollar.err" | cut -c1-160 )"
+    fi
+else
+    no "J: presence — the generated dollar run is $ktDollarRun long, not 65537 — the kotlin/003 runtime arm would assert on the wrong input"
 fi
 
 # ── verdict ─────────────────────────────────────────────────────────────────────────────────────
