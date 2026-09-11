@@ -32,6 +32,17 @@
 # guard, the Rule-3 eligibility guard, the name-based --uses counts and the hygiene arms. They are what proves the
 # guard took ONLY what it should.
 #
+# THE GUARD IS LOAD-BEARING, PART BY PART (manual mutations, each a scratch build of graph.h, measured 2026-09-11;
+# 35/35 PASS on the unmutated binary):
+#   M1  guard never applies (cppFamilyRef forced false)            19 FAIL — byte-for-byte the RED readings above
+#   M2  call site passes `alreadyPinned` instead of `canonical`,     4 FAIL — --callees=rotate 1, rotate's census row
+#       i.e. a Rule-3-narrowed site is exempt (the Rust shape)       'receiver-rule', header edges=7 external=11, census 11
+#   M3  inline ABI namespaces ignored (only a literal `std` counts)   4 FAIL — --callers=Buf::move 2 (std::__1::move binds
+#                                                                    again), --callees=takeInline 1, launderIt 0 (the def
+#                                                                    inside std::__1 is refused)
+# M3 leaves the header at edges=6 external=12 — one edge swaps for one refusal — so only the per-function arms
+# catch it. Keep them; the totals alone cannot.
+#
 # Usage:  RIPWIRE_BIN=build/ripwire bash test/stdqualcheck.sh   |   bash test/stdqualcheck.sh asan/ripwire
 # Exits non-zero on any failure; prints PASS/FAIL per check, ALL PASS on success.
 
