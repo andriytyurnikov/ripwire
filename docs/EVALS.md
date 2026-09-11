@@ -5368,9 +5368,16 @@ names, while its stated cost — "~3.5 KB per `--pack-task` bundle" — was not 
 `--pack-task` emits no `sibs=` at all, before or after. Symbols-per-file here is median 4, p90 18,
 p99 85; 100 clears the tail, fires on 15.8% of bodies, costs +36% on a single-symbol `--expand` answer
 and **nothing** on `--for` or `--pack-task`, which are byte-identical at every cap. The full inventory
-of the 114 caps in `src/` — and of the 6 ranking parameters partitioned out of the same census, which
-together make the 120 cap-shaped constants the generator parses — is `docs/LIMITS.md`, generated and
-gated by `test/limitstablecheck.sh`. What each cap COSTS, measured per verb, is `docs/TUNING.md`.
+of the 205 caps in `src/` — and of the 7 ranking parameters partitioned out of the same census, which
+together make the 212 cap-shaped constants the generator parses — is `docs/LIMITS.md`, generated and
+gated by `test/limitstablecheck.sh`. Those figures were **114 / 6 / 120** until 2026-09-10, and the
+difference is not new code: `docs/limits_build.py` required the literal `inline constexpr` with the
+value on the same line, so 92 declarations under 81 distinct names — `kType3MaxBucket`, which bounds
+clone DETECTION; `kSkillScanFindingCap`, which bounds a security verdict; `kHandoffSymbolsPerFile`,
+which truncates output and discloses — were outside a register whose first line says "Every
+compile-time cap in `src/`". The old number was the size of a regex's output presented as the size of a
+population; `test/limitstablecheck.sh` arm (H) now plants a plain `constexpr`, a `static constexpr`
+member and a wrapped initializer in a synthetic tree and requires each to appear. What each cap COSTS, measured per verb, is `docs/TUNING.md`.
 
 The three figures moved together on 2026-08-15, and the cause is on the *denominator* side, not this
 verb's: `--expand`'s `<b>` bodies now carry `sibs=`/`inc=` file-context attributes, which grows the

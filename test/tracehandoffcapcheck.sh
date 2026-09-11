@@ -20,7 +20,7 @@
 #       name_ladder_capped="1" name_ladder_total="N" — present ONLY when the ladder was BOTH truncated and
 #       exhausted, so a frame that bound on rung 3 (the overwhelming majority) still costs zero bytes.
 #
-#   (B) src/handoff.h kHandoffSymbolsPerFile (6) cuts the <s n=.../> rows inside each <verified><f> — the
+#   (B) src/handoff.h's symbols-per-file caps cut the <s n=.../> rows inside each <verified><f> — the
 #       DISK-TRUTH half of a continuation packet, the section whose whole contract is "this is what the
 #       change set is". It was silent, and it fires on the typical case, not a tail: a two-file diff of
 #       ordinary source files listed 12 symbols out of 44 (73% withheld) beside no marker at all. Now the
@@ -155,21 +155,37 @@ grep -q PROBE_BROKEN "$TMP/a.res" && no "(A) --from-trace probe broken: $( cat "
 # ===================================================================================================
 # (B) the verified symbols-per-file rows — --handoff / kHandoffSymbolsPerFile
 # ===================================================================================================
-echo "-- (B) verified symbols-per-file cap (kHandoffSymbolsPerFile, src/handoff.h)"
+echo "-- (B) verified symbols-per-file caps (kHandoffSymbolsPerCodeFile / PerDocFile, src/handoff.h)"
 
 HFIX="$TMP/hfix"
 mkdir -p "$HFIX"
-# wide.c is written PAST the cap by computation, not by eye; narrow.c stays comfortably under it.
-python3 - "$HFIX" <<'PY'
-import os, sys
-d = sys.argv[1]
-CAP = 6
-wide = "".join("int wideFn%02d( int a )\n{\n    return a + %d;\n}\n" % (i, i) for i in range(12))
-assert wide.count("int wideFn") > CAP
-narrow = "".join("int narrowFn%02d( int a )\n{\n    return a - %d;\n}\n" % (i, i) for i in range(3))
-assert narrow.count("int narrowFn") < CAP
+# The cap is TWO caps since 2026-09-10 — 50 for a code file, 12 for a prose file — so the fixture needs
+# four files, and each of the four sizes is COMPUTED from the value read out of src/handoff.h. A fixture
+# with a literal count is a fixture that silently stops crossing the cap the day the cap moves, which is
+# exactly what happened here: the old one wrote 12 functions against a cap of 6, and at 50 it tests
+# nothing at all while still printing PASS.
+python3 - "$HFIX" "$ROOT/src/handoff.h" <<'PY'
+import os, re, sys
+d, hdr = sys.argv[1], open(sys.argv[2], encoding="utf-8").read()
+def capOf(name):
+    m = re.search(r'\b%s\s*=\s*(\d+)\s*;' % name, hdr)
+    if not m:
+        sys.exit("tracehandoffcapcheck: %s is not declared in src/handoff.h — the fixture cannot size itself" % name)
+    return int(m.group(1))
+CODE, DOC = capOf("kHandoffSymbolsPerCodeFile"), capOf("kHandoffSymbolsPerDocFile")
+open(os.path.join(d, "caps.txt"), "w").write("%d %d\n" % (CODE, DOC))
+wide = "".join("int wideFn%03d( int a )\n{\n    return a + %d;\n}\n" % (i, i) for i in range(CODE + 10))
+assert wide.count("int wideFn") > CODE
+narrow = "".join("int narrowFn%03d( int a )\n{\n    return a - %d;\n}\n" % (i, i) for i in range(3))
+assert narrow.count("int narrowFn") < CODE
+wided = "# Wide doc\n\n" + "".join("## section %03d\n\nbody\n\n" % i for i in range(DOC + 10))
+assert wided.count("## section") > DOC
+narrowd = "# Narrow doc\n\n" + "".join("## section %03d\n\nbody\n\n" % i for i in range(2))
+assert narrowd.count("## section") < DOC
 open(os.path.join(d, "wide.c"), "w").write(wide)
 open(os.path.join(d, "narrow.c"), "w").write(narrow)
+open(os.path.join(d, "wide.md"), "w").write(wided)
+open(os.path.join(d, "narrow.md"), "w").write(narrowd)
 PY
 (
     cd "$HFIX" || exit 1
@@ -182,15 +198,17 @@ PY
 # a real, ordinary edit to BOTH files — this is the diff the packet reports on
 printf 'int wideFnEdited( int a )\n{\n    return a;\n}\n'   >> "$HFIX/wide.c"
 printf 'int narrowFnEdited( int a )\n{\n    return a;\n}\n' >> "$HFIX/narrow.c"
+printf '\n## edited section\n\nbody\n'                       >> "$HFIX/wide.md"
+printf '\n## edited section\n\nbody\n'                       >> "$HFIX/narrow.md"
 
 run "$HFIX" --handoff > "$TMP/b_handoff.xml"
 run "$HFIX"           > "$TMP/b_map.xml"
 
-python3 - "$TMP/b_handoff.xml" "$TMP/b_map.xml" <<'PY' > "$TMP/b.res" 2>&1
+python3 - "$TMP/b_handoff.xml" "$TMP/b_map.xml" "$HFIX/caps.txt" <<'PY' > "$TMP/b.res" 2>&1
 import re, sys
 packet = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 mapdoc = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-CAP = 6
+CODE, DOC = (int(x) for x in open(sys.argv[3], encoding="utf-8").read().split())
 
 def files_of(doc):
     out = {}
@@ -205,28 +223,47 @@ if not ver:
     print("PROBE_BROKEN no <verified> in packet: %r" % packet[-400:]); raise SystemExit
 pk  = files_of(ver.group(0))
 mp  = files_of(mapdoc)
-if "wide.c" not in pk or "narrow.c" not in pk or "wide.c" not in mp:
+need = ["wide.c", "narrow.c", "wide.md", "narrow.md"]
+if any(f not in pk for f in need) or "wide.c" not in mp or "wide.md" not in mp:
     print("PROBE_BROKEN packet=%s map=%s" % (sorted(pk), sorted(mp))); raise SystemExit
 
-w_attrs, w_shown = pk["wide.c"]
-n_attrs, n_shown = pk["narrow.c"]
-_, w_real = mp["wide.c"]
+def crossing(tag, path, cap):
+    attrs, shown = pk[path]
+    _, real = mp[path]
+    print("%s %s crossing: packet lists %d of the map's %d symbols in %s (cap %d)"
+          % (tag, "OK" if shown == cap and real > cap else "NO", shown, real, path, cap))
+    return attrs, real
 
-# 1. CROSSING — the file really has more symbols than the packet lists, per the tool's OWN map.
-print("B1 %s crossing: packet lists %d of the map's %d symbols in wide.c (cap %d)"
-      % ("OK" if w_shown == CAP and w_real > CAP else "NO", w_shown, w_real, CAP))
+def disclosure(tag, path, real):
+    attrs, _ = pk[path]
+    cap = re.search(r'\bsyms_capped="([^"]*)"', attrs)
+    tot = re.search(r'\bsyms_total="([^"]*)"',  attrs)
+    good = cap and cap.group(1) == "1" and tot and int(tot.group(1)) == real
+    print("%s %s disclosure on %s: syms_capped=%s syms_total=%s (want 1 / %d)"
+          % (tag, "OK" if good else "NO", path, cap.group(1) if cap else "<absent>",
+             tot.group(1) if tot else "<absent>", real))
 
-# 2. DISCLOSURE — the cut <f> says it was cut, and names the true total.
-cap = re.search(r'\bsyms_capped="([^"]*)"', w_attrs)
-tot = re.search(r'\bsyms_total="([^"]*)"',  w_attrs)
-good = cap and cap.group(1) == "1" and tot and int(tot.group(1)) == w_real
-print("B2 %s disclosure: syms_capped=%s syms_total=%s (want 1 / %d)"
-      % ("OK" if good else "NO", cap.group(1) if cap else "<absent>", tot.group(1) if tot else "<absent>", w_real))
+def silence(tag, path, cap):
+    attrs, shown = pk[path]
+    good = "syms_capped" not in attrs and "syms_total" not in attrs and shown < cap
+    print("%s %s silence: %s shows %d symbols, attrs=%r" % (tag, "OK" if good else "NO", path, shown, attrs.strip()))
 
-# 3. SILENCE — the uncut <f> pays nothing.
-print("B3 %s silence: narrow.c shows %d symbols, attrs=%r"
-      % ("OK" if ("syms_capped" not in n_attrs and "syms_total" not in n_attrs and n_shown < CAP) else "NO",
-         n_shown, n_attrs.strip()))
+# 1-3. THE CODE CAP, on a file written past it by computation.
+_, w_real = crossing("B1", "wide.c", CODE)
+disclosure("B2", "wide.c", w_real)
+silence("B3", "narrow.c", CODE)
+
+# 4-6. THE PROSE CAP, which is a DIFFERENT number. Without a doc file in the fixture the split is
+# untested: a build that ignored kHandoffSymbolsPerDocFile entirely would pass B1-B3 unchanged.
+_, d_real = crossing("B4", "wide.md", DOC)
+disclosure("B5", "wide.md", d_real)
+silence("B6", "narrow.md", DOC)
+
+# 7. THE SPLIT ITSELF. A code file with MORE symbols than the doc cap but fewer than the code cap must
+# be uncut, which is the one assertion a single-cap build cannot satisfy.
+_, mid_real = mp["wide.c"], mp["wide.c"][1]
+print("B7 %s split: the two caps differ (code %d, prose %d) and the prose file is cut at the SMALLER one"
+      % ("OK" if CODE != DOC and pk["wide.md"][1] == DOC and pk["wide.c"][1] == CODE else "NO", CODE, DOC))
 PY
 while read -r tag verdict rest; do
     [ "$verdict" = OK ] && ok "$tag $rest" || no "$tag $rest"
