@@ -11,6 +11,9 @@
 # cache-transparency compare ripwire against itself so they hold on any corpus.
 
 set -u
+# A gate that imports a module out of the checkout would otherwise leave __pycache__/ in it: gitignored, but
+# still counted by every crawl of the live repo (corpus_pruned_dirs=). test/pargates.py sets the same per gate.
+export PYTHONDONTWRITEBYTECODE=1
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${RIPWIRE_BIN:-$ROOT/build/ripwire}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"          # allow a repo-relative RIPWIRE_BIN
