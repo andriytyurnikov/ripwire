@@ -46,8 +46,9 @@
 # test: the monotonicity gates' held-constant input tree, _headbin_build's build tree, qdrefpaircheck's wave commit. It
 # is a `git clone --shared`, never `git worktree add`. A worktree is registered in the repository's .git/worktrees,
 # which every session on the machine shares, and a caller killed before its cleanup leaves that registration behind:
-# test/pargates.py's budget is SIGKILL, which no trap sees, and macOS bash 3.2 skips its EXIT trap on Ctrl-C. Twenty
-# such leftovers were found on 2026-09-10. The clone writes nothing into the source repository, so a killed caller —
+# no trap sees SIGKILL (test/pargates.py's whole budget until 2026-09-10, and still its last resort after a TERM and a
+# grace), and macOS bash 3.2 skips its EXIT trap on Ctrl-C. Twenty such leftovers were found on 2026-09-10. The clone
+# writes nothing into the source repository, so a killed caller —
 # a builder killed mid-cmake included — leaves only a directory under its temp dir. test/worktreeleakcheck.sh kills
 # every caller mid-flight and asserts the repository's .git/worktrees stays empty.
 

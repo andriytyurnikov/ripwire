@@ -86,6 +86,10 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 | `kSpecificMinLen` | `8` | `src/graph.h` | **unsourced** | ≥8 chars …  (aider's) |
 | `kZoneDistanceThreshold` | `0.5` | `src/arch.h` | **unsourced** | \|A+I-1\| past this → classify into pain/useless |
 
+## Caps, by file
+
+One table for each of the 83 files that declare a cap — the 208 caps counted above, and no parameter.
+
 ### `src/abicheck.h`
 
 Discloses: **none**

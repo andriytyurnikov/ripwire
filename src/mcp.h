@@ -1657,8 +1657,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                 }
                 else if( name == "quality_delta" && !path.empty() )
                 {
-                    std::string       qerr;
-                    const std::string j = qualityDeltaJson( path, qerr );
+                    const auto [ j, qerr ] = qualityDeltaJson( path );
                     resp = j.empty() ? errResultMsg( -32602, qerr.empty() ? std::string( "quality-delta unavailable" ) : qerr ) : textResult( j );
                 }
                 else if( name == "quality_baseline" && !path.empty() )
@@ -1675,8 +1674,7 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     // reading kMcpSingleRootVerbs, so this verb's reason lives in the same table as the other
                     // six instead of being the one hand-written instance. Control only reaches here on a
                     // single-root path. It never renders the workspace key.
-                    std::string       qerr;
-                    const std::string j = qualityBaselineJson( path, qerr );
+                    const auto [ j, qerr ] = qualityBaselineJson( path );
                     resp = j.empty() ? errResultMsg( -32603, qerr.empty() ? std::string( "could not write baseline" ) : qerr ) : textResult( j );
                 }
                 // L4: `explore` — ONE-call task orientation (routed ranking + bodies + callers + notes + tests_to_run

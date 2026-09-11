@@ -1214,11 +1214,12 @@ inline bool errorMaskConfirmOnDisk( const IngestResult& ing, const AstMatch& m,
     if( m.fileId != memoFileId )
     {
         memoFileId = m.fileId;
-        memoBytes.clear();
-        if( !docparse::detail::readWholeFile( diskPath( ing, m.fileId ), memoBytes ) )
+        std::optional<std::string> bytes = docparse::detail::readWholeFile( diskPath( ing, m.fileId ) );
+        if( !bytes )
         {
             DEGRADED_PATH_ALERT( "lintrules: error-mask confirm cannot re-read the block's file" );
         }
+        memoBytes = std::move( bytes ).value_or( std::string() );
     }
     if( std::size_t( m.startByte ) + m.text.size() > memoBytes.size() )
     {

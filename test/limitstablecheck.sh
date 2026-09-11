@@ -42,6 +42,11 @@
 #   (J) ONE NAME DECLARED TWICE IN ONE FILE. With no line to tell them apart, identical declarations
 #       render as ONE row marked ×2 (beside a separate row for a different value), and deleting one of
 #       them must still make --check fail: a multiplicity is part of the cap set, not a duplicate to drop.
+#   (K) THE CAP TABLES ARE NOT FILED UNDER "NOT CAPS". Read from the RENDERED outline — what GitHub's TOC
+#       and --grep's enclosing-section attribution both read — every per-file `### `src/…`` table must have
+#       a `##` above it, the same one for all, and it must not be the parameter section (found by the table
+#       only that section carries, not by its title). Control: deleting that `##` from a copy must turn the
+#       identical reading RED. It does not assert which heading it is.
 #
 # WHY (E)-(G) LIVE HERE. The 2026-09-10 round split this table in two — caps that truncate, parameters
 # that weight — because they need different instruments: a cap is judged by what it cuts and
@@ -271,6 +276,86 @@ else
         ok "(J) a name declared twice renders as one ×2 row, and deleting one of the two still goes RED"
     fi
 fi
+
+# ── (K) the per-file cap tables are not filed under "Not caps" ────────────────────────────────────────
+# WHY. render() emitted every per-file `### `src/…`` table with no `##` of its own, so in the document's
+# outline all 50 of them were children of the last `##` written before them: "Not caps — ranking and
+# apportionment parameters". (B) could not see it — the committed document matched its generator exactly.
+# A READER of the outline could: GitHub's TOC, and `ripwire . --grep=kPrDefaultBudgetTokens`, which
+# attributed its docs/LIMITS.md hit to in="Not caps — ranking and apportionment parameters::`src/prcontext.h`".
+# A cap an agent is told is not a cap is a claim this document makes, so it is gated where the claim is
+# made: the RENDERED outline, read the way (G) reads the rendered cells.
+#
+# The parameter section is found by the table only it carries, never by its title, so a retitle cannot
+# blind the arm, and a document with no such table fails as blind instead of passing on nothing. The arm
+# does not assert WHICH `##` parents the tables — naming it is render()'s job — only that there is one, it
+# is shared by all of them, and it is not the section that says its contents are not caps.
+python3 - "$DOC" "$TMP" <<'OUTLINE' || fail=1
+import os, re, sys
+DOC, TMP = sys.argv[ 1 ], sys.argv[ 2 ]
+bad = []
+def ok( m ): print( "  PASS  %s" % m )
+def no( m ): print( "  FAIL  %s" % m ); bad.append( m )
+def read( p ):
+    with open( p, encoding="utf-8" ) as fh:
+        return fh.read().split( "\n" )
+
+HEAD  = re.compile( r'^(#{1,6})[ \t]+(.+?)[ \t]*$' )
+PARAM = re.compile( r'^\| constant \| value \| site \| anchor \| note \|' )
+def title( line ):
+    return HEAD.match( line ).group( 2 )
+def outline( lines ):
+    """Each per-file `### `src/…`` heading with the index of its nearest `##` above (None: none), and the index
+    of the `##` whose body carries the parameter table (None: no such table)."""
+    tables, h2, param = [], None, None
+    for i, line in enumerate( lines ):
+        m = HEAD.match( line )
+        if m and len( m.group( 1 ) ) <= 2:
+            h2 = i if len( m.group( 1 ) ) == 2 else None
+        elif m and len( m.group( 1 ) ) == 3 and m.group( 2 ).startswith( "`src/" ):
+            tables.append( ( m.group( 2 ).strip( "`" ), h2 ) )
+        elif h2 is not None and PARAM.match( line ):
+            param = h2
+    return tables, param
+
+lines         = read( DOC )
+tables, param = outline( lines )
+parents       = sorted( { p for _, p in tables if p is not None } )
+if not tables:
+    no( "(K) parsed ZERO per-file `### `src/…`` headings out of docs/LIMITS.md — the heading shape changed and this arm is blind" )
+elif param is None:
+    no( "(K) no `##` section of docs/LIMITS.md carries the parameter table — the section this arm guards against is gone, so it is blind" )
+else:
+    orphan = [ f for f, p in tables if p is None ]
+    under  = [ f for f, p in tables if p == param ]
+    if orphan:
+        no( "(K) %d of %d per-file cap tables have no `##` above them, e.g. `%s`" % ( len( orphan ), len( tables ), orphan[ 0 ] ) )
+    if under:
+        no( "(K) %d of %d per-file cap tables are filed under the parameter section \"%s\" (line %d), e.g. `%s` — the outline tells a reader they are not caps"
+            % ( len( under ), len( tables ), title( lines[ param ] ), param + 1, under[ 0 ] ) )
+    if len( parents ) > 1:
+        no( "(K) the per-file cap tables are split across %d `##` sections: %s" % ( len( parents ), "; ".join( title( lines[ p ] ) for p in parents ) ) )
+
+if not bad:
+    ok( "(K) all %d per-file cap tables sit under one `##`, \"%s\", which is not the parameter section" % ( len( tables ), title( lines[ parents[ 0 ] ] ) ) )
+    # CONTROL: delete that `##` from a COPY and re-read it with the identical extraction. The tables must fall
+    # back under the parameter section and the reading must go RED, or this arm has never seen the nesting
+    # it exists for.
+    cut = parents[ 0 ]
+    mut = os.path.join( TMP, "outline.md" )
+    with open( mut, "w", encoding="utf-8" ) as fh:
+        fh.write( "\n".join( lines[ : cut ] + lines[ cut + 1 : ] ) )
+    back = read( mut )
+    if back.count( lines[ cut ] ) != lines.count( lines[ cut ] ) - 1:
+        no( "(K) mutation control: \"%s\" was not removed from the copy — the control would measure nothing" % title( lines[ cut ] ) )
+    else:
+        t2, p2 = outline( back )
+        if p2 is None or not [ f for f, p in t2 if p == p2 ]:
+            no( "(K) mutation control: with \"%s\" deleted, no per-file table read as filed under the parameter section — this arm cannot go red" % title( lines[ cut ] ) )
+        else:
+            ok( "(K) mutation control: deleting that `##` files the tables under the parameter section again, and the reading goes RED" )
+sys.exit( 1 if bad else 0 )
+OUTLINE
 
 # ── (D) a tree with no caps is a refusal, not an empty table ────────────────────────────────────────
 mkdir -p "$TMP/empty/src" "$TMP/empty/docs"
