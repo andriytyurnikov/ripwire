@@ -149,7 +149,7 @@ inline void noteCap( InfoT* outInfo, const char* cappedAttr, const char* totalAt
 // kMentionMaxDirectSymbols 0/39. All three firings came from the same shape — a task that pastes SEVERAL
 // paths, which is exactly the multi-file localization case B8 exists for. The kMentionMaxFiles 3/39 is an
 // UPPER BOUND: it was read off the first cut of the flag, which reported a scan's STOP as a cut on exactly
-// that multi-path shape (see namesFileNotKept), and the 39-task list was not kept, so it cannot be re-derived. The zero is a property of this
+// that multi-path shape (see mentionUnkeptFiles), and the 39-task list was not kept, so it cannot be re-derived. The zero is a property of this
 // corpus, not of the cap: it takes more than eight definitions of one Scope.name for the cap to bite, and
 // a C++ tree with unique method names has none. The class is real and gated on a fixture that does
 // (test/mentioncapcheck.sh arm C), and the attribute costs nothing on the runs where it stays silent, so
@@ -394,21 +394,8 @@ inline bool definesScopeName( const IngestResult& ing, const std::string& scope,
     return std::any_of( ing.symbols.begin(), ing.symbols.end(), [ & ]( const Symbol& s ) { return s.name == name && s.scope == scope; } );
 }
 
-inline bool namesUnkeptPackageIndex( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
-{
-    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
-    {
-        if( isIndexBaseName( baseNameOf( ing.files[f] ) ) && dirSuffixMatches( ing.files[f], m.segments )
-            && std::find( kept.begin(), kept.end(), f ) == kept.end() )
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 // WHICH files this mention names that `kept` does not — appended, never cleared, so a caller can union
-// across mentions. This is namesFileNotKept's body with "return true on the first one" replaced by "collect
+// across mentions. This is the old first-hit predicate's body with "return true on the first one" replaced by "collect
 // them all": a bare boolean told the caller something was withheld and neither how much nor how to get it,
 // which is §9-3 of docs/METHODOLOGY.md unmet, and the sibling caps in this same file already pass a total.
 // Verdict-equivalent to the predicate below by construction — same resolution order, same three rules, and
@@ -454,27 +441,8 @@ inline void mentionUnkeptFiles( const IngestResult& ing, const RawMention& m, co
     }
 }
 
-inline bool namesFileNotKept( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept )
-{
-    std::vector<std::uint32_t> unkept;
-    mentionUnkeptFiles( ing, m, kept, unkept );
-    return !unkept.empty();
-}
-
-// The file-cap verdict for the whole task: did kMentionMaxFiles keep out a file ANY mention names? A cut needs a full
-// list, so the common anchored query pays one size test. A mention resolved while the list still had room kept
-// everything it named and answers false, so asking every mention is exact — no bookkeeping of which one filled it.
-inline bool mentionFilesCut( const IngestResult& ing, const std::vector<RawMention>& raw, const std::vector<std::uint32_t>& kept )
-{
-    if( kept.size() < kMentionMaxFiles )
-    {
-        return false;
-    }
-    return std::any_of( raw.begin(), raw.end(), [ & ]( const RawMention& m ) { return namesFileNotKept( ing, m, kept ); } );
-}
-
 // How many DISTINCT files the task's mentions name in total — the kept ones plus the ones the cap refused.
-// Equal to kept.size() when nothing was cut, so `total > kept.size()` is exactly mentionFilesCut's verdict
+// Equal to kept.size() when nothing was cut, so `total > kept.size()` is exactly the file-cap verdict
 // and the two can never disagree. The union is only computed on the runs where the list is full, so the
 // common anchored query pays the same one size test it always did.
 inline std::uint32_t mentionFilesNamedTotal( const IngestResult& ing, const std::vector<RawMention>& raw,
@@ -701,7 +669,7 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
             liftPackageDirMention( ing, m, mentionedFiles );
         }
     }
-    // a STOP is not a CUT (namesFileNotKept), and a CUT without a total is a fact the caller cannot act on:
+    // a STOP is not a CUT (mentionUnkeptFiles), and a CUT without a total is a fact the caller cannot act on:
     // mention_files_total= is every distinct file the task names, so `total - shown` is what the cap withheld.
     const std::uint32_t mentionFilesTotal = mentionFilesNamedTotal( ing, raw, mentionedFiles );
     noteCap( outInfo, "mention_files_capped", "mention_files_total",
