@@ -444,6 +444,7 @@ inline std::string enclosingScopeOf( TSNode node, std::string_view src )
     return {};
 }
 
+
 // Ruby: the enclosing `class` / `module` of a definition — the Ruby arm of the P2-D Rule-1 scope that
 // enclosingScopeOf gives C++ and Python. Kept separate rather than folded into enclosingScopeOf because
 // tree-sitter-ruby's kinds are bare words (`class`, `module`) that several other grammars also spell — JS
@@ -731,6 +732,28 @@ inline bool anySelfOrAncestor( TSNode node, NodePred pred ) noexcept
         }
     }
     return false;
+}
+
+// The `recovered` extraction bit (RawDef::recovered; extentsuspect.h rule `error`). Two shapes, both measured on the
+// scope-leak fixture family (test/extentfix): a CLASS whose own body holds an error while an ERROR node encloses it —
+// the struct whose body swallowed the definitions after it — and a C++ `method` with NO scope inside an ERROR node — a
+// member of a class the recovery dissolved (a field_identifier declarator only exists inside a class body). A clean
+// class inside a recovered file is NOT marked: its body parsed, so its members' scope is the one the source gave them.
+// The ancestor walk (anySelfOrAncestor, above) runs only for those rare candidates, in a file whose root has an error.
+inline std::uint8_t parseRecoveredBits( TSNode defNode, SymKind kind, Lang lang, bool isScopeless )
+{
+    const bool isContainerShape = extent::inSet( extent::kExtentClassKinds, kind ) && ts_node_has_error( defNode );
+    const bool isOrphanShape    = lang == Lang::Cpp && kind == SymKind::Method && isScopeless;
+    if( !isContainerShape && !isOrphanShape )
+    {
+        return 0;
+    }
+    const bool hasErrorAncestor = anySelfOrAncestor( ts_node_parent( defNode ), []( TSNode n ) noexcept { return ts_node_is_error( n ); } );
+    if( !hasErrorAncestor )
+    {
+        return 0;
+    }
+    return isContainerShape ? extent::kRecoveredContainer : extent::kRecoveredOrphan;
 }
 
 // Rust: the def itself, or any enclosing `mod`/`fn`, carries a test attribute.

@@ -1417,6 +1417,9 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
     // #62: byte ranges this file's preprocessor decides are dead; see preprocDeadRangesFor above.
     const std::vector<PreprocDeadRange> ppDead = preprocDeadRangesFor( le, root, src );
 
+    // extent honesty: the recovered-bit walk (parseRecoveredBits) only exists in a file the parser had to recover.
+    const bool fileHasError = ts_node_has_error( root );
+
     {
         PROFILE_SCOPE_DESCRIBE( "ingest/extractFile: tags query exec+captures" );
         ts_query_cursor_exec( cursor, query, root );
@@ -1769,6 +1772,9 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             { // enclosing class/module → id= addressability, per-class overload sets, editCheckImplicitReceiver
                 d.scope = rubyEnclosingScopeOf( nameNode, src );   // (test/rubyscopecheck.sh)
             }
+            // extent honesty: did the parse RECOVER this def's container or kind? Only asked in a file whose root
+            // holds an error (fileHasError, one O(1) flag test per file) — see parseRecoveredBits.
+            d.recovered = fileHasError ? parseRecoveredBits( defNode, kind, le.lang, d.scope.empty() ) : std::uint8_t( 0 );
             defs.push_back( std::move( d ) );
             if( kind == SymKind::Class || kind == SymKind::Struct || kind == SymKind::Interface )
             {

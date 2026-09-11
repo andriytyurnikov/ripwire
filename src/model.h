@@ -350,6 +350,13 @@ struct Symbol
     // signal is the other half, and filter.h::isTestSymbol is the ONE predicate that ORs them — every
     // symbol-keyed consumer of the test partition must route through it so the two halves cannot drift.
     std::uint8_t  testScope     = 0;
+    // EXTENT HONESTY (src/extentsuspect.h, gate test/extentcheck.sh): the containment rules this def's extent,
+    // scope or recovered kind FAILED, as extent::kSuspect* bits (name/head/scope/error); 0 ⇒ every rule held.
+    // Computed at LOAD from facts the cache already carries (the extents, the name byte, the `recovered`
+    // extraction bit), in ingest_model.h::markExtentSuspects — never persisted itself, so a rule change needs no
+    // parser bump. Rows stay; surfaces DISCLOSE it as extent_suspect="name,head,scope,error" and --hotspots keeps
+    // a flagged def's complexity out of its ranking. Takes the last free pad byte (the static_assert below holds).
+    std::uint8_t  extentSuspect = 0;
     std::string   name;                // final identifier segment
     std::string   scope;               // enclosing class/namespace name (C++), for canonical scope::name resolution; "" if none
 };

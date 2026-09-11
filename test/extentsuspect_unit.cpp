@@ -106,6 +106,12 @@ int main()
                 { def( 0, 50, 100, 10, SymKind::Function, Lang::Cpp, "a" ),
                   def( 0, 50, 100, 12, SymKind::Function, Lang::Cpp, "b" ) },
                 { 0, 0 } );
+    expectBits( "R3 definitions in a signature AFTER the name are valid C++ (mem-initializer lambda: local struct, vexing-parse local)",
+                { def( 0, 900, 1000, 10, SymKind::Method, Lang::Cpp, "Storage", "Storage" ),
+                  def( 200, 230, 300, 207, SymKind::Class, Lang::Cpp, "LocalProtector", "LocalProtector" ),
+                  def( 240, 260, 260, 245, SymKind::Method, Lang::Cpp, "clone", "LocalProtector" ),
+                  def( 400, 450, 450, 420, SymKind::Function, Lang::Cpp, "queuedBatch" ) },
+                { 0, 0, 0, 0 } );
     expectBits( "R3 a definition inside a body is clean",
                 { def( 0, 20, 500, 7, SymKind::Class, Lang::Cpp, "Outer" ),
                   def( 30, 60, 120, 40, SymKind::Method, Lang::Cpp, "m", "Outer" ) },

@@ -18,8 +18,11 @@
 #
 # THE RULES (src/extentsuspect.h; the reason codes a row's extent_suspect= carries, in this order):
 #   name  — a definition's own name lies outside its own signature span (a span adopted from another node).
-#   head  — C family: a definition lies inside a BODIED definition's signature span; the whole top-level
-#           extent tree holding the violation is marked (the containers' extents are the corrupted ones).
+#   head  — C family: a definition lies in a BODIED definition's signature span, wholly before that definition's
+#           own name (the return-type position); the whole top-level extent tree holding it is marked (the
+#           containers' extents are the corrupted ones). The name bound came from measurement: valid C++ puts local
+#           structs and vexing-parse locals inside lambdas in a constructor's member-initializer list — after the
+#           name — and the unbounded rule flagged them (unit case "R3 definitions in a signature AFTER the name").
 #   scope — C++: filed under C:: while physically inside a different class, C defined in the same file.
 #   error — the parse recovered a CLASS whose own body holds an error inside an ERROR region (extraction
 #           bit, cached), or a C++ method with no scope inside one; every definition inside such a class too.
@@ -177,8 +180,8 @@ PY
     fi
 done
 grep -q '<h p="plain.cpp"' "$TMP/f.xml" && no "(F) the clean plain.cpp got an <h> row" || ok "(F) the clean plain.cpp has no <h> row"
-grep -qE '<ctx[^>]* extent_suspect_files="3"' "$TMP/f.xml" && ok "(F) root extent_suspect_files=\"3\"" \
-    || no "(F) root extent_suspect_files= is not 3: $( grep -oE '<ctx[^>]*>' "$TMP/f.xml" | head -1 | cut -c1-300 )"
+grep -qE '<skipped [^>]* extent_suspect_files="3"' "$TMP/f.xml" && ok "(F) root extent_suspect_files=\"3\"" \
+    || no "(F) root extent_suspect_files= is not 3: $( grep -oE '<skipped [^>]*>' "$TMP/f.xml" | head -1 | cut -c1-400 )"
 defines "$TMP/f.xml" extent_suspect_syms && defines "$TMP/f.xml" extent_suspect_files && comments "$TMP/f.xml" | grep -q 'extent-suspect' \
     && ok "(F) --skipped legend defines extent_suspect_syms=, extent_suspect_files= and why=extent-suspect" \
     || no "(F) --skipped legend misses extent_suspect_syms= / extent_suspect_files= / extent-suspect"
@@ -321,8 +324,11 @@ else
     eval "CXX_FLAGS=(    $( grep -m1 '^CXX_FLAGS ='    "$FLAGS_MK" | sed 's/^CXX_FLAGS =//' ) )"
     eval "CXX_DEFINES=(  $( grep -m1 '^CXX_DEFINES ='  "$FLAGS_MK" | sed 's/^CXX_DEFINES =//' ) )"
     eval "CXX_INCLUDES=( $( grep -m1 '^CXX_INCLUDES =' "$FLAGS_MK" | sed 's/^CXX_INCLUDES =//' ) )"
+    # VERIFY's debug arm reports through the diagnostics TU, so the driver links that one object (when present).
+    DIAG_OBJ="$BUILD_DIR/CMakeFiles/ripwire.dir/src/infra/diagnostics.cpp.o"
+    DIAG_LINK=(); [ -f "$DIAG_OBJ" ] && DIAG_LINK=( "$DIAG_OBJ" )
     if "$CXX" "${CXX_FLAGS[@]}" "${CXX_DEFINES[@]}" "${CXX_INCLUDES[@]}" -I"$ROOT/src" \
-         "$ROOT/test/extentsuspect_unit.cpp" -o "$TMP/extentsuspect_unit" >"$TMP/u_build.log" 2>&1; then
+         "$ROOT/test/extentsuspect_unit.cpp" "${DIAG_LINK[@]}" -o "$TMP/extentsuspect_unit" >"$TMP/u_build.log" 2>&1; then
         if "$TMP/extentsuspect_unit" >"$TMP/u_run.log" 2>&1; then
             ok "(U) extentsuspect_unit: $( grep -c '  PASS' "$TMP/u_run.log" | tr -d ' ' ) rule cases hold"
         else

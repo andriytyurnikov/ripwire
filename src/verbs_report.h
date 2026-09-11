@@ -1159,13 +1159,29 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
         }
 
         // per-file Σ cognitive complexity + the single worst function (for "go look HERE")
+        //
+        // EXTENT HONESTY (src/extentsuspect.h): a function whose extent failed a containment check is EXCLUDED from
+        // ccx=, score= and top=, and counted instead. Marking it and ranking it anyway was the alternative, and it
+        // fails METHODOLOGY §9's "neither may lie": a rank is an ORDERING claim, and ordering files by a number the
+        // tool itself flags as a recovery artifact (one 14-line function measured ccx=920 because a swallowed
+        // struct became its return type) states a comparison the tool cannot support — the attribute beside it
+        // would be honest while the row's position lied. Excluding is a disclosed cut instead (§9.3): the row
+        // says how many were left out (extent_suspect_syms=), ccx= becomes a FLOOR of the file's true sum, and a
+        // file with nothing trustworthy left is counted in unranked_extent_suspect= so the partition still adds
+        // up to files=. The flagged rows themselves stay visible on every other surface, marked.
         std::vector<std::uint64_t> ccxSum( ing.files.size(), 0 );
         std::vector<std::uint32_t> worstCcx( ing.files.size(), 0 );
         std::vector<NodeId>        worstSym( ing.files.size(), kNoNode );
+        std::vector<std::uint32_t> suspectSyms( ing.files.size(), 0 );
         for( const Symbol& s : ing.symbols )
         {
             if( s.kind != SymKind::Function && s.kind != SymKind::Method )
             {
+                continue;
+            }
+            if( s.extentSuspect != 0 )
+            {
+                ++suspectSyms[ s.fileId ];
                 continue;
             }
             ccxSum[ s.fileId ] += s.ccx;
@@ -1184,15 +1200,18 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
         // is the honest cut: it is "no commit in the window was attributed to this path", which covers the
         // quiet file AND the unbound one. Separating those two needs the join to report its own misses, which
         // it does not; the legend says so rather than implying the count is purely about quietness.
+        // extent honesty adds a FOURTH bucket: a file with commits whose every scorable function was excluded above
+        // (or whose trustworthy remainder scores 0) is unranked for THAT reason, never folded into no_complexity —
+        // "no function to score" and "no function we can trust" are different claims about the file.
         std::vector<std::uint32_t> order;
-        std::size_t                unrankedNoChurn = 0, unrankedNoComplexity = 0;
+        std::size_t                unrankedNoChurn = 0, unrankedNoComplexity = 0, unrankedExtentSuspect = 0;
         for( std::uint32_t f = 0; f < ing.files.size(); ++f )
         {
             if( !churn[f] )      { ++unrankedNoChurn;      continue; }
-            if( !ccxSum[f] )     { ++unrankedNoComplexity; continue; }
+            if( !ccxSum[f] )     { if( suspectSyms[f] > 0 ) { ++unrankedExtentSuspect; } else { ++unrankedNoComplexity; } continue; }
             order.push_back( f );
         }
-        VERIFY( order.size() + unrankedNoChurn + unrankedNoComplexity == ing.files.size() );
+        VERIFY( order.size() + unrankedNoChurn + unrankedNoComplexity + unrankedExtentSuspect == ing.files.size() );
         const auto score = [ & ]( std::uint32_t f ) { return std::uint64_t( churn[f] ) * ccxSum[f]; };
         std::sort( order.begin(), order.end(), [ & ]( std::uint32_t a, std::uint32_t b )
                    { return score( a ) != score( b ) ? score( a ) > score( b ) : ing.files[a] < ing.files[b]; } );
@@ -1240,8 +1259,28 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
         // r26-stamp Task A: anchor churn×complexity scores to the commit (+dirty state) they were mined
         // against — multi-root anchors to the PRIMARY root (d.root); the merged ranking has no per-root
         // sub-scoping to hang a second stamp on, unlike --pr-context's per-root sections.
-        rw::emitTo( stdout, "<hotspots window=\"{}\" files=\"{}\" ranked=\"{}\" unranked_no_churn=\"{}\" unranked_no_complexity=\"{}\"{}{}{}>",
-                     windowLabel.c_str(), ing.files.size(), order.size(), unrankedNoChurn, unrankedNoComplexity,
+        // extent honesty: the fourth bucket's attribute and the row count share ONE reading, written only into a
+        // document that carries either (a corpus with nothing excluded keeps every byte).
+        bool shownRowExcludedSome = false;
+        for( std::size_t i = pw.begin; i < pw.end; ++i )
+        {
+            shownRowExcludedSome = shownRowExcludedSome || suspectSyms[ order[i] ] > 0;
+        }
+        if( unrankedExtentSuspect > 0 || shownRowExcludedSome )
+        {
+            constexpr const char* kHotspotsExtentSuspectLegend =
+                "<!-- extent_suspect_syms=K on a row = K of the file's functions failed an extent/scope containment check (the map,"
+                " the bundles and the skipped verb mark each one, reasons and all) and are LEFT OUT of that row's ccx=, score= and top=,"
+                " so its ccx= is a FLOOR of the file's true sum rather than a total. unranked_extent_suspect= counts files with commits"
+                " whose every scorable function was left out that way (or whose trusted remainder scores 0), so ranked= +"
+                " unranked_no_churn= + unranked_no_complexity= + unranked_extent_suspect= = files= exactly. Absent = nothing excluded. -->";
+            rw::emitRaw( stdout, kHotspotsExtentSuspectLegend );
+        }
+        const std::string unrankedSuspectAttr = unrankedExtentSuspect > 0
+                                              ? " unranked_extent_suspect=\"" + std::to_string( unrankedExtentSuspect ) + "\""
+                                              : std::string();
+        rw::emitTo( stdout, "<hotspots window=\"{}\" files=\"{}\" ranked=\"{}\" unranked_no_churn=\"{}\" unranked_no_complexity=\"{}\"{}{}{}{}>",
+                     windowLabel.c_str(), ing.files.size(), order.size(), unrankedNoChurn, unrankedNoComplexity, unrankedSuspectAttr,
                      pageDisclosure( pab, sizeof( pab ), pw.end - pw.begin, order.size(), pw.end,
                                      cfg.pageLimit, cfg.pageOffset, true ),
                      mvRootAttr.c_str(),                    // R-E fix: root= before at= — at= stays LAST (r26)
@@ -1258,9 +1297,11 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
             // real 1-based source line) so the --expand hop is buildable straight from this row.
             const HotspotWorstFn    worst = hotspotWorstFnOf( ing, worstSym[f] );
             const std::string_view  rp    = mvSingleRoot ? rw::sarif::rootRelativeUri( ing.files[f], mvRootPrefix ) : std::string_view( ing.files[f] );
-            rw::emitTo( stdout, "<f p=\"{}\" churn=\"{}\" ccx=\"{}\" score=\"{}\" top=\"{}\" top_ccx=\"{}\" top_l=\"{}\"/>",
+            // extent honesty: extent_suspect_syms= — the functions left out of this row's ccx=/score=/top= (absent at 0)
+            const std::string suspectAttr = suspectSyms[f] > 0 ? " extent_suspect_syms=\"" + std::to_string( suspectSyms[f] ) + "\"" : std::string();
+            rw::emitTo( stdout, "<f p=\"{}\" churn=\"{}\" ccx=\"{}\" score=\"{}\" top=\"{}\" top_ccx=\"{}\" top_l=\"{}\"{}/>",
                          ex( rp ).c_str(), churn[f], (unsigned long long)ccxSum[f],
-                         (unsigned long long)score( f ), ex( worst.name ).c_str(), worstCcx[f], worst.line );
+                         (unsigned long long)score( f ), ex( worst.name ).c_str(), worstCcx[f], worst.line, suspectAttr );
         }
         rw::emitTo( stdout, "</hotspots>" );
         return 0;
@@ -1685,15 +1726,17 @@ struct SkipHealthFinding
     std::size_t fileIndex = 0;
     bool        degraded  = false;   // the parse holds ERROR/MISSING nodes
     bool        minified  = false;   // whitespace frequency under the threshold
+    std::uint32_t extentSuspectSyms = 0;   // extent honesty: definitions here carrying extent_suspect= (0 ⇒ none flagged)
 };
 
-// §L1 — the health pass's whole answer: the flagged files, plus the three counts the root discloses.
+// §L1 — the health pass's whole answer: the flagged files, plus the counts the root discloses.
 struct SkipHealthReport
 {
     std::vector<SkipHealthFinding> findings;
     std::size_t                    degraded   = 0;
     std::size_t                    minified   = 0;
     std::size_t                    unmeasured = 0;   // indexed but never parsed — NOT the same as clean
+    std::size_t                    extentSuspectFiles = 0;   // extent honesty: files holding >= 1 flagged definition
 };
 
 // §L1 — classify every indexed file's recorded health against the two disclosure thresholds.
@@ -1707,27 +1750,44 @@ struct SkipHealthReport
 // never parsed — a doc-format file the doc post-pass extracted, a binary-sniff or nesting-guard refusal, a
 // read failure. Those are counted as unmeasured and are absent from the other two counts, because "we did
 // not look" is not "we looked and it was clean".
+// extent honesty — how many flagged definitions (Symbol::extentSuspect != 0) each file holds, indexed by fileId.
+std::vector<std::uint32_t> extentSuspectCountsByFile( const rw::IngestResult& ing )
+{
+    std::vector<std::uint32_t> counts( ing.files.size(), 0 );
+    for( const rw::Symbol& s : ing.symbols )
+    {
+        if( s.extentSuspect != 0 && s.fileId < counts.size() )
+        {
+            ++counts[ s.fileId ];
+        }
+    }
+    return counts;
+}
+
 SkipHealthReport classifySkipHealth( const rw::IngestResult& ing )
 {
     using namespace rw;
     SkipHealthReport out;
+    // extent honesty: a file holding any flagged definition gets an <h> row even when its parse is clean (the
+    // signature-swallow shape is legal C) — this verb is where "WHICH files" gets answered.
+    const std::vector<std::uint32_t> suspectSyms = extentSuspectCountsByFile( ing );
     for( std::size_t f = 0; f < ing.files.size(); ++f )
     {
-        const FileHealth h = f < ing.fileHealth.size() ? ing.fileHealth[ f ] : FileHealth{};
-        if( h.fileBytes == 0 )
-        {
-            ++out.unmeasured;
-            continue;
-        }
+        const FileHealth    h       = f < ing.fileHealth.size() ? ing.fileHealth[ f ] : FileHealth{};
+        const std::uint32_t suspect = suspectSyms[ f ];
+        out.extentSuspectFiles += suspect > 0 ? 1u : 0u;
+        // fileBytes == 0 is the NOT-MEASURED sentinel: counted as unmeasured and never degraded/minified (both predicates
+        // below are false at 0 bytes), so such a file is rowed only if it still holds a flagged definition — never hidden.
+        out.unmeasured += h.fileBytes == 0 ? 1u : 0u;
         const std::size_t   sample   = h.fileBytes < kHealthWsSampleBytes ? h.fileBytes : kHealthWsSampleBytes;
         const std::uint32_t wsPerMil = sample == 0 ? 1000u : std::uint32_t( ( std::uint64_t( h.wsBytes ) * 1000ull ) / sample );
         const bool          degraded = rw::fileParseDegraded( ing, f );   // the ONE predicate (model.h) — grep + refusals route through it too
         const bool          minified = h.fileBytes >= kMinifiedMinBytes && wsPerMil < kMinifiedWsPerMille;
         out.degraded += degraded ? 1u : 0u;
         out.minified += minified ? 1u : 0u;
-        if( degraded || minified )
+        if( degraded || minified || suspect > 0 )
         {
-            out.findings.push_back( { f, degraded, minified } );
+            out.findings.push_back( { f, degraded, minified, suspect } );
         }
     }
     return out;
@@ -1801,24 +1861,49 @@ void writeUnindexedExtRows( rw::XmlWriter& w, std::vector<char>& esc, const std:
 // both ratios are emitted on every row, whichever class fired, so a reader can second-guess either
 // threshold without re-running anything. err_ratio is over the FILE's bytes; ws_freq is over the leading
 // sample, which is its own denominator — hence two ratios and not one.
+// §L1 + extent honesty — an <h> row's why=: the reasons that fired, in their fixed order, comma-joined.
+std::string healthWhyList( const SkipHealthFinding& hr )
+{
+    const std::array<std::pair<bool, std::string_view>, 3> reasons = { { { hr.degraded, "degraded-parse" },
+                                                                         { hr.minified, "minified-suspect" },
+                                                                         { hr.extentSuspectSyms > 0, "extent-suspect" } } };
+    std::string why;
+    for( const auto& [ isFired, token ] : reasons )
+    {
+        if( isFired )
+        {
+            why += why.empty() ? "" : ",";
+            why += token;
+        }
+    }
+    return why;
+}
+
+// extent honesty — the row's count attribute, empty when the file holds no flagged definition (composed, never the
+// fixed `row` buffer, so the fixed-buffer sweep's population is unchanged).
+std::string healthExtentSuspectAttr( const SkipHealthFinding& hr )
+{
+    return hr.extentSuspectSyms > 0 ? " extent_suspect_syms=\"" + std::to_string( hr.extentSuspectSyms ) + "\"" : std::string();
+}
+
 void writeHealthRows( rw::XmlWriter& w, std::vector<char>& esc, const rw::IngestResult& ing,
                       const std::vector<SkipHealthFinding>& findings, std::string_view rootPrefix = {} )
 {
     for( const SkipHealthFinding& hr : findings )
     {
-        const rw::FileHealth h       = ing.fileHealth[ hr.fileIndex ];
+        // an unmeasured file reaches here only when it still holds a flagged definition: no health record, no ratio
+        const rw::FileHealth h       = hr.fileIndex < ing.fileHealth.size() ? ing.fileHealth[ hr.fileIndex ] : rw::FileHealth{};
         const std::size_t    sample  = h.fileBytes < rw::kHealthWsSampleBytes ? h.fileBytes : rw::kHealthWsSampleBytes;
-        const double         errFrac = double( h.errBytes ) / double( h.fileBytes );
+        const double         errFrac = h.fileBytes == 0 ? 0.0 : double( h.errBytes ) / double( h.fileBytes );
         const double         wsFrac  = sample == 0 ? 1.0 : double( h.wsBytes ) / double( sample );
         char row[ 192 ];
         const std::string_view rp = rootPrefix.empty() ? std::string_view( ing.files[ hr.fileIndex ] ) : rw::sarif::rootRelativeUri( ing.files[ hr.fileIndex ], rootPrefix );
         w.write( "<h p=\"" );  w.write( rw::escapeXml( rp, esc ) );
-        rw::formatTo( row, sizeof( row ), "\" why=\"{}{}{}\" err=\"{}\" err_ratio=\"{:.3f}\" ws_freq=\"{:.3f}\" bytes=\"{}\"/>",
-                       hr.degraded ? "degraded-parse" : "",
-                       ( hr.degraded && hr.minified ) ? "," : "",
-                       hr.minified ? "minified-suspect" : "",
-                       h.errNodes, errFrac, wsFrac, h.fileBytes );
+        rw::formatTo( row, sizeof( row ), "\" why=\"{}\" err=\"{}\" err_ratio=\"{:.3f}\" ws_freq=\"{:.3f}\" bytes=\"{}\"",
+                       healthWhyList( hr ), h.errNodes, errFrac, wsFrac, h.fileBytes );
         w.write( row );
+        w.write( healthExtentSuspectAttr( hr ) );
+        w.write( "/>" );
     }
 }
 
@@ -1947,6 +2032,14 @@ std::optional<int> runSkipped( const MainDispatch& d )
         const SkipHealthReport health = classifySkipHealth( ing );
 
         w.write( kSkippedLegend );
+        // extent honesty: its reading rides ONLY a report that carries it, so a clean corpus keeps every byte.
+        if( health.extentSuspectFiles > 0 )
+        {
+            w.write( "<!-- why=extent-suspect on an <h> row = the file holds extent_suspect_syms= definitions whose extent, scope or kind"
+                     " FAILED a containment check (the map and bundle rows carry the reasons as extent_suspect=: name, head, scope, error);"
+                     " joined to the parse-health reasons comma-separated, and rowed even when the parse itself is clean."
+                     " extent_suspect_files= on the root counts such rows. Nothing is dropped. -->" );
+        }
         char hdr[ 768 ];   // fourteen counters, each up to 20 digits, + ignore_mode= — sized well clear of a truncated count
         // mirror ingest()'s own zero-ceiling clamp so the header states the EFFECTIVE bound, never a raw 0
         const std::size_t effectiveMax = cfg.maxFileBytes == 0 ? kDefaultMaxFileBytes : cfg.maxFileBytes;
@@ -1956,13 +2049,16 @@ std::optional<int> runSkipped( const MainDispatch& d )
         rw::formatTo( hdr, sizeof( hdr ),
                        "<skipped indexed=\"{}\" oversize=\"{}\" excluded=\"{}\" unsupported_ext=\"{}\" excluded_dirs=\"{}\""
                        " pruned_dirs=\"{}\" ignored=\"{}\" ignored_dirs=\"{}\" ignore_mode=\"{}\""
-                       " degraded_parse=\"{}\" minified_suspect=\"{}\" unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
+                       " degraded_parse=\"{}\" minified_suspect=\"{}\"{} unmeasured=\"{}\" max_file_size=\"{}\" json_ceiling=\"{}\""
                        " yaml_ceiling=\"{}\"{}",
                        ing.files.size(), ing.skippedOversize.size(),
                        ( unsigned long long ) cs.excludedFiles, ( unsigned long long ) cs.unsupportedFiles,
                        ( unsigned long long ) cs.excludedDirs, ( unsigned long long ) cs.prunedDirs,
                        ( unsigned long long ) cs.ignoredFiles, ( unsigned long long ) cs.ignoredDirs, ignoreModeLabel( cs.ignoreMode ),
-                       health.degraded, health.minified, health.unmeasured,
+                       health.degraded, health.minified,
+                       // extent honesty: extent_suspect_files= counts the h rows carrying why=extent-suspect (absent at 0)
+                       health.extentSuspectFiles > 0 ? " extent_suspect_files=\"" + std::to_string( health.extentSuspectFiles ) + "\"" : std::string(),
+                       health.unmeasured,
                        effectiveMax, kMaxJsonConfigBytes, kMaxYamlConfigBytes,
                        rowsCapped ? " rows_capped=\"1\"" : "" );
         w.write( hdr );
