@@ -192,7 +192,17 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 #   TOTAL        40,986 -> 40,902 B; nothing else moved. Raw wire bytes (this gate measures json.dumps
 #                      with ensure_ascii, which spends 6 for each em dash instead of 3): 40,901 -> 40,811.
 # Headroom goes back UP, 14 B -> 98 B. That is item 5 below working, not a new allowance.
-CEILING = 42000
+# RE-ANCHORED 2026-09-10 (the string/perf round's integration, two lanes each declaring arguments):
+#   for, explore      +127 B each = +254 B: `no_route` (mirrors the CLI --no-route so an MCP agent that reads
+#                      route= and disagrees has a recovery path — R1 finding F-R1-07)
+#   flags             +329 B (+145 B description, `limit`/`offset` properties): the dark-flag site listing and
+#                      the six --flip listings join the paging family and disclose their cuts (C1 F-07)
+#   situational_awareness +281 B (+97 B description, `limit`/`offset`): --situ's blast-radius and co-change
+#                      listings page instead of cutting silently at 8 (C1 F-10)
+#   TOTAL             41,220 -> 42,084 B on the merged tree, attributed tool by tool against main's binary
+#                      (both lanes had re-anchored alone — 41,650 and 42,000 — and the sum is what ships).
+# Headroom after this line: 116 B, less than one declared argument, which is rule 5 above working.
+CEILING = 42200
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )
