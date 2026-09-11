@@ -13,6 +13,12 @@ This is not a tour. Every path, line and output below was checked against PR #13
 `main` as d752d953. Line numbers move; every pointer also names its symbol, so
 `git grep -n <symbol>` finds it again after they do.
 
+Outputs move too. **Your baseline is the commit you branch from, not `c181d2be`**: build that base,
+run the STEP 1 block on it, and record what it prints. Every "leave this byte-identical" below means
+byte-identical to *that*, and the STEP 3 controls are pinned against it. Where your base disagrees
+with a printed tag here, the base is right and this file is out of date — say which rows moved in the
+plan.
+
 Work in a git worktree, not the main checkout. Run every gate in the foreground.
 
 ---
@@ -100,9 +106,25 @@ Every row above carries `declined_calls="1"`; the declined `crender` site is
 `cpp/caller/caller.cpp:3`. The two `::` spellings are worse because `--uses` matches sites against
 the whole spelling there (STEP 2), and that is true even when nothing was declined:
 `--callers=cpp/pair/one.cpp::One::ctwin` answers `count="1"` with
-`next="--uses=cpp/pair/one.cpp::One::ctwin"`, and that answer is `count="0"`. **That bound case is a
-separate, older gap. Leave its output byte-identical in this change and name it in the PR as a
-follow-up.**
+`next="--uses=cpp/pair/one.cpp::One::ctwin"`, and at `c181d2be` that answer is `count="0"`. **That
+bound case is a separate, older gap and not this change's to close. Leave whatever your base prints
+for it byte-identical.**
+
+**The sibling kit.** `prompts/help-wanted/uses-qualified-selector.md` is that older gap. It has no
+prerequisite and can land **before** this one, so run the bound pair on your own base before you
+believe the paragraph above:
+
+```bash
+../../build/ripwire . --no-cache --callers=cpp/pair/one.cpp::One::ctwin
+../../build/ripwire . --no-cache --uses=cpp/pair/one.cpp::One::ctwin
+```
+
+If that second answer is already `count="1"`, the sibling has landed: the bound gap is closed, the
+STEP 6 follow-up bullet is moot, and the declined `::` spellings in the table above now carry the
+`file:name` disclosure that kit adds — so re-read the two rows that say "**no** `call_sites_of_name=`
+at all" against your base before you pin a gate row on them. If it is `count="0"`, the sibling has
+not landed and the table stands as printed. Either way the two changes touch different code, must not
+be combined into one PR, and neither is a prerequisite for the other.
 
 Controls that must not move:
 
@@ -381,7 +403,8 @@ binary no single commit can, and every symptom then points somewhere else (`CLAU
 - **Every STEP 5 gate with its result**, and the `--quality-delta` and `--test-gate` summaries.
 - **Every re-pinned manifest row or regenerated capture**, each with its reason, in its own commit.
 - **Follow-ups found and not fixed** — at least the `::` spellings whose uses answer is `count="0"`
-  when nothing was declined (STEP 1).
+  when nothing was declined (STEP 1), unless `uses-qualified-selector.md` landed first and your base
+  already answers them, in which case say that instead.
 - A link to PR #136.
 
 ---
