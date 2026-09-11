@@ -196,10 +196,11 @@ function qdExamples(s, entries){
     { x: wireX+0.3, y: 5.3, w: wireW-0.6, h: 0.62, fontFace: SANS, fontSize: 15, color: TEXT, valign: "top", margin: 0 });
   s.addText("Every truncation is disclosed, and every guess says how many it chose from.",
     { x: wireX+0.3, y: 5.98, w: wireW-0.6, h: 0.42, fontFace: SANS, fontSize: 12.5, color: MUTED, valign: "top", margin: 0 });
-  foot(s, "Apache-2.0  ·  single binary  ·  hermetic build (proven with the network off)  ·  23 vendored tree-sitter grammars");
+  foot(s, "Apache-2.0  ·  single binary  ·  hermetic build (proven with the network off)  ·  24 vendored tree-sitter grammars");
   notes(s, [
     "SOURCES (cover)",
-    "- \"23 vendored tree-sitter grammars\": commit 680a0a3d, \"It is 23: 22 upstream projects under third_party/deps/, with tree-sitter-typescript supplying both typescript and tsx\"; PR #106's title, \"Dart: a 23rd grammar …\"; README.md, \"23 vendored grammars\".",
+    "- \"24 vendored tree-sitter grammars\" — pending merge: #126, which vendors the Kotlin grammar (PR #126 body: \"vendored fwcd/tree-sitter-kotlin grammar\"). Without #126 the count is 23.",
+    "- The 23 it builds on: commit 680a0a3d,\"It is 23: 22 upstream projects under third_party/deps/, with tree-sitter-typescript supplying both typescript and tsx\"; PR #106's title, \"Dart: a 23rd grammar …\"; README.md, \"23 vendored grammars\".",
     "- The wave under \"The ripgrep of AI context.\": present/assets/paddle-out.png, rendered from docs/assets/paddle-out.svg (commit 680a0a3d; PR #133 moved the wave from the README hero to this deck).",
   ]);
 }
@@ -227,10 +228,14 @@ function qdExamples(s, entries){
 {
   const s = p.addSlide(); bg(s);
   kicker(s, "// one binary, the whole pipeline", CYAN);
+  notes(s, [
+    "SOURCES (grammar count and language row)",
+    "- \"24 vendored grammars\" and Kotlin in the language row — pending merge: #126 (PR body: \"Adds Kotlin (.kt) language support: vendored fwcd/tree-sitter-kotlin grammar\"). Without #126: 23 (commit 680a0a3d) and no Kotlin.",
+  ]);
   title(s, "Crawl → parse → resolve → rank → emit. Deterministic, end to end.");
   const stages = [
     ["crawl",   "the tree, no VCS needed"],
-    ["parse",   "tree-sitter, 23 vendored grammars"],
+    ["parse",   "tree-sitter, 24 vendored grammars"],
     ["resolve", "references → call graph"],
     ["rank",    "Personalized PageRank"],
     ["emit",    "minified XML, one line"],
@@ -246,7 +251,7 @@ function qdExamples(s, entries){
   const props = [
     ["byte-identical", "two runs, same bytes — a gate on every push, not a tendency; warm equals cold"],
     ["zero runtime deps", "CMake + a C++23 compiler; builds with the network off — vendored everything"],
-    ["the languages", "Rust · C++ · ObjC/C++ · C · Metal · CUDA · Python · Go · Swift · TypeScript · JavaScript · Java · Ruby · PHP · Lua · Elixir · Dart · Bash · C# · JSON · TOML · YAML · Markdown — 23 vendored grammars; markdown headings are real symbols"],
+    ["the languages", "Rust · C++ · ObjC/C++ · C · Metal · CUDA · Python · Go · Swift · TypeScript · JavaScript · Java · Kotlin · Ruby · PHP · Lua · Elixir · Dart · Bash · C# · JSON · TOML · YAML · Markdown — 24 vendored grammars; markdown headings are real symbols"],
     ["agent-native", "an MCP server and 179 long flags behind one `--help` that is always the authority"],
   ];
   // Row height carries the LONGEST body (the language line, which wraps to three at this width),
@@ -406,9 +411,10 @@ function qdExamples(s, entries){
   const CW = (W - 2*MX - 0.14) / 2, CH = 2.43, X2 = MX + CW + 0.14, Y2 = 1.72 + CH + 0.12;
   const langs = [
     ["Dart", "the 23rd grammar, by @calvinchengx: 71,726 symbols from flutter/packages' 3,706 .dart files, none among its 289 degraded parses (#75, #106)", CYAN],
+    ["Kotlin", "by @xCatG: calls resolve between Kotlin and Java, both ways; no sanitizer finding across 501 real .kt files, deterministic on ~9,500 more (#126)", CYAN],
     ["any language", "Dart's landing caught six per-language arrays sized off the last enum by hand: an appended language dropped out of --skipped's census silently. Fixed for all.", AMBER],
   ];
-  listCard(s, MX, 1.72, CW, CH, "a new language", CYAN, langs, { bigW: 1.55 });
+  listCard(s, MX, 1.72, CW, CH, "two new languages", CYAN, langs, { bigW: 1.55 });
   listCard(s, X2, 1.72, CW, CH, "Rip'n Fast", CYAN, [
     ["159.7 → 9.2 s", "warm --grep on llvm-project: an inheritance cone rebuilt on every still-ambiguous receiver-typed call is now built once per type (#83)", GREEN],
     ["−19.9% CPU",    "cold parse on llvm-project, 194.1 → 155.6 s: child walks that went quadratic now use a cursor, output byte-identical (#127, #130)", GREEN],
@@ -431,6 +437,7 @@ function qdExamples(s, entries){
     "A NEW LANGUAGE",
     "- Dart: merge commit 6f91fed2, “merge(dart): a 23rd grammar …” — “On flutter/packages (3,706 .dart files) this indexes 71,726 Dart symbols and none of that corpus's 289 degraded parses is a .dart file.” Lane by @calvinchengx (#75).",
     "- Six arrays: 6f91fed2 — “moves six per-language array extents off the spelled-out last enumerator (std::size_t( Lang::Elixir ) + 1) and onto model.h's kLangCount”; with two tallies reverted, --skipped over two .cpp and two .dart files “prints indexed=4 with a single <lang n=cpp …> row: two indexed files gone from the census, with nothing saying a row is missing.”",
+    "- Kotlin — pending merge: #126 (PR body; PR author xCatG): “vendored fwcd/tree-sitter-kotlin grammar … a JVM interop bridge that resolves Kotlin↔Java calls bidirectionally”; “Zero ASan/UBSan/LSan findings across 501 real .kt files (8 local Android/JVM repos) … and ~9,500 additional .kt files across 5 larger real-world corpora (nowinandroid, compose-samples, architecture-samples, ktor, Signal-Android) — deterministic and well-formed on every one”. The quadrant heading “two new languages” is pending with it.",
     "RIP'N FAST",
     "- 159.7 → 9.2 s: PR #83 body, table “--grep | 159.7 s | 9.2 s” (warm, llvm-project); cause “recomputed on every still-ambiguous receiver-typed call”, “Each receiver type's cone is now computed once”.",
     "- −19.9%, 194.1 → 155.6 s: PR #127 body table, llvm-project cold map --no-cache, 194.14 → 155.60 CPU s, −19.9%, n=1, output identical. PR #130 body: “22 walks converted”. “byte-identical”: #127 “Every row cmp-identical between the two binaries.”",
@@ -596,6 +603,63 @@ function qdExamples(s, entries){
     "- 209f97a4: “run_corpus recorded len(stdout) and discarded returncode”; “The denominator counted 56 rows that emit nothing at all”; “a 10.4 MB cache blob that --batch= then read back, ‘responding’ to 103 of 108 caps”; “Every row now carries a state (ok / rc=N / unparseable / unexpanded / timeout)”; “A run in which NOTHING answered … now refuses to report a split”; “the destination must resolve outside the corpus”.",
     "- PR #127 lane H: “re-derived split 64 of 151 answering rows (was published as 59/195)”.",
     "- 5723b2c0: “fix(cache): the budget sweep pins the root you are working in, and says what it took”.",
+  ]);
+}
+
+/* ── S5h · 0.6.0: three more honesty stories (pending merge: #135, #136, #126) ───────────── */
+{
+  // PENDING MERGE. This slide arrives in a commit of its own: keep it once #135, #136 and #126 have all landed,
+  // or drop it (or the card whose PR missed the release). The slide text reads as merged; the notes say pending.
+  const s = p.addSlide(); bg(s);
+  storyCards(s, {
+    kick: "// wire, in practice — three more: the parser, the resolver, and a new language",
+    head: "Three more: a semicolon, a silence, a new language",
+    footText: "every figure is quoted from its PR body or commit in the speaker notes",
+    stories: [
+      { tag: "#135 · the parser",
+        headline: "One missing semicolon",
+        what: "A member macro with no ';' as a class's last line, like EXC_NAME(Foo) before '};', derails tree-sitter's C, C++ and ObjC error recovery. On memgraph one file had 472 of its 487 definitions misfiled, and a 14-line function ranked #4 in --hotspots, with nothing on the row saying so.",
+        stat: "ccx 920 → 2", statColor: GREEN,
+        statLabel: "PrintFuncSignature, 14 lines: cx=749 ccx=920 before, cx=3 ccx=2 after the re-parse",
+        now: "Misfiled definitions carry extent_suspect=, and --hotspots leaves them out and says so. An error-gated re-parse blanks ALL-CAPS member macros and keeps the result only if it has fewer error bytes. Lowercase and namespace-scope runs still derail: flagged, not fixed.",
+        gate: "extentcheck.sh (55) · macroreparsecheck.sh (103)" },
+      { tag: "#136 · the resolver",
+        headline: "22% of calls, declined in silence",
+        what: "--callers answered count=0, as if nothing called. When a call names two or more same-named definitions, none in the caller's file or directory, the resolver declines to guess: the right rule, but the decline was silent. On memgraph, 22% of all call references were declined this way.",
+        stat: "65,516 / 295,086", statColor: AMBER,
+        statLabel: "memgraph call references declined (22.2%), now shown as declined= and declined_calls=",
+        now: "Every call reference ends in exactly one named bucket, and --pin-census prints the balance. It proved itself in the merge: #134's std:: refusals had gone uncounted, 1,495 on ripwire and 4,966 on memgraph. Now they count, and unaccounted=0.",
+        gate: "test/declinecheck.sh · 17 languages, 104 checks" },
+      { tag: "#126 · Kotlin, by @xCatG",
+        headline: "A new language must not change old answers",
+        what: "Kotlin brings calls that cross into Java. In #126's review, once retrofit's same-named Kotlin body() methods were indexed, calls to the Java Response.body were declined, and its callers fell from 279 to 5: a Java-only answer, changed by files in another language.",
+        stat: "279 → 5 → 279", statColor: GREEN,
+        statLabel: "callers of retrofit's Response.java:body: before Kotlin, with the first Kotlin binary, after the fix",
+        now: "A call reaches the other JVM language only when its own language has no candidate, so adding .kt files never changes a Java-only edge. The Kotlin gate was written red first.",
+        gate: "test/kotlincheck.sh · 28 of 48 arms red on main" },
+    ],
+  });
+  notes(s, [
+    "PENDING MERGE: #135, #136, #126. This whole slide comes from its own commit. Keep it only once all three PRs have landed (or drop the card whose PR missed the release), and re-check every figure below against the merged PR.",
+    "ONE MISSING SEMICOLON — pending merge: #135 (PR body):",
+    "- “A function-like macro invoked without ; as the last member of a class or struct (EXC_NAME(Foo) right before };) sends tree-sitter-cpp's error recovery off course.” “The same shape derails tree-sitter-c and tree-sitter-objc.”",
+    "- “On memgraph, one file had 472 of 487 definitions misfiled”; “A 14-line function (PrintFuncSignature) reported cx=749, ccx=920, and it ranked #4 in --hotspots. Before this PR, nothing on the row said anything was wrong.”",
+    "- Measurements table: “PrintFuncSignature | a method, cx=749 ccx=920 loc=5479 | a free function, cx=3 ccx=2 loc=15”.",
+    "- “--hotspots excludes flagged functions instead of ranking a number the tool itself calls an artifact”; the re-parse “Blank[s] ALL-CAPS function-like macro invocations that sit alone on a line as class/struct/union members” and “Adopt[s] the new tree only if it holds strictly fewer error bytes”; “Only the ALL-CAPS, class-body shape is repaired. Lowercase and namespace-scope macro runs still derail, and the detector keeps flagging them.”",
+    "- Gates: “test/extentcheck.sh (55 checks …)” and “test/macroreparsecheck.sh (103 checks)”, “both red on their pre-change binaries”.",
+    "22% DECLINED IN SILENCE — pending merge: #136 (PR body):",
+    "- The rule: “a bare-name call with two or more candidates, none in the caller's file or directory, and no narrowing rescue is declined”; “the decline was silent … --callers=X answered count=0 exactly as if nothing called X”.",
+    "- “memgraph: 22% of all call references were being discarded this way.” Table: “memgraph (merged tree) | 295,086 | 65,516 | 22.2%”.",
+    "- “Header: declined=N”; “declined_calls=K on the --callers, --callees and --impact roots”.",
+    "- “every iteration of the resolve loop now ends in exactly one named disposition”; “--pin-census prints the balance”.",
+    "- “#134's std:: guard exits the loop with continue, and on the merged tree its refused calls came out uncounted: 1,495 on ripwire and 4,966 on memgraph … They are now counted as external”; both census lines end “unaccounted=0”.",
+    "- “test/declinecheck.sh has a fixture covering 17 languages”; “Now it passes 104 checks.”",
+    "A NEW LANGUAGE MUST NOT CHANGE OLD ANSWERS — pending merge: #126 (Kotlin; PR author xCatG):",
+    "- Commit 201ca038: “the PR #126 review found the decline on retrofit, where Response.body's callers fell from 279 to 5 once same-named Kotlin body() methods were indexed. That number belongs to #126's Kotlin binary.”",
+    "- The draft 0.6.0 CHANGELOG, from the coordinator's brief on the maintainer fixes: “retrofit, a mixed Java and Kotlin tree: Response.java:body keeps its 279 callers”; “a call reaches the other JVM language only when its own language has no candidate”; “Gate: test/kotlincheck.sh, written red first: 28 of its 48 arms fail on main.”",
+    "- The coordinator's brief for this deck: “fixed back to 279, with the invariant that adding .kt never changes a Java-only edge”.",
+    "- PR #126 body: “a JVM interop bridge that resolves Kotlin↔Java calls bidirectionally”.",
+    "- CAVEAT: PR #126's head (1e21943a) body does not carry the 279 figures or the 28-of-48 count; re-verify them on the merged tree.",
   ]);
 }
 
@@ -1286,8 +1350,12 @@ function qdExamples(s, entries){
     ["What-to-Retrieve · arXiv 2503.20589", "retrieval selection beats retrieval volume for coding agents → the selection-over-dumping thesis"],
     ["LocAgent / Loc-Bench (2025)", "the localization metric (strict Acc@k) and the frozen 560-instance dataset every accuracy number here is scored on"],
     ["scip-clang · Serena / clangd", "the compiler-grade oracle round 9 graded both tools against — an outside referee, not a rival"],
-    ["tree-sitter", "the incremental GLR parsing substrate — 23 grammars vendored, one parser per thread"],
+    ["tree-sitter", "the incremental GLR parsing substrate — 24 grammars vendored, one parser per thread"],
   ];
+  notes(s, [
+    "SOURCES (grammar count only)",
+    "- \"24 grammars vendored\" — pending merge: #126 (PR body: \"vendored fwcd/tree-sitter-kotlin grammar\"). Without #126 the count is 23 (commit 680a0a3d).",
+  ]);
   y = 2.05;
   for (const [t, d] of modern){
     card(s, 7.0, y, 5.6, 0.9, CARD2);   // 5 cards at 0.97 end at 6.83; at 1.03 the last one ran under the footer
@@ -1304,7 +1372,7 @@ function qdExamples(s, entries){
   kicker(s, "// do not take any of it on trust", AMBER);
   title(s, "Every claim, and the command that re-derives it");
   const claims = [
-    ["179 long flags · 33 slides",        "bash test/deckclaimcheck.sh"],
+    ["179 long flags · 34 slides",        "bash test/deckclaimcheck.sh"],
     ["every --flag named here exists",    "bash test/deckcheck.sh"],
     ["74.7% fewer element bytes",         "bash test/showcasecapturecheck.sh"],
     ["598 gate scripts",                  "bash test/manifestcheck.sh"], // gatecount
