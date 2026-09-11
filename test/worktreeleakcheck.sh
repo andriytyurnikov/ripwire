@@ -18,10 +18,12 @@
 #     KILL to its pid                              does NOT run                      does NOT run
 #     TERM during the ( git worktree add ) subshell: bash runs the trap it had and exits; the orphaned git registers
 #     afterwards, on both.
-# test/pargates.py enforces a gate's budget with subprocess.run(timeout=), and its timeout path is Popen.kill(): SIGKILL
-# to the gate's bash, the one case no shell intercepts. The real crossdirincludecheck, run on the live repository the
-# same day and signalled after its registration, bore that out: TERM and Ctrl-C ran its trap, SIGKILL left `$TMP/head`
-# registered with the checkout on disk, and Ctrl-C during the HEAD-binary build left the builder's `lock/work/head`.
+# test/pargates.py enforced a gate's budget with subprocess.run(timeout=), whose timeout path is Popen.kill(): SIGKILL
+# to the gate's bash, the one case no shell intercepts. (Since 2026-09-10 it TERMs the gate's whole process group and
+# KILLs only what outlives a grace; a SIGKILL from anywhere still runs no trap.) The real crossdirincludecheck, run on the
+# live repository the same day and signalled after its registration, bore that out: TERM and Ctrl-C ran its trap, SIGKILL
+# left `$TMP/head` registered with the checkout on disk, and Ctrl-C during the HEAD-binary build left the builder's
+# `lock/work/head`.
 #
 # THE FIX is one function, ripwire_private_checkout in test/lib/headbinlib.sh: `git clone --shared --no-checkout`, then
 # the commit checked out detached. The clone borrows the objects through its OWN alternates file and writes nothing into
@@ -42,7 +44,7 @@
 #                      TERM>gate   TERM to the gate's bash; its group SIGKILLed if still alive 4 s later (bash 3.2
 #                                  defers TERM while the gate waits inside $( ), which is where these gates wait)
 #                      INT>group   Ctrl-C: SIGINT to the whole process group
-#                      KILL>gate   test/pargates.py's timeout: SIGKILL to the gate's bash alone
+#                      KILL>gate   SIGKILL to the gate's bash alone (test/pargates.py's timeout until 2026-09-10)
 #                  Then whatever is left in the group is SIGKILLed, as a job teardown does, and the throwaway
 #                  repository's .git/worktrees must be empty. The HEAD-binary builder is killed the same three ways
 #                  mid-cmake (a sleeping cmake shim), through the first caller that also asks headbinlib for a binary.
