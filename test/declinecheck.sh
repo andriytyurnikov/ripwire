@@ -39,12 +39,16 @@
 #       an external name -> external (C++ find, Python sum); header edges=13 ambiguous=5 unresolved=1 external=2
 #   (D) header declined=17, legend-defined, JSON twin; both ABSENT on a one-directory corpus (test/lpinfix)
 #   (E) the three answers in XML / --json / --format=columnar and the MCP twins; each legend defines the key it
-#       emits, and an answer with nothing declined carries neither the key nor its clause
+#       emits, and an answer with nothing declined carries neither the key nor its clause; the callers answer's next=
+#       LANDS: --uses=NAME lists each declined site's file:line, and the call sites no caller row encloses number
+#       exactly declined_calls (1 on the four arm-A names, 0 on three bound controls); a file-qualified selector's
+#       narrowed uses cannot list a site that resolves to no definition, so call_sites_of_name must disclose it
 #   (F) conservation: the dispositions sum to calls=, unaccounted=0, census declined/external/unresolved == the
 #       header's, bound == the non-external decision rows; every exit the fixture is built to reach is reached;
 #       a two-root run reaches other_root and conserves too; and test/stdqualfix, where the std:: guard refuses
 #       std::move sites through vetoExternal, conserves with each refusal counted external, never unaccounted
-#   (G) the predicates can fail (a line that does not sum, unaccounted=1, a bare zero, a header without declined=)
+#   (G) the predicates can fail (a line that does not sum, unaccounted=1, a bare zero, a header without declined=,
+#       a uses answer that drops the declined site)
 #   (H) determinism x2 (map and census), xmllint, no degrade alert on stderr
 #
 # Exits non-zero on any failure.
@@ -91,6 +95,24 @@ import re, sys
 kv = dict( ( k, int( v ) ) for k, v in re.findall( r"(\w+)=(\d+)", sys.argv[1] ) )
 calls = kv.pop( "calls", None )
 sys.exit( 0 if calls is not None and "unaccounted" in kv and kv[ "unaccounted" ] == 0 and sum( kv.values() ) == calls else 1 )
+PY
+}
+# the role="call" sites (p=file:line) a uses answer lists, one per line; given a callers answer as well, only the sites whose
+# enclosing symbol (file + leaf of in_id) is none of its rows — the calls that answer holds no edge for. Nothing on a
+# document that does not parse (an empty or failed run lists no site).
+call_sites(){ python3 - "$@" <<'PY'
+import sys, xml.etree.ElementTree as ET
+leaf = lambda s: s.rsplit( "::", 1 )[ -1 ]
+where = lambda p, n: ( p.rsplit( ":", 1 )[ 0 ], leaf( n ) )
+try:
+    uses = ET.parse( sys.argv[ 1 ] ).getroot()
+    rows = ET.parse( sys.argv[ 2 ] ).getroot().iter( "s" ) if len( sys.argv ) > 2 else []
+except ( ET.ParseError, OSError ):
+    sys.exit( 1 )
+bound = { where( s.get( "p", "" ), s.get( "n", "" ) ) for s in rows }
+for u in uses.iter( "u" ):
+    if u.get( "role" ) == "call" and where( u.get( "p", "" ), u.get( "in_id", "" ) ) not in bound:
+        print( u.get( "p" ) )
 PY
 }
 
@@ -196,7 +218,7 @@ grep -q '"declined"' "$TMP/clean.json" && no '(D) "declined" present in --json o
     || ok '(D) "declined" absent from --json on a decline-free corpus'
 
 # ── (E) the answers, every dialect ────────────────────────────────────────────────────────────────────────────
-echo "=== (E) callers / callees / impact carry declined_calls= in every dialect, defined where emitted ==="
+echo "=== (E) callers / callees / impact carry declined_calls= in every dialect, defined where emitted; next= lands on the site ==="
 DEF=java/alpha/Alpha.java:jbody
 for spec in "callers $DEF" "callees javaDeclined" "impact $DEF"; do
     set -- $spec
@@ -215,6 +237,55 @@ for spec in "callers $DEF" "callees javaDeclined" "impact $DEF"; do
     [ "$( attr "$R" declined_calls )" = 1 ] && ok "(E) --$verb --format=columnar root declined_calls=\"1\"" \
         || no "(E) --$verb columnar root: ${R:-no <$verb> root}"
 done
+# next= must LAND. A declined call has no edge, so no caller row can hold it; the reader is sent to the uses verb, which
+# lists call SITES by name. On each name: (a) the callers answer's next= is --uses=NAME; (b) that pointer, run verbatim,
+# lists the declined site's own file:line; (c) the role="call" sites no callers row encloses number exactly declined_calls
+# — 1 on the arm-A names, 0 (the key absent) on the bound controls, whose one site sits inside the caller they list.
+# (c) is an equality on THIS fixture, not an identity: an unbound site can end in another disposition (unresolved, a
+# same-named call from another language; self; qualified_external), and a declined site inside a caller that also binds
+# the name hides behind that caller's row. Each name below has one call site in the fixture and none of those shapes, so
+# a declined site the uses verb drops, or an unbound site that is not counted declined, breaks the equality.
+# name | the declined site (- for a bound control) | declined_calls
+while IFS='|' read -r name site want; do
+    [ -z "$name" ] && continue
+    rw --callers="$name" >"$TMP/nxcallers.xml"
+    R="$( root_tag "$TMP/nxcallers.xml" callers )"
+    NEXT="$( attr "$R" next )"; K="$( attr "$R" declined_calls )"
+    [ "$NEXT" = "--uses=$name" ] && ok "(E) --callers=$name next=\"--uses=$name\"" \
+        || no "(E) --callers=$name next= should name --uses=$name: ${R:-no <callers> root}"
+    : >"$TMP/nxuses.xml"
+    case "$NEXT" in --uses=*) rw "$NEXT" >"$TMP/nxuses.xml" ;; esac
+    U="$( root_tag "$TMP/nxuses.xml" uses )"
+    if [ "$site" != - ]; then
+        call_sites "$TMP/nxuses.xml" | grep -qxF "$site" && ok "(E) $NEXT lists the declined site $site" \
+            || no "(E) ${NEXT:-the next= pointer} does not list the declined site $site: ${U:-no <uses> root}"
+    fi
+    GOT="$( call_sites "$TMP/nxuses.xml" "$TMP/nxcallers.xml" | wc -l | tr -d ' ' )"
+    [ -n "$U" ] && [ "${K:-0}" = "$want" ] && [ "$GOT" = "$want" ] \
+        && ok "(E) $name: $GOT call site(s) outside every caller row == declined_calls=${K:-absent}" \
+        || no "(E) $name: $GOT call site(s) outside every caller row, declined_calls=${K:-absent}, expected $want of each"
+done <<'EOF'
+jbody|java/caller/JavaCaller.java:7|1
+crender|cpp/caller/caller.cpp:3|1
+pyfetch|py/caller/caller.py:2|1
+rfetch|rust/caller/caller.rs:3|1
+jtwin|-|0
+ctwin|-|0
+pytwin|-|0
+EOF
+# the file-qualified selector the dialect loop reads: its next= is --uses on that SAME selector, which keeps only the call
+# sites that RESOLVE to the chosen definition — a declined site resolves to none, so it cannot be a row there. It must be
+# disclosed instead: call_sites_of_name (the un-narrowed total) minus the call rows shown is at least declined_calls.
+rw --callers="$DEF" >"$TMP/nxcallers.xml"
+R="$( root_tag "$TMP/nxcallers.xml" callers )"
+NEXT="$( attr "$R" next )"; K="$( attr "$R" declined_calls )"
+: >"$TMP/nxuses.xml"
+case "$NEXT" in --uses=*) rw "$NEXT" >"$TMP/nxuses.xml" ;; esac
+U="$( root_tag "$TMP/nxuses.xml" uses )"; TOTAL="$( attr "$U" call_sites_of_name )"
+SHOWN="$( call_sites "$TMP/nxuses.xml" | wc -l | tr -d ' ' )"
+[ "$NEXT" = "--uses=$DEF" ] && [ -n "$K" ] && [ -n "$TOTAL" ] && [ $(( TOTAL - SHOWN )) -ge "$K" ] \
+    && ok "(E) --callers=$DEF next=\"$NEXT\" discloses the declined site: call_sites_of_name=$TOTAL, $SHOWN call row(s) shown, declined_calls=$K" \
+    || no "(E) --callers=$DEF next=\"$NEXT\" hides the declined site: ${U:-no <uses> root} (declined_calls=${K:-absent})"
 # omit-at-zero: an answer with nothing declined carries neither the key nor the clause
 for spec in "callers java/solo/Solo.java:jonly" "callees javaUnique" "impact java/solo/Solo.java:jonly"; do
     set -- $spec
@@ -315,6 +386,9 @@ R='<callers of="x" defs="1" count="0" root="." counts_floor="1">'
     && no "(G) the answer predicate cannot see a bare zero" || ok "(G) a bare count=\"0\" without declined_calls= IS detected"
 H='<!-- files=1 symbols=2 edges=0 shown=2 est_tokens=9 ambiguous=0 unresolved=0 order=important-first -->'
 [ "$( gauge "$H" declined )" = 17 ] && no "(G) the header predicate cannot see a missing gauge" || ok "(G) a header without declined= IS detected"
+printf '%s' '<uses of="jbody" defs="2" external="0" count="0" root="." counts_floor="1"></uses>' >"$TMP/g_uses.xml"
+call_sites "$TMP/g_uses.xml" | grep -qxF java/caller/JavaCaller.java:7 \
+    && no "(G) the site predicate finds a declined site the uses answer does not list" || ok "(G) a uses answer that drops the declined site IS detected"
 
 # ── (H) determinism, well-formedness, no degrade alert ────────────────────────────────────────────────────────
 echo "=== (H) determinism + well-formedness ==="
