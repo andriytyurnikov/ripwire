@@ -78,6 +78,8 @@ cd your-repo
 ripwire . --for="<the change you are about to make, in words>"
 ```
 
+Every install route (prebuilt, from source, per-agent skills, hooks, the MCP server) is in [INSTALL.md](INSTALL.md).
+
 **Reach for the CLI first — it is the cheaper interface.** The MCP server is the optional second
 way in, and its convenience has a cost the shell pipe does not carry: its verb schemas sit in your
 agent's context every session, whether or not it calls them.
@@ -367,6 +369,8 @@ your agent starts in the right place at all.
 | graphify 0.9.34 | 31.7% | 46.7% | 7.82 s | 0.614 s |
 | Aider repo-map 0.86.2 | 20.0% | 35.0% | *(inside query)* | 2.920 s |
 | codeseek 0.1.31 (better of its two arms) | 15.0% | 20.0% | 3.37 s | 0.040 s |
+
+*Measured 2026-08-08, before the performance work that ships in 0.6.0. ripwire has become faster since — llvm-project's cold parse (182,555 files) fell from 194.1 s to 155.6 s of CPU, and `--pack-task` on a Go repository from 8.13 s to 5.88 s — but these timing columns have not been re-measured.*
 
 <details>
 <summary>What this table costs us — six paired losses named, a runner-up we had under-credited at <b>26.7%</b> and corrected to <b>40.0%</b>, and the multi-file stratum no arm solves</summary>
@@ -1381,6 +1385,8 @@ profile-guided release build that now ships), one evaluator, all arms re-run on 
 | Aider repo-map 0.86.2 (no-personalization control) | 10.0% | 25.0% | *(inside query)* | 0.818 s |
 | codeseek 0.1.31 (ident-mention convention arm) | 15.0% | 20.0% | 3.37 s | 0.040 s |
 | codeseek 0.1.31 (raw issue text, keyless fallback) | 0.0%² | 0.0% | 3.37 s | 0.024 s |
+
+*Measured 2026-08-08, before the performance work that ships in 0.6.0. ripwire has become faster since — llvm-project's cold parse (182,555 files) fell from 194.1 s to 155.6 s of CPU, and `--pack-task` on a Go repository from 8.13 s to 5.88 s — but these timing columns have not been re-measured.*
 
 <details>
 <summary>Round-4 method and the paired losses — one binary, one evaluator, what re-running cost us, and the three limits that travel with this table</summary>
