@@ -232,8 +232,12 @@ ROSETTA_AVX2="unknown"
 rosetta_avx2_probe(){
     cat > "$WORK/avx2probe.c" <<'EOF_PROBE'
 // The probe must exercise the SAME feature set the slice is compiled with (-march=x86-64-v3 = AVX, AVX2,
-// BMI1, BMI2, FMA, LZCNT, MOVBE, F16C), not one AVX2 instruction: PR #127 run 7 showed a Rosetta 2 that
-// executes vpaddb and still SIGILLs the v3 slice. Every value flows through a volatile so nothing folds.
+// BMI1, BMI2, FMA, LZCNT, MOVBE, F16C). Its first cut was one AVX2 add compiled with -mavx2 — and clang
+// folded that to a scalar `addb` despite the volatile (otool: zero ymm/VEX opcodes), so it printed "ok"
+// on every runtime and never chose the baseline slice (PR #127 run 7). Which v3 extension Sonoma's
+// Rosetta 2 lacks is not known; only that the v3 slice SIGILLs there. Hence: the floor's own -march,
+// every extension touched, every value through a volatile, and the gate DISASSEMBLES the binary to
+// assert the opcodes are really in it (below) — a probe that proves nothing must fail, not pass.
 #include <immintrin.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -264,6 +268,21 @@ EOF_PROBE
     if ! "${CC:-cc}" -arch x86_64 -march=x86-64-v3 -O1 "$WORK/avx2probe.c" -o "$WORK/avx2probe" 2>"$WORK/avx2probe.cc.log"; then
         ROSETTA_AVX2="no_toolchain"; return 1
     fi
+    # The probe must CONTAIN the instructions it claims to execute — a folded probe (run 7) answered "ok"
+    # without a single vector opcode. Disassemble and require one opcode from each class; if no
+    # disassembler is on the host, the probe cannot be trusted and the mirror takes the baseline slice.
+    if command -v otool >/dev/null 2>&1; then
+        otool -tv "$WORK/avx2probe" > "$WORK/avx2probe.dis" 2>/dev/null
+    elif command -v objdump >/dev/null 2>&1; then
+        objdump -d "$WORK/avx2probe" > "$WORK/avx2probe.dis" 2>/dev/null
+    else
+        ROSETTA_AVX2="no (no disassembler to verify the probe's opcodes)"; return 1
+    fi
+    for cls in 'ymm' 'pdep' 'pext' 'lzcnt' 'tzcnt' 'vfmadd' 'vcvtph2ps|vcvtps2ph'; do
+        if ! grep -qE "$cls" "$WORK/avx2probe.dis"; then
+            ROSETTA_AVX2="no (the probe binary lacks a $cls opcode — folded by the compiler; the probe proves nothing)"; return 1
+        fi
+    done
     "$WORK/avx2probe" > "$WORK/avx2probe.out" 2>&1; local rc=$?
     if [ "$rc" = 0 ] && grep -q '^v3 ok' "$WORK/avx2probe.out"; then
         ROSETTA_AVX2="yes"; return 0
