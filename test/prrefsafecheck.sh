@@ -26,6 +26,11 @@
 #   - the same, with a DIRTY tree (the numstat pass then has content to write — the orchestrator's repro)
 #   - a plain unknown ref exits 1 and names the ref on stderr, with an EMPTY stdout (no payload)
 #   - the multi-root form refuses the same way (the branch that had no check at all)
+#   - WHO refuses, seen from the git child through an argv-logging PATH shim whose liveness is its own arm: a ref
+#     beginning with '-' refuses (exit 1, names the ref) and its payload never reaches any git argv, single- and
+#     multi-root — ripwire refuses it, git is never asked; a ref rev-parse answers with a non-bare name (`^HEAD` →
+#     `^<sha>` at rc 0) refuses and no `^<sha>` reaches a git argv; a valid ref answers byte-identically through the
+#     shim and reaches git only inside its own resolve probe
 #   - a VALID base ref still works: exit 0, anchor="merge-base", the changed file present
 #   - a non-git root with a base ref still DEGRADES to exit 0 (it is not a bad-ref refusal)
 #   - determinism + xmllint-clean on the success path
@@ -76,6 +81,7 @@ printf 'def other():\n    return 1\n' >"$REPO2/other.py"
 git -C "$REPO2" add -A
 GIT_AUTHOR_DATE="2026-06-01T12:00:00" GIT_COMMITTER_DATE="2026-06-01T12:00:00" \
     git -C "$REPO2" commit -qm "init"
+git -C "$REPO2" branch -q mainline   # so a multi-root run has a base ref BOTH roots resolve (the shim block's valid row)
 
 # ── the security assertion: an option-shaped ref must write NOTHING ───────────────────────────────────
 # Two victims, because an exit code alone proves nothing: one that EXISTS (must stay byte-identical) and
@@ -150,6 +156,95 @@ printf 'def x():\n    return 1\n' >"$PLAIN/x.py"
 "$BIN" "$PLAIN" --pr-context=mainline >"$TMP/plain.out" 2>/dev/null; rc=$?
 [ "$rc" = 0 ] && ok "a non-git root with a base ref still degrades to exit 0" \
               || no "a non-git root must degrade (exit 0), got $rc"
+
+# ── WHO refuses a ref git could read as an option — ripwire, or git? Seen from the git CHILD's side ─────────
+# The arms above prove exit 1 and an untouched victim; they cannot tell who refused. resolveBaseRefSha used to hand
+# `rev-parse --verify --quiet '<ref>^{commit}'` a ref beginning with '-' as its own argv entry, stopped only because
+# git's own rev-parse rejects one today. quality::gitResolveCommitSha refuses it before git is asked. The other half
+# of that house rule — rev-parse's answer counts only as a bare object name (`^REF` answers `^<sha>` at rc 0) — held
+# here already through a private copy; the `nonbare` rows fence it across the move to the shared resolver. A PATH
+# shim logs every argv entry of every git call as `[entry]`, one call per line.
+REALGIT="$( command -v git )"
+mkdir -p "$TMP/shim"
+cat >"$TMP/shim/git" <<EOF
+#!/bin/bash
+{ for a in "\$@"; do printf '[%s]' "\$a"; done; printf '\n'; } >> "$TMP/argv.log"
+exec "$REALGIT" "\$@"
+EOF
+chmod +x "$TMP/shim/git"
+
+# prctx MODE REF [shim] — MODE single = REPO, multi = REPO REPO2. With `shim` the run goes through the argv-logging git
+# and leaves exactly its own git argv in $TMP/argv.log. Sets PC_RC; stdout / stderr land in $TMP/pc.out / $TMP/pc.err.
+prctx()
+{
+    local roots=( "$REPO" ) path="$PATH"
+    [ "$1" = multi ] && roots+=( "$REPO2" )
+    [ "${3:-}" = shim ] && path="$TMP/shim:$PATH"
+    rm -f "$TMP/argv.log"
+    PATH="$path" "$BIN" "${roots[@]}" "--pr-context=$2" >"$TMP/pc.out" 2>"$TMP/pc.err"; PC_RC=$?
+}
+
+# liveness control: the shim sees a VALID ref's resolve probe as its own argv entry
+prctx single mainline shim
+grep -qF '[rev-parse][--verify][--quiet][mainline^{commit}]' "$TMP/argv.log" 2>/dev/null \
+    && ok "shim liveness: a valid ref's resolve probe is logged as its own argv entry ([mainline^{commit}])" \
+    || no "shim liveness: no resolve probe for mainline in the argv log — every argv arm below is vacuous: $( head -c 300 "$TMP/argv.log" 2>/dev/null )"
+
+# mode|kind|ref|needle — `valid`: answers byte-identically to the unshimmed run; `nonbare`: rev-parse answers the ref at
+# rc 0 with `^<sha>`; `dash`: git could read the ref as an option, and `needle` is the payload path that must never
+# reach a git argv (nor be written).
+ROWS="single|valid|mainline|
+multi|valid|mainline|
+single|nonbare|^HEAD|
+single|nonbare|^mainline|
+single|dash|--output=$TMP/pwned-output|$TMP/pwned-output
+single|dash|--upload-pack=touch $TMP/pwned-uploadpack|$TMP/pwned-uploadpack
+multi|dash|--output=$TMP/pwned-output-mr|$TMP/pwned-output-mr"
+while IFS='|' read -r mode kind ref needle <&3; do
+    label="$mode-root '$ref'"
+    if [ "$kind" = valid ]; then
+        prctx "$mode" "$ref"
+        mv "$TMP/pc.out" "$TMP/unshimmed.out"
+        prctx "$mode" "$ref" shim
+        { [ "$PC_RC" -eq 0 ] && [ -s "$TMP/pc.out" ] && cmp -s "$TMP/pc.out" "$TMP/unshimmed.out"; } \
+            && ok "$label answers byte-identically through the shim (rc=0, same bytes as the unshimmed run)" \
+            || no "$label through the shim: rc=$PC_RC, or its answer differs from the unshimmed run"
+        # a refused run never reaches the later git calls, so this arm counts only on an answered run — and only once the
+        # resolved sha is seen reaching git (the merge-base call), or "no raw ref after the probe" would be vacuous
+        OTHER="$( grep -F -- "$ref" "$TMP/argv.log" | grep -vF -- "[rev-parse][--verify][--quiet][$ref^{commit}]" )"
+        { [ "$PC_RC" -eq 0 ] && grep -qF -- "[$SHA]" "$TMP/argv.log" && [ -z "$OTHER" ]; } \
+            && ok "$label reaches git only inside its own resolve probe — later git calls are handed the sha (${SHA:0:10}…)" \
+            || no "$label: rc=$PC_RC, the resolved sha never reached git, or the raw ref reached a git argv outside its resolve probe: $( printf '%s' "$OTHER" | head -1 | head -c 300 )"
+        continue
+    fi
+    if [ "$kind" = nonbare ]; then
+        # presence guard: on THIS fixture rev-parse must answer the ref at rc 0 with a non-bare name, or the refusal
+        # below would pass for the boring reason (the ref simply does not resolve)
+        PROBE="$( git -C "$REPO" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null )"; PROBERC=$?
+        { [ "$PROBERC" -eq 0 ] && [ "${PROBE#^}" != "$PROBE" ]; } \
+            && ok "precondition: rev-parse answers '$ref' at rc 0 with a non-bare name (${PROBE:0:10}…)" \
+            || no "precondition: rev-parse does not answer '$ref' with a '^'-prefixed name here (rc=$PROBERC '$PROBE') — the arm cannot see the defect"
+    fi
+    prctx "$mode" "$ref" shim
+    { [ "$PC_RC" -eq 1 ] && grep -qF -- "unknown base ref '$ref'" "$TMP/pc.err"; } \
+        && ok "$label refuses as a bad ref (exit 1, names the ref)" \
+        || no "$label did not refuse as a bad ref (rc=$PC_RC): $( head -c 300 "$TMP/pc.err" )"
+    [ -s "$TMP/pc.out" ] && no "$label: a refusal must not also write a bundle to stdout" \
+                         || ok "$label: the refusal writes no stdout payload"
+    [ -s "$TMP/argv.log" ] \
+        && ok "$label: the shim logged git calls during this very run (its argv arm is live)" \
+        || no "$label: the shim logged nothing during this run — its argv arm is vacuous"
+    if [ "$kind" = nonbare ]; then
+        grep -Eq '\[\^[0-9a-f]{40}([0-9a-f]{24})?\]' "$TMP/argv.log" \
+            && no "$label: rev-parse's non-bare answer reached git as an argv entry: $( grep -Eo '\[[a-z-]+\]\[\^[0-9a-f]+\]' "$TMP/argv.log" | head -2 | tr '\n' ' ' )" \
+            || ok "$label: no '^<sha>' negation reached any git argv"
+    else
+        grep -qF -- "$needle" "$TMP/argv.log" \
+            && no "$label reached a git argv: $( grep -F -- "$needle" "$TMP/argv.log" | head -1 | head -c 300 )" \
+            || ok "$label never appears in any git argv (refused before git is asked)"
+        [ ! -e "$needle" ] && ok "$label: nothing was written at the payload path" || no "$label created $needle"
+    fi
+done 3<<< "$ROWS"
 
 # ── determinism + G4 on the success path ──────────────────────────────────────────────────────────────
 "$BIN" "$REPO" --pr-context=mainline >"$TMP/a.xml" 2>/dev/null
