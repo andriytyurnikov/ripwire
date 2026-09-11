@@ -424,10 +424,10 @@ kRowsPerCap = 12          # rows per cap table; a cap in a document ABOUT caps, 
 def render(sweep, meta, caps, disc):
     """docs/TUNING.md as a PURE FUNCTION of (frozen measurements, live cap census).
 
-    Line numbers are deliberately absent. They belong to docs/LIMITS.md, which is regenerated against
-    src/ on every change; carrying them here as well would make this doc drift on any edit ANYWHERE
-    above a cap, which is churn that says nothing about the measurement. What DOES belong here — the
-    cap's name, its value and its file — is re-read from src/ every run, so a retuned cap reds the gate.
+    Line numbers are deliberately absent, here and (since 2026-09-10) in docs/LIMITS.md: a line would
+    make either doc drift on any edit ANYWHERE above a cap, which is churn that says nothing about the
+    measurement. What DOES belong here — the cap's name, its value and its file — is re-read from src/
+    every run, so a retuned cap reds the gate.
     """
     names   = sorted({c[0] for c in caps})
     vals    = {c[0]: c[1] for c in caps}
