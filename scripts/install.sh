@@ -19,6 +19,9 @@
 #                             ~/.local/bin (no sudo needed). Pass /usr/local for the traditional location
 #                             (may prompt for sudo to write there).
 #   RIPWIRE_INSTALL_YES=1     skip the interactive confirmation (for CI / scripted installs).
+#   RIPWIRE_SKIP_CPU_CHECK=1  skip the x86-64-v3 CPU pre-check ("CPU floor" below). The downloaded binary is
+#                             still run before it is installed, so a CPU that truly lacks v3 is still refused.
+#   RIPWIRE_CPUINFO           read the Linux CPU flags from this file instead of /proc/cpuinfo (test seam).
 set -eu
 
 # ── repo + version ───────────────────────────────────────────────────────────────────────────────────────
@@ -73,6 +76,75 @@ assetUrl="$( printf '%s' "$releaseJson" | grep -o "\"browser_download_url\": *\"
     echo "  (built for ${assetOs}/${assetArch} — this platform may not be published for this release)" >&2
     exit 1
 }
+
+# ── CPU floor: from 0.6.0 the prebuilt x86-64 binary requires x86-64-v3 ────────────────────────────────────
+# cmake/PortableFlags.cmake builds every non-native x86-64 binary with -march=x86-64-v3: AVX, AVX2, BMI1, BMI2,
+# F16C, FMA, LZCNT, MOVBE — the RHEL 10 floor, roughly Intel Haswell (2013) / AMD Excavator (2015) onward. On an
+# older CPU that binary dies with SIGILL the first time it runs, and this installer used to report that as
+# "refusing version mismatch" with an empty version. So the flags are read BEFORE the download, and a CPU below
+# the floor stops here naming what it lacks. Four rules keep the check from refusing a machine the binary runs on:
+#   * no guessing: unreadable flags (no /proc/cpuinfo, a sysctl key missing) give no verdict, and the
+#     verification run after the download names a SIGILL for what it is;
+#   * a Rosetta-translated shell is not judged: its feature bits describe the translator, not the machine;
+#   * releases up to 0.5.x were built without the floor, so pinning one with RIPWIRE_VERSION is not judged;
+#   * RIPWIRE_SKIP_CPU_CHECK=1 overrides a verdict the user knows is wrong (a VM hiding a flag its host has).
+# test/releaseinstallcheck.sh arms (G1)-(G12) pin all of it.
+sourceBuildHint()
+{
+    echo "  Build from source instead, tuned for this CPU (https://github.com/${repo}/blob/main/INSTALL.md#build-from-source):" >&2
+    echo "    git clone https://github.com/${repo}.git && cd ${repo##*/} && ./install.sh" >&2
+    echo "  ./install.sh configures -DRIPWIRE_NATIVE=ON (-march=native); a plain cmake build keeps the x86-64-v3 floor." >&2
+}
+cpuFloor=0
+case "$resolvedVersion" in
+    0.[0-5].*) ;;
+    *) if [ "$assetArch" = x64 ]; then cpuFloor=1; fi ;;
+esac
+cpuTranslated=0
+if [ "$cpuFloor" = 1 ] && [ "$osName" = Darwin ] && [ "$( sysctl -n sysctl.proc_translated 2>/dev/null || true )" = 1 ]; then
+    cpuTranslated=1
+fi
+if [ "$cpuFloor" = 1 ] && [ "$cpuTranslated" = 0 ] && [ "${RIPWIRE_SKIP_CPU_CHECK:-0}" != 1 ]; then
+    cpuFlags=""
+    if [ "$osName" = Linux ]; then
+        # Names as the kernel prints them (arch/x86/include/asm/cpufeatures.h): LZCNT is "abm". "lzcnt" is taken
+        # as well, so a synthetic cpuinfo that spells the instruction's own name is never refused over it.
+        cpuSource="${RIPWIRE_CPUINFO:-/proc/cpuinfo}"
+        cpuNeed="avx:AVX avx2:AVX2 bmi1:BMI1 bmi2:BMI2 f16c:F16C fma:FMA movbe:MOVBE abm:LZCNT"
+        cpuFlags="$( grep -m1 '^flags[[:space:]]*:' "$cpuSource" 2>/dev/null || true )"
+        [ -z "$cpuFlags" ] || cpuFlags=" ${cpuFlags#*:} "
+        case "$cpuFlags" in *" lzcnt "*) cpuFlags="$cpuFlags abm " ;; esac
+    else
+        # Names as XNU prints them (osfmk/i386/cpuid.c): AVX is "AVX1.0", AVX2/BMI1/BMI2 are leaf-7 bits and LZCNT
+        # an extended one. A key that is missing or empty leaves no verdict, never a list of "missing" features.
+        cpuSource="sysctl machdep.cpu"
+        cpuNeed="AVX1.0:AVX AVX2:AVX2 BMI1:BMI1 BMI2:BMI2 F16C:F16C FMA:FMA MOVBE:MOVBE LZCNT:LZCNT"
+        for cpuKey in machdep.cpu.features machdep.cpu.leaf7_features machdep.cpu.extfeatures; do
+            cpuValue="$( sysctl -n "$cpuKey" 2>/dev/null || true )"
+            if [ -z "$cpuValue" ]; then cpuFlags=""; break; fi
+            cpuFlags="$cpuFlags $cpuValue "
+        done
+    fi
+    cpuLacks=""
+    if [ -n "$cpuFlags" ]; then
+        for cpuPair in $cpuNeed; do
+            case "$cpuFlags" in
+                *" ${cpuPair%%:*} "*) ;;
+                *) cpuLacks="$cpuLacks ${cpuPair#*:}" ;;
+            esac
+        done
+    fi
+    if [ -n "$cpuLacks" ]; then
+        echo "install.sh: this CPU is below x86-64-v3, which the prebuilt x86-64 ripwire ${resolvedTag} requires." >&2
+        echo "  missing:${cpuLacks} (read from ${cpuSource})" >&2
+        echo "  x86-64-v3 is AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE: roughly Intel Haswell (2013) or AMD Excavator (2015) and newer." >&2
+        echo "  That binary would die with SIGILL (illegal instruction) here, so nothing was downloaded." >&2
+        sourceBuildHint
+        echo "  If this verdict is wrong for this machine (a VM that hides a flag its host has), RIPWIRE_SKIP_CPU_CHECK=1 skips it;" >&2
+        echo "  the binary is still test-run before it is installed." >&2
+        exit 1
+    fi
+fi
 
 # ── install location + consent ──────────────────────────────────────────────────────────────────────────
 prefix="${RIPWIRE_INSTALL_PREFIX:-$HOME/.local}"
@@ -140,7 +212,34 @@ extractedDir="$work/$expectedDirName"
 [ -d "$extractedDir" ] || { echo "install.sh: unexpected archive layout — no $expectedDirName directory found" >&2; exit 1; }
 [ -x "$extractedDir/ripwire" ] || { echo "install.sh: extracted archive has no executable ripwire binary" >&2; exit 1; }
 
-binaryVersion="$( "$extractedDir/ripwire" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 )"
+# RUN IT BEFORE INSTALLING IT, AND READ HOW IT EXITED. This was `ripwire --version 2>&1 | grep | head -1`, and a
+# pipeline's status is its last command's: a binary that could not run at all — SIGILL below the x86-64 floor,
+# a loader refusing an older glibc — left an empty version and the report "refusing version mismatch". A
+# mismatch now means one thing only: a binary that RAN and named another version (releaseinstallcheck (G1)-(G4)).
+verifyRc=0
+verifyOut="$( "$extractedDir/ripwire" --version 2>&1 )" || verifyRc=$?
+if [ "$verifyRc" -ne 0 ]; then
+    if [ "$verifyRc" -eq 132 ]; then
+        verifyHow="was killed by SIGILL (illegal instruction)"
+    elif [ "$verifyRc" -gt 128 ]; then
+        verifyHow="was killed by signal $(( verifyRc - 128 ))"
+    else
+        verifyHow="exited $verifyRc"
+    fi
+    echo "install.sh: the ripwire binary in release $resolvedTag $verifyHow when run as \`ripwire --version\`; nothing was installed." >&2
+    [ -z "$verifyOut" ] || printf '%s\n' "$verifyOut" | head -5 | sed 's/^/  | /' >&2
+    if [ "$verifyRc" -eq 132 ] && [ "$cpuFloor" = 1 ]; then
+        if [ "$cpuTranslated" = 1 ]; then
+            echo "  This shell runs under Rosetta, and the x86-64 binary requires x86-64-v3 instructions (AVX2, BMI2, FMA, ...)." >&2
+            echo "  Run the installer from a native arm64 shell to install the arm64 binary instead." >&2
+        else
+            echo "  This binary requires an x86-64-v3 CPU (AVX2, BMI2, FMA, ...); this CPU may be older." >&2
+            sourceBuildHint
+        fi
+    fi
+    exit 1
+fi
+binaryVersion="$( printf '%s\n' "$verifyOut" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 )"
 [ "$binaryVersion" = "$resolvedVersion" ] || {
     echo "install.sh: release $resolvedTag contains ripwire ${binaryVersion:-<unknown>} — refusing version mismatch" >&2
     exit 1
