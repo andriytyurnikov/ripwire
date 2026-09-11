@@ -10,10 +10,10 @@ where the pathological tail is, never near the typical case — and when it fire
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 206 | 81 | 100 | **106** |
+| 205 | 81 | 116 | **89** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 206 + 7 is the 213 constants this generator parses out of `src/`.
+are not counted as caps, and 205 + 7 is the 212 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -31,8 +31,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **109 of 206 caps are classified
-(37 INDEXING, 37 OUTPUT, 35 BOUNDARY); the remaining 97 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **111 of 205 caps are classified
+(37 INDEXING, 39 OUTPUT, 35 BOUNDARY); the remaining 94 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -127,8 +127,8 @@ Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `ro
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kConnectRadiusMax` | `12` | 3093 | — | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
-| `kIntFlagMax` | `1000000000` | 3092 | — | parsePosInt/parseNonNegInt's own overflow ceiling |
+| `kConnectRadiusMax` | `12` | 3097 | — | == connectcfg::kMaxRadius (static_assert at the seam in main.cpp) |
+| `kIntFlagMax` | `1000000000` | 3096 | — | parsePosInt/parseNonNegInt's own overflow ceiling |
 | `kPageValueMax` | `1000000000` | 591 | — | — |
 
 ### `src/cloneidiom.h`
@@ -180,13 +180,13 @@ Discloses: **none**
 
 ### `src/darkflags.h`
 
-Discloses: **none**
+Discloses: `reads_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxAliasDepth` | `8` | 859 | INDEXING | — |
-| `kMaxEnvNameLen` | `128` | 58 | BOUNDARY | longest plausible environment-variable name |
-| `kMaxSitesShown` | `8` | 57 | OUTPUT | per gate, per list; the rest are counted in a <more/> |
+| `kMaxAliasDepth` | `8` | 862 | INDEXING | — |
+| `kMaxEnvNameLen` | `128` | 61 | BOUNDARY | longest plausible environment-variable name |
+| `kMaxSitesShown` | `8` | 60 | OUTPUT | <read> sites per gate; a DEFAULT, raisable by --limit=N (effectiveRowCap), lifted by --detail |
 
 ### `src/didyoumean.h`
 
@@ -209,19 +209,19 @@ Discloses: **none**
 
 ### `src/docdrift.h`
 
-Discloses: **none**
+Discloses: `failed_capped`, `importers_capped`, `weak_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxAnchorsShown` | `12` | 130 | OUTPUT | drifted anchors printed per doc; detail lifts the cap |
-| `kMaxClaimedLine` | `200000` | 138 | BOUNDARY | past this a "line number" is a hostile-input example, not a claim |
-| `kMaxDecDigits` | `10` | 134 | BOUNDARY | overflow guard on a doc/code integer literal |
-| `kMaxExtLen` | `6` | 136 | BOUNDARY | "cpp", "swift", "metal" — longer is not an extension |
-| `kMaxFrontMatter` | `12` | 150 | — | — |
-| `kMaxHexDigits` | `15` | 135 | BOUNDARY | …hex fits 15 nibbles in 64 bits with room to spare |
-| `kMaxNameLen` | `96` | 133 | BOUNDARY | past this it is a sentence, not an identifier |
-| `kMinMentionLen` | `4` | 131 | BOUNDARY | a backticked name shorter than this is prose, not code |
-| `kMinValueNameLen` | `3` | 132 | BOUNDARY | …and the bar for a `= N` / `[N]` subject name |
+| `kMaxAnchorsShown` | `12` | 131 | OUTPUT | failed anchors per doc; a SECONDARY listing (pageview.h rule 6) — --detail lifts it, --limit does not |
+| `kMaxClaimedLine` | `200000` | 139 | BOUNDARY | past this a "line number" is a hostile-input example, not a claim |
+| `kMaxDecDigits` | `10` | 135 | BOUNDARY | overflow guard on a doc/code integer literal |
+| `kMaxExtLen` | `6` | 137 | BOUNDARY | "cpp", "swift", "metal" — longer is not an extension |
+| `kMaxFrontMatter` | `12` | 151 | — | — |
+| `kMaxHexDigits` | `15` | 136 | BOUNDARY | …hex fits 15 nibbles in 64 bits with room to spare |
+| `kMaxNameLen` | `96` | 134 | BOUNDARY | past this it is a sentence, not an identifier |
+| `kMinMentionLen` | `4` | 132 | BOUNDARY | a backticked name shorter than this is prose, not code |
+| `kMinValueNameLen` | `3` | 133 | BOUNDARY | …and the bar for a `= N` / `[N]` subject name |
 
 ### `src/editcheck.h`
 
@@ -290,15 +290,15 @@ Discloses: **none**
 
 ### `src/flipimpact.h`
 
-Discloses: **none**
+Discloses: `hosts_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxBindings` | `32` | 93 | INDEXING | value-style constants tracked — bounds pass B's needle count |
-| `kMaxChainDepth` | `8` | 92 | INDEXING | alias-chain depth cap (mirrors darkflags::kMaxAliasDepth) |
-| `kMaxFamily` | `64` | 91 | INDEXING | gates one flip may light — an alias fan-out past this is a table, not a switch |
-| `kMaxFlipRows` | `25` | 94 | OUTPUT | per emitted list; --detail lifts every cap |
-| `kMaxNearMisses` | `5` | 95 | OUTPUT | "did you mean" suggestions on an unknown gate name |
+| `kMaxBindings` | `32` | 96 | INDEXING | value-style constants tracked — bounds pass B's needle count |
+| `kMaxChainDepth` | `8` | 95 | INDEXING | alias-chain depth cap (mirrors darkflags::kMaxAliasDepth) |
+| `kMaxFamily` | `64` | 94 | INDEXING | gates one flip may light — an alias fan-out past this is a table, not a switch |
+| `kMaxFlipRows` | `25` | 97 | OUTPUT | per emitted list; a DEFAULT --limit=N raises and --detail lifts |
+| `kMaxNearMisses` | `5` | 98 | OUTPUT | "did you mean" suggestions on an unknown gate name; --limit=N raises it |
 
 ### `src/gitmine.h`
 
@@ -527,11 +527,11 @@ Discloses: `coboost_commits_capped`, `hits_capped`, `unindexed_candidates_capped
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kBatchCap` | `16` | 4218 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
+| `kBatchCap` | `16` | 4241 | — | max sub-queries processed per batch; excess is REPORTED, never silently dropped |
 | `kMcpPageValueMax` | `1000000000` | 306 | — | == cli.h's kPageValueMax |
 | `kMcpRecallTopKMax` | `1000` | 312 | — | — |
-| `kOtherDefCap` | `4` | 3953 | OUTPUT | disclosure, not a listing — cap the tail |
-| `kRowCap` | `100` | 889 | — | — |
+| `kOtherDefCap` | `4` | 3976 | OUTPUT | disclosure, not a listing — cap the tail |
+| `kRowCap` | `100` | 902 | — | — |
 
 ### `src/mention.h`
 
@@ -609,7 +609,7 @@ Discloses: `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`,
 | `kCochangePartnerCap` | `30` | 170 | — | — |
 | `kExternalSurfaceRowCap` | `100` | 186 | — | names, by ref count (≈ 5.2 KB on this repo) |
 | `kImportReachRowCap` | `40` | 179 | — | — |
-| `kPageDisclosureCap` | `224` | 366 | — | — |
+| `kPageDisclosureCap` | `224` | 403 | — | — |
 | `kTreeRowCap` | `80` | 184 | — | files, by best symbol's rank: 80 rows ≈ 11.5 KB on this repo (100 = 14.3 KB) |
 | `kUseSiteRowCap` | `100` | 165 | — | — |
 | `kZoomTopModuleCap` | `40` | 185 | — | top-level modules, size desc (their children ride along: levels_shown=2) |
@@ -760,11 +760,10 @@ Discloses: `tests_capped`, `untested_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kMaxUntestedRows` | `25` | 939 | — | — |
-| `kSituBlastFilesShown` | `8` | 348 | OUTPUT | section [1] — blast-radius file rows |
-| `kSituPartnerFileRowsShown` | `4` | 351 | — | section [1] — decl/def partner rows |
-| `kSituPartnerRowsShown` | `8` | 350 | — | section [3] — co-change partner rows |
-| `kSituTestRowsShown` | `25` | 349 | — | section [2] — tests-to-run rows |
+| `kMaxUntestedRows` | `25` | 987 | — | — |
+| `kSituBlastFilesShown` | `8` | 355 | OUTPUT | section [1] — blast-radius file rows; a raisable DEFAULT |
+| `kSituPartnerFileRowsShown` | `4` | 357 | OUTPUT | section [1] — decl/def partner rows |
+| `kSituPartnerRowsShown` | `8` | 356 | OUTPUT | section [3] — co-change partner rows; a raisable DEFAULT |
 
 ### `src/skillscan.h`
 
@@ -819,7 +818,7 @@ Discloses: `seed_files_capped`
 
 | constant | value | line | class | note |
 | --- | --- | --- | --- | --- |
-| `kRunTraceRelevantLinesCap` | `40` | 696 | — | <lines view="relevant"> cap (first/last half split past it) |
+| `kRunTraceRelevantLinesCap` | `40` | 698 | — | <lines view="relevant"> cap (first/last half split past it) |
 
 ### `src/verbs_doctor.h`
 

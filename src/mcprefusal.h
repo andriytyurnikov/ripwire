@@ -980,7 +980,7 @@ inline constexpr McpVerbFields kMcpVerbFields[] = {
     // --cochange is in that set, so its twin declares the same window.
     { "cochange",                 "path file limit offset" },
     { "memory_recall",            "path task top_k budget_tokens" },
-    { "situational_awareness",    "path diff files" },
+    { "situational_awareness",    "path diff files limit offset" },
     { "mentions",                 "path paths symbol limit offset" },
     { "for",                      "path paths task budget_tokens" },
     { "lego",                     "path paths type legend" },
@@ -1006,7 +1006,7 @@ inline constexpr McpVerbFields kMcpVerbFields[] = {
     { "edit_check",               "path paths symbol new_body limit offset legend" },
     { "whereis",                  "path symbol kind limit offset legend" },
     { "stray_content",            "path kind limit offset legend" },
-    { "flags",                    "path kind symbol legend" },
+    { "flags",                    "path kind symbol limit offset legend" },
     { "doc_drift",                "path kind limit offset legend" },
     // lane/tc-sliceat: the ARISE def-use slice — var/flow/depth mirror the CLI's :VAR / --slice-flow /
     // --slice-depth knobs; single-root by kMcpSingleRootVerbs (a per-definition on-disk re-parse).

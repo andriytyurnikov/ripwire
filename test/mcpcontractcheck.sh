@@ -342,6 +342,12 @@ TWIN = {
     # 2026-09-10: --edit-check joined the paging set (it windows its unflagged caller rows) and its twin
     # honors limit/offset through the same mcpPageArgs, so it is a MAPPED verb, not a CLI-only one.
     "--edit-check": "edit_check",
+    # 2026-09-10 (C1 F-07/F-10): --flags (with its --flip mode) and --situ joined the paging set when their
+    # row listings became windowable. Both have twins, and both twins honour limit/offset through the same
+    # mcpPageArgs — so they are MAPPED, not CLI-only. Note the situational twin's DEFAULT is unbounded while
+    # the CLI report's is 8: the payload is machine-read and has always served every row, so limit there is
+    # relief for a caller who wants less, never a new cut.
+    "--flags": "flags", "--situ": "situational_awareness",
 }
 unmapped = sorted( v for v in pagingCli if v not in TWIN )
 check( not unmapped, "(G) every paging CLI verb is classified twin-or-not (%s)" % ( ",".join( unmapped ) or "none unmapped" ) )

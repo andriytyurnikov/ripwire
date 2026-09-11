@@ -311,6 +311,15 @@ inline constexpr long long kMcpPageValueMax = 1000000000;   // == cli.h's kPageV
 // value outside the band is refused rather than quietly rewritten (the §B8.1 ruling, same as radius).
 inline constexpr long long kMcpRecallTopKMax = 1000;
 
+// C1 F-07: the verb-side fold of pageview.h's effectiveRowCap — "an explicit limit beats the verb's own
+// display default" in ONE place on this surface too. It exists because writing that line twice, once in
+// flagsText and once in flipText, is what --quality-delta reads as a new clone of a reused helper, and it
+// is right to: two copies of a cap decision is one more than the contract needs.
+inline std::size_t mcpRowCap( int pageLimit, std::size_t verbDefault ) noexcept
+{
+    return std::size_t( rw::effectiveRowCap( pageLimit, int( verbDefault ) ) );
+}
+
 inline McpPageParse mcpPageArgs( const std::string& scope )
 {
     const McpIntArg limitArg = mcpIntArg( scope, "limit", 1, kMcpPageValueMax );
@@ -513,11 +522,15 @@ inline std::string strayContentText( const std::string& root, const std::string&
 }
 
 // `flags` verb: the dark-content dashboard. Index-backed (it needs the crawled file list).
-inline std::string flagsText( const std::string& root, const std::string& filter, std::size_t maxSites )
+// C1 F-07 (2026-09-10): --flags joined cli.h's honorsPaging set when its per-gate <read> listing became
+// windowable, so the twin takes the same pair rather than 0,0 — M13's rule is that a CLI verb that pages has
+// a twin that pages, and test/mcpcontractcheck.sh (G) derives that set from kPagingHonoringVerbs itself.
+inline std::string flagsText( const std::string& root, const std::string& filter, std::size_t maxSites,
+                              McpPageArgs page = {} )
 {
     const McpIndex& ix = getIndex( root );
     const darkflags::FlagsResult res = darkflags::computeFlags( ix.ing, root, {}, filter );
-    return captureXml( [ & ]( std::FILE* f ) { darkflags::writeFlags( f, res, maxSites ); } );
+    return captureXml( [ & ]( std::FILE* f ) { darkflags::writeFlags( f, res, mcpRowCap( page.limit, maxSites ), page.offset ); } );
 }
 
 // `flags` verb with the optional `symbol` argument = the CLI's `--flags --flip=NAME`: the blast radius of
@@ -526,12 +539,12 @@ inline std::string flagsText( const std::string& root, const std::string& filter
 // index-backed, and unlike the plain lane it needs the call graph too (ix.g). "" ⇒ no such gate: the
 // handler turns that into a -32602 naming the near-misses, never an empty-looking success.
 inline std::string flipText( const std::string& root, const std::string& gate, std::size_t maxRows,
-                             std::vector<std::string>& nearMissesOut )
+                             std::vector<std::string>& nearMissesOut, McpPageArgs page = {} )
 {
     const McpIndex&                  ix  = getIndex( root );
-    const flipimpact::FlipResult     res = flipimpact::computeFlip( ix.ing, ix.g, root, {}, gate );
+    const flipimpact::FlipResult     res = flipimpact::computeFlip( ix.ing, ix.g, root, {}, gate, page.limit );
     if( !res.ok ) { nearMissesOut = res.nearMisses; return {}; }
-    return captureXml( [ & ]( std::FILE* f ) { flipimpact::writeFlip( f, res, ix.ing, root, maxRows ); } );
+    return captureXml( [ & ]( std::FILE* f ) { flipimpact::writeFlip( f, res, ix.ing, root, mcpRowCap( page.limit, maxRows ), page.offset ); } );
 }
 
 // `doc_drift` verb: the markdown docs' checkable anchors vs the live index. Index-backed —
@@ -1171,7 +1184,14 @@ inline std::string declDefAndWindowJson( const SituationFacts& facts, PathRelFn 
          + std::to_string( facts.coCommits );
 }
 
-inline std::string situationDiffJson( const std::string& root, const std::string& diffOrEmpty )
+// C1 F-10 (2026-09-10): --situ joined cli.h's honorsPaging set (its blast-radius and co-change sections
+// window), so this twin takes limit/offset too — M13's rule, derived by test/mcpcontractcheck.sh (G) from
+// kPagingHonoringVerbs. THE DEFAULT IS DIFFERENT ON PURPOSE, and it is the honest one: the CLI report caps
+// those two listings at 8 because it is a screen an agent reads inline, while this payload is machine-read
+// and has always served EVERY row. An absent limit therefore still serves every row — this adds relief for
+// a caller who wants less, never a new cut — and the two arrays are the only ones windowed: tests_to_run and
+// hotspot_alert are the answer, exactly as in the CLI twin.
+inline std::string situationDiffJson( const std::string& root, const std::string& diffOrEmpty, McpPageArgs page = {} )
 {
     const McpIndex&     ix  = getIndex( root );
     const IngestResult& ing = ix.ing;
@@ -1245,10 +1265,12 @@ inline std::string situationDiffJson( const std::string& root, const std::string
     // payload used to emit {"file":...} alone, so the agent got a ranked blast radius with no magnitude and
     // could not tell a file contributing 300 dependent symbols from one contributing 1 — while the CLI text
     // report has printed "(N dependent symbols)" on every such line all along.
+    const PageWindow situJBlast   = pageWindow( facts.blastRadius.size(), page.limit, page.offset );
+    const PageWindow situJForgot   = pageWindow( facts.forgotten.size(),   page.limit, page.offset );
     out += "],\"blast_radius\":[";
     {
         bool first = true;
-        for( std::size_t i = 0; i < facts.blastRadius.size(); ++i )
+        for( std::size_t i = situJBlast.begin; i < situJBlast.end; ++i )
         {
             if( !first )
             {
@@ -1288,8 +1310,9 @@ inline std::string situationDiffJson( const std::string& root, const std::string
     out += "]" + declDefAndWindowJson( facts, situJPathRel ) + ",\"forgotten\":[";
     {
         bool first = true;
-        for( const auto& [ f, deg ] : facts.forgotten )
+        for( std::size_t i = situJForgot.begin; i < situJForgot.end; ++i )
         {
+            const auto& [ f, deg ] = facts.forgotten[i];
             if( !first )
             {
                 out += ",";
