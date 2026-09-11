@@ -413,13 +413,21 @@ for verb, args, arrayKey in ( ( "find_referencing_symbols", { "path": ROOT, "sym
 # equal the rows actually served, capped must equal shown < total — so a hand-written constant cannot
 # satisfy this arm.
 try:
-    bare = json.loads( srvG.tool( "situational_awareness", { "path": ROOT } )[ "result" ][ "content" ][ 0 ][ "text" ] )
+    # Named files, not the working tree's git diff: on a CLEAN checkout (CI, or an integrator's tree) the
+    # bare form has zero changed files, zero blast radius, total=0 — and every assertion below reads that
+    # zero as a red about paging. The fixture must not be the live repo's dirty state (the same trap
+    # gate-fixture-is-the-live-repo names); src/graph.h + src/verbs_for.h reach well over two files.
+    SITU_FILES = "src/graph.h,src/verbs_for.h"
+    bare = json.loads( srvG.tool( "situational_awareness", { "path": ROOT, "files": SITU_FILES } )[ "result" ][ "content" ][ 0 ][ "text" ] )
     cut  = json.loads( srvG.tool( "situational_awareness",
-                                  { "path": ROOT, "limit": 2, "offset": 0 } )[ "result" ][ "content" ][ 0 ][ "text" ] )
+                                  { "path": ROOT, "files": SITU_FILES, "limit": 2, "offset": 0 } )[ "result" ][ "content" ][ 0 ][ "text" ] )
 except Exception as e:
     check( False, "(G) situational_awareness paging probe failed: %s" % e )
     bare = cut = None
 if bare is not None:
+    check( len( bare.get( "blast_radius", [] ) ) > 2,
+           "(G) presence guard: the named files reach %d blast-radius rows (> the 2-row window; a zero here would make every arm below vacuous)"
+           % len( bare.get( "blast_radius", [] ) ) )
     for doc, label in ( ( bare, "bare" ), ( cut, "limit=2" ) ):
         for arr, shownKey, cappedKey in ( ( "blast_radius", "shown_blast_radius", "blast_radius_capped" ),
                                           ( "forgotten",    "shown_forgotten",    "forgotten_capped"    ) ):
