@@ -347,6 +347,26 @@ int logged( int n ){
     catch( const std::runtime_error& e ) { std::fprintf( stderr, "bad" ); return -2; }
 }
 CPP
+# The JS half (CodeRabbit #127 / 3985249701). JavaScript is where the review's counterexample lives,
+# because ASI means a handler body can carry NO ';' and NO inner '{' — which is everything the flattened
+# prefilter can see. All three start life as a real `return -1` handler so the working edit makes each row
+# NEW debt, which is the only kind --quality-delta reports.
+cat > "$EM/src/m.js" <<'JS'
+function riskyJs( n ) { return n }
+function recoverJs( n ) { return n + 1 }
+function guardedJs( n ) {
+    try { return riskyJs( n ) }
+    catch ( e ) { return -1 }
+}
+function recoveredJs( n ) {
+    try { return riskyJs( n ) }
+    catch ( e ) { return -1 }
+}
+function lineCommentJs( n ) {
+    try { return riskyJs( n ) }
+    catch ( e ) { return -1 }
+}
+JS
 ( cd "$EM" && git add -A >/dev/null 2>&1 && git commit -qm base >/dev/null 2>&1 )
 python3 - "$EM/src/m.cpp" <<'PY'
 import sys
@@ -354,6 +374,19 @@ p=sys.argv[1]; s=open(p).read()
 s=s.replace("catch( const std::runtime_error& e ) { return -1; }",
             "catch( const std::runtime_error& e ) { /* deliberately ignored */ }")
 open(p,"w").write(s)
+j=p.replace("m.cpp","m.js"); t=open(j).read()
+def sub(fn, body):
+    global t
+    old = "function %s( n ) {\n    try { return riskyJs( n ) }\n    catch ( e ) { return -1 }\n}" % fn
+    assert old in t, fn
+    t = t.replace(old, "function %s( n ) {\n    try { return riskyJs( n ) }\n    catch ( e ) %s\n}" % (fn, body))
+# a REAL swallow — the comment is the whole interior. Must be reported.
+sub("guardedJs",     "{ /* deliberately ignored */ }")
+# a comment OPENS the block, then code runs. A handler. Must NOT be reported.
+sub("recoveredJs",   "{ /* fall back */ recoverJs( n ) }")
+# the one flattened text cannot decide: the newline that ends the // comment is scrubbed to a space.
+sub("lineCommentJs", "{ // fall back\n        recoverJs( n )\n    }")
+open(j,"w").write(t)
 PY
 OEM="$( cd "$EM" && "$BIN" . --quality-delta --no-cache 2>/dev/null )"
 row "$OEM" error-masking guarded >/dev/null \
@@ -362,6 +395,23 @@ row "$OEM" error-masking guarded >/dev/null \
 row "$OEM" error-masking logged >/dev/null \
     && { no "error-masking: a catch that LOGS and returns was counted — a statement survives in it"; rows "$OEM"; } \
     || ok "error-masking: a catch carrying a real statement is not a swallow"
+
+# NON-VACUITY FIRST: the JS swallow must be reported, or the two negative arms below prove nothing.
+row "$OEM" error-masking guardedJs >/dev/null \
+    && ok "error-masking: a comment-only JS catch block is a swallow (the positive control)" \
+    || { no "error-masking: the comment-only JS catch was missed — the two arms below are vacuous"; rows "$OEM"; }
+# A COMMENT THAT OPENS THE BLOCK DOES NOT CLOSE IT (CodeRabbit #127 / 3985249701). Both bodies open with a
+# comment and then run real code; neither holds a ';' or an inner '{', which is everything the flattened
+# prefilter can see, so both were reported as swallows even though each HANDLES the error. `lineCommentJs`
+# is the one flattened text cannot decide AT ALL: astQuery scrubs the newline that ends a `//` comment, so
+# `{ // fall back  recoverJs( n ) }` is byte-identical to a block whose entire interior is a comment. The
+# confirm re-reads the file's own bytes, which is the only place that distinction still exists.
+row "$OEM" error-masking recoveredJs >/dev/null \
+    && { no "error-masking: code AFTER a /* */ comment was counted as a swallow — the block handles the error"; rows "$OEM"; } \
+    || ok "error-masking: a /* */ comment followed by code is a HANDLER, not a swallow"
+row "$OEM" error-masking lineCommentJs >/dev/null \
+    && { no "error-masking: code on the line after a // comment was counted as a swallow"; rows "$OEM"; } \
+    || ok "error-masking: a // comment followed by code on the next line is a HANDLER, not a swallow"
 [ "$OEM" = "$( cd "$EM" && "$BIN" . --quality-delta --no-cache 2>/dev/null )" ] \
     && ok "error-masking: byte-identical run to run (deterministic)" || no "error-masking: non-deterministic delta"
 

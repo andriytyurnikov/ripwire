@@ -30,6 +30,7 @@
 
 #include "model.h"              // Lang enum
 #include "ingest.h"             // AstQuerySpec, AstMatch, astQuery, IngestResult
+#include "docparse.h"           // detail::readWholeFile — THE canonical whole-file byte read; never re-rolled
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT (no-op in release; the fprintf below is the visible line)
 
 namespace rw
@@ -1108,7 +1109,74 @@ inline bool errorMaskBlockIsCommentOnly( std::string_view collapsed ) noexcept
     return mid.substr( 0, first ).find_first_not_of( " \t" ) == std::string_view::npos;
 }
 
-inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+// ── the EXACT answer, over the block's UNFLATTENED bytes (CodeRabbit #127 / 3985249701) ─────────────
+// The test above is a PREFILTER and nothing more: it proves a comment OPENS the interior, never that the
+// comment CLOSES it. `catch( e ) { /* ignore */ recover() }` is valid JavaScript, holds no ';' and no inner
+// '{', and opens with a comment — so the prefilter said "comment-only" about a block that handles the
+// error, and the kind manufactured a finding. That is the one direction §Q-DIAL-6's own floors forbid.
+//
+// It cannot be fixed on the flattened text. astQuery scrubs '\n' to ' ' (makeAstMatch, the ONE cut), and a
+// `//` comment ends at a newline that is no longer there: `{ // ignore <NL> recover() }` and
+// `{ // ignore recover() }` are the same 23 bytes after the scrub, and the first is a handler while the
+// second is a swallow. So the confirm reads the block's RAW bytes and asks the only question that decides
+// it — does comment text consume the WHOLE interior?
+//
+//   /* … */   spans to its closer; an unterminated one is NOT comment-only (it cannot be, the block closed)
+//   //  #     run to the end of THEIR line — the fact the scrub destroyed
+//   between   only spaces, tabs, CR and LF
+//
+// `raw` is the block's bytes cut to exactly the length astQuery cut its text to, so the 120-byte floor
+// §Q-DIAL-6 states is preserved character for character: this confirm can only REMOVE rows, never add one.
+inline bool errorMaskCommentConsumesBlock( std::string_view raw ) noexcept
+{
+    const auto isSpace = []( char c ) noexcept { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+
+    std::string_view t = raw;
+    while( !t.empty() && isSpace( t.front() ) ) { t.remove_prefix( 1 ); }
+    while( !t.empty() && isSpace( t.back()  ) ) { t.remove_suffix( 1 ); }
+    if( t.size() < 2 || t.front() != '{' || t.back() != '}' )
+    {
+        return false;
+    }
+
+    const std::string_view mid = t.substr( 1, t.size() - 2 );
+    std::size_t            at  = 0;
+    while( at < mid.size() )
+    {
+        if( isSpace( mid[ at ] ) )
+        {
+            ++at;
+            continue;
+        }
+        if( mid.compare( at, 2, "/*" ) == 0 )
+        {
+            const std::size_t close = mid.find( "*/", at + 2 );
+            if( close == std::string_view::npos )
+            {
+                return false;      // the block closed but the comment did not — not decidable as a swallow
+            }
+            at = close + 2;
+            continue;
+        }
+        if( mid.compare( at, 2, "//" ) == 0 || mid[ at ] == '#' )
+        {
+            const std::size_t nl = mid.find( '\n', at );
+            if( nl == std::string_view::npos )
+            {
+                return true;       // the line comment runs to the end of the interior
+            }
+            at = nl + 1;
+            continue;
+        }
+        return false;              // code survives inside the block — a handler, not a swallow
+    }
+    return true;
+}
+
+// A brace pair with nothing at all between them. Split out from errorMaskBlockIsEmpty so the caller can
+// tell WHICH half answered: this one needs no confirm (there is no comment to mis-read), the comment half
+// does.
+inline bool errorMaskBlockIsBareBraces( std::string_view collapsed ) noexcept
 {
     std::string stripped;
     for( char c : collapsed )
@@ -1118,7 +1186,15 @@ inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
             stripped.push_back( c );
         }
     }
-    return stripped == "{}" || errorMaskBlockIsCommentOnly( collapsed );
+    return stripped == "{}";
+}
+
+// THE PREFILTER, over astQuery's flattened span text. Cheap and deliberately over-accepting on its comment
+// half — findErrorMasking confirms every row this admits through a comment against the block's RAW bytes
+// (errorMaskCommentConsumesBlock). Never call this alone to decide a finding.
+inline bool errorMaskBlockIsEmpty( std::string_view collapsed ) noexcept
+{
+    return errorMaskBlockIsBareBraces( collapsed ) || errorMaskBlockIsCommentOnly( collapsed );
 }
 
 // One error-masking hit: the suppressing block's file + start byte (so a caller can attribute it to the
@@ -1157,6 +1233,11 @@ inline std::vector<ErrorMaskHit> findErrorMasking( const IngestResult& ing )
     // AstMatch per CAPTURE, so a swallow rule yields both a @p hit and a @m hit. We keep only the @m block by
     // its emptiness signature: @p (a bare identifier "catch"/"then") is never "{}", and for non-emptyOnly
     // Python rules @p does not exist, so every emitted capture is the block. Route by tag → rule.
+    // one-entry raw-bytes memo for the confirm below: astQuery already sorts (file, startByte, tag), so the
+    // candidates of one file arrive together and a single slot is the whole cache.
+    std::uint32_t rawFileId = ~std::uint32_t( 0 );
+    std::string   rawBytes;
+
     for( const AstMatch& m : astQuery( ing, specs ) )
     {
         std::size_t r = 0;
@@ -1179,6 +1260,35 @@ inline std::vector<ErrorMaskHit> findErrorMasking( const IngestResult& ing )
         if( rule.emptyOnly && !errorMaskBlockIsEmpty( m.text ) )
         {
             continue; // the @p identifier capture is dropped here too (never "{}")
+        }
+        // THE CONFIRM (CodeRabbit #127 / 3985249701). The prefilter above cannot see where a `//` comment
+        // ends, because astQuery scrubbed the newline that ended it — so a block admitted through its
+        // COMMENT half is re-asked of the file's own bytes. A bare `{}` needs no confirm: there is no
+        // comment there to mis-read, and skipping it keeps the cost at "one read per file that has a
+        // comment-shaped candidate", which on this repo's history is a handful of files, not the corpus.
+        //
+        // `m.text.size()` IS the cut length makeAstMatch used (the scrub is byte-for-byte), so the raw
+        // slice is the same span — the 120-byte floor §Q-DIAL-6 discloses is preserved exactly. An
+        // UNREADABLE file degrades to dropping the row: a finding we cannot substantiate is not reported.
+        if( rule.emptyOnly && !errorMaskBlockIsBareBraces( m.text ) )
+        {
+            if( m.fileId != rawFileId )
+            {
+                rawFileId = m.fileId;
+                rawBytes.clear();
+                if( !docparse::detail::readWholeFile( diskPath( ing, m.fileId ), rawBytes ) )
+                {
+                    DEGRADED_PATH_ALERT( "lintrules: error-mask confirm cannot re-read the block's file" );
+                }
+            }
+            if( std::size_t( m.startByte ) + m.text.size() > rawBytes.size() )
+            {
+                continue;   // the file moved under us, or could not be read — do not assert a swallow
+            }
+            if( !errorMaskCommentConsumesBlock( std::string_view( rawBytes ).substr( m.startByte, m.text.size() ) ) )
+            {
+                continue;   // a comment OPENS the block but code follows it — that is a handler
+            }
         }
         out.push_back( { m.fileId, m.startByte, m.line, std::string( rule.id ) } );
     }
