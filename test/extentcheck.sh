@@ -45,7 +45,10 @@
 #   (G) --hotspots: a flagged symbol's complexity is EXCLUDED, never ranked — ccx= re-derives from the
 #       unflagged rows of --metrics, top= is never a flagged symbol, the row discloses extent_suspect_syms=,
 #       a file with nothing trustworthy left is counted in unranked_extent_suspect= and the partition still
-#       sums to files=.
+#       sums to files=. EVERY `… = files=` equation the legend states names each bucket it sums and holds on the
+#       emitted counts — the unconditional header comment spelled three terms beside a nonzero fourth (CodeRabbit
+#       #135; red on f5948b69: 59 PASS / 1 FAIL, that equation alone). A zero-bucket control (plain.cpp alone)
+#       carries no extent_suspect byte, and with RIPWIRE_BASE_BIN its --hotspots document is byte-identical.
 #   (H) CONTROL + MUTATION: the same leak file with the semicolons added — no leak, and not one byte of the
 #       new vocabulary on any surface. With RIPWIRE_BASE_BIN (a pre-change build) the control's outputs are
 #       byte-compared against it.
@@ -231,6 +234,22 @@ ues = ra.get('unranked_extent_suspect')
 print(("PASS" if ues == '2' else "FAIL") + " (G) unranked_extent_suspect=%s counts head.c + orphan.cpp" % ues)
 parts = int(ra['ranked']) + int(ra['unranked_no_churn']) + int(ra['unranked_no_complexity']) + int(ues or 0)
 print(("PASS" if parts == int(ra['files']) else "FAIL") + " (G) ranked+unranked_no_churn+unranked_no_complexity+unranked_extent_suspect=%d = files=%s" % (parts, ra['files']))
+# the LEGEND's equation must be the partition the root emits (CodeRabbit #135): the unconditional header comment spelled
+# three buckets beside a nonzero fourth, so one document stated two identities and one of them was false. EVERY
+# "… = files=" the legend states must parse as a sum of buckets the root carries, name unranked_extent_suspect= while
+# it is nonzero, and hold on these counts (a bucket absent from the root reads as 0 — the legend's own "Absent" rule).
+legend = '\n'.join(re.findall(r'<!--.*?-->', hot, re.S))
+stated = len(re.findall(r'= files=', legend))
+eqs = re.findall(r'((?:\w+= \+ )+\w+=) = files=', legend)
+print(("PASS" if stated > 0 and len(eqs) == stated else "FAIL") + " (G) the legend states %d files= equation(s), %d parse as a sum of buckets" % (stated, len(eqs)))
+for eq in eqs:
+    terms = re.findall(r'(\w+)=', eq)
+    unknown = [t for t in terms if t not in ra and t != 'unranked_extent_suspect']
+    total = sum(int(ra.get(t, 0)) for t in terms)
+    names = 'unranked_extent_suspect' in terms
+    good = not unknown and total == int(ra['files']) and (names or int(ues or 0) == 0)
+    print(("PASS" if good else "FAIL") + " (G) legend '%s = files=' %s unranked_extent_suspect= and sums to %d vs files=%s%s"
+          % (eq, "names" if names else "OMITS", total, ra['files'], (" (not on the root: %s)" % ",".join(unknown)) if unknown else ""))
 PY
     while IFS= read -r line; do
         case "$line" in PASS*) ok "${line#PASS }";; *) no "${line#FAIL }";; esac
@@ -238,6 +257,25 @@ PY
     defines "$TMP/g.xml" unranked_extent_suspect && defines "$TMP/g.xml" extent_suspect_syms \
         && ok "(G) --hotspots legend defines unranked_extent_suspect= and extent_suspect_syms=" \
         || no "(G) --hotspots legend misses unranked_extent_suspect= / extent_suspect_syms="
+    # ZERO-BUCKET CONTROL: a git corpus with nothing flagged keeps every byte — the fourth bucket enters neither the root
+    # nor any legend equation at 0 (a fix that always appended the term would red here), and with RIPWIRE_BASE_BIN the
+    # whole --hotspots document is byte-identical to the pre-change build.
+    mkdir -p "$TMP/hot0"
+    cp "$FIX/plain.cpp" "$TMP/hot0/"
+    git -C "$TMP/hot0" init -q >/dev/null 2>&1
+    git -C "$TMP/hot0" add -A >/dev/null 2>&1
+    git -C "$TMP/hot0" -c user.name=extentcheck -c user.email=extentcheck@example.invalid -c commit.gpgsign=false commit -q -m fixture >/dev/null 2>&1
+    cap "$TMP/g0.xml" "$TMP/hot0" --no-cache --hotspots
+    grep -q '<hotspots ' "$TMP/g0.xml" && ! grep -q 'extent_suspect' "$TMP/g0.xml" \
+        && ok "(G) zero-bucket control: plain.cpp alone carries no extent_suspect byte on the root or in any legend equation" \
+        || no "(G) zero-bucket control carries extent_suspect vocabulary (or no <hotspots> root): $( grep -oE 'unranked_no_complexity=[^.]*files=' "$TMP/g0.xml" | head -1 )"
+    if [ -n "${RIPWIRE_BASE_BIN:-}" ] && [ -x "${RIPWIRE_BASE_BIN}" ]; then
+        "$RIPWIRE_BASE_BIN" "$TMP/hot0" --no-cache --hotspots >"$TMP/base_g0.xml" 2>/dev/null
+        cmp -s "$TMP/g0.xml" "$TMP/base_g0.xml" && ok "(G) zero-bucket control --hotspots is byte-identical to RIPWIRE_BASE_BIN" \
+            || no "(G) zero-bucket control --hotspots differs from RIPWIRE_BASE_BIN"
+    else
+        echo "  SKIP  (G) zero-bucket --hotspots byte-identity vs a pre-change build (set RIPWIRE_BASE_BIN)"
+    fi
 else
     echo "  SKIP  (G) git unavailable"
 fi

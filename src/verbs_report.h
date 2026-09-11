@@ -1233,10 +1233,14 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
                 windowLabelInComment[i] = ' ';
             }
         }
+        // the equation names every bucket the root emits: unranked_extent_suspect= joins it exactly when that attribute is
+        // written (absent at 0, so a corpus with nothing excluded keeps every byte). Spelled with three terms beside a nonzero
+        // fourth, this comment stated a false identity in the same document as the extent legend's true one (CodeRabbit #135).
+        const char* const extentSuspectTerm = unrankedExtentSuspect > 0 ? " + unranked_extent_suspect=" : "";
         rw::emitTo( stdout, "<!-- ripwire hotspots: maintenance-pain = complexity × recent churn (window={}). "
                      "churn=commits touching the file; ccx=Σ cognitive complexity; score=churn×ccx; top=worst function. "
                      "files= is the DENOMINATOR ranked= is drawn from, and a hotspot needs both factors nonzero, so "
-                     "ranked= + unranked_no_churn= + unranked_no_complexity= = files= exactly. "
+                     "ranked= + unranked_no_churn= + unranked_no_complexity={} = files= exactly. "
                      "unranked_no_complexity= is a file with commits but no function or method to score (a pure "
                      "declaration header, markdown, config). unranked_no_churn= is a file no in-window commit was "
                      "attributed to — and it CONFLATES two cases this verb cannot tell apart: a genuinely quiet file, "
@@ -1244,7 +1248,7 @@ std::optional<int> runMaintenanceViews( const MainDispatch& d )
                      "join could not match), which scores zero for a reason that is not about the file. Treat it as an "
                      "upper bound on quietness, not a measure of it. "
                      "raise the default cap with limit=N (offset=M pages; a cut listing carries total=/has_more=/next_offset= so a paging loop can continue from it) -->{}{}",
-                     windowLabelInComment.c_str(), rw::kAtStampLegend, rw::rootRelPathsLegend( mvSingleRoot )  );   // sweep: at= was undefined on this screen
+                     windowLabelInComment.c_str(), extentSuspectTerm, rw::kAtStampLegend, rw::rootRelPathsLegend( mvSingleRoot )  );   // sweep: at= was undefined on this screen
         if( multiRoot )
         { // §5 comparability caveat: churn scales (commit-count conventions) differ per repo
             rw::emitTo( stdout, "<!-- multi-root workspace: churn is mined PER root — hotspot scores are comparable within a root, not across roots -->" );
