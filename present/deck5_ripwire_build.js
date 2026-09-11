@@ -5,6 +5,10 @@
 // the slide count and the flag count are derived from this file and the binary by
 // test/deckclaimcheck.sh. Design: dark, two-tone on the name's own halves — cyan = ripgrep/speed,
 // amber = tripwire/honesty.
+// Speaker notes: every slide added for 0.6.0 carries its sources in its notes — the PR body, commit,
+// doc or web page each figure was read from, quoted. A claim about a change that has not merged yet
+// says "pending merge: #N" in those notes and lives in a commit of its own, so it can be kept or dropped
+// when that PR lands.
 const pptxgen = require("pptxgenjs");
 
 const p = new pptxgen();
@@ -24,6 +28,23 @@ const MONO  = "Courier New";
 const SANS  = "Arial";
 
 const W = 13.33, H = 7.5, MX = 0.62;
+
+// ── --quality-delta examples: DATA, not layout ──────────────────────────────────────────────────────────
+// The "What --quality-delta catches" slide renders these entries. They come from
+// docs/QUALITY_DELTA_CATALOG.md, which a separate lane is writing with real, reproduced findings. Until
+// that file lands this array stays EMPTY, and the slide renders as a clearly marked placeholder, never with
+// invented rows. Filling it in is a data-only edit — no layout code changes:
+//   { kind:    "…",   // the kind exactly as --quality-delta prints it
+//     finding: "…",   // the row's own finding text
+//     before:  "…",   // the snippet before the change; "\n" separates lines
+//     after:   "…",   // the snippet after the change
+//     why:     "…" }  // one sentence: why the finding matters
+// 3 to 6 entries (the layout refuses more than 6). Snippets render in the mono face: keep them to about
+// 6 lines, and to about 40 columns once there are 4 or more entries (two columns of cards) — about 80
+// columns fit with 1 to 3 (one column). Cite each entry's catalog section in the slide's notes.
+const QD_EXAMPLES = [
+  // intentionally empty until docs/QUALITY_DELTA_CATALOG.md lands — see above
+];
 
 function bg(s){ s.background = { color: BG }; }
 function kicker(s, txt, color){ s.addText(txt, { x: MX, y: 0.42, w: 9, h: 0.32, fontFace: MONO, fontSize: 13, color, margin: 0 }); }
@@ -52,6 +73,93 @@ function row(s, y, h, cols, opts={}){
                      bold: !!c.bold, italic: !!c.italic, color: c.color||TEXT, valign: "middle", align: c.align||"left", margin: 0 });
     x += c.w + (c.gap === undefined ? 0.12 : c.gap);
   }
+}
+// Speaker notes, one line per sourced fact. The notes are where a figure's quote and origin live.
+function notes(s, lines){ s.addNotes(lines.join("\n")); }
+// A card of [big, label, color] rows under a mono heading: the 0.6.0 overview's four quadrants. Row height
+// is shared out of the card, so a quadrant with two rows and one with three keep the same outer frame.
+function listCard(s, x, y, w, h, head, headColor, items, opts={}){
+  card(s, x, y, w, h, opts.fill);
+  s.addText(head, { x: x+0.2, y: y+0.12, w: w-0.4, h: 0.36, fontFace: MONO, fontSize: 14, bold: true, color: headColor, margin: 0 });
+  const bigW = opts.bigW || 1.85, top = y + 0.56, rowH = (h - 0.56 - 0.1) / items.length;
+  items.forEach(([big, label, c], i) => {
+    const ry = top + i * rowH;
+    s.addText(big,   { x: x+0.2, y: ry, w: bigW, h: rowH, fontFace: MONO, fontSize: opts.bigSize || 13, bold: true, color: c || TEXT, valign: "middle", margin: 0 });
+    s.addText(label, { x: x+0.3+bigW, y: ry, w: w-0.5-bigW, h: rowH, fontFace: SANS, fontSize: opts.lsize || 9.5, color: MUTED, valign: "middle", margin: 0 });
+  });
+}
+// Three story cards in a row: what went confidently wrong, the number, and what catches it now. Each story is
+// { tag, headline, what, stat, statLabel, now, gate }. Sized for about 320 characters of `what` and 250 of
+// `now` at this width; the honesty slides pass exactly three. The CALLER adds the slide: test/deckclaimcheck.sh
+// derives the slide count from the literal addSlide calls in this file, so a helper that added its own slide
+// would be counted once however many times it ran.
+function storyCards(s, { kick, head, stories, footText }){
+  kicker(s, kick, AMBER);
+  title(s, head, { size: 32 });
+  const GAP = 0.14, cw = (W - 2*MX - 2*GAP) / 3, y = 1.72, h = 5.14;
+  stories.forEach((st, i) => {
+    const x = MX + i * (cw + GAP), tw = cw - 0.4;
+    card(s, x, y, cw, h);
+    s.addText(st.tag,       { x: x+0.2, y: y+0.14, w: tw, h: 0.26, fontFace: MONO, fontSize: 10, color: AMBER, margin: 0 });
+    s.addText(st.headline,  { x: x+0.2, y: y+0.42, w: tw, h: 0.62, fontFace: SANS, fontSize: 16, bold: true, color: TEXT, valign: "top", margin: 0 });
+    s.addText(st.what,      { x: x+0.2, y: y+1.06, w: tw, h: 1.42, fontFace: SANS, fontSize: 10, color: MUTED, valign: "top", margin: 0 });
+    s.addText(st.stat,      { x: x+0.2, y: y+2.52, w: tw, h: 0.46, fontFace: MONO, fontSize: 20, bold: true, color: st.statColor || GREEN, valign: "middle", margin: 0 });
+    s.addText(st.statLabel, { x: x+0.2, y: y+2.98, w: tw, h: 0.44, fontFace: SANS, fontSize: 9, color: MUTED, valign: "top", margin: 0 });
+    s.addText("what catches it now", { x: x+0.2, y: y+3.48, w: tw, h: 0.22, fontFace: MONO, fontSize: 9, color: CYAN, margin: 0 });
+    s.addText(st.now,       { x: x+0.2, y: y+3.72, w: tw, h: 1.06, fontFace: SANS, fontSize: 10, color: TEXT, valign: "top", margin: 0 });
+    s.addText(st.gate,      { x: x+0.2, y: y+4.8,  w: tw, h: 0.26, fontFace: MONO, fontSize: 8.5, color: MUTED, valign: "middle", margin: 0 });
+  });
+  if (footText){ foot(s, footText); }
+  return s;
+}
+// "What --quality-delta catches": 1–3 entries lay out as one column of wide cards, 4–6 as two columns; each
+// card is a kind + finding header, a before/after pair of mono panes, and a one-line why. With no entries the
+// slide is a marked PLACEHOLDER showing three empty frames of that layout — it never renders an invented row.
+// Like storyCards, it draws on a slide its caller added.
+function qdExamples(s, entries){
+  if (entries.length > 6){ throw new Error(`QD_EXAMPLES has ${entries.length} entries; the slide is laid out for at most 6`); }
+  entries.forEach((e, i) => {
+    for (const k of ["kind", "finding", "before", "after", "why"]){
+      if (typeof e[k] !== "string" || e[k] === ""){ throw new Error(`QD_EXAMPLES[${i}].${k} is missing or empty`); }
+    }
+  });
+  const placeholder = entries.length === 0;
+  kicker(s, "// examples from docs/QUALITY_DELTA_CATALOG.md — each one reproduced, none invented", CYAN);
+  title(s, "What --quality-delta catches", { size: 32 });
+  const shown = placeholder
+    ? [0, 1, 2].map(() => ({ kind: "‹kind›", finding: "‹the finding, as the tool prints it›", before: "‹before›", after: "‹after›", why: "‹why it matters, in one sentence›" }))
+    : entries;
+  const AW = W - 2*MX, AH = 5.08, GAP = 0.14, top = 1.74;
+  const cols = shown.length <= 3 ? 1 : 2, rows = Math.ceil(shown.length / cols);
+  const cw = (AW - (cols-1)*GAP) / cols, ch = (AH - (rows-1)*GAP) / rows, codeSize = cols === 1 ? 9.5 : 8.5;
+  shown.forEach((e, i) => {
+    const x = MX + (i % cols) * (cw + GAP), y = top + Math.floor(i / cols) * (ch + GAP);
+    const edge = placeholder ? { color: "3A4353", width: 1, dashType: "dash" } : { color: "232D3D", width: 0.75 };
+    s.addShape("roundRect", { x, y, w: cw, h: ch, fill: { color: CARD }, rectRadius: 0.09, line: edge });
+    s.addText(e.kind,    { x: x+0.18, y: y+0.08, w: 2.2, h: 0.3, fontFace: MONO, fontSize: 11, bold: true, color: placeholder ? MUTED : AMBER, valign: "middle", margin: 0 });
+    s.addText(e.finding, { x: x+2.45, y: y+0.08, w: cw-2.63, h: 0.3, fontFace: SANS, fontSize: 10.5, color: placeholder ? MUTED : TEXT, valign: "middle", margin: 0 });
+    const paneY = y + 0.44, paneH = ch - 0.44 - 0.42, paneW = (cw - 0.36 - 0.12) / 2;
+    [["before", e.before], ["after", e.after]].forEach(([label, code], j) => {
+      const px = x + 0.18 + j * (paneW + 0.12);
+      s.addShape("rect", { x: px, y: paneY, w: paneW, h: paneH, fill: { color: BG }, line: { color: "232D3D", width: 0.5 } });
+      s.addText(label, { x: px+0.08, y: paneY+0.03, w: paneW-0.16, h: 0.2, fontFace: MONO, fontSize: 8, color: MUTED, margin: 0 });
+      s.addText(code,  { x: px+0.08, y: paneY+0.24, w: paneW-0.16, h: paneH-0.28, fontFace: MONO, fontSize: codeSize, color: placeholder ? MUTED : TEXT, valign: "top", margin: 0 });
+    });
+    s.addText(e.why, { x: x+0.18, y: y+ch-0.38, w: cw-0.36, h: 0.32, fontFace: SANS, fontSize: 9.5, italic: true, color: MUTED, valign: "middle", margin: 0 });
+  });
+  if (placeholder){
+    chip(s, "PLACEHOLDER", W-MX-2.0, 0.38, 2.0, AMBER, { h: 0.36, size: 12, line: AMBER });
+    foot(s, "placeholder: the examples arrive as data (QD_EXAMPLES, top of the generator) once docs/QUALITY_DELTA_CATALOG.md lands");
+    notes(s, [
+      "PLACEHOLDER — no example is shown on purpose.",
+      "The examples come from docs/QUALITY_DELTA_CATALOG.md, which a separate lane is writing with real, reproduced findings. It is not in the tree as of main 766913d0.",
+      "To fill: add 3 to 6 { kind, finding, before, after, why } entries to QD_EXAMPLES at the top of present/deck5_ripwire_build.js, copied from the catalog, then rebuild. The notes list each entry against the catalog.",
+    ]);
+  } else {
+    foot(s, "each pair is copied from docs/QUALITY_DELTA_CATALOG.md, where the command that reproduces it is recorded");
+    notes(s, ["SOURCES: docs/QUALITY_DELTA_CATALOG.md — one entry per card, in order:"].concat(entries.map((e, i) => `${i+1}. ${e.kind}: ${e.finding}`)));
+  }
+  return s;
 }
 
 /* ── S1 · title ─────────────────────────────────────────────────────────── */
@@ -89,6 +197,11 @@ function row(s, y, h, cols, opts={}){
   s.addText("Every truncation is disclosed, and every guess says how many it chose from.",
     { x: wireX+0.3, y: 5.98, w: wireW-0.6, h: 0.42, fontFace: SANS, fontSize: 12.5, color: MUTED, valign: "top", margin: 0 });
   foot(s, "Apache-2.0  ·  single binary  ·  hermetic build (proven with the network off)  ·  23 vendored tree-sitter grammars");
+  notes(s, [
+    "SOURCES (cover)",
+    "- \"23 vendored tree-sitter grammars\": commit 680a0a3d, \"It is 23: 22 upstream projects under third_party/deps/, with tree-sitter-typescript supplying both typescript and tsx\"; PR #106's title, \"Dart: a 23rd grammar …\"; README.md, \"23 vendored grammars\".",
+    "- The wave under \"The ripgrep of AI context.\": present/assets/paddle-out.png, rendered from docs/assets/paddle-out.svg (commit 680a0a3d; PR #133 moved the wave from the README hero to this deck).",
+  ]);
 }
 
 /* ── S2 · the problem ───────────────────────────────────────────────────── */
@@ -281,6 +394,209 @@ function row(s, y, h, cols, opts={}){
     y += 1.25;
   }
   foot(s, "CHANGELOG.md [Unreleased] carries the ignore-default measurement and its ledger in bench/PROFILE.md \u00b7 the sampler negative is docs/EVALS.md \u00a77, published as a counterexample against our own published numbers");
+}
+
+/* ── S5e · 0.6.0 at a glance ────────────────────────────────────────────── */
+{
+  // Four quadrants, one per theme of the release. The language quadrant is DATA: a change that lands later
+  // adds a row to `langs`, and the card shares its height out among the rows.
+  const s = p.addSlide(); bg(s);
+  kicker(s, "// 0.6.0 — everything since v0.5.0 (tagged 2026-09-07); each figure names its PR", CYAN);
+  title(s, "0.6.0: faster where it hurt, clearer where it stops", { size: 32 });
+  const CW = (W - 2*MX - 0.14) / 2, CH = 2.43, X2 = MX + CW + 0.14, Y2 = 1.72 + CH + 0.12;
+  const langs = [
+    ["Dart", "the 23rd grammar, by @calvinchengx: 71,726 symbols from flutter/packages' 3,706 .dart files, none among its 289 degraded parses (#75, #106)", CYAN],
+    ["any language", "Dart's landing caught six per-language arrays sized off the last enum by hand: an appended language dropped out of --skipped's census silently. Fixed for all.", AMBER],
+  ];
+  listCard(s, MX, 1.72, CW, CH, "a new language", CYAN, langs, { bigW: 1.55 });
+  listCard(s, X2, 1.72, CW, CH, "Rip'n Fast", CYAN, [
+    ["159.7 → 9.2 s", "warm --grep on llvm-project: an inheritance cone rebuilt on every still-ambiguous receiver-typed call is now built once per type (#83)", GREEN],
+    ["−19.9% CPU",    "cold parse on llvm-project, 194.1 → 155.6 s: child walks that went quadratic now use a cursor, output byte-identical (#127, #130)", GREEN],
+    ["−27.6% CPU",    "warm --pack-task on go, 8.13 → 5.88 s: the tokenizer rebuilt on one header of NEON, AVX2 and scalar string kernels (#127)", GREEN],
+  ]);
+  listCard(s, MX, Y2, CW, CH, "honest where it counts", AMBER, [
+    ["2,107 → 3",    "false callers of memgraph's SafeString::move: a std::move call no longer binds to your own code (#134)", AMBER],
+    ["12/12 → 8/12", "commits --quality-delta gated, of 12 landed: true-positive share 2% → 12%, with 0 wrong rows (#127)", AMBER],
+    ["13/25 → 0",    "harmful --help-task recommendations on the adversarial prose set; precision 0.797 → 1.000 (#127)", AMBER],
+  ]);
+  listCard(s, X2, Y2, CW, CH, "fewer tokens, nothing hidden", GREEN, [
+    ["46,385 → 4,473",  "tokens for --help: one line per flag now, and every disclosure is still one call away (#92)", CYAN],
+    ["6 → 50",          "--handoff symbols per code file (12 per prose file): containment 16% → 54%, purely additive (#127)", CYAN],
+    ["pages, not cuts", "--doc-drift, --flags, --flip and --situ disclose their cuts and page; --situ lists every tests-to-run row (#127)", CYAN],
+  ]);
+  foot(s, "upgrade note: prebuilt x86-64 Linux binaries now need an x86-64-v3 (AVX2-class) CPU, RHEL 10's own floor; arm64 uses NEON (#127)");
+  notes(s, [
+    "SOURCES (0.6.0 at a glance). Window: after the v0.5.0 tag (commit bacfa3b7, 2026-09-07) through main 766913d0. Merge dates read with gh: #83 2026-09-09, #92 2026-09-10, #106 (merge commit 6f91fed2) 2026-09-10, #127 and #134 2026-09-11.",
+    "- Title words “faster where it hurt”: the draft 0.6.0 release notes' heading. “Rip'n Fast”: README.md's H1, “Rip'n Fast. Fewer Tokens. Better Code.”",
+    "A NEW LANGUAGE",
+    "- Dart: merge commit 6f91fed2, “merge(dart): a 23rd grammar …” — “On flutter/packages (3,706 .dart files) this indexes 71,726 Dart symbols and none of that corpus's 289 degraded parses is a .dart file.” Lane by @calvinchengx (#75).",
+    "- Six arrays: 6f91fed2 — “moves six per-language array extents off the spelled-out last enumerator (std::size_t( Lang::Elixir ) + 1) and onto model.h's kLangCount”; with two tallies reverted, --skipped over two .cpp and two .dart files “prints indexed=4 with a single <lang n=cpp …> row: two indexed files gone from the census, with nothing saying a row is missing.”",
+    "RIP'N FAST",
+    "- 159.7 → 9.2 s: PR #83 body, table “--grep | 159.7 s | 9.2 s” (warm, llvm-project); cause “recomputed on every still-ambiguous receiver-typed call”, “Each receiver type's cone is now computed once”.",
+    "- −19.9%, 194.1 → 155.6 s: PR #127 body table, llvm-project cold map --no-cache, 194.14 → 155.60 CPU s, −19.9%, n=1, output identical. PR #130 body: “22 walks converted”. “byte-identical”: #127 “Every row cmp-identical between the two binaries.”",
+    "- −27.6%, 8.13 → 5.88 s: PR #127 body table, go warm --pack-task, n=5, identical. Lane K: src/infra/strkern.h “(NEON/AVX2/scalar); the query-time tokenizer rewritten as mask algebra”.",
+    "HONEST WHERE IT COUNTS",
+    "- 2,107 → 3: PR #134 body, “memgraph --callers=SafeString::move | 2,107 | 3”.",
+    "- 12/12 → 8/12, 2% → 12%, 0 wrong: PR #127 lane Q, “12 landed commits: 12/12 → 8/12 gating, TRUE 2% → 12%, WRONG → 0”.",
+    "- 13/25 → 0, 0.797 → 1.000: PR #127 lane R, “harmful 13/25 → 0, precision 0.797 → 1.000”; the brief names the set “the adversarial prose set”.",
+    "FEWER TOKENS, NOTHING HIDDEN",
+    "- 46,385 → 4,473: PR #92 body, “46,385 → 4,473 tokens (10.4x)”, “Nothing is deleted”, “every disclosure one call away” (title).",
+    "- 6 → 50 / 12, 16% → 54%: PR #127 lane H, “kHandoffSymbolsPerFile 6 → 50 code / 12 prose (containment 16 → 54%, additive)”.",
+    "- Paging: PR #127 lane H2, “--doc-drift, --flags/--flip, --situ disclose their cuts and page; answer rows never page”; gate-pin note, “the 25-row cap on tests-to-run was RETIRED … the arm now asserts every row listed”.",
+    "FOOTER",
+    "- PR #127 body: “x86-64 floor is -march=x86-64-v3 (AVX2, BMI1/2, FMA — RHEL 10's own floor). Prebuilt Linux x86 binaries now require AVX2-class CPUs. NEON on arm64.”",
+  ]);
+}
+
+/* ── S5f · 0.6.0: the scale rung ────────────────────────────────────────── */
+{
+  // Three defects that were measured on llvm-project, then a bar per corpus for the one no standard corpus
+  // showed, then — on the right, kept to ONE callout — why that corpus, with every item verified in the notes.
+  const s = p.addSlide(); bg(s);
+  kicker(s, "// Rip'n Fast, at scale — llvm-project, 182,555 files, as the instrument", CYAN);
+  title(s, "Three bugs found at llvm-project scale", { size: 32 });
+  const LW = 7.55;
+  const found = [
+    ["O(C²) child walks", CYAN,
+     "An indexed ts_node_child( n, i ) loop re-walks the child list on every call, so wide, flat lists (comment runs, C/C++ include guards) go quadratic. #127 moved 24 walks to one cursor helper (18 arms red first at 11–125×); #130 moved 22 more (13–126×).",
+     "194.1 → 155.6 s", "cold parse CPU, n = 1\n−19.9% · wall −25%"],
+    ["the inheritance cone", CYAN,
+     "Rebuilt on every still-ambiguous receiver-typed call: 86,667 cones for 2,984 distinct types, 143 s of a 154 s run. Each type's cone is now built once, and default maps are byte-identical on go and llvm-project.",
+     "159.7 → 9.2 s", "warm --grep\ndefault map 248 s → 10 s"],
+    ["the cache that evicted itself", AMBER,
+     "One llvm root needs 1.76 GB of cache, and the 2 GB oldest-first sweep was evicting that root's own index. The sweep now pins the root you are working in, and two key builders that hashed one root with different seeds share one key.",
+     "274 → 26 s", "a repeated --for, CPU"],
+  ];
+  let y = 1.72;
+  for (const [name, c, what, big, lbl] of found){
+    card(s, MX, y, LW, 1.18);
+    s.addText(name, { x: MX+0.2, y: y+0.08, w: 5.0, h: 0.3, fontFace: MONO, fontSize: 12.5, bold: true, color: c, margin: 0 });
+    s.addText(what, { x: MX+0.2, y: y+0.38, w: 5.05, h: 0.76, fontFace: SANS, fontSize: 9.5, color: MUTED, valign: "top", margin: 0 });
+    s.addText(big,  { x: MX+5.3, y: y+0.14, w: 2.1, h: 0.5, fontFace: MONO, fontSize: 16, bold: true, color: GREEN, align: "right", valign: "middle", margin: 0 });
+    s.addText(lbl,  { x: MX+5.3, y: y+0.64, w: 2.1, h: 0.46, fontFace: SANS, fontSize: 9, color: MUTED, align: "right", valign: "top", margin: 0 });
+    y += 1.27;
+  }
+  s.addText("the same round's cold parse, CPU Δ by corpus (median of 5; llvm-project n = 1)", { x: MX, y: 5.56, w: LW, h: 0.26, fontFace: MONO, fontSize: 9.5, color: MUTED, margin: 0 });
+  const bars = [["ripwire", 2.1], ["go", 1.7], ["rocksdb", 6.7], ["llvm-project", 19.9]];
+  const BX = MX + 1.55, BMAX = 4.9;
+  let by = 5.86;
+  for (const [corp, d] of bars){
+    const hit = corp === "llvm-project", bw = Math.max(0.04, BMAX * d / 19.9);
+    s.addText(corp, { x: MX, y: by, w: 1.45, h: 0.24, fontFace: MONO, fontSize: 10, color: hit ? TEXT : MUTED, align: "right", valign: "middle", margin: 0 });
+    s.addShape("rect", { x: BX, y: by+0.04, w: bw, h: 0.16, fill: { color: hit ? GREEN : "3A4353" }, line: { color: hit ? GREEN : "3A4353", width: 0 } });
+    s.addText("−" + d.toFixed(1) + "%", { x: BX+bw+0.08, y: by, w: 0.9, h: 0.24, fontFace: MONO, fontSize: 10, bold: hit, color: hit ? GREEN : MUTED, valign: "middle", margin: 0 });
+    by += 0.26;
+  }
+
+  const CX = 8.35, CWd = W - MX - CX;
+  card(s, CX, 1.72, CWd, 5.18, CARD2);
+  s.addText("Why llvm-project", { x: CX+0.22, y: 1.84, w: CWd-0.44, h: 0.32, fontFace: SANS, fontSize: 14, bold: true, color: TEXT, margin: 0 });
+  s.addText("A scale test that is also the real thing. Built on or with LLVM:", { x: CX+0.22, y: 2.16, w: CWd-0.44, h: 0.3, fontFace: SANS, fontSize: 10, italic: true, color: MUTED, margin: 0 });
+  const built = [
+    ["Clang (C, C++, Objective-C)", "Chromium's only supported compiler; the Android NDK's; Apple Clang in Xcode; the PS4 toolchain"],
+    ["Swift · Rust · Julia · Zig · Kotlin/Native", "each has an LLVM backend for its code generation"],
+    ["CUDA", "NVIDIA's NVVM compiler is based on LLVM, and Clang compiles CUDA too"],
+    ["Metal", "Apple's shading language: “Metal uses clang and LLVM”"],
+    ["MLIR", "part of LLVM; used by TensorFlow, OpenAI Triton and Mojo"],
+    ["WebAssembly", "Emscripten, a compiler toolchain to WebAssembly using LLVM"],
+    ["ROCm · oneAPI", "AMD ROCm's compilers fork llvm-project; Intel's oneAPI DPC++/C++ uses LLVM"],
+  ];
+  let ly = 2.5;
+  for (const [n, d] of built){
+    s.addText([
+      { text: n + "\n", options: { color: CYAN, bold: true, fontSize: 10.5, fontFace: MONO } },
+      { text: d, options: { color: MUTED, fontSize: 9.5 } },
+    ], { x: CX+0.22, y: ly, w: CWd-0.44, h: 0.56, fontFace: SANS, valign: "top", margin: 0 });
+    ly += 0.575;
+  }
+  s.addText("LLVM received the 2012 ACM Software System Award · each item's source is in the notes", { x: CX+0.22, y: 6.56, w: CWd-0.44, h: 0.28, fontFace: SANS, fontSize: 8.5, color: MUTED, margin: 0 });
+  foot(s, "all three measured on llvm-project; no standard corpus could see the first · sources: #127, #130, #83 — quotes in the notes");
+  notes(s, [
+    "SOURCES (the scale rung)",
+    "- 182,555 files: PR #127 body, “with llvm-project (182,555 files) as the scale rung”; PR #83 body, “llvm-project (182,555 files)”.",
+    "- Kicker “Rip'n Fast”: README.md's H1.",
+    "ROW 1, O(C²) CHILD WALKS",
+    "- Mechanism: the #127 presentation brief — “indexed ts_node_child(n,i) loops re-walk the child list on every call, which is O(children²)”; “Only wide FLAT child lists trigger it (comments as extras, C/C++ include guards), so no standard corpus could see it.”",
+    "- 24 walks, 18 arms at 11–125×: the brief, “24 walks converted to one cursor helper (src/infra/tschildren.h); 18 isolation arms proven red-first at 11–125×”; PR #127 lanes W and W2/W3.",
+    "- 22 more at 13–126×: PR #130 body, “22 walks converted, every one proven quadratic on the pre-change binary first … 13x..126x its control under a 16 000-comment flood”; “3 loops stay indexed with the reason written at the loop”; “156 generated fixture × verb pairs and the 21 committed ones are byte-identical”.",
+    "- 194.1 → 155.6 s, −19.9%, n = 1: PR #127 body table, llvm-project cold map --no-cache, 194.14 → 155.60. Wall −25%: the brief, “wall −25%”.",
+    "ROW 2, THE INHERITANCE CONE",
+    "- PR #83 body: “86,667 cones for 2,984 distinct receiver types”; “143 s of 154 s”; table --grep 159.7 s → 9.2 s and default map 248 s → 10 s; “default maps byte-identical pre/post on go and llvm-project”.",
+    "ROW 3, THE CACHE THAT EVICTED ITSELF",
+    "- The brief: “One llvm root needs 1.76 GB of cache against a 2 GB oldest-first sweep. Once the sweep stopped evicting the working root's own families, a repeated --for went from 274 s to 26 s CPU.” “Two cache-key builders hashed the root with different FNV seeds (one of them truncated), so every root minted two key families. There is one key now.” PR #127 lanes C and C2.",
+    "BARS",
+    "- PR #127 body table, cold map --no-cache, Δ median: ripwire (own tree) −2.1% (n=5), go −1.7% (n=5), rocksdb −6.7% (n=5), llvm-project −19.9% (n=1). The body: “the cold parse (--no-cache) carries the child-walk and field-id lanes … the O(C²) walks only bite on wide flat child lists, which C/C++ include guards and comment floods produce”. The bars therefore carry both lanes, as that table does.",
+    "- Title and footer: all three rows were measured on llvm-project (#127 body and brief; #83 body). Only the child walk is sourced as invisible elsewhere — the brief, “no standard corpus could see it” — so the footer claims that for the first row alone.",
+    "WHY LLVM-PROJECT — each item verified on 2026-09-11 against the page named; anything not verified was dropped",
+    "- 2012 ACM Software System Award: https://llvm.org/ — “LLVM has been awarded the 2012 ACM Software System Award!”",
+    "- Clang (C/C++/Objective-C): https://llvm.org/ lists “Clang (C/C++/Objective-C compiler)” among the sub-projects.",
+    "- Chromium: https://chromium.googlesource.com/chromium/src/+/main/docs/clang.md — “Chromium ships a prebuilt clang binary”; “This is the only supported compiler for building Chromium.”",
+    "- Android NDK: https://developer.android.com/ndk/guides/other_build_systems — “The Clang compiler in the NDK is useable with only minimal configuration required to define your target environment.” https://developer.android.com/ndk/downloads/revision_history — r18b: “GCC has been removed.”",
+    "- Apple: https://developer.apple.com/xcode/cpp/ — “Apple supports C++ with the Apple Clang compiler (included in Xcode)”.",
+    "- PS4: https://llvm.org/devmtg/2013-11/slides/Robinson-PS4Toolchain.pdf (Paul T. Robinson, Sony Computer Entertainment, LLVM Dev Meeting 2013) — “Compiler – LLVM with the Clang front end”. Only the PS4 deck was read, so later consoles are not claimed.",
+    "- Swift: https://www.swift.org/documentation/swift-compiler/ — “IR generation (implemented in lib/IRGen) lowers SIL to LLVM IR, at which point LLVM can continue to optimize it and generate machine code.”",
+    "- Rust: https://rustc-dev-guide.rust-lang.org/overview.html — “Since rustc uses LLVM for code generation, the first step is to convert the MIR to LLVM-IR.”",
+    "- Julia: https://docs.julialang.org/en/v1/devdocs/jit/ — “It is primarily built on LLVM's On-Request-Compilation (ORCv2) technology”.",
+    "- Zig: https://ziglang.org/download/0.15.1/release-notes.html — “the LLVM backend is still the default” on several targets, and the self-hosted x86 backend “emit[s] slower machine code than the LLVM backend”. Zig also has self-hosted backends, hence “has an LLVM backend”, not “uses only LLVM”.",
+    "- Kotlin/Native: https://kotlinlang.org/docs/native-overview.html — “Kotlin/Native includes an LLVM-based backend for the Kotlin compiler”.",
+    "- CUDA: https://docs.nvidia.com/cuda/nvvm-ir-spec/ — “The NVVM compiler (which is based on LLVM) generates PTX code from NVVM IR.” https://llvm.org/docs/CompileCudaWithLLVM.html — “This document describes how to compile CUDA code with clang”.",
+    "- Metal: the Metal Shading Language Specification, https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf — “Metal uses clang and LLVM so you get a compiler that delivers optimized performance on the GPU.” Read through a search-index extract of Apple's PDF: the file is larger than the fetch limit.",
+    "- MLIR: https://mlir.llvm.org/ (source at github.com/llvm/llvm-project/tree/main/mlir). TensorFlow: https://www.tensorflow.org/mlir — MLIR “unifies the infrastructure required to execute high performance machine learning models in TensorFlow and similar ML frameworks”. OpenAI Triton: https://github.com/triton-lang/triton — “Backend rewritten to use MLIR”; “Triton uses LLVM to generate code for GPUs and CPUs.” Mojo: https://mojolang.org/docs/vision — “KGEN is built using MLIR Core”.",
+    "- Emscripten: https://emscripten.org/ — “a complete compiler toolchain to WebAssembly, using LLVM”.",
+    "- AMD ROCm: https://rocm.docs.amd.com/projects/llvm-project/en/latest/ — “The AMD llvm-project is a fork of llvm/llvm-project.”",
+    "- Intel oneAPI DPC++/C++: https://www.intel.com/content/www/us/en/developer/tools/oneapi/dpc-compiler.html — “Uses well-proven LLVM compiler technology”.",
+    "- DROPPED as unverified: XLA/OpenXLA as MLIR-based (the openxla.org pages fetched did not say so).",
+  ]);
+}
+
+/* ── S5g · 0.6.0: honesty stories ───────────────────────────────────────── */
+{
+  const s = p.addSlide(); bg(s);
+  storyCards(s, {
+    kick: "// wire, in practice — three stories from 0.6.0, all merged",
+    head: "Confidently wrong, caught, and fixed in the open",
+    footText: "every figure is quoted from its PR body or commit in the speaker notes — the tripwire covers our own instruments too",
+    stories: [
+      { tag: "#134 · the resolver",
+        headline: "std::move had 2,107 callers",
+        what: "On memgraph, calls written std::move bound to the repository's lone in-repo move, SafeString::move, at full confidence and with no amb= or prov= marker. It became map row #1. In ripwire's own graph, std::min, std::max and std::sort bound fastmath and svector members.",
+        stat: "2,107 → 3", statColor: GREEN,
+        statLabel: "callers of SafeString::move after the fix: two of its unit tests and one std::ranges::move, a disclosed gap",
+        now: "A std::-qualified call keeps only candidates inside namespace std; anything else counts toward external= and gets no edge. On ripwire's own tree, --callers=min went from 131 to 5.",
+        gate: "test/stdqualcheck.sh · 35 checks, 19 red before" },
+      { tag: "#127 · the string kernels' gate",
+        headline: "The probe that lied",
+        what: "strkerncheck asked Rosetta 2 whether it could run the x86-64-v3 kernels, using a one-add AVX2 probe. Clang folded that probe to a scalar addb, with zero ymm or VEX opcodes, so it answered ok on every runtime while the v3 slice SIGILLed on the macos-14 runner. The first fix's commit gave the wrong reason; the next one corrected it.",
+        stat: "0 ymm opcodes", statColor: AMBER,
+        statLabel: "in the probe binary that had answered “ok” (otool)",
+        now: "The probe is now built with the floor's own -march and touches every v3 extension. The gate disassembles it and requires ymm, pdep, pext, lzcnt, tzcnt, vfmadd and vcvtph2ps; a folded probe routes to the scalar slice instead of passing.",
+        gate: "test/strkerncheck.sh · b4ebf0bb, 150fb6d3" },
+      { tag: "#127 · the audit's own tools",
+        headline: "The audit's instrument was wrong twice",
+        what: "A 14× super-linear reading turned out to be the cache evicting its own working root. And the recorded cap sweep had measured retrieval caps on a population of zero: it discarded exit codes, counted rows that emit nothing, and read back its own 10.4 MB cache blob, which “responded” to 103 of 108 caps.",
+        stat: "59/195 → 64/151", statColor: CYAN,
+        statLabel: "cap-sensitive rows: the published split, then the split re-derived over the rows that answer",
+        now: "Every sweep row now carries a state (ok, rc=N, unparseable, unexpanded, timeout), a run where nothing answered refuses to report, and nothing it writes may land in the corpus. The cache sweep pins the root you are working in.",
+        gate: "test/capsweepcheck.sh · 209f97a4 · 5723b2c0" },
+    ],
+  });
+  notes(s, [
+    "SOURCES (three stories, all merged to main)",
+    "STD::MOVE — PR #134 body (merged 2026-09-11):",
+    "- “A C++ call written std::X(...) bound to the repository's lone in-repo definition named X. It bound at full confidence, with no amb= or prov= marker.” “On memgraph, SafeString::move became map row #1 with 2,107 false callers from std::move.” “In ripwire's own graph, std::min/std::max/std::sort bound fastmath and svector members.”",
+    "- Table: “memgraph --callers=SafeString::move | 2,107 | 3”; “ripwire --callers=min / max / sort | 131 / 67 / 7 | 5 / 14 / 2”. “The three remaining memgraph callers are two SafeString unit tests and one std::ranges::move; see the first gap below.”",
+    "- Fix: “only candidates scoped inside std. Otherwise the call is counted through the existing external path (external=) and gets no edge.”",
+    "- Gate: “test/stdqualcheck.sh (35 checks, fresh fixture): pre-fix binary: 19 FAIL / 16 PASS, where the 16 are controls”.",
+    "THE PROBE THAT LIED — commits b4ebf0bb and 150fb6d3 (in #127, on main) and test/strkerncheck.sh:",
+    "- b4ebf0bb: “Correction of a fact the run-8 commit stated: run 7's probe did NOT execute an AVX2 instruction that Rosetta then survived — clang had folded the one-add probe to a scalar addb despite its volatile (otool: zero ymm/VEX opcodes), so it printed 'ok' on every runtime and never chose the baseline slice.” “the gate disassembles it (otool -tv, or objdump -d) and requires one opcode of each class — ymm, pdep, pext, lzcnt, tzcnt, vfmadd, vcvtph2ps — so a future compiler that folds the probe makes it route to the baseline slice rather than lie”.",
+    "- 150fb6d3: “Run 7: the macos-14 runner's Rosetta 2 executed the one-instruction AVX2 probe and then SIGILL'd the v3 slice” (the reason b4ebf0bb corrects); “The probe is now compiled with the floor itself and touches every extension it implies”.",
+    "- test/strkerncheck.sh: “clang folded that to a scalar addb despite the volatile (otool: zero ymm/VEX opcodes), so it printed ok on every runtime”.",
+    "THE AUDIT'S INSTRUMENT WAS WRONG TWICE — the #127 presentation brief, PR #127's body, commits 209f97a4 and 5723b2c0:",
+    "- The brief: “A 14× super-linear reading was a cache-eviction artifact, and the recorded cap sweep had measured retrieval caps on a population of zero.”",
+    "- 209f97a4: “run_corpus recorded len(stdout) and discarded returncode”; “The denominator counted 56 rows that emit nothing at all”; “a 10.4 MB cache blob that --batch= then read back, ‘responding’ to 103 of 108 caps”; “Every row now carries a state (ok / rc=N / unparseable / unexpanded / timeout)”; “A run in which NOTHING answered … now refuses to report a split”; “the destination must resolve outside the corpus”.",
+    "- PR #127 lane H: “re-derived split 64 of 151 answering rows (was published as 59/195)”.",
+    "- 5723b2c0: “fix(cache): the budget sweep pins the root you are working in, and says what it took”.",
+  ]);
 }
 
 /* ── S6 · head-to-head, round 4 ─────────────────────────────────────────── */
@@ -865,6 +1181,9 @@ function row(s, y, h, cols, opts={}){
   foot(s, "docs/EVALS.md §9.9 — same harness and criteria as the original four families, run BEFORE the two new ones shipped enabled");
 }
 
+/* ── S11d · what --quality-delta catches (examples: QD_EXAMPLES, top of this file) ─────────── */
+{ const s = p.addSlide(); bg(s); qdExamples(s, QD_EXAMPLES); }
+
 /* ── S12 · agent wiring ─────────────────────────────────────────────────── */
 {
   const s = p.addSlide(); bg(s);
@@ -984,7 +1303,7 @@ function row(s, y, h, cols, opts={}){
   kicker(s, "// do not take any of it on trust", AMBER);
   title(s, "Every claim, and the command that re-derives it");
   const claims = [
-    ["179 long flags · 29 slides",        "bash test/deckclaimcheck.sh"],
+    ["179 long flags · 33 slides",        "bash test/deckclaimcheck.sh"],
     ["every --flag named here exists",    "bash test/deckcheck.sh"],
     ["74.7% fewer element bytes",         "bash test/showcasecapturecheck.sh"],
     ["598 gate scripts",                  "bash test/manifestcheck.sh"], // gatecount
