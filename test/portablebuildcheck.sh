@@ -20,6 +20,8 @@
 #      confined to the RIPWIRE_IS_APPLE_SILICON branch inside cmake/PortableFlags.cmake).
 #   5) the real top-level CMakeLists.txt still routes through cmake/PortableFlags.cmake (didn't drift back
 #      to an inline literal).
+#   6) no ordered STL algorithm over std::string_view takes the default comparator in src/ — a line-local grep
+#      (#6) plus a pass that resolves each container through its declaration (#6b), with planted controls.
 #
 # Usage: test/portablebuildcheck.sh
 # Exits non-zero on any failure; prints PASS/FAIL per check, ALL PASS on success.
@@ -358,6 +360,274 @@ if [ -z "$SVBAD" ]; then
 else
     no "#6 ordered STL search over string_view with the DEFAULT comparator — aborts the Linux G1 leg (pass an explicit byte-comparator):"
     printf '%s\n' "$SVBAD" | sed 's/^/        /'
+fi
+
+# ── #6b: the same rule, resolved through each container's DECLARATION — the half the grep above cannot see ──
+# #6 is line-local and type-blind: it fires only when `string_view` is spelled on the call line, and it never
+# looked at std::sort at all. PR #135's extent detector sorted a std::vector<std::string_view> MEMBER declared
+# 67 lines up and binary-searched a std::span<const std::string_view> PARAMETER (src/extentsuspect.h); neither
+# call line names the type. #6 stayed green, both macOS legs stayed green, and on the Linux G1 leg every ingest
+# of a C++ tree with two same-file class names that prefix one another aborted INSIDE ingest — before any verb
+# ran, so even --pack-task's refusal arms died rc=134 with empty stderr (CI run 34583440115; the report,
+# `unsigned integer overflow: 8 - 13` at libstdc++ string_view:576, came from resetExtentScratch's std::sort).
+# The pass: every ordered algorithm called at its DEFAULT arity (no comparator argument) → the container its first
+# argument ranges over (`x.begin()`, `std::begin( x )`, a ranges:: argument) → the NEAREST PRECEDING declaration
+# of that name in the same file (a member access skips parameter-shaped ones). string_view anywhere in that
+# declaration's template arguments (vector, span, array, a pair element) or a C array of string_view is a finding.
+# static_assert calls are exempt: constant evaluation runs no sanitizer. Stated blind spots — zero findings means
+# "none found", not "none exists": a container declared in ANOTHER file, an `auto`-typed container, and a
+# comparator lambda that itself applies `<` to string_views. The two control scans run on planted input every
+# time, so a scanner that goes quiet fails this arm instead of passing it.
+SVSCAN="$TMP/svorder.py"
+cat > "$SVSCAN" <<'PY'
+import bisect
+import os
+import re
+import sys
+
+# ordered algorithm -> its classic (iterator-pair) arity WITHOUT a comparator argument
+ALGS = {
+    'sort': 2, 'stable_sort': 2, 'partial_sort': 3, 'nth_element': 3, 'is_sorted': 2, 'is_sorted_until': 2,
+    'min_element': 2, 'max_element': 2, 'minmax_element': 2, 'binary_search': 3, 'lower_bound': 3,
+    'upper_bound': 3, 'equal_range': 3, 'inplace_merge': 3, 'includes': 4, 'lexicographical_compare': 4,
+    'merge': 5, 'set_union': 5, 'set_intersection': 5, 'set_difference': 5, 'set_symmetric_difference': 5,
+}
+TWO_RANGE = {'includes', 'lexicographical_compare', 'merge', 'set_union', 'set_intersection', 'set_difference',
+             'set_symmetric_difference'}
+NOT_A_TYPE = {'return', 'co_return', 'co_yield', 'throw', 'case', 'else', 'delete', 'new', 'sizeof', 'alignof',
+              'typename', 'goto', 'using', 'operator', 'do', 'not', 'and', 'or', 'template', 'class', 'struct'}
+CALL = re.compile(r'\bstd::(ranges::)?(' + '|'.join(ALGS) + r')\s*\(')
+# comments and literal contents are blanked (newlines kept, so offsets and lines stay true); a pp-number is matched
+# first so a digit separator (1'000) is never read as a character literal
+TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/'
+                   r'|(?<![\w])(?:u8|u|U|L)?R"(?P<delim>[^()\\\s]{0,16})\(.*?\)(?P=delim)"'
+                   r"|(?<![\w])\d[\w']*"
+                   r'|"(?:[^"\\\n]|\\.)*"'
+                   r"|'(?:[^'\\\n]|\\.)*'", re.S)
+
+
+def blank(text):
+    return TOKEN.sub(lambda m: m.group(0) if m.group(0)[0].isdigit() else re.sub(r'[^\n]', ' ', m.group(0)), text)
+
+
+def split_args(text, open_index):
+    depth, args, start = 0, [], open_index + 1
+    for i in range(open_index, len(text)):
+        c = text[i]
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                args.append(text[start:i])
+                return args
+        elif c == ',' and depth == 1:
+            args.append(text[start:i])
+            start = i + 1
+    return None
+
+
+def container_of(arg):
+    """(identifier, is_member_access) of the container the first argument ranges over, or None."""
+    for pattern in (r'(\w+)\s*(?:\.|->)\s*c?r?(?:begin|end|data)\s*\(\s*\)',
+                    r'std::(?:ranges::)?c?r?(?:begin|end|data)\s*\(\s*((?:\w+\s*(?:\.|->|::)\s*)*)(\w+)\s*\)',
+                    r'^\s*((?:\w+\s*(?:\.|->)\s*)*)(\w+)\s*$'):
+        m = re.search(pattern, arg)
+        if not m:
+            continue
+        if m.lastindex == 1:
+            before = arg[:m.start(1)].rstrip()
+            return m.group(1), before.endswith('.') or before.endswith('->')
+        return m.group(2), bool(m.group(1).strip())
+    return None
+
+
+def type_before(text, pos):
+    """The type spelled right before a declarator at `pos`, or None when `pos` is not in declarator position."""
+    i = pos - 1
+    while i >= 0 and (text[i].isspace() or text[i] in '&*'):
+        i -= 1
+    if i >= 4 and text[i - 4:i + 1] == 'const' and (i < 5 or not (text[i - 5].isalnum() or text[i - 5] == '_')):
+        i -= 5
+        while i >= 0 and (text[i].isspace() or text[i] in '&*'):
+            i -= 1
+    end = i + 1
+    if i >= 0 and text[i] == '>':
+        if i >= 1 and text[i - 1] == '-':
+            return None
+        depth = 0
+        while i >= 0:
+            if text[i] == '>':
+                depth += 1
+            elif text[i] == '<':
+                depth -= 1
+                if depth == 0:
+                    break
+            elif text[i] in ';{}':
+                return None
+            i -= 1
+        i -= 1
+        while i >= 0 and text[i].isspace():
+            i -= 1
+    j = i
+    while j >= 0 and (text[j].isalnum() or text[j] in '_:'):
+        j -= 1
+    head = text[j + 1:i + 1]
+    if not head or head[0].isdigit() or head.endswith(':') or head.split('::')[-1] in NOT_A_TYPE:
+        return None
+    return re.sub(r'\s+', ' ', text[j + 1:end])
+
+
+def declarations(text, ident, cache):
+    if ident not in cache:
+        rows = []
+        for m in re.finditer(r'\b' + re.escape(ident) + r'\s*([;={(,)\[])', text):
+            spelled = type_before(text, m.start())
+            if spelled is not None:
+                rows.append((m.start(), spelled, m.group(1)))
+        cache[ident] = rows
+    return cache[ident]
+
+
+def is_string_view_ordered(spelled, next_char):
+    if re.search(r'<.*\bstring_view\b', spelled):
+        return True   # a container (or pair/tuple element) of string_view: its operator< is the wrapping one
+    return next_char == '[' and re.search(r'\bstring_view$', spelled) is not None   # a C array of string_view
+
+
+def scan_file(path, rel):
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        text = blank(fh.read())
+    cache, findings = {}, []
+    line_starts = [0] + [m.end() for m in re.finditer('\n', text)]
+    for m in CALL.finditer(text):
+        is_ranges, alg = m.group(1) is not None, m.group(2)
+        args = split_args(text, m.end() - 1)
+        if args is None:
+            continue
+        defaults = {ALGS[alg]}
+        if is_ranges:
+            defaults.add(ALGS[alg] - (2 if alg in TWO_RANGE else 1))
+        if len(args) not in defaults:
+            continue   # an explicit comparator (or projection) is passed
+        statement_start = max(text.rfind(';', 0, m.start()), text.rfind('{', 0, m.start()), text.rfind('}', 0, m.start()))
+        if 'static_assert' in text[statement_start + 1:m.start()]:
+            continue   # constant evaluation: no sanitizer runs there
+        container = container_of(args[0])
+        if container is None:
+            continue
+        ident, is_member = container
+        rows = [r for r in declarations(text, ident, cache) if r[0] < m.start() and (not is_member or r[2] in ';={')]
+        if not rows or not is_string_view_ordered(rows[-1][1], rows[-1][2]):
+            continue
+        line = bisect.bisect_right(line_starts, m.start())
+        decl_line = bisect.bisect_right(line_starts, rows[-1][0])
+        findings.append(f'{rel}:{line}: std::{"ranges::" if is_ranges else ""}{alg} over `{ident}` '
+                        f'(declared line {decl_line}: {rows[-1][1]}) with the default comparator')
+    return findings
+
+
+root = sys.argv[1].rstrip('/')
+paths = []
+for dirpath, dirnames, names in os.walk(root):
+    dirnames.sort()
+    for name in sorted(names):
+        if name.endswith(('.h', '.hpp', '.hh', '.cpp', '.cc', '.cxx', '.inc', '.ipp')):
+            paths.append(os.path.join(dirpath, name))
+for path in paths:
+    for finding in scan_file(path, os.path.relpath(path, os.path.dirname(root))):
+        print(finding)
+PY
+if ! command -v python3 >/dev/null 2>&1; then
+    no "#6b needs python3 on PATH to resolve declarations"
+else
+    mkdir -p "$TMP/svctl/planted" "$TMP/svctl/clean"
+    # every line marked PLANT must be found, and nothing else: the #135 shapes plus the other element spellings
+    cat > "$TMP/svctl/planted/planted.h" <<'EOF'
+inline constexpr int kBig = 1'000'000;
+inline constexpr const char* kRaw = R"x(a "quoted" ) paren)x";
+struct Scratch
+{
+    std::vector<std::string_view> names;
+};
+inline bool has( std::span<const std::string_view> names, std::string_view s )
+{
+    return std::binary_search( names.begin(), names.end(), s );   // PLANT
+}
+inline void reset( Scratch& scratch )
+{
+    std::sort( scratch.names.begin(),   // PLANT
+               scratch.names.end() );
+}
+inline void pairs()
+{
+    std::vector<std::pair<std::string_view, int>> rows;
+    std::sort( rows.begin(), rows.end() );   // PLANT
+}
+inline void carr()
+{
+    std::string_view table[ 3 ] = { "b", "a", "ab" };
+    std::sort( std::begin( table ), std::end( table ) );   // PLANT
+}
+inline void ranges( std::vector<std::string_view>& v )
+{
+    std::ranges::sort( v );   // PLANT
+}
+EOF
+    # none of these may be found: byte comparators, a std::string collision, constant evaluation, text that only spells a call
+    cat > "$TMP/svctl/clean/clean.h" <<'EOF'
+inline constexpr const char* kRaw = R"x(std::sort( names.begin(), names.end() ) ")x";
+struct Scratch2
+{
+    std::vector<std::string_view> names;
+};
+inline void reset2( Scratch2& scratch )
+{
+    std::sort( scratch.names.begin(), scratch.names.end(), rw::sortutil::svLess );
+}
+inline bool has2( std::span<const std::string_view> names, std::string_view s )
+{
+    return std::binary_search( names.begin(), names.end(), s, rw::sortutil::svLess );
+}
+inline void collision()
+{
+    std::vector<std::string> names;
+    std::sort( names.begin(), names.end() );
+}
+constexpr std::string_view kTable[] = { "a", "ab", "b" };
+static_assert( std::is_sorted( std::begin( kTable ), std::end( kTable ) ) );
+// std::sort( names.begin(), names.end() );  a comment is not a call
+inline const char* help = "std::sort( names.begin(), names.end() )";
+inline void sortChars()
+{
+    std::string_view chars = "cba";
+    std::string buf( chars );
+    std::sort( buf.begin(), buf.end() );
+}
+EOF
+    wantPlanted="$( grep -n 'PLANT' "$TMP/svctl/planted/planted.h" | cut -d: -f1 | sed 's#^#planted/planted.h:#' )"
+    gotPlanted="$( python3 "$SVSCAN" "$TMP/svctl/planted" | cut -d: -f1,2 )"
+    if [ -n "$wantPlanted" ] && [ "$gotPlanted" = "$wantPlanted" ]; then
+        ok "#6b control: the declaration pass finds exactly the $( printf '%s\n' "$wantPlanted" | wc -l | tr -d ' ' ) planted calls (member, span parameter, pair element, C array, ranges::)"
+    else
+        no "#6b control: planted default-comparator calls not found exactly — want [$( printf '%s ' $wantPlanted )] got [$( printf '%s ' $gotPlanted )]"
+    fi
+    gotClean="$( python3 "$SVSCAN" "$TMP/svctl/clean" )"; cleanRc=$?
+    if [ "$cleanRc" -eq 0 ] && [ -z "$gotClean" ]; then
+        ok "#6b control: byte comparators, a std::string collision, static_assert and call-shaped text are not findings"
+    else
+        no "#6b control: the clean input produced findings (rc=$cleanRc):"
+        printf '%s\n' "$gotClean" | sed 's/^/        /'
+    fi
+    SVDECL="$( python3 "$SVSCAN" "$ROOT/src" )"; svRc=$?
+    if [ "$svRc" -ne 0 ]; then
+        no "#6b the declaration pass itself failed on src/ (rc=$svRc) — a crashed scan is not a clean one"
+    elif [ -z "$SVDECL" ]; then
+        ok "#6b no ordered STL algorithm over a string_view container takes the default comparator (resolved through its declaration)"
+    else
+        no "#6b ordered STL algorithm over a string_view container with the DEFAULT comparator — aborts the Linux G1 leg (pass rw::sortutil::svLess):"
+        printf '%s\n' "$SVDECL" | sed 's/^/        /'
+    fi
 fi
 
 # NOTE (what this gate can prove vs what only Linux CI can prove): this machine is Apple-Silicon macOS, so

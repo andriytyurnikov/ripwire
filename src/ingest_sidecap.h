@@ -1123,6 +1123,74 @@ struct TreeGuard
     }
 };
 
+// ── THE MEMBER-MACRO RE-PARSE (src/macroreparse.h; gate test/macroreparsecheck.sh) ──────────────────────────────────
+// Per-worker scratch, reused across files: the scanner's scope stack, the spans the CURRENT file's adopted re-parse
+// blanked (cleared for every file; non-empty only after an adoption), the blanked copy of the bytes, and whether this
+// ingest records value uses (the rich family) — which decides whether a blanked invocation stays a --uses site.
+struct MemberMacroReparse
+{
+    macroreparse::ScanScratch            scan;
+    std::vector<macroreparse::BlankSpan> spans;
+    std::string                          blanked;
+    bool                                 captureValueUses = false;
+};
+
+// §L1 health of the parse this file's symbols will come from. For a C-family file whose FIRST parse holds error bytes,
+// try the re-parse with its semicolon-less member macro invocations blanked, and swap `tree` for it only when
+// macroreparse::adoptsReparse says it holds strictly fewer error bytes. The returned health then describes the ADOPTED
+// tree (errNodes/errBytes measured on it, wsBytes on the original bytes) and carries macroBlanked; otherwise it is the
+// first parse's, byte for byte what measureFileHealth always returned. A clean first parse pays one comparison.
+inline FileHealth measureHealthAdoptingMemberMacroReparse( TSParser* parser, Lang lang, std::string_view bytes, TreeGuard& tree, MemberMacroReparse& work )
+{
+    const FileHealth first = measureFileHealth( ts_tree_root_node( tree.get() ), bytes );
+    work.spans.clear();
+    if( first.errBytes == 0 || !macroreparse::isMacroReparseLang( lang ) )
+    {
+        return first;
+    }
+    macroreparse::findMemberMacroInvocations( bytes, work.spans, work.scan );
+    if( work.spans.empty() )
+    {
+        return first;
+    }
+    PROFILE_SCOPE_DESCRIBE( "ingest/extractFile: member-macro re-parse" );
+    macroreparse::blankInvocations( bytes, work.spans, work.blanked );
+    TreeGuard  second( parseTree( parser, work.blanked ) );
+    FileHealth reparsed = second.get() != nullptr ? measureFileHealth( ts_tree_root_node( second.get() ), bytes ) : first;
+    if( second.get() == nullptr || !macroreparse::adoptsReparse( first.errBytes, reparsed.errBytes ) )
+    {
+        work.spans.clear();
+        return first;
+    }
+    reparsed.macroBlanked = std::uint32_t( work.spans.size() );
+    tree = std::move( second );
+    return reparsed;
+}
+
+// A blanked invocation stays a use of the macro NAME: role=Type, the role the unrepaired parse gave it (it read
+// `NAME(X)` as a declaration whose type is NAME), so --uses=NAME lists the same sites whether or not the re-parse was
+// adopted. Only where that parse recorded uses at all — the rich family, C++/ObjC, captureSideFacts' own arming. Type
+// never enters the call graph, so PageRank and the default map are untouched by these rows. Identifiers inside the
+// parentheses are NOT re-recorded (disclosed in the skipped verb's legend).
+inline void appendBlankedMacroUses( const MemberMacroReparse& work, Lang lang, std::uint32_t fileId, std::string_view bytes, std::vector<RawRef>& refs )
+{
+    if( !work.captureValueUses || ( lang != Lang::Cpp && lang != Lang::ObjC ) )
+    {
+        return;
+    }
+    for( const macroreparse::BlankSpan& span : work.spans )
+    {
+        RawRef use;
+        use.fileId    = fileId;
+        use.startByte = span.startByte;
+        use.line      = span.line;
+        use.lang      = lang;
+        use.role      = RefRole::Type;
+        use.name      = std::string( bytes.substr( span.startByte, span.nameEndByte - span.startByte ) );
+        refs.push_back( std::move( use ) );
+    }
+}
+
 // ── ONE pre-order stream for every whole-AST side-capture pass ────────────────────────────────────────
 // FFI, routes, Rust impls, bindings and value-uses each used to run their OWN iterative pre-order walk of
 // the same tree, back to back. Measured with a per-pass node-pop probe on a 1659-file ObjC++/C++ corpus:
@@ -1417,6 +1485,9 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
 
     // #62: byte ranges this file's preprocessor decides are dead; see preprocDeadRangesFor above.
     const std::vector<PreprocDeadRange> ppDead = preprocDeadRangesFor( le, root, src );
+
+    // extent honesty: the recovered-bit walk (parseRecoveredBits) only exists in a file the parser had to recover.
+    const bool fileHasError = ts_node_has_error( root );
 
     {
         PROFILE_SCOPE_DESCRIBE( "ingest/extractFile: tags query exec+captures" );
@@ -1764,6 +1835,9 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             { // enclosing class/module → id= addressability, per-class overload sets, editCheckImplicitReceiver
                 d.scope = rubyEnclosingScopeOf( nameNode, src );   // (test/rubyscopecheck.sh)
             }
+            // extent honesty: did the parse RECOVER this def's container or kind? Only asked in a file whose root
+            // holds an error (fileHasError, one O(1) flag test per file) — see parseRecoveredBits.
+            d.recovered = fileHasError ? parseRecoveredBits( defNode, kind, le.lang, d.scope.empty() ) : std::uint8_t( 0 );
             defs.push_back( std::move( d ) );
             if( kind == SymKind::Class || kind == SymKind::Struct || kind == SymKind::Interface )
             {

@@ -44,6 +44,9 @@ struct RawDef
     std::uint8_t  maxNest   = 0;   // Q4: max control-structure nesting depth inside the def (from cc_walk)
     std::uint8_t  arityExact = 0;  // B2.2: 1 ⇒ params is a fixed call-comparable arity (no variadic/default, not implicit-self)
     std::uint8_t  testScope = 0;   // L8: 1 ⇒ an IN-FILE test convention encloses this def (see inFileTestScope)
+    std::uint8_t  recovered = 0;   // extent honesty (extentsuspect.h kRecovered*): the parse RECOVERED this def's container
+                                   //   (a class whose body holds an error, inside an ERROR region) or its kind (a scopeless
+                                   //   C++ method inside one); 0 ⇒ no recovery claim. Feeds the `error` reason at load.
     SymKind       kind      = SymKind::Other;
     Lang          lang      = Lang::Unknown;
     std::string   name;
@@ -119,7 +122,14 @@ constexpr std::uint32_t kCacheMagic   = 0x4b505443;   // "CTPK"
 //   all match) rather than silently re-absolutizing a key that was never root-relative to begin
 //   with — a v2 cache simply misses on every lookup that survives the guard, which is exactly the
 //   self-healing full-reparse path already used for any other corrupt/stale cache.
-constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs inside a preprocessor-DECIDED-dead region
+constexpr std::uint32_t kCacheVersion = 20;           // 20: the member-macro re-parse (test/macroreparsecheck.sh) — each
+                                                      //    FILE record gains FileHealth::macroBlanked, a fifth health
+                                                      //    u32 after wsBytes — a FORMAT change → reject v19 blobs.
+                                                      //    kParserVer moves with it.
+                                                      // 19: extent honesty (test/extentcheck.sh) — each def record gains
+                                                      //    the `recovered` u8 (RawDef::recovered, after testScope) — a
+                                                      //    FORMAT change → reject v18 blobs. kParserVer moves with it.
+                                                      // 18: #62 — call refs inside a preprocessor-DECIDED-dead region
                                                       //    (`#if 0`, the `#else` of `#if 1`) are no longer captured. The
                                                       //    record SHAPE is unchanged, but a v17 blob holds refs this build
                                                       //    would not produce, and replaying them warm would resurrect the
@@ -206,7 +216,26 @@ constexpr std::uint32_t kCacheVersion = 18;           // 18: #62 — call refs i
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 88;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 90;           // bump on any grammar/.scm/extraction change
+                                                      // 90 = 2026-09-11 (member-macro re-parse, test/macroreparsecheck.sh):
+                                                      //    a C-family file whose first parse holds error bytes may be
+                                                      //    extracted from a re-parse with its semicolon-less member macro
+                                                      //    invocations blanked (src/macroreparse.h) — different defs,
+                                                      //    scopes, complexity and health for exactly those files, plus
+                                                      //    one role=Type use per blanked invocation on the rich family.
+                                                      //    A v89 record cannot say which parse it came from, and the
+                                                      //    file record grows a u32, so kCacheVersion moves 19 -> 20.
+                                                      // 89 = 2026-09-11 (extent honesty, test/extentcheck.sh): every
+                                                      //    def carries RawDef::recovered — the parse recovered its
+                                                      //    container (a class whose body holds an error, inside an
+                                                      //    ERROR node) or its kind (a scopeless C++ method inside one),
+                                                      //    set by ingest_names.h parseRecoveredBits. A new extracted
+                                                      //    fact, so a v88 record cannot answer it; the record SHAPE
+                                                      //    grows one u8 too, so kCacheVersion moves 18 -> 19 with it.
+                                                      //    Every symbol, edge and metric is byte-identical (verified
+                                                      //    against the pre-change binary on src/ and the test/ corpus);
+                                                      //    only rows the new check flags gain extent_suspect=.
+                                                      //    quality.h's kIngestParserVerMirror bumped in the SAME commit.
                                                       // 88 = 2026-09-10 (Dart, test/dartcheck.sh): a 23rd grammar joins
                                                       //    kLangTable, so the CRAWL ADMITS FILES IT PREVIOUSLY REFUSED —
                                                       //    a v87 blob has no record for the `.dart` it never saw, so the
@@ -971,8 +1000,8 @@ inline std::uint64_t blobChecksum( std::string_view s ) noexcept
 //     [21:25)  u32  entryCount    file records == offset-table entries; cross-checked against the trailer
 //
 //   RECORD REGION — [ kCacheHeaderBytes, tableOffset ), entryCount records in ASCENDING pathHash order.
-//     Each record is the v14 per-file record, unchanged byte for byte: the root-relative path string,
-//     the content hash, the (size, mtime, ctime) stat-gate triple, the four FileHealth u32s, the rich
+//     Each record is the v14 per-file record plus v20's fifth FileHealth u32: the root-relative path string,
+//     the content hash, the (size, mtime, ctime) stat-gate triple, the five FileHealth u32s, the rich
 //     family's subtoken dictionary, then the seven counted record arrays (defs, refs, includes, binds,
 //     FFI aliases, route defs, route uses). Nothing inside a record moved — that is what lets a carry-
 //     over be a raw byte copy and what will let a future content-addressed store lift a record whole.
@@ -1364,7 +1393,7 @@ inline unsigned lexDictIndexWidth( std::size_t dictCount ) noexcept
 }
 inline void writeDef( ByteW& w, const RawDef& d, bool withLex, std::size_t fileDictCount, const std::uint32_t* rowDictIndex )
 {
-    w.u32( d.line ); w.u32( d.startByte ); w.u32( d.endByte ); w.u32( d.nameByte ); w.u32( d.bodyByte ); w.u32( d.cx ); w.u32( d.ccx ); w.u32( d.loc ); w.u32( d.locals ); w.u32( d.ppAlt ); w.u32( d.humps ); w.u32( d.deepLoc ); w.u32( d.ev ); w.u32( d.params ); w.u8( d.maxNest ); w.u8( d.arityExact ); w.u8( d.testScope ); w.u8( std::uint8_t( d.kind ) ); w.u8( std::uint8_t( d.lang ) ); w.str( d.name ); w.str( d.scope );
+    w.u32( d.line ); w.u32( d.startByte ); w.u32( d.endByte ); w.u32( d.nameByte ); w.u32( d.bodyByte ); w.u32( d.cx ); w.u32( d.ccx ); w.u32( d.loc ); w.u32( d.locals ); w.u32( d.ppAlt ); w.u32( d.humps ); w.u32( d.deepLoc ); w.u32( d.ev ); w.u32( d.params ); w.u8( d.maxNest ); w.u8( d.arityExact ); w.u8( d.testScope ); w.u8( d.recovered ); w.u8( std::uint8_t( d.kind ) ); w.u8( std::uint8_t( d.lang ) ); w.str( d.name ); w.str( d.scope );
     for( const std::uint8_t tagCount : d.evWhy ) { w.u8( tagCount ); }   // 8×u8, fixed order (model.h kEvWhyTagTable)
     if( withLex )
     {
@@ -1460,12 +1489,13 @@ inline void   writeRef( ByteW& w, const RawRef& r ) { w.u32( r.startByte ); w.u8
 // written as a u32 — 10 -> 11; the nesting profile then added `humps` and `deepLoc`, written as u32 each —
 // 11 -> 13; essential complexity then added `ev` as a u32 in the run plus the 8×u8 evWhy tag counters
 // after the strings — 13 -> 14 u32 and 4 -> 12 u8, so 56 + 12 + 8 = 76; L8's in-file `testScope` then
-// added one u8 in the run — 12 -> 13 u8, so 56 + 13 + 8 = 77); the RICH (withLex) extra is
+// added one u8 in the run — 12 -> 13 u8, so 56 + 13 + 8 = 77; the extent-honesty `recovered` bit then added
+// one more u8 in the run — 13 -> 14 u8, so 56 + 14 + 8 = 78); the RICH (withLex) extra is
 // dlWeighted u32 + tokenCount u32 + tfWidth u8 = 9 bytes. A ref record is 3 u32 + 7 u8 + 5 empty
 // str(len u32) fields = 3*4 + 7*1 + 5*4 = 39 bytes. verifyCacheRecordMinimaTripwire() below derives these
 // same numbers from the REAL writer functions at runtime so the next field added to writeDef/writeRef
 // can't silently stale them.
-inline constexpr std::size_t kMinDefRecordBytesLean      = 77;   // 14×u32 + 13×u8 + 2×str(len u32, empty)
+inline constexpr std::size_t kMinDefRecordBytesLean      = 78;   // 14×u32 + 14×u8 + 2×str(len u32, empty)
 inline constexpr std::size_t kMinDefRecordBytesRichExtra =  9;   // v10 rich withLex extra: dlWeighted u32 + tokenCount u32 + tfWidth u8
 inline constexpr std::size_t kMinRefRecordBytes          = 39;   // 3×u32 + 7×u8 + 5×str(len u32, empty)
 
@@ -1495,7 +1525,7 @@ inline void verifyCacheRecordMinimaTripwire() noexcept
 
 inline RawDef readDef( ByteR& r, bool withLex, const std::vector<std::uint64_t>& fileDict )
 {
-    RawDef d; d.line = r.u32(); d.startByte = r.u32(); d.endByte = r.u32(); d.nameByte = r.u32(); d.bodyByte = r.u32(); d.cx = r.u32(); d.ccx = r.u32(); d.loc = r.u32(); d.locals = r.u32(); d.ppAlt = std::uint16_t( r.u32() ); d.humps = std::uint16_t( r.u32() ); d.deepLoc = std::uint16_t( r.u32() ); d.ev = std::uint16_t( r.u32() ); d.params = std::uint16_t( r.u32() ); d.maxNest = r.u8(); d.arityExact = r.u8(); d.testScope = r.u8(); d.kind = SymKind( r.u8() ); d.lang = Lang( r.u8() ); d.name = r.str(); d.scope = r.str();
+    RawDef d; d.line = r.u32(); d.startByte = r.u32(); d.endByte = r.u32(); d.nameByte = r.u32(); d.bodyByte = r.u32(); d.cx = r.u32(); d.ccx = r.u32(); d.loc = r.u32(); d.locals = r.u32(); d.ppAlt = std::uint16_t( r.u32() ); d.humps = std::uint16_t( r.u32() ); d.deepLoc = std::uint16_t( r.u32() ); d.ev = std::uint16_t( r.u32() ); d.params = std::uint16_t( r.u32() ); d.maxNest = r.u8(); d.arityExact = r.u8(); d.testScope = r.u8(); d.recovered = r.u8(); d.kind = SymKind( r.u8() ); d.lang = Lang( r.u8() ); d.name = r.str(); d.scope = r.str();
     for( std::uint8_t& tagCount : d.evWhy ) { tagCount = r.u8(); }   // mirrors writeDef's fixed 8×u8 order
     if( withLex && r.ok )
     {
@@ -1652,6 +1682,7 @@ inline bool readFileRecord( ByteR& r, bool captureValueUses, std::vector<std::ui
     ffOut.health.errBytes  = r.u32();       //   NOT-MEASURED meaning across the round trip
     ffOut.health.fileBytes = r.u32();
     ffOut.health.wsBytes   = r.u32();
+    ffOut.health.macroBlanked = r.u32();   // v20: member-macro re-parse — rides the record so the disclosure survives a warm run
     if( !r.ok )
     {
         return false;
@@ -2211,6 +2242,7 @@ inline void saveCache( const std::string& path, std::string_view rootDir, const 
                 // NOT MEASURED — no sentinel of its own, and no way to mistake it for "clean".
                 const FileHealth fh = f < fileHealth.size() ? fileHealth[f] : FileHealth{};
                 w.u32( fh.errNodes );  w.u32( fh.errBytes );  w.u32( fh.fileBytes );  w.u32( fh.wsBytes );
+                w.u32( fh.macroBlanked );   // v20: the member-macro re-parse's per-file count (0 ⇒ the first parse was kept)
             }
             if( captureValueUses )
             {

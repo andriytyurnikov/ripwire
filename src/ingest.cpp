@@ -25,6 +25,8 @@
                                 // primitive, reused for a --match query's node-kind tokens (see nearestNodeKindHint)
 #include "pattern.h"           // R2: the pattern surface's compiler + matcher — AstWalk::Pattern rides the shared file walk
 #include "preprocdead.h"       // #62: the ONE literal `#if 0` rule (shared with slice.h) — dead call sites never become edges
+#include "extentsuspect.h"     // extent honesty: the containment rules + the recovered/suspect bit vocabulary
+#include "macroreparse.h"      // member-macro re-parse: the scanner, the offset-preserving blank, the adoption rule
 
 #include "infra/Diagnostics.h"
 #include "infra/profileScope.h"  // PROFILE_SCOPE self-profiling — gated by PROFILE_ENABLED (off unless -DRIPWIRE_PROFILE=ON)
@@ -313,6 +315,9 @@ IngestResult ingest( const char* rootDir, const std::vector<std::string>& exclud
     // 4) attribute each reference to its enclosing definition (innermost span containing it) — the
     //    per-file DefSpanIndex + DefSweep cursor every fact family below shares (ingest_model.h).
     const DefSpanIndex spanIndex = buildDefSpanIndex( result, raw.defs );
+
+    // 4a) extent honesty — the containment rules over the same sorted spans; bits land on Symbol::extentSuspect.
+    markExtentSuspects( result, raw.defs, spanIndex );
 
     // references: order a uint32 index permutation (radix by startByte), then MOVE each RawRef's strings
     // into its Reference while the shared sweep attributes fromSymbol (ingest_model.h).

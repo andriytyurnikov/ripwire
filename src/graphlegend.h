@@ -38,6 +38,7 @@
 #include <utility>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rw
@@ -437,10 +438,18 @@ inline constexpr const char* kDeclinedCallsLegend =
     "declined_calls=K (absent when 0) counts call SITES the resolver declined to bind: the called name has two or more same-language definitions, none in the caller's file or directory, and no qualifier, receiver type or include chose one, so no edge exists and no count or row here includes them (the map header's declined=). Callers form: declined calls that could have meant this selector's definitions; impact form: that could have reached SYM or a symbol in its radius; callees form: declined calls these definitions make. Each call counts once however many candidates it had; the uses verb on the called name lists the sites. ";
 inline const char* declinedCallsLegend( bool on ) noexcept { return on ? kDeclinedCallsLegend : ""; }
 
+// ONE absent-at-zero count attribute: ` name="N"`, or nothing at all when count is 0. declined_calls= below and
+// --skipped's extent_suspect_files=/macro_blanked_files= (root) and extent_suspect_syms=/macro_blanked= (<h> rows)
+// all spell through it, so the shape has one definition instead of a copy per verb.
+inline std::string countAttrXmlOrEmpty( std::string_view name, std::size_t count )
+{
+    return count > 0 ? " " + std::string( name ) + "=\"" + std::to_string( count ) + "\"" : std::string();
+}
+
 // The attribute and the key, one spelling each, absent at zero like bodyless_defs= and graph_unindexed=.
 inline std::string declinedCallsAttrXml( std::size_t declinedCalls )
 {
-    return declinedCalls > 0 ? " declined_calls=\"" + std::to_string( declinedCalls ) + "\"" : std::string();
+    return countAttrXmlOrEmpty( "declined_calls", declinedCalls );
 }
 inline std::string declinedCallsKeyJson( std::size_t declinedCalls )
 {
