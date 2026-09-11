@@ -21,7 +21,7 @@ before you approve it. Read the plan, cut what you disagree with, then say go.
 | [`head-to-head.md`](head-to-head.md) | Anyone who needs a number they can defend | A paired comparison against a competitor or a bare-grep baseline, with tokens-to-correct-answer and wall time, and the losses examined instead of buried. |
 | [`build-showcase.md`](build-showcase.md) | Anyone presenting the tool to someone else | A deck, one-pager or HTML page built only from numbers this repo's gates pin, each slide citing its instrument, with one honest counterexample. |
 | [`command-tour.md`](command-tour.md) | A new user, and the docs | Every verb run live on this repo with its output explained, plus a filed drift finding for any verb whose help, reference entry and live behavior disagree. |
-| [`help-wanted/`](help-wanted/README.md) | Anyone who wants a scoped problem to take on, with the research already done | An index of the help-wanted kits: one detailed prompt per open problem, its difficulty, and the pull request to claim it on. |
+| [`help-wanted/`](help-wanted/README.md) | Anyone who wants a scoped problem to take on, with the research already done | An index of the help-wanted kits: one detailed prompt per open problem, its difficulty, and the `help wanted` issue to claim it on. |
 
 **Before you start any of them:** build the tool, because most prompts need a binary to measure
 against.
