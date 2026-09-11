@@ -6,8 +6,9 @@
 # DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN, one TEST_CASE per kernel, one CHECK/REQUIRE per assertion, built
 # beside ripwire_test_csr / ripwire_test_pagerank / ripwire_test_radix. Until 2026-09-10 the same arms
 # lived in a standalone test/strkern_harness.cpp (14 `checkf` arms) and test/emitescape_harness.cpp (4);
-# the doctest target carries all 18 plus one — a compiled-path assertion — and this gate prints both
-# counts so a lost arm is arithmetic, not a feeling.
+# the doctest target carries all 18 plus a compiled-path assertion and, since the #127 review round, a
+# LexHeadIndex empty-bucket case; this gate prints both counts so a lost arm is arithmetic, not a
+# feeling, and MIN_ASSERTIONS is a FLOOR, never an exact expectation.
 #
 # THE TARGET IS BUILT THREE TIMES, and each build is a different question:
 #

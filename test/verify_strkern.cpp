@@ -65,6 +65,7 @@
 #include "infra/strkern.h"
 #include "infra/jsonesc.h"
 #include "lexindex.h"
+#include "lexical.h"            // LexHeadIndex — the empty-bucket arm below is this header's
 #include "serialize.h"
 #include "harnesscommon.h"      // DeterministicRng — the sanitizer-clean generator the SIMD harnesses share
 
@@ -1106,6 +1107,47 @@ TEST_CASE( "strkern: the compiled path is the one this target claims" )
     std::printf( "strkern sweep-rng: %016llx buffers=%zu\n",
                  static_cast< unsigned long long >( sweep().rngState ), sweep().bufferCount );
     CHECK( sk::kBlockBytes <= sk::kMaxBlockBytes );
+}
+
+// ── LexHeadIndex: the EMPTY bucket and the EMPTY longRows (CodeRabbit #127 / 3985249670) ─────────────
+// matchRow picks its scan range as `bucketIdx.data() + bucketOff[len]` for a token of at most kMaxLen
+// bytes and as `longRows.data() … + longRows.size()` above it. On the ordinary table NO row is longer
+// than 64 bytes, so `longRows` is EMPTY and `data()` may be null — and a 65+ byte corpus token whose
+// lowercased head is in the head set reaches exactly that expression. A length bucket that holds no row
+// is the same shape one level down.
+//
+// `null + 0` is a null pointer value, not undefined behaviour ([expr.add]/4, C++17 onward; this project
+// is C++23), and `first != last` is then false, so the loop body never runs. This arm is that claim in
+// executable form, under the same -fsanitize=address,undefined,integer,-fno-sanitize-recover=all build
+// arm 1 runs: it drives BOTH empty ranges and asserts the answer is kNoRow. It also drives the NON-empty
+// long path, so it is not a test of two early returns.
+TEST_CASE( "strkern: LexHeadIndex empty length bucket and empty longRows" )
+{
+    using rw::LexHeadIndex;
+
+    // A table whose every row is short: longRows is empty, and most length buckets are empty too.
+    const std::vector< std::string > shortTable{ "alpha", "beta", "gamma" };
+    const auto                        shortTokOf = [ & ]( std::size_t m ) -> const std::string& { return shortTable[ m ]; };
+    const LexHeadIndex                shortIx    = rw::buildLexHeadIndex( shortTable.size(), shortTokOf );
+    REQUIRE( shortIx.longRows.empty() );
+    CHECK( shortIx.longRows.data() + shortIx.longRows.size() == shortIx.longRows.data() );
+
+    // a 70-byte token whose head 'a' IS in the head set — the length bucket does not exist, so the
+    // kMaxLen branch is not taken and the empty longRows range is what decides the answer.
+    const std::string longTok( 70, 'a' );
+    CHECK( shortIx.matchRow( longTok.data(), longTok.size(), shortTokOf ) == LexHeadIndex::kNoRow );
+    // an in-range length whose bucket is empty (no 4-byte row starts with 'a'), head still in the set
+    const std::string fourA = "aaaa";
+    CHECK( shortIx.matchRow( fourA.data(), fourA.size(), shortTokOf ) == LexHeadIndex::kNoRow );
+    // the rows that DO exist still resolve — the arm is not passing because everything returns kNoRow
+    CHECK( shortIx.matchRow( shortTable[ 1 ].data(), shortTable[ 1 ].size(), shortTokOf ) == 1u );
+
+    // NON-EMPTY longRows: one 70-byte row, so the long branch has something to scan and hits.
+    const std::vector< std::string > longTable{ "alpha", std::string( 70, 'a' ) };
+    const auto                        longTokOf = [ & ]( std::size_t m ) -> const std::string& { return longTable[ m ]; };
+    const LexHeadIndex                longIx    = rw::buildLexHeadIndex( longTable.size(), longTokOf );
+    REQUIRE( longIx.longRows.size() == 1u );
+    CHECK( longIx.matchRow( longTok.data(), longTok.size(), longTokOf ) == 1u );
 }
 
 TEST_CASE( "strkern: A1 classMasks over all 256 byte values, every offset and length" )
