@@ -156,6 +156,7 @@ inline constexpr std::string_view kCompactProsePrefixes[] =
     "<!-- hdr:",                       // the map header's ignored_files definition
     "<!-- format=columnar: ",          // the columnar re-serialization block
     "<!-- a body's sibs=",             // --expand's sibs= block
+    "<!-- extent_suspect=",            // the extent-honesty row reading (serialize.h kExtentSuspectRowLegend)
 };
 
 // Comments that share a prose opener and must stay: --for's trailer (est_tokens=/dropped_positive=/weak= are
@@ -220,6 +221,8 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     { "scrubbed",          "scrubbed=1: this CDATA is not the bytes (]]> split or C0 replaced)", true },
     { "preview",           "preview=1: an UNWRITTEN payload; <overwrite l= end= bytes=> = the span an apply replaces, CDATA as on disk (shown=/capped=1/elided_lines= when cut)" },
     { "redacted",          "redacted=1: a credential shape rewritten to [REDACTED:kind]; the no-redact flag serves the bytes", true },
+    // extent honesty (serialize.h kExtentSuspectRowLegend): a ROW-level term on the map, <d> and <b> rows alike.
+    { "extent_suspect",    "extent_suspect=: span/scope/kind failed containment (name|head|scope|error)", true },
 };
 
 // the paging window: these five mean the same on every element (L4's one-attribute-one-reading law), so they are

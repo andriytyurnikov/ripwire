@@ -28,6 +28,15 @@ namespace
 // `receiver:` / `method:` fields, and a receiver-less `m(args)` is the same node kind with no `receiver:`
 // field. So `call` is the member-access node for Ruby and a null receiver is the bare shape — receiverOf's
 // existing null-receiver return already reads that as RecvKind::None (test/rubyscopecheck.sh, Rule 1 arms).
+// DISCLOSED GAP, not an oversight: Kotlin is absent here. `A.f()` parses to a `navigation_expression`
+// (verified against the vendored grammar), which this function does not recognize, so EVERY Kotlin
+// call site — bare `f()` and explicitly-qualified `A.f()` alike — classifies RecvKind::None. The
+// practical cost: an explicit receiver that WOULD narrow a same-name collision (two Kotlin
+// classes/objects each defining `f`, called as `A.f()` vs `B.f()`) currently does not — both stay
+// candidates, same as a genuinely bare call. graph.h's JVM bridge doesn't cause this (it is real and
+// present for Kotlin-only collisions too, no Java involved); adding this is a real feature — a
+// navigation_expression arm here plus a Kotlin case in memberAccessReceiver/memberAccessField below
+// — not a bug fix, and is out of scope for this port.
 inline bool isMemberAccessNode( const char* t, Lang lang ) noexcept
 {
     if( lang == Lang::Cpp || lang == Lang::ObjC ) { return kindIs( t, "field_expression" ); }

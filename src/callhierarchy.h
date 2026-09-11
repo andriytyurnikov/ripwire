@@ -60,11 +60,15 @@ inline HopTestedPartition computeHopTestedPartition( const IngestResult& ing, co
 //   rows    — the deduped neighbour set, in the served order (tier before path before line before name).
 // `bodylessDefs` is meaningful for the callee direction only (a declaration with no body has no callees),
 // and is counted here rather than at each emitter so the two cannot disagree about what "bodyless" means.
+// `declinedCalls` is the tier-3 declines the rows cannot show (graph.h): for callers, declined calls that named a
+// match among their candidates; for callees, declined calls a match made. Counted here with bodylessDefs, so the
+// CLI and MCP twins cannot disagree about the number printed beside count=.
 struct CallHierarchyRows
 {
     std::vector<NodeId> matches;
     std::vector<NodeId> rows;
-    std::size_t         bodylessDefs = 0;
+    std::size_t         bodylessDefs  = 0;
+    std::size_t         declinedCalls = 0;
 };
 
 inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph& g, std::string_view selector, bool wantCallers )
@@ -104,6 +108,8 @@ inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph
             }
         }
     }
+
+    out.declinedCalls = wantCallers ? declinedCallsNaming( g, out.matches ) : declinedCallsMadeBy( g, out.matches );
 
     // LB-G (r10 §5): TIER before path — filter.h states the key once and --uses shares it. Plain path order
     // put 171 `tests/` rows ahead of anything useful on django's `--callers=bulk_create`.

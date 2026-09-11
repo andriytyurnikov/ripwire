@@ -81,7 +81,7 @@ inline bool isValidSeverity( std::string_view s ) noexcept
 inline bool langFromToken( std::string_view tok, Lang& out ) noexcept
 {
     struct Row { std::string_view name; Lang lang; };
-    static constexpr std::array<Row, 17> kMap = { {
+    static constexpr std::array<Row, 18> kMap = { {
         { "cpp",        Lang::Cpp        },
         { "python",     Lang::Python     },
         { "typescript", Lang::TypeScript },
@@ -99,6 +99,7 @@ inline bool langFromToken( std::string_view tok, Lang& out ) noexcept
         { "lua",        Lang::Lua        },
         { "elixir",     Lang::Elixir     },
         { "dart",       Lang::Dart       },
+        { "kotlin",     Lang::Kotlin     },
     } };
     for( const Row& r : kMap )
     {
@@ -131,7 +132,7 @@ inline Lang langOfPath( std::string_view path ) noexcept
     }
 
     struct Row { std::string_view ext; Lang lang; };
-    static const std::array<Row, 33> kExt = { {
+    static const std::array<Row, 34> kExt = { {
         { ".cpp", Lang::Cpp }, { ".cc", Lang::Cpp }, { ".cxx", Lang::Cpp },
         { ".h", Lang::Cpp }, { ".hpp", Lang::Cpp }, { ".hh", Lang::Cpp }, { ".hxx", Lang::Cpp }, { ".c", Lang::C },
         { ".py", Lang::Python },
@@ -149,6 +150,7 @@ inline Lang langOfPath( std::string_view path ) noexcept
         { ".lua", Lang::Lua },
         { ".ex", Lang::Elixir }, { ".exs", Lang::Elixir },
         { ".dart", Lang::Dart },
+        { ".kt", Lang::Kotlin },
     } };
     for( const Row& r : kExt )
     {
@@ -213,6 +215,7 @@ inline bool dependencyCapable( Lang lang ) noexcept
         case Lang::Rust: case Lang::Go: case Lang::Swift:
         case Lang::Java: case Lang::CSharp: case Lang::Php:
         case Lang::Bash: case Lang::Ruby: case Lang::Lua: case Lang::Elixir:
+        case Lang::Kotlin:
             return true;
         case Lang::Json: case Lang::Toml: case Lang::Yaml: case Lang::Markdown: case Lang::Unknown:
         default:
@@ -235,7 +238,11 @@ inline bool dependencyCapable( Lang lang ) noexcept
 // (resolve.h::resolveTsImport). Every other language resolves only onto its own files (resolve.h's
 // Step-A candidate lists are extension-closed), so each is its own group. Java/Go/Swift/C#/PHP keep a
 // group despite being DEFERRED in the resolver: capability is about the language, not about how far this
-// tool currently resolves it, and a deferred pair is honestly "could carry one, we found none".
+// tool currently resolves it, and a deferred pair is honestly "could carry one, we found none". Kotlin
+// joins Java's group rather than minting its own, for the SAME reason C-family is one group: a Kotlin
+// file genuinely imports a Java class and vice versa in a mixed Android/JVM module (graph.h's
+// langCompatible bridges the two for the same reason on the call-graph side) — a separate Kotlin dialect
+// would report a real cross-language import pair as "not defined" instead of "found none".
 enum class DepDialect : std::uint8_t { None = 0, CFamily, Web, Python, Rust, Go, Swift, Java, CSharp, Php, Bash, Ruby, Lua, Elixir };
 
 /// Return the dependency dialect of a language, or DepDialect::None when it carries no file dependency.
@@ -249,7 +256,7 @@ inline DepDialect dependencyDialect( Lang lang ) noexcept
         case Lang::Rust:                                return DepDialect::Rust;
         case Lang::Go:                                  return DepDialect::Go;
         case Lang::Swift:                               return DepDialect::Swift;
-        case Lang::Java:                                return DepDialect::Java;
+        case Lang::Java: case Lang::Kotlin:              return DepDialect::Java;
         case Lang::CSharp:                              return DepDialect::CSharp;
         case Lang::Php:                                 return DepDialect::Php;
         case Lang::Bash:                                return DepDialect::Bash;

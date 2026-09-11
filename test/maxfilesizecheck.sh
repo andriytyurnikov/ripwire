@@ -78,7 +78,11 @@ grep -q 'skipped_oversize=' "$TMP/big" \
 # unresolved= are byte-identical to the pre-fix binary), so this gate asserts the ACCOUNTING INVARIANT
 # rather than a literal count: files= + skipped_oversize= is the same population at every setting.
 # Derived, never hardcoded — a count in a gate rots (trap #12).
-hdrnum(){ grep -oE "<!-- [^>]*$2=[0-9]+" "$1" | head -1 | grep -oE "$2=[0-9]+" | grep -oE '[0-9]+'; }
+# The name is anchored on the space in front of it. `files=` is a SUFFIX of other header attributes
+# (`macro_blanked_files=`, since the member-macro re-parse; `dep_files=`/`extent_suspect_files=` on
+# other surfaces), and the greedy first match runs to the LAST one, so an unanchored second grep read
+# `files=1773` AND the `files=7` inside `macro_blanked_files=7`, and $(( )) refused "1773\n7".
+hdrnum(){ grep -oE "<!-- [^>]*$2=[0-9]+" "$1" | head -1 | grep -oE "(^| )$2=[0-9]+" | grep -oE '[0-9]+'; }
 totalAt(){   # $1 = --max-file-size arg (may be empty) → "files+skipped"
     "$BIN" "$ROOT" $1 --top-k=1 >"$TMP/at" 2>/dev/null
     local f s; f="$( hdrnum "$TMP/at" files )"; s="$( hdrnum "$TMP/at" skipped_oversize )"

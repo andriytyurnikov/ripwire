@@ -13,12 +13,15 @@
 #                         (owner, 2026-09-10 — see the branch below for why, and for the FMA caveat).
 #                         That is an architecture LEVEL, not a host bake-in, and it is what makes
 #                         src/infra/strkern.h's AVX2 kernels compile at all.
-#                         On real Apple Silicon, -mcpu=apple-m1 is safe GENERIC tuning (every
+#                         For an Apple Silicon TARGET, -mcpu=apple-m1 is safe GENERIC tuning (every
 #                         shipping Apple Silicon core, M1 through the current line, is an M1-superset —
-#                         this is not a native-host bake-in), so we auto-apply it there. The moment we are
-#                         NOT on Apple Silicon — any Linux, x86-64 macOS, or cross build — we must emit
+#                         this is not a native-host bake-in), so we auto-apply it there. The moment the
+#                         target is NOT Apple Silicon — any Linux, x86-64 macOS, a cross build — we must emit
 #                         ZERO Apple-specific flags: `-mcpu=apple-m1` is a hard configure/compile failure
-#                         on every other target (clang: "unknown target CPU"; gcc: flag not recognized).
+#                         on every other target (clang: "unknown target CPU", or on clang >= 17 for x86
+#                         "unsupported option '-mcpu=' for target"; gcc: flag not recognized).
+#   TARGET, NOT HOST      every branch keys on RIPWIRE_TARGET_ARCH, set below: CMAKE_OSX_ARCHITECTURES when
+#                         it names one arch, else CMAKE_SYSTEM_PROCESSOR.
 #
 # -fno-finite-math-only is load-bearing in EVERY branch: it keeps isnan/isinf live for isFiniteFast even
 # under -ffast-math. src/pagerank.cpp overrides all of this with -fno-fast-math regardless of branch
@@ -33,13 +36,37 @@ option(RIPWIRE_PRETEND_LINUX
   "TEST-ONLY (test/portablebuildcheck.sh): force the portable non-Apple-Silicon flag path for testability, even on real Apple Silicon"
   OFF)
 
+# ── the TARGET architecture — never the host's ─────────────────────────────────────────────────────────
+# CMAKE_SYSTEM_PROCESSOR names the HOST on a macOS cross build: CMake derives it from the running machine
+# (CMakeDetermineSystem honours only CMAKE_APPLE_SILICON_PROCESSOR) and never from CMAKE_OSX_ARCHITECTURES.
+# release.yml builds the macOS x86_64 binary on an arm64 runner with -DCMAKE_OSX_ARCHITECTURES=x86_64, and
+# keyed on CMAKE_SYSTEM_PROCESSOR that compile got -mcpu=apple-m1 and no -march: a hard driver error on
+# clang >= 17 (AppleClang 16, the Xcode 16.2 the release pins), and on clang 16 a baseline x86-64 binary
+# running strkern.h's scalar twins. test/portablebuildcheck.sh #2d-#2g hold both directions.
+set(RIPWIRE_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  list(LENGTH CMAKE_OSX_ARCHITECTURES _ripwire_osx_arch_count)
+  if(_ripwire_osx_arch_count EQUAL 1)
+    set(RIPWIRE_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+  elseif(NOT RIPWIRE_NATIVE)
+    # One add_compile_options() cannot give an x86_64 slice -march=x86-64-v3 and an arm64 slice
+    # -mcpu=apple-m1: a universal tree would hand both slices ONE arch's flags, which is the defect above on
+    # half the binary. Nothing here builds one; a universal binary is `lipo -create` of two single-arch trees.
+    message(FATAL_ERROR
+      "ripwire builds one architecture per build tree (CMAKE_OSX_ARCHITECTURES='${CMAKE_OSX_ARCHITECTURES}'): "
+      "configure one tree per architecture and combine the binaries with `lipo -create`.")
+  endif()
+  unset(_ripwire_osx_arch_count)
+endif()
+message(STATUS "RIPWIRE_TARGET_ARCH:${RIPWIRE_TARGET_ARCH}")
+
 set(RIPWIRE_IS_APPLE_SILICON OFF)
-if(APPLE AND NOT RIPWIRE_PRETEND_LINUX AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+if(APPLE AND NOT RIPWIRE_PRETEND_LINUX AND RIPWIRE_TARGET_ARCH MATCHES "^(arm64|arm64e|aarch64)$")
   set(RIPWIRE_IS_APPLE_SILICON ON)
 endif()
 
 set(RIPWIRE_IS_X86_64 OFF)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+if(RIPWIRE_TARGET_ARCH MATCHES "^(x86_64|x86_64h|amd64|AMD64)$")
   set(RIPWIRE_IS_X86_64 ON)
 endif()
 

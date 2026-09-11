@@ -168,7 +168,7 @@ hash_off  = path_off + path_len
 size_off  = hash_off + 8
 mtime_off = size_off + 8
 ctime_off = mtime_off + 8
-nd_off    = ctime_off + 8 + 16   # past ctimeNs and the four FileHealth u32s: the LEAN def-record count
+nd_off    = ctime_off + 8 + 20   # past ctimeNs and the five FileHealth u32s (v20 added macroBlanked): the LEAN def-record count
 
 mutations = {}
 

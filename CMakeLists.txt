@@ -50,8 +50,8 @@ if(RIPWIRE_FUZZ)
 endif()
 
 # ---- optimization profile (portable by default) ----
-# default: arch-neutral on anything that isn't Apple Silicon; auto-detected apple-m1 tuning (safe generic
-# tuning, not a native-host bake-in) on real Apple Silicon. -DRIPWIRE_NATIVE=ON: dev-machine-only opt-in
+# default: the TARGET architecture decides — -march=x86-64-v3 for x86-64 (the owner's floor), generic apple-m1
+# tuning (not a native-host bake-in) for Apple Silicon, arch-neutral otherwise. -DRIPWIRE_NATIVE=ON: dev-machine-only opt-in
 # (-march=native bakes in host CPU extensions — never for a binary that ships or runs elsewhere).
 # See cmake/PortableFlags.cmake for the full rationale and the RIPWIRE_PRETEND_LINUX test-only hook.
 # DECLARED here, beside the other five options, rather than left to be conjured by a bare -D on the
@@ -250,6 +250,7 @@ set(_ripwire_query_names
   java
   javascript
   json
+  kotlin
   lua
   objc
   php
@@ -462,6 +463,17 @@ add_ts_grammar(elixir https://github.com/elixir-lang/tree-sitter-elixir.git 4b0c
 # owns — no new leak surface, and the G1 leg is run with the existing suppressions unchanged.
 add_ts_grammar(lua    https://github.com/tree-sitter-grammars/tree-sitter-lua.git 10fe0054734eec83049514ea2e718b2a56acd0c9)  # v0.5.0
 
+# Kotlin (.kt): fwcd/tree-sitter-kotlin — the only actively maintained Kotlin grammar. Pinned
+# to a bare commit on `main`, not the last tag (v0.3.8, Aug 2024): that tag predates a scanner
+# segfault fix (upstream #136), and main's scanner.c is still plain C, so add_ts_grammar's
+# scanner.c-only glob applies unchanged. Local-corpus probe (501 real .kt files, 2026-09-07):
+# 0.03% of bytes fall in ERROR subtrees, concentrated in one understood construct
+# (`@Composable () -> Unit`-shaped annotated function-type parameters: ~23% of Composable-heavy files
+# carry one, localized to a few bytes each with the enclosing declaration intact); zero ASan/UBSan
+# reports parsing the same corpus, despite the grammar's own scanner-segfault history. `.kts` is
+# deliberately not a kLangTable row yet — see the note there.
+add_ts_grammar(kotlin https://github.com/fwcd/tree-sitter-kotlin.git 1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1)  # main, post-0.3.8
+
 # PHP (.php): the official tree-sitter org grammar. Like TypeScript this repo hosts TWO sub-grammars
 # in subdirectories — `php/` (the full one: HTML text interleaved with `<?php … ?>` blocks) and
 # `php_only/` (no surrounding text). ONLY `php/` is vendored and built: a real .php file in a real
@@ -522,6 +534,7 @@ set(RIPWIRE_TS_OBJECTS
   $<TARGET_OBJECTS:ts_json>
   $<TARGET_OBJECTS:ts_lua>
   $<TARGET_OBJECTS:ts_dart>
+  $<TARGET_OBJECTS:ts_kotlin>
   $<TARGET_OBJECTS:ts_elixir>
   $<TARGET_OBJECTS:ts_php>
   $<TARGET_OBJECTS:ts_toml>
@@ -732,7 +745,7 @@ endif()
 set(RIPWIRE_GRAMMAR_TARGETS
   ts_cpp ts_python ts_go ts_rust ts_tsts ts_tstsx ts_swift ts_objc
   ts_javascript ts_bash ts_java ts_ruby ts_json ts_toml ts_yaml ts_csharp ts_c ts_cuda ts_markdown
-  ts_php ts_lua ts_elixir ts_dart)
+  ts_php ts_lua ts_elixir ts_dart ts_kotlin)
 set(RIPWIRE_RUNTIME_COMPILE_TARGETS ripwire_probe ripwire tree-sitter ${RIPWIRE_GRAMMAR_TARGETS})
 set(RIPWIRE_RUNTIME_LINK_TARGETS ripwire_probe ripwire)
 # The C++ subset of the compile list — the only targets that include a C++ standard library at all, and so
@@ -973,5 +986,6 @@ if(RIPWIRE_FUZZ)
   add_ripwire_fuzzer(dart       tree_sitter_dart       dart)
   add_ripwire_fuzzer(elixir     tree_sitter_elixir     elixir)
   add_ripwire_fuzzer(lua        tree_sitter_lua        lua)
+  add_ripwire_fuzzer(kotlin     tree_sitter_kotlin     kotlin)
   add_custom_target(ripwire_fuzzers DEPENDS ${RIPWIRE_FUZZ_TARGETS})
 endif()

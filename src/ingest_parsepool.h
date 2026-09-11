@@ -367,6 +367,8 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
     {
         lexScratch.reserve( 1024 );
     }
+    MemberMacroReparse macroWork;                        // member-macro re-parse (src/macroreparse.h): per-worker scratch
+    macroWork.captureValueUses = sh.captureValueUses;
     const auto buildLexForNewDefs = [ & ]( std::vector<RawDef>& defs, std::size_t firstNewDefIndex, const std::string& fileBytes )
     {
         if( !sh.captureValueUses )
@@ -539,6 +541,12 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 continue;
             }
 
+            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing, and itemized in --skipped (ingest_prewarm.h)
+            if( refuseKotlinNesting( *le, bytes, path.c_str(), fileId, scan ) )
+            {
+                continue;
+            }
+
             if( le->lang == Lang::Markdown )
             {
                 // hostile/degenerate markdown guard — MEMORY-SAFETY load-bearing, the yaml pair's
@@ -580,9 +588,11 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                     continue;
                 }
 
+                // §L1 — before `bytes` can be moved below. May swap `tree` for the member-macro re-parse (macroreparse.h).
+                scan.health[ fileId ] = measureHealthAdoptingMemberMacroReparse( pg.p, le->lang, bytes, tree, macroWork );
                 const TSNode root = ts_tree_root_node( tree.get() );
-                scan.health[ fileId ] = measureFileHealth( root, bytes );   // §L1 — before `bytes` can be moved below
                 captureSideFacts( *le, static_cast<std::uint32_t>( fileId ), bytes, root, out.refs, out.incs, out.binds, out.ffis, out.routeDefs, out.routeUses, out.constOpens, sh.captureValueUses );
+                appendBlankedMacroUses( macroWork, le->lang, static_cast<std::uint32_t>( fileId ), bytes, out.refs );
 
                 const bool canQueueParsed = !sh.prewarm.ready.load( std::memory_order_acquire )
                                          && pendingParsed.size() < kMaxPendingParsedFiles
@@ -862,6 +872,7 @@ inline RawFacts runParsePool( IngestResult& result, const char* rootDir, std::st
         // Skips the ~11ms / 7 MB serialization+write on a no-change warm run.
         if( !cacheFile.empty() && dirty.load() )
         {
+            forgetNestRefusalsForCache( scan );   // a refused file is written UNKNOWN, so a warm run re-refuses it (ingest_prewarm.h)
             saveCache( std::string( cacheFile ), rootDir, result.files, scan.hash, scan.statSize, scan.statMtime, scan.statCtime, scan.health, raw.defs, raw.refs, raw.incs, raw.binds, raw.ffis, raw.routeDefs, raw.routeUses, raw.constOpens, captureValueUses );
         }
     }
