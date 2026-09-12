@@ -12,8 +12,16 @@
 # timeout left the body empty, and the empty string went on to be judged: "transports DIFFER … http=" in
 # mcpframehonestycheck (CI 2026-09-12, release macos-14, shard 2/4, first frame only), a traceback that silenced every
 # later arm in mcpcontractcheck, "premise BROKEN" in mcptoolprunecheck. `post` reads the body to its Content-Length; a
-# timeout, a refused connect, a close without a response or a short body raises NoAnswer, whose sentence names which.
-# The sentence is context-free: each caller adds what the silence is NOT (a transport difference, a catalog verdict).
+# timeout, a refused connect, a close without a response, a short body or a garbled one raises NoAnswer, whose sentence
+# names which. The sentence is context-free: each caller adds what the silence is NOT (a transport difference, a catalog
+# verdict).
+#
+# ONE DEADLINE PER REQUEST. A timeout set on each recv bounds the silence BETWEEN bytes, not the request: a listener that
+# sends one byte more often than the timeout kept a request alive, and its buffer growing, for as long as it went on
+# sending (review of PR #188). `post` now gives the whole request, connect through the last body byte, one absolute
+# deadline, and every blocking call waits only for what is left of it; waitServing does the same against its serving
+# ceiling. Nothing is read past a declared Content-Length, and a read that already carried more is a garbled answer,
+# never a body cut to length. mcpframehonestycheck (I0) observes it live: a stand-in that trickles a body it never ends.
 #
 # READY MEANS ANSWERED. A port that ACCEPTS is not a server that answers: runMcpHttp (src/mcpserver.h) listen()s,
 # then warms the pinned index, and only then enters its accept loop, while the kernel completes handshakes into the
@@ -39,21 +47,40 @@ REQUEST_TIMEOUT_SEC = 5.0
 class NoAnswer( Exception ):
     """There is no response body to judge; str() is the sentence that says why."""
 
+def secondsLeft( deadline ):
+    """What is left of an ABSOLUTE deadline, as the next blocking call's timeout; socket.timeout once nothing is."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise socket.timeout( "timed out" )
+    return left
+
+def recvBefore( s, deadline, size ):
+    """One recv of at most `size` bytes that cannot outlive `deadline`, however often the peer sends."""
+    s.settimeout( secondsLeft( deadline ) )
+    return s.recv( size )
+
 def waitServing( port, isAlive, ceilingSec = SERVING_CEILING_SEC ):
     """'' once the listener on `port` ANSWERS an HTTP request, else the sentence naming why it never did."""
     deadline = time.monotonic() + ceilingSec
+    status   = b"HTTP/1."                              # any status line: 405 bare, 401 under a token
     while time.monotonic() < deadline:
         if not isAlive():
             return "the HTTP listener exited before it answered a request"
-        try:
-            s = socket.create_connection( ( "127.0.0.1", port ), 0.25 )
+        try:                                           # socket.timeout is an OSError: the ceiling passing lands here too
+            s = socket.create_connection( ( "127.0.0.1", port ), min( 0.25, secondsLeft( deadline ) ) )
         except OSError:
             time.sleep( 0.02 )
             continue
-        try:                                           # connected is not served: wait on THIS connection
-            s.settimeout( max( 0.05, deadline - time.monotonic() ) )
+        try:                                           # connected is not served: wait on THIS connection, to the ceiling
+            s.settimeout( secondsLeft( deadline ) )
             s.sendall( b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" )
-            if s.recv( 16 ).startswith( b"HTTP/1." ):
+            got = b""
+            while len( got ) < len( status ):          # the status prefix and no further, however it is split
+                chunk = recvBefore( s, deadline, len( status ) - len( got ) )
+                if not chunk:
+                    break
+                got += chunk
+            if got == status:
                 return ""
         except OSError:
             pass
@@ -70,28 +97,39 @@ def contentLength( head ):
     return None
 
 def post( port, body, extraHeaders = b"", timeoutSec = REQUEST_TIMEOUT_SEC ):
-    """The body of one POST /mcp, read to its Content-Length. Raises NoAnswer when there is no body to judge."""
+    """The body of one POST /mcp, read to its Content-Length. Raises NoAnswer when there is no body to judge.
+
+    `timeoutSec` is ONE deadline for the whole request, connect through the last body byte: every blocking call waits
+    only for what is left of it, so a listener that keeps sending cannot keep the request alive."""
     req = ( b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n" + extraHeaders
             + b"Accept: application/json, text/event-stream\r\nContent-Length: " + str( len( body ) ).encode()
             + b"\r\n\r\n" + body )
+    started  = time.monotonic()
+    deadline = started + timeoutSec
     try:
         s = socket.create_connection( ( "127.0.0.1", port ), timeoutSec )
     except OSError as e:
         raise NoAnswer( "could not connect to 127.0.0.1:%d (%s)" % ( port, e ) )
-    got = b""
+    got, tail, length = b"", b"", None
     try:
+        s.settimeout( secondsLeft( deadline ) )
         s.sendall( req )
         while True:
             head, sep, tail = got.partition( b"\r\n\r\n" )
             length = contentLength( head ) if sep else None
-            if length is not None and len( tail ) >= length:
-                return tail[ :length ].decode( "utf-8", "replace" )
-            chunk = s.recv( 65536 )
+            if length is not None and len( tail ) > length:
+                raise NoAnswer( "the server sent %d body bytes against a declared Content-Length of %d: a garbled answer, "
+                                "not a body to cut to length" % ( len( tail ), length ) )
+            if length is not None and len( tail ) == length:
+                return tail.decode( "utf-8", "replace" )
+            chunk = recvBefore( s, deadline, 65536 if length is None else min( 65536, length - len( tail ) ) )
             if not chunk:
                 break
             got += chunk
     except socket.timeout:
-        raise NoAnswer( "HTTP request timed out after %g s with %d response bytes" % ( timeoutSec, len( got ) ) )
+        raise NoAnswer( "HTTP request timed out after %g s with %d response bytes (%.2f s elapsed%s)"
+                        % ( timeoutSec, len( got ), time.monotonic() - started,
+                            "" if length is None else "; %d of the %d body bytes its Content-Length declares" % ( len( tail ), length ) ) )
     except OSError as e:
         raise NoAnswer( "HTTP request failed after %d response bytes (%s)" % ( len( got ), e ) )
     finally:

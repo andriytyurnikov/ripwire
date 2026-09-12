@@ -553,6 +553,61 @@ case "$CTRL" in
     *) no "(I0) control: a silent listener did not come back as a named no-answer (exit|stdout): $CTRL";;
 esac
 
+# (I0) CONTROL, the listener that DOES send: a head declaring a Content-Length it never delivers, then one body byte
+# every 0.5 s. A timeout set on each recv never fires on that, because every byte restarts it, so the request lived as
+# long as the trickle did (review of PR #188). The 2 s deadline is the whole request's: the stand-in times its
+# connection from accept to the client's hang-up, so the bound is read off the wire rather than off the client's own
+# sentence, and a 10 s kill turns a client that no longer keeps its deadline into this row's FAIL instead of a hang.
+trickle_listener_post(){ python3 - "$GATEHTTP" <<'PY'
+import select, socket, subprocess, sys, threading, time
+TIMEOUT_SEC, MARGIN_SEC, KILL_SEC = 2.0, 1.0, 10.0
+stand = socket.socket(); stand.bind( ( "127.0.0.1", 0 ) ); stand.listen( 1 ); stand.settimeout( KILL_SEC )
+lived = []                                      # accept -> the client's hang-up, as the stand-in saw it
+def trickle():
+    try:
+        conn, _ = stand.accept()
+    except OSError:
+        return
+    accepted = time.monotonic()
+    try:
+        conn.sendall( b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n{" )
+        while time.monotonic() - accepted < KILL_SEC + 5:
+            if select.select( [ conn ], [], [], 0.5 )[ 0 ]:
+                if not conn.recv( 65536 ):      # EOF is the hang-up; the request's own bytes are drained unread
+                    break
+            else:
+                conn.sendall( b" " )
+    except OSError:                             # a reset or a broken pipe is the hang-up too
+        pass
+    lived.append( time.monotonic() - accepted )
+    conn.close()
+server = threading.Thread( target = trickle ); server.start()
+try:
+    r = subprocess.run( [ sys.executable, sys.argv[1], "post", str( stand.getsockname()[1] ), "{}", "%g" % TIMEOUT_SEC ],
+                        stdout = subprocess.PIPE, timeout = KILL_SEC )
+    rc, said = r.returncode, r.stdout.decode( "utf-8", "replace" )
+except subprocess.TimeoutExpired:
+    rc, said = None, ""
+server.join(); stand.close()
+if rc is None:
+    print( "FAIL|the client was still waiting when it was killed %g s in: the trickle kept a %g s request alive"
+           % ( KILL_SEC, TIMEOUT_SEC ) )
+elif rc != 3 or not said.startswith( "HTTP request timed out after %g s" % TIMEOUT_SEC ):
+    print( "FAIL|not a named timeout (exit %d): %s" % ( rc, said[ :200 ] ) )
+elif not lived or lived[ 0 ] > TIMEOUT_SEC + MARGIN_SEC:
+    print( "FAIL|a named timeout, but the connection lived %s against a %g s deadline + %g s margin: %s"
+           % ( "%.2f s" % lived[ 0 ] if lived else "an unmeasured time", TIMEOUT_SEC, MARGIN_SEC, said ) )
+else:
+    print( "PASS|the connection lived %.2f s against a %g s deadline (+ %g s margin): %s"
+           % ( lived[ 0 ], TIMEOUT_SEC, MARGIN_SEC, said ) )
+PY
+}
+TRICKLE="$( trickle_listener_post )"
+case "$TRICKLE" in
+    "PASS|"*) ok "(I0) control: a listener that trickles a body it never finishes is a NAMED no-answer at the request's deadline — ${TRICKLE#PASS|}";;
+    *) no "(I0) control: a trickling listener outlived the request's deadline, or was not a named no-answer — ${TRICKLE#FAIL|}";;
+esac
+
 PORT=$(( 21000 + ( $$ % 9000 ) ))
 "$BIN" "$FIX" --listen=127.0.0.1:"$PORT" >"$TMP/http.log" 2>&1 &
 HTTP_PID=$!
@@ -1002,10 +1057,11 @@ elif whyNotServing:
     http.terminate(); http.wait( 15 )
 else:
     auth   = b"Authorization: Bearer " + token.encode() + b"\r\n"
-    stdio  = StdioServer( ws )
-    before = identity( target )
+    stdio  = None
     differ, remoteApplied, noAnswer = [], [], []
-    try:
+    try:                                            # the SETUP is inside too: StdioServer raises if its process will not
+        stdio  = StdioServer( ws )                  # start or initialize, identity() from os.stat or open, and either one
+        before = identity( target )                 # before this `try` skipped the terminate below and orphaned the listener
         for verb, field in WRITE_VERBS:
             for cp in inSet[ ::3 ]:
                 line = json.dumps( { "jsonrpc": "2.0", "id": 7, "method": "tools/call",
@@ -1019,9 +1075,12 @@ else:
                     continue
                 if s != h:                          differ.append( ( verb, cp, s[ :90 ], h[ :90 ] ) )
                 if '"error"' not in h:              remoteApplied.append( ( verb, cp ) )
-    finally:                                        # an escaping exception must not orphan a live listener
-        http.terminate(); http.wait( 15 )
-    stdio.close()
+    finally:                                        # a raise anywhere above, setup included, must not orphan the listener:
+        try:                                        # stdio is closed only if it was created, and the listener is
+            if stdio is not None:                   # terminated and reaped even when that close raises
+                stdio.close()
+        finally:
+            http.terminate(); http.wait( 15 )
     for verb, cp, why in noAnswer[ :5 ]:
         print( "  FAIL  (K2) %-20s U+%04X no HTTP answer: %s — not a transport difference" % ( verb, cp, why ) )
     for verb, cp, s, h in differ[ :5 ]:
