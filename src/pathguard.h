@@ -30,7 +30,8 @@
 // ofstream, and not true of the problem: the writers do not need ofstream, they need a descriptor. So the
 // check and the create are now ONE syscall, and it is the only one a writer makes:
 //
-//     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 )   (O_NONBLOCK and the fstat after it: round 4)
+//     ::open( path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0666 )   (round 4: O_NONBLOCK, then fstat, then ftruncate
+//                                                                          in place of the O_TRUNC it once carried)
 //
 // O_NOFOLLOW makes the KERNEL refuse a final component that is a symlink, at the instant of resolution.
 // There is no window because there is no second resolution — whatever the entry is when the kernel looks
@@ -223,25 +224,43 @@ struct OpenedFile
 //
 // NOT A REGULAR FILE (round 4). O_NONBLOCK lets the open return for a FIFO instead of waiting for a reader:
 // with nobody reading, it fails at once with ENXIO and takes the plain-errno branch below. The fstat then
-// refuses whatever DID open but is not a regular file, before any byte is written. O_TRUNC has run by that
-// point and does nothing to a FIFO; on a regular file nothing here is refused. That refusal reports EINVAL,
+// refuses whatever DID open but is not a regular file, before any byte is written. That refusal reports EINVAL,
 // because no syscall failed: the name holds something a sidecar cannot be.
+//
+// TRUNCATION COMES LAST. The open does not carry O_TRUNC: with it, an existing regular sidecar was emptied before
+// fstat had looked at anything, so a failure there returned an error over a file already destroyed. The descriptor
+// is truncated with ftruncate only once fstat has confirmed a regular file, so every refusal and every failure
+// before that point leaves the old sidecar exactly as it was.
 inline OpenedFile openNoFollowTruncate( std::string_view what, const std::string& path )
 {
-    const int fd = ::open( path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 );
+    const int fd = ::open( path.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0666 );
     if( fd >= 0 )
     {
         struct stat openedSt{};
-        if( ::fstat( fd, &openedSt ) == 0 && S_ISREG( openedSt.st_mode ) )
+        if( ::fstat( fd, &openedSt ) != 0 )
         {
-            return { fd, 0 };
+            const int statErr = errno;
+            ::close( fd );
+            rw::emitTo( stderr, "ripwire: could not inspect {} at '{}': {}. Nothing was written.\n", what, path, std::strerror( statErr ) );
+            return { -1, statErr };
         }
-        ::close( fd );
-        rw::emitTo( stderr,
-                    "ripwire: refusing to write {} at '{}': that path is not a regular file (a FIFO, for example), so there is no\n"
-                    "  sidecar there to write. Nothing was written. Remove it and re-run.\n",
-                    what, path );
-        return { -1, EINVAL };
+        if( !S_ISREG( openedSt.st_mode ) )
+        {
+            ::close( fd );
+            rw::emitTo( stderr,
+                        "ripwire: refusing to write {} at '{}': that path is not a regular file (a FIFO, for example), so there is no\n"
+                        "  sidecar there to write. Nothing was written. Remove it and re-run.\n",
+                        what, path );
+            return { -1, EINVAL };
+        }
+        if( ::ftruncate( fd, 0 ) != 0 )
+        {
+            const int truncErr = errno;
+            ::close( fd );
+            rw::emitTo( stderr, "ripwire: could not truncate {} at '{}' for writing: {}. Nothing was written.\n", what, path, std::strerror( truncErr ) );
+            return { -1, truncErr };
+        }
+        return { fd, 0 };
     }
     const int err = errno;
 

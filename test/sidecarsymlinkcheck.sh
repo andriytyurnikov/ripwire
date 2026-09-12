@@ -29,7 +29,8 @@
 # made the write follow a link after all. The guard was ADVISORY — it described the destination, it did not
 # constrain the open. The remedy is that the check and the create are now ONE syscall:
 #
-#     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 )   (src/pathguard.h; O_NONBLOCK since round 4)
+#     ::open( path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0666 )   (src/pathguard.h; O_NONBLOCK since round 4, and the
+#     O_TRUNC it once carried is now an ftruncate that runs only after the regular-file check)
 #
 # and the three writers hold the resulting descriptor. There is no window because there is no second
 # resolution. The pre-open lstat is GONE from all three writers — which is what makes the (a)/(b) arms
@@ -72,8 +73,9 @@
 #                       emitters report no failed write, and fclose answers only for its own final flush, so a
 #                       failed EARLIER flush could still come back true. The two siblings already had the shape,
 #                       so on them these rows are green before and after — a regression guard there
-#     once:         (f) MECHANISM: src/pathguard.h has exactly TWO ::open — one write open carrying all four of
-#                       O_WRONLY/O_CREAT/O_TRUNC/O_NOFOLLOW (f1), and one read open carrying O_RDONLY|O_NOFOLLOW
+#     once:         (f) MECHANISM: src/pathguard.h has exactly TWO ::open — one write open carrying
+#                       O_WRONLY/O_CREAT/O_NOFOLLOW and no O_TRUNC, truncating with ftruncate only after its
+#                       regular-file check (f1), and one read open carrying O_RDONLY|O_NOFOLLOW
 #                       (f3, round 3); and refuseSymlinkWrite — the advisory check-then-open guard — is gone
 #                       from src/ entirely, not merely unused (f2)
 #
@@ -415,13 +417,20 @@ grep -v '^[[:space:]]*//' "$PG" >"$PGCODE"
 openLines="$( grep -c '::open(' "$PGCODE" | tr -d ' ' )"
 writeOpens="$( grep '::open(' "$PGCODE" | grep -c 'O_WRONLY' | tr -d ' ' )"
 readOpens="$( grep '::open(' "$PGCODE" | grep -c 'O_RDONLY' | tr -d ' ' )"
-if [ "$openLines" = "2" ] && [ "$writeOpens" = "1" ] \
+# The write open does NOT truncate. With O_TRUNC on the open, an existing regular sidecar was emptied before the
+# fstat check had looked at anything; the writer now truncates the descriptor with ftruncate, and only after fstat has
+# confirmed a regular file. (w2) is the behavioural half: a rewrite over a longer planted baseline must still come
+# out byte-identical, which it cannot if the truncation stopped happening.
+WTRUNC="$TMP/pathguard_truncate_fn.txt"
+awk '/inline OpenedFile openNoFollowTruncate\(/ { f = 1 } f { print } f && /^}$/ { exit }' "$PGCODE" >"$WTRUNC"
+if [ "$openLines" = "2" ] && [ "$writeOpens" = "1" ] && [ -s "$WTRUNC" ] \
    && grep '::open(' "$PGCODE" | grep 'O_WRONLY' | grep -q 'O_CREAT' \
-   && grep '::open(' "$PGCODE" | grep 'O_WRONLY' | grep -q 'O_TRUNC' \
-   && grep '::open(' "$PGCODE" | grep 'O_WRONLY' | grep -q 'O_NOFOLLOW'; then
-    ok "pathguard: (f1) exactly two ::open, and the one write open carries O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW"
+   && grep '::open(' "$PGCODE" | grep 'O_WRONLY' | grep -q 'O_NOFOLLOW' \
+   && ! grep '::open(' "$PGCODE" | grep 'O_WRONLY' | grep -q 'O_TRUNC' \
+   && awk '/S_ISREG/ { seen = 1 } seen && /::ftruncate\(/ { found = 1 } END { exit !found }' "$WTRUNC"; then
+    ok "pathguard: (f1) exactly two ::open; the write open carries O_WRONLY|O_CREAT|O_NOFOLLOW and no O_TRUNC, and ::ftruncate runs only after the S_ISREG check"
 else
-    no "pathguard: (f1) expected two ::open, exactly one of them a write open carrying all four flags — found $openLines open(s), $writeOpens write: $( grep '::open(' "$PGCODE" | tr '\n' ' ' | head -c 240 )"
+    no "pathguard: (f1) expected two ::open, one write open with O_WRONLY|O_CREAT|O_NOFOLLOW and no O_TRUNC, and an ::ftruncate after the S_ISREG check — found $openLines open(s), $writeOpens write, $( wc -l <"$WTRUNC" | tr -d ' ' ) line(s) of openNoFollowTruncate: $( grep '::open(' "$PGCODE" | tr '\n' ' ' | head -c 200 )"
 fi
 if [ "$readOpens" = "1" ] \
    && grep '::open(' "$PGCODE" | grep 'O_RDONLY' | grep -q 'O_NOFOLLOW' \
