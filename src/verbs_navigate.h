@@ -110,6 +110,15 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         // Bodyless definitions (a declaration with no body) are counted by callhierarchy.h, callees-only.
         const std::size_t bodylessDefsCount = chRows.bodylessDefs;
 
+        // H1: the decl→def widening's RESIDUE — same-named definitions this `file:name` selector could not
+        // tie to the file it named, dropped rather than served (graph.h::declToDefFollowThrough). It rides
+        // beside bodyless_defs= on all three dialects because it qualifies the same defs=, but WITHOUT that
+        // attribute's !wantCallers gate: bodyless_defs= is callees-only because a declaration has no callees
+        // to read, and nothing about an untied definition is direction-specific. Absent at zero, through the
+        // shared countAttrXmlOrEmpty spelling. Without it a drop reaches the reader as a bare count="0" —
+        // #63's silent zero, re-introduced by the fix for its over-count.
+        const std::string chUnprovenAttr = rw::unprovenDefsAttrXml( chRows.unprovenDefs );
+
         // T2 + §P8 G1: paginate the sorted result. count= stays the un-windowed total (V3 L-4: "TRUE" is the
         // word this comment used, and it contradicts the counts_floor= marker the emitter ten lines below now
         // prints — the total is true of the PAGE, never of the world); the disclosure appears only
@@ -138,10 +147,11 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         {
             // M12: under multi-root this verb carries no root= at all (correctly — no single root exists)
             // and, before this, disclosed nothing about the `<label>/` prefix every p= below carries.
-            rw::emitTo( stdout, "{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers ).c_str(),
+            rw::emitTo( stdout, "{}{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers ).c_str(),
                          rw::capLegendClause( rw::computePageDisclosure( pw.end - pw.begin, result.size(), pw.end,
                                                                         cfg.pageLimit, cfg.pageOffset, chDiscloseCap ).active ),
                          rw::declinedCallsLegend( chRows.declinedCalls > 0 ),   // exactly when the root carries declined_calls=
+                         rw::unprovenDefsLegend( chRows.unprovenDefs > 0 ),     // H1: likewise, exactly when unproven_defs= is there
                          rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::rootRelPathsLegend( chSingleRoot ),
                          rw::multiRootTableLegend( ing.rootLabels.size() >= 2 ) );
         }
@@ -168,6 +178,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
             const std::string attr = "of=\"" + ex( sym ) + "\" defs=\"" + std::to_string( matches.size() )
                                    + "\" count=\"" + std::to_string( result.size() ) + "\""
                                    + ( !wantCallers && bodylessDefsCount > 0 ? " bodyless_defs=\"" + std::to_string( bodylessDefsCount ) + "\"" : "" )
+                                   + chUnprovenAttr     // H1: the decl→def residue, on BOTH directions
                                    + chTested.xmlAttr   // A6: hop_tested=/hop_untested=, the same partition on every dialect
                                    + chDeclinedAttr     // the tier-3 declines, beside the count they are not in
                                    + chRootAttr   // R-E: same root= the XML/JSON branches carry
@@ -190,6 +201,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
             {
                 rw::emitTo( stdout, ",\"bodyless_defs\":{}", bodylessDefsCount );
             }
+            rw::emitTo( stdout, "{}", rw::unprovenDefsKeyJson( chRows.unprovenDefs ).c_str() );   // H1: absent at zero, like its XML twin
             // R-E: the JSON twin of the XML root= below — right after the leading identifying fields.
             if( chSingleRoot ) { rw::emitTo( stdout, ",\"root\":\"{}\"", jsonStr( cfg.roots[0] ).c_str() ); }
             rw::emitTo( stdout, ",\"hop_tested\":{},\"hop_untested\":{}{}", chTested.tested, chTested.untested,
@@ -210,7 +222,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         {
             rw::emitTo( stdout, " bodyless_defs=\"{}\"", bodylessDefsCount );
         }
-        rw::emitTo( stdout, "{}{}", chTested.xmlAttr.c_str(), chDeclinedAttr.c_str() );   // A6: hop_tested=/hop_untested=, then the declines
+        rw::emitTo( stdout, "{}{}{}", chUnprovenAttr.c_str(), chTested.xmlAttr.c_str(), chDeclinedAttr.c_str() );   // H1's residue; then A6's partition and the declines
         rw::emitTo( stdout, "{}{}{}>", pageDisclosure( pab, sizeof( pab ), pw.end - pw.begin, result.size(), pw.end,
                                     cfg.pageLimit, cfg.pageOffset, chDiscloseCap ),
                      rw::graphCountFloorAttrXml( g ).c_str(),

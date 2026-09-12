@@ -467,6 +467,37 @@ inline std::string declinedCallsKeyJson( std::size_t declinedCalls )
     return declinedCalls > 0 ? ",\"declined_calls\":" + std::to_string( declinedCalls ) : std::string();
 }
 
+// ── THE DECL→DEF RESIDUE — unproven_defs= on the callers/callees answers (test/decltodefcheck.sh arm E2) ──
+// H1's fix (graph.h::declToDefFollowThrough) stopped a `file:name` selector from answering with same-named
+// definitions it could not tie to the file it named. What it DROPS has to be said: without this clause and
+// its attribute a dropped candidate reaches the reader as `count="0"`, which is the silent zero #63 exists to
+// kill — the fix would have traded one honesty defect for another. BOTH directions carry it, unlike
+// bodyless_defs= above: that one is callees-only because a declaration has no callees to read, and the
+// residue has no such asymmetry — a selector whose definitions could not be tied to its file is equally
+// unanswered whichever edge direction was asked.
+//
+// EMITTED EXACTLY WHEN THE ATTRIBUTE IS (unprovenDefsLegend takes the emitter's own condition, never a
+// re-derivation) — this header's own rootRelPathsLegend rule: a legend that defines an attribute the
+// document did not emit is the mirror-image false claim. That is also why graphlegendbudgetcheck's pins did
+// not move: it measures a BARE-NAME selector, which never reaches the widening, so the shared essay is
+// byte-identical there. Same shape graphUnindexedLegend( bool ) already uses, and for the same two reasons.
+//
+// G4: inside an XML comment, so no double hyphen — `file:name` is written without dashes for that reason.
+inline constexpr const char* kUnprovenDefsLegend =
+    "unproven_defs=K (absent when 0) counts same-named DEFINITIONS this file:name selector found and could not tie to the file it named: they are NOT in defs= and no row or count here includes them. A declaration widens to the definitions it stands for only where the definition is IN the named file, or its own file includes the named file, resolved path-precisely; a same-named body anywhere else is not evidence and is never served. Widen the selector to the bare NAME, or to Scope::name, to see them. ";
+inline const char* unprovenDefsLegend( bool on ) noexcept { return on ? kUnprovenDefsLegend : ""; }
+
+// The attribute and the key, one spelling each, absent at zero — through the shared countAttrXmlOrEmpty
+// above, so this cannot become a second spelling of bodyless_defs='s hand-rolled idiom.
+inline std::string unprovenDefsAttrXml( std::size_t unprovenDefs )
+{
+    return countAttrXmlOrEmpty( "unproven_defs", unprovenDefs );
+}
+inline std::string unprovenDefsKeyJson( std::size_t unprovenDefs )
+{
+    return unprovenDefs > 0 ? ",\"unproven_defs\":" + std::to_string( unprovenDefs ) : std::string();
+}
+
 // M12's writeMultiRootTable/multiRootTableLegend (the multi-root roots-table disclosure --callers/--uses
 // reuse from the default map) live in serialize.h, not here: they need escapeXml, and serialize.h includes
 // THIS header (for rootRelPathsLegend) before its own escapeXml definition — putting them here would be
