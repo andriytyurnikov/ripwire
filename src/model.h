@@ -882,6 +882,21 @@ struct CrawlSkips
     // invariant's drop classes — a refused file is already inside indexed=.
     std::vector<SkippedFile>  nestRefused;          // capped rows, path-sorted
     std::uint64_t             nestRefusedFiles = 0; // EXACT count (rows may be fewer)
+
+    // §SEC1 — files the crawl REFUSED because a symlink took them out of the root they were crawled under
+    // (ingest.h's crawl-boundary rule; darkflags.h's CMake walk applies the same rule to its own harvest).
+    // A class of its own, and tested FIRST, because none of the classes above can carry it honestly: this is
+    // not a language this build cannot read, not something the user asked to hide, and not something the
+    // repository declared uninteresting — it is content this tool declined to disclose. Folding it into
+    // `unsupported` would be actively wrong: grep's aux scan READS that population, which is exactly how the
+    // fifth serving channel stayed open (test/crawlescapecheck.sh arm 5).
+    //
+    // The rows carry bytes=0 as the NOT-MEASURED sentinel the ignored-dir rows already use, deliberately: a
+    // size would have to come from `file_size()` on the link, which follows it, and handing back the size of
+    // a file we just declined to read gives away a piece of what the refusal withheld. The path is the
+    // IN-ROOT link, never the target, for the same reason.
+    std::vector<SkippedFile>  escaped;              // capped rows, path-sorted (bytes 0 = not measured)
+    std::uint64_t             escapedFiles    = 0;  // EXACT count (rows may be fewer)
 };
 
 // §L1 — PARSE HEALTH: a per-indexed-file record of how much of the file the parser actually understood,
