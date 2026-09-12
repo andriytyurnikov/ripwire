@@ -63,23 +63,25 @@
 # re-anchor that rung with its own arithmetic") is now due, and this is that arithmetic. The ceiling ladder's
 # RUNG ZERO — the one that drops the confidence=/margin_pct=/budget_tokens= clause and the r=/tail clause to buy
 # the header back under the allowance — used to do it in SILENCE: the attributes stayed on the root with nothing
-# defining them and no word that a definition had been removed. It now splices a 182 B sentence naming exactly
-# those attributes (verbs_for.h kForLegendDroppedNote). 182 B is 73 tokens at the conservative rate, against the
+# defining them and no word that a definition had been removed. It now splices a 181 B sentence naming exactly
+# those attributes (verbs_for.h kForLegendDroppedNote). 181 B is 73 tokens at the conservative rate, against the
 # TWO tokens of headroom the rung had left. The note is not shortened to fit the rung; the rung moves.
 #
 # MEASURED, both binaries, this corpus in a mktemp dir, --token-budget swept 950..3000:
-#   · 950  post-fix: the post-rung-zero header + payload is 2 624 B against an allowance of 950 × 2.36 × 1.15 =
-#     2 578 B, so NOTHING the ladder can build fits and it lands on its last rung — 2 757 B, est_tokens=1103.
-#     An honest overshoot, labelled over_ceiling="1", which is the rung earning its move rather than an argument
-#     against the disclosure.
-#   · 1000 post-fix: 2 625 B fits the 2 714 B allowance, but est_tokens=1050 is 50 over the TOKEN ceiling (the
+#   · 950  post-fix: NOTHING the ladder can build fits the 950 × 2.36 × 1.15 = 2 578 B allowance, so it lands on
+#     its last rung — the emitted document is 2 756 B, est_tokens=1102. An honest overshoot, labelled
+#     over_ceiling="1", which is the rung earning its move rather than an argument against the disclosure.
+#   · 1000 post-fix: 2 624 B fits the 2 714 B allowance, but est_tokens=1050 is 50 over the TOKEN ceiling (the
 #     70 B of over_ceiling="1" and its legend clause are the difference between this row and the next).
-#   · 1050 / 1100 / 1150 post-fix: est_tokens=1022 at all three, 2 555 B — the serving shape is FLAT across that
+#   · 1050 / 1100 / 1150 post-fix: est_tokens=1022 at all three, 2 554 B — the serving shape is FLAT across that
 #     band (no additional row fits anywhere in it), so the rung buys headroom rather than a different selection.
 # 1100 sits mid-plateau with 78 tokens of headroom, one step clear of the short edge (1000) and of the upper edge
 # where the next row would land. The pre-fix binary reads est_tokens=949 at 1100, so the history is green at every
 # step. The other two rungs did not move: 1640 reads 1620 and 3000 reads 2802 on BOTH binaries — rung zero never
 # fires there, which is the whole reason only the tight rung moved.
+# (Re-measured 2026-09-12 when the note's closing clause was corrected: it had pointed the reader at a help text
+# that defines two of the four attributes it names. The replacement is 181 B against 182 B, so every number in
+# this block moved by at most one byte — the figures above are the re-measured ones, not the originals.)
 #
 # ── RE-ANCHORED 2026-09-05 (terminality round A, lane R, P7 rank order): the MIDDLE rung 1600 → 1640. ──
 # The lens <sigs> is FLAT now: rows in rank order, each carrying p="src/modN.py" (16 B), no <f p=> wrapper (24 B

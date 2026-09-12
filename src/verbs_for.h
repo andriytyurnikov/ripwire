@@ -556,15 +556,47 @@ inline constexpr std::string_view kForCompactConfidenceClause =
 //
 // ITS LENGTH IS THE SIBLING RUNGS', not a paragraph. Rungs (b) and (c) say "[task_echo: dropped (ceiling) - the
 // verbatim copy is the task= attribute above]" in 31-80 B: the thing dropped, the cause, and where the survivor
-// is. This says the same four things in 182 B, and the extra bytes are ENTIRELY the attribute names, which are
+// is. This says the same four things in 181 B, and the extra bytes are ENTIRELY the attribute names, which are
 // the disclosure — a shorter sentence that said "some clauses were dropped" would leave the reader exactly where
 // the silence did. The bytes are not free and must not be: this note rides ONLY on a run whose header did not
 // fit, so every one of them competes with the sig row the rung just bought back. Gates that pin a budget against
-// this floor (fornotesbudgetcheck's 950 rung, estcalib's for-budgeted pin) are re-anchored with arithmetic when
+// this floor (fornotesbudgetcheck's tight rung, estcalib's for-budgeted pin) are re-anchored with arithmetic when
 // it moves — the note is never re-worded to fit a pin.
+//
+// WHERE IT SENDS THE READER, and why not to the help text. The first spelling of this note ended "the ripwire
+// help text defines them", which was FALSE of half of what it names, measured on the binary that shipped it:
+// `budget_tokens` appears ZERO times in --help (19 376 B), in --help=--for (5 027 B) and in --help=all
+// (202 636 B); `max_tokens=` appears only in --help=all, never in the --for entry a reader of THIS document
+// would open. Only confidence= and margin_pct= are genuinely defined there. A disclosure whose whole job is to
+// stop a reader mistaking a budget cut for a missing feature must not then send them somewhere the definition
+// is missing — they would conclude the feature is. So it points at the one place that provably has all of them:
+// the SAME query at a wider ceiling. Every clause rung zero drops is unconditional at a budget where no rung
+// fires, so re-running wider both recovers the definitions AND demonstrates that the absence was a cut. Gate:
+// test/legendcoveragecheck.sh arm (E) re-asks every name this note spells against that wider run.
+//
+// THE CORRECTION IS ONE BYTE SHORTER THAN THE SENTENCE IT REPLACES, and that is a measurement, not a coincidence
+// worth ignoring. A first draft of it ran to 191 B, and forrootlegendcheck's arm 2 went red: its --token-budget=800
+// fixture sat at est_tokens=799 with ONE token of headroom, the nine bytes took it to 802, and crossing the budget
+// bought the 70 B of over_ceiling="1" plus its legend clause — so nine bytes of prose landed as 31 tokens and put
+// a bundle that had fitted 3.9% past the ceiling it names. METHODOLOGY §9 is the tie-breaker: the smaller document
+// inside the budget beats the larger one past it. Two honest spellings were available and the shorter was taken;
+// that is not the same as trimming a disclosure until a pin goes green, and the day it is, the pin moves instead.
 inline constexpr std::string_view kForLegendDroppedNote =
     " [legend clauses: confidence=/margin_pct=, budget_tokens=/max_tokens= and r=/tail (total= shown= capped=) "
-    "dropped (ceiling) - the attributes stay; the ripwire help text defines them]";
+    "dropped (ceiling) - the attributes stay; a wider token-budget defines them]";
+
+// …and the COMPACT DIALECT's spelling, which names two fewer attributes because that dialect never had them.
+// The full dialect's confidence sentence carries "[budget_tokens=/max_tokens=: the token ceiling this bundle was
+// shaped against]" appended to it (runForLens), so rung zero really does take those definitions down with it
+// there. The compact dialect emits kForCompactConfidenceClause instead, which defines confidence= and
+// margin_pct= and nothing else — budget_tokens= has never been defined in it at any budget. Telling a compact
+// reader it was "dropped (ceiling)" would be the exact error this note exists to prevent, pointed the other way:
+// a feature that is missing, reported as a cut. Two constants rather than one assembled at runtime, for the
+// reason kForCompactConfidenceClause is one constant — the byte ledgers that exempt and charge these strings
+// read their sizes, and a string built at runtime has no size to read at compile time.
+inline constexpr std::string_view kForLegendDroppedNoteCompact =
+    " [legend clauses: confidence=/margin_pct= and r=/tail (total= shown= capped=) dropped (ceiling) - "
+    "the attributes stay; a wider token-budget defines them]";
 
 inline void appendCompactForLegend( std::string& h, const ForLensHeaderParts& p, std::string_view extraNotes )
 {
@@ -590,7 +622,7 @@ inline void appendCompactForLegend( std::string& h, const ForLensHeaderParts& p,
     }
     if( p.legendDropped )
     {
-        h += kForLegendDroppedNote;   // L1: the two clauses above went to the ceiling — say so where they would have been
+        h += kForLegendDroppedNoteCompact;   // L1: the two clauses above went to the ceiling — in THIS dialect's inventory
     }
     h.append( extraNotes );
     h += " -->";
