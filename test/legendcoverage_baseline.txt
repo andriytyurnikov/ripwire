@@ -233,3 +233,28 @@ for-auto | d@next
 # vocabulary; pure= in the map legend), same un-charged-header reason as the for-auto line above.
 for | d@next
 for | d@pure
+# L1 (0.6.1): the for-budgeted row is NEW WINDOW, not new debt — the roster had no budgeted --for at all, so no
+# run in it ever climbed a rung of the ceiling ladder, which is where --for legend clauses get dropped. The ten
+# lines below are the same gaps the two unbudgeted --for rows already record (route=/task=/field@*/d@next/d@pure
+# above), plus TWO that exist only under a budget and are NOT rung zero's doing:
+#   ctx@bodies, ctx@reason — defined by the bundle=auto / bundle=compact legend, which the enrichment's
+#   `legendOff` path drops on an exhausted explicit ceiling. That drop is silent in exactly the way rung zero's
+#   was before this commit (verbs_for.h buildForEnrichment keeps the ATTRIBUTE and sheds the sentence), and it is
+#   a SEPARATE finding from the one this commit closes — recorded here rather than papered over.
+# What is deliberately NOT below: confidence=, margin_pct=, budget_tokens=, d@r and the <tail> counts. Those are
+# rung zero's, and kForLegendDroppedNote now names every one of them where the reader meets it. The same note is
+# also what closes sigs@total/shown/capped on this row — the gate's `defined` predicate is attribute-name-shaped
+# and cannot tell <tail total=> from <sigs total=>, so the sigs trio is credited to a sentence written for the
+# tail. It is not a false statement to that reader (their definitions were budget-dropped too, by legendOff) but
+# the attribution is the predicate's, not the note's, and it is written down here so nobody reads the closure as
+# evidence that legendOff discloses itself. It does not.
+for-budgeted | ctx@bodies
+for-budgeted | ctx@reason
+for-budgeted | ctx@route
+for-budgeted | ctx@task
+for-budgeted | d@next
+for-budgeted | d@pure
+for-budgeted | field@name
+for-budgeted | field@owner
+for-budgeted | field@rel
+for-budgeted | field@type

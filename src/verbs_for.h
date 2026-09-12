@@ -469,6 +469,11 @@ struct ForLensHeaderParts
                                               //   the facts (r= attrs, the <tail> element) survive, only the
                                               //   explainer goes — the L1 "first rung that costs no unique
                                               //   information" ordering.
+    bool             legendDropped = false;   // …and rung zero SAYS SO: set with the two clears above, it splices
+                                              //   kForLegendDroppedNote. A field rather than a note the rung
+                                              //   appends once, because the ladder rebuilds this header up to
+                                              //   three more times and a disclosure that survives only the
+                                              //   as-built shape is a disclosure the tight budgets never see.
     std::string_view rootArg;              // R-E (2026-08-17): the single-root run's own root= — the ladder's
                                             // route-dropped rebuild below calls ctxRootOpen a second time and
                                             // must carry the SAME root as the pre-built rootOpenStr did.
@@ -536,6 +541,31 @@ using rw::deriveForConfidence;
 inline constexpr std::string_view kForCompactConfidenceClause =
     " [confidence=/margin_pct=: the ranked head's largest relative score drop; low = flat ranking, a starting point]";
 
+// L1 — RUNG ZERO'S OWN DISCLOSURE. The ceiling ladder's rung zero (runForLens, below) buys header bytes back by
+// dropping the two clauses whose loss costs no UNIQUE information: the confidence=/margin_pct= +
+// budget_tokens=/max_tokens= sentence and the r=/tail sentence. Every fact they describe stays on the document;
+// only the explanation goes. THE TRADE IS RIGHT and stays — METHODOLOGY §9 takes the smaller document inside the
+// budget over the larger one past it, and on src/ at --token-budget=1300 that is 2 890 B against 3 654 B, the
+// two clauses being ~750 B of it. What was wrong is that it was SILENT: rungs (b) and (c) each splice a "[… dropped (ceiling)]"
+// sentence of their own, and rung zero spliced nothing, so `--for --token-budget=1300` shipped confidence=
+// margin_pct= budget_tokens= r= and the <tail> counts with no legend defining any of them and no word that a
+// definition had been removed — the reader cannot tell a budget cut from a missing feature. This is that word.
+// It names the attributes VERBATIM, the way the cap clause and dropped_positive= do, so a reader who meets one
+// on the root meets its name here and is told where its definition went. No "--" anywhere: it rides inside an
+// XML comment, where a double hyphen is ill-formed (G4). Gate: test/legendcoveragecheck.sh, the for-budgeted row.
+//
+// ITS LENGTH IS THE SIBLING RUNGS', not a paragraph. Rungs (b) and (c) say "[task_echo: dropped (ceiling) - the
+// verbatim copy is the task= attribute above]" in 31-80 B: the thing dropped, the cause, and where the survivor
+// is. This says the same four things in 182 B, and the extra bytes are ENTIRELY the attribute names, which are
+// the disclosure — a shorter sentence that said "some clauses were dropped" would leave the reader exactly where
+// the silence did. The bytes are not free and must not be: this note rides ONLY on a run whose header did not
+// fit, so every one of them competes with the sig row the rung just bought back. Gates that pin a budget against
+// this floor (fornotesbudgetcheck's 950 rung, estcalib's for-budgeted pin) are re-anchored with arithmetic when
+// it moves — the note is never re-worded to fit a pin.
+inline constexpr std::string_view kForLegendDroppedNote =
+    " [legend clauses: confidence=/margin_pct=, budget_tokens=/max_tokens= and r=/tail (total= shown= capped=) "
+    "dropped (ceiling) - the attributes stay; the ripwire help text defines them]";
+
 inline void appendCompactForLegend( std::string& h, const ForLensHeaderParts& p, std::string_view extraNotes )
 {
     h += "<!-- ripwire for ripwire.for/v1: task/route/root and bundle/bodies/reason are root facts; "
@@ -557,6 +587,10 @@ inline void appendCompactForLegend( std::string& h, const ForLensHeaderParts& p,
     if( p.tailLegend )
     {
         h += rw::kForFileTailLegendCompact;   // deep-tail: r= + <tail> definitions ride the compact legend too, short form
+    }
+    if( p.legendDropped )
+    {
+        h += kForLegendDroppedNote;   // L1: the two clauses above went to the ceiling — say so where they would have been
     }
     h.append( extraNotes );
     h += " -->";
@@ -660,6 +694,10 @@ inline std::string forLensHeaderText( const ForLensHeaderParts& p, bool withRout
     if( p.tailLegend )
     {
         h.append( rw::kForFileTailLegend );   // deep-tail: defines r= and the <tail> element (sigs-charge-exempt, serialize.h)
+    }
+    if( p.legendDropped )
+    {
+        h.append( kForLegendDroppedNote );   // L1: the confidence and tail clauses went to the ceiling — say so, and name what they defined
     }
     h.append( extraNotes );
     h += " -->";
@@ -848,7 +886,8 @@ inline bool forLensJsonOverCeiling( std::size_t tokenBudget, std::size_t ceiling
 // ladderFired is the W3FIX ceiling ladder's last rung (a --token-budget state); it is kept as its own input
 // rather than folded into the budget comparison because the rung fires on BYTES against the allowance, which
 // is a strictly wider condition than the token comparison beside it — dropping it would narrow what the
-// attribute means. Gate: test/formaxtokenscheck.sh.
+// attribute means. It arrives as the VALUE the ladder returned (serialize.h CeilingRung), never as a search
+// of the emitted text — see ForLensRootFinish::lastRungFired. Gate: test/formaxtokenscheck.sh.
 inline bool forLensOverCeiling( bool ladderFired, std::size_t tokenBudget, int maxTokens, bool hasBodyCeiling,
                                 std::size_t estTokens ) noexcept
 {
@@ -874,7 +913,13 @@ struct ForLensRootFinish
     std::string_view droppedPositiveNote, sigsCeilingNote, capNote;      // clauses, before the last " -->"
     bool             measured = false;
     std::string_view estTokensLegend, overCeilingLegend;
-    std::string_view lastRungNote;                                       // empty ⇒ the ladder did not run, so no rung fired
+    // M3: the ceiling ladder's VERDICT, carried as a value. False ⇒ the ladder did not run, or stopped above its
+    // last rung. It used to be the rung's note text, which finishForLensHeader searched the finished header for,
+    // and the header contains the caller's task echoed verbatim — so a task quoting the note forged the verdict
+    // and put over_ceiling="1" on a 9.8 KB bundle under a 100 000-token budget. climbCeilingLadderBy returns the
+    // rung it took (serialize.h CeilingRung); the fit predicate below sets this per candidate, the call site sets
+    // it from the chosen rung, and no code path derives it from text. Gate: test/ceilingverdictcheck.sh.
+    bool             lastRungFired        = false;
     std::size_t      nonHeaderMarkupBytes = 0;                           // every markup byte outside the header, "</ctx>" included
     std::size_t      bodyTokens           = 0;                           // the body-rate sections, already priced
     std::size_t      tokenBudget          = 0;
@@ -884,9 +929,6 @@ struct ForLensRootFinish
 
 inline std::string finishForLensHeader( std::string header, const ForLensRootFinish& f )
 {
-    // N1: the ladder's last rung is a VERDICT read off the chosen shape, before anything below is spliced into it
-    const bool ladderFired = !f.lastRungNote.empty() && header.find( f.lastRungNote ) != std::string::npos;
-
     // T3: the bundle=auto disclosure attributes, then budget_bytes= (its presence is decided by the sigs render),
     // then the INDEXING-cap attributes (root facts of the RANKING, so on the root est_tokens prices rather than in
     // the ladder's input). All three go in BEFORE est_tokens is computed, so the number measures a header that
@@ -950,7 +992,7 @@ inline std::string finishForLensHeader( std::string header, const ForLensRootFin
     // clause unconditionally would charge every budgeted bundle for an attribute it does not carry. Monotone —
     // adding bytes only RAISES est_tokens — so one extra stage is exact and the flag never oscillates. The
     // definition rides the legend of the document that carries the attribute.
-    if( forLensOverCeiling( ladderFired, f.tokenBudget, f.maxTokens, f.bodyCeiling, priced.first ) )
+    if( forLensOverCeiling( f.lastRungFired, f.tokenBudget, f.maxTokens, f.bodyCeiling, priced.first ) )
     {
         spliceBefore( header, " -->", /*fromEnd=*/true, f.overCeilingLegend );
         overAttr = " over_ceiling=\"1\"";
@@ -1947,7 +1989,7 @@ std::optional<int> runForLens( const MainDispatch& d )
                                         mentionNote, boostNote, docMentionNote, sibliftNote, expandNote, floorNote,
                                         forConf.attrs, forConf.note, forAtAttrStr, mentionDocAttrsStr,
                                         cfg.anchor, plan.autoBodies, plan.compact, cfg.legend == "compact",
-                                        /*tailLegend=*/true, flRootArg };
+                                        /*tailLegend=*/true, /*legendDropped=*/false, flRootArg };
         const auto buildForHeader = [ & ]( bool withRouteAttr, bool withTaskEcho, std::string_view extraNotes )
         { return forLensHeaderText( headerParts, withRouteAttr, withTaskEcho, extraNotes ); };
         std::string headerStr = buildForHeader( /*withRouteAttr=*/true, /*withTaskEcho=*/true, {} );
@@ -2477,8 +2519,9 @@ std::optional<int> runForLens( const MainDispatch& d )
                                                                + autoSection.xml.size() + autoAttr.size() + 6 + headerSpliceReserve + droppedPositiveSpliceReserve );
 
         // N1: the last rung's note DEFINES the root attribute it accompanies (over_ceiling= …), so the attribute is
-        // never on a document whose legend does not explain it; the bracket spelling stays. Hoisted out of the ladder
-        // because finishForLensHeader reads it as well: that note on the chosen shape IS the last-rung verdict.
+        // never on a document whose legend does not explain it; the bracket spelling stays. It is PROSE ONLY now —
+        // M3 took the verdict off it. finishForLensHeader used to recover "the last rung fired" by finding this
+        // exact text in the finished header, which the verbatim task echo could also supply.
         static constexpr rw::CeilingLadderNotes kNotes{
             " [task_echo: dropped (ceiling)]", " [task_echo + route_attr: dropped (ceiling)]",
             " [over_ceiling= is 1 on the root: the header floor (verbatim task echo + fixed legend) exceeds this budget"
@@ -2486,8 +2529,10 @@ std::optional<int> runForLens( const MainDispatch& d )
 
         // PR #135: the priced root this header will carry — every late splice and the est_tokens fixpoint, in
         // finishForLensHeader (above runForLens, with each splice's rationale). Assembled BEFORE the ladder so the
-        // ladder prices the header it will EMIT.
-        const ForLensRootFinish rootFinish{
+        // ladder prices the header it will EMIT. NOT const (M3): .lastRungFired is the ladder's answer, written
+        // from the rung climbCeilingLadderBy returns — it starts false, which is exactly the state of a run whose
+        // ladder never ran.
+        ForLensRootFinish rootFinish{
             .autoAttr             = autoAttr,
             .sigsCeilingAttr      = sigsCeilingAttr,
             .capAttrs             = capAttrsStr,
@@ -2498,7 +2543,6 @@ std::optional<int> runForLens( const MainDispatch& d )
             .measured             = sigsPreRendered,
             .estTokensLegend      = kForEstTokensLegend,
             .overCeilingLegend    = kForOverCeilingLegend,
-            .lastRungNote         = ( cfg.tokenBudget > 0 && sigsPreRendered ) ? kNotes.overCeiling : std::string_view(),
             // F2: everything OUTSIDE the header at the markup rate. enrich.markupBytes is the compact <hops> section,
             // folded in here rather than charged separately — one rate, one rounding (ForEnrichmentPlan).
             .nonHeaderMarkupBytes = sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + graphSection.xml.size()
@@ -2533,10 +2577,17 @@ std::optional<int> runForLens( const MainDispatch& d )
             const std::size_t emittedNonHeaderBytes = sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + tailStr.size()
                                                     + detailSection.xml.size() + ( autoSection.isRendered ? autoSection.xml.size() : 0u )
                                                     + graphSection.xml.size() + 6;   // + "</ctx>"
-            const auto fitsCeiling = [ & ]( std::string_view candidate )
+            // M3: the rung comes IN, so the shape-dependent 70 B (over_ceiling="1" + the clause defining it, owed
+            // on the last rung alone) are priced onto the candidate that will actually carry them. This used to be
+            // decided inside finishForLensHeader by looking for the rung's note in the candidate's text, which the
+            // verbatim task echo could supply — injected text then added those bytes to EVERY rung's price and
+            // could push an honest bundle down the ladder for no reason.
+            const auto fitsCeiling = [ & ]( std::string_view candidate, rw::CeilingRung rung )
             {
+                ForLensRootFinish pricedAs = rootFinish;
+                pricedAs.lastRungFired     = ( rung == rw::CeilingRung::OverCeiling );
                 return candidate.size() + ladderPayloadBytes <= ladderCeiling
-                    && finishForLensHeader( std::string( candidate ), rootFinish ).size() + emittedNonHeaderBytes <= ladderCeiling;
+                    && finishForLensHeader( std::string( candidate ), pricedAs ).size() + emittedNonHeaderBytes <= ladderCeiling;
             };
             // RUNG ZERO — the confidence LEGEND clause, before any of the ladder's own rungs: it is the one
             // header string whose loss costs NO unique information (confidence=/margin_pct= stay on the root
@@ -2547,14 +2598,24 @@ std::optional<int> runForLens( const MainDispatch& d )
             // Measured need: fornotesbudgetcheck's 850-ceiling fixture holds 35 tokens of headroom and the
             // clause is ~55 — charged-not-exempt (the explicit-regime split above) still cannot fit it,
             // because the floor there is notes + first-entry-whole, neither of which may trim.
-            if( !fitsCeiling( headerStr ) && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
+            // L1: and it DISCLOSES itself now, like rungs (b) and (c) do — legendDropped splices
+            // kForLegendDroppedNote, naming the attributes whose definitions just went. Silence here was the
+            // reader seeing confidence= margin_pct= budget_tokens= r= and the <tail> counts with nothing in the
+            // legend about any of them and no way to tell a budget cut from a feature that does not exist.
+            if( !fitsCeiling( headerStr, rw::CeilingRung::AsBuilt ) && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
             {
                 headerParts.confidenceNote = {};
                 headerParts.tailLegend     = false;   // deep-tail: the explainer falls with the confidence clause —
                                                       //   the r= attrs and the <tail> element (the facts) survive
-                headerStr = buildForHeader( /*withRouteAttr=*/true, /*withTaskEcho=*/true, {} );
+                headerParts.legendDropped  = true;    // …and this is the sentence that says both of them fell
+                headerStr                  = buildForHeader( /*withRouteAttr=*/true, /*withTaskEcho=*/true, {} );
             }
-            headerStr = rw::climbCeilingLadderBy( buildForHeader, headerStr, fitsCeiling, /*hasRouteAttr=*/!routeNoteRaw.empty(), kNotes );
+            // M3: the ladder hands back the rung it took. That value — never a search of the emitted text — is
+            // what puts over_ceiling="1" on the root below.
+            rw::CeilingLadderChoice chosen = rw::climbCeilingLadderBy( buildForHeader, headerStr, fitsCeiling,
+                                                                       /*hasRouteAttr=*/!routeNoteRaw.empty(), kNotes );
+            headerStr                = std::move( chosen.header );
+            rootFinish.lastRungFired = ( chosen.rung == rw::CeilingRung::OverCeiling );
         }
         headerStr = finishForLensHeader( std::move( headerStr ), rootFinish );
 

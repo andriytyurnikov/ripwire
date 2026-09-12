@@ -691,27 +691,56 @@ struct CeilingLadderNotes { std::string_view echoDropped, echoAndRouteDropped, o
 // ladder picks a shape: est_tokens=, plus over_ceiling="1" and the legend clause defining it whenever that price
 // exceeds budget_tokens. Those bytes change with the shape, so no fixed payload can stand in for them, and pricing
 // the BUILT header let a bundle ship 70 B past the allowance with no rung fired (PR #135, estchargecheck #11 A7).
-// climbCeilingLadderBy climbs the same rungs against `fits( candidateHeader )`. climbCeilingLadder is its
+// climbCeilingLadderBy climbs the same rungs against `fits( candidateHeader, rung )`. climbCeilingLadder is its
 // fixed-payload form, so the two cannot climb different ladders.
-template<typename BuildFn, typename FitsFn>
-inline std::string climbCeilingLadderBy( BuildFn&& build, std::string_view builtHeader, FitsFn&& fits, bool hasRouteAttr,
-                                         const CeilingLadderNotes& notes )
+//
+// M3 — THE RUNG IS RETURNED, NOT LEFT TO BE GUESSED, and the fit test is TOLD which rung it is pricing. A caller
+// needs the verdict (--for puts over_ceiling="1" on its root when the last rung fires) and the only other place
+// to read it from is the finished document, by searching it for the rung's own note. That is FORGEABLE: the
+// header carries the caller's task echoed verbatim by contract (routeoncecheck), so a task containing the note
+// text is indistinguishable from a rung that really fired — --for shipped `budget_tokens="100000"
+// est_tokens="3932" over_ceiling="1"` on a 9.8 KB document for exactly that reason, a root contradicting itself
+// in one unit. The branch that BUILDS a candidate is the branch that knows its rung, so carrying that value out
+// (and in, to `fits`) is what makes the forgery impossible rather than merely unlikely. Gate:
+// test/ceilingverdictcheck.sh.
+enum class CeilingRung : std::uint8_t
 {
-    if( fits( builtHeader ) )
+    AsBuilt = 0,           // (a) it already fitted — the overwhelmingly common case
+    EchoDropped,           // (b) the comment's task echo dropped — a byte-for-byte duplicate of task=
+    EchoAndRouteDropped,   // (c) that plus the verbatim route= attribute — the first unique-information loss
+    OverCeiling            // (d) nothing reached the allowance: the complete bundle, honestly labelled
+};
+
+struct CeilingLadderChoice
+{
+    std::string header;
+    CeilingRung rung = CeilingRung::AsBuilt;
+};
+
+template<typename BuildFn, typename FitsFn>
+inline CeilingLadderChoice climbCeilingLadderBy( BuildFn&& build, std::string_view builtHeader, FitsFn&& fits, bool hasRouteAttr,
+                                                 const CeilingLadderNotes& notes )
+{
+    if( fits( builtHeader, CeilingRung::AsBuilt ) )
     {
-        return std::string( builtHeader );
+        return { std::string( builtHeader ), CeilingRung::AsBuilt };
     }
 
-    std::string candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/false, notes.echoDropped );
-    if( !fits( std::string_view( candidate ) ) && hasRouteAttr )
+    // ONE fit test per candidate. The rung-(b) shape used to be priced twice — harmless when `fits` is the
+    // fixed-payload comparison below, but --for's predicate rebuilds and re-prices a whole header through
+    // finishForLensHeader, so the second call was a duplicated fixpoint on every budgeted run.
+    CeilingLadderChoice choice{ build( /*withRouteAttr=*/true, /*withTaskEcho=*/false, notes.echoDropped ), CeilingRung::EchoDropped };
+    bool                candidateFits = fits( std::string_view( choice.header ), choice.rung );
+    if( !candidateFits && hasRouteAttr )
     {
-        candidate = build( /*withRouteAttr=*/false, /*withTaskEcho=*/false, notes.echoAndRouteDropped );
+        choice        = { build( /*withRouteAttr=*/false, /*withTaskEcho=*/false, notes.echoAndRouteDropped ), CeilingRung::EchoAndRouteDropped };
+        candidateFits = fits( std::string_view( choice.header ), choice.rung );
     }
-    if( !fits( std::string_view( candidate ) ) )
+    if( !candidateFits )
     {
-        candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/true, notes.overCeiling );
+        choice = { build( /*withRouteAttr=*/true, /*withTaskEcho=*/true, notes.overCeiling ), CeilingRung::OverCeiling };
     }
-    return candidate;
+    return choice;
 }
 
 template<typename BuildFn>
@@ -719,8 +748,9 @@ inline std::string climbCeilingLadder( BuildFn&& build, std::string_view builtHe
                                        std::size_t byteCeiling, bool hasRouteAttr, const CeilingLadderNotes& notes )
 {
     return climbCeilingLadderBy( build, builtHeader,
-                                 [ & ]( std::string_view header ) { return header.size() + payloadBytes <= byteCeiling; },
-                                 hasRouteAttr, notes );
+                                 [ & ]( std::string_view header, CeilingRung ) { return header.size() + payloadBytes <= byteCeiling; },
+                                 hasRouteAttr, notes )
+        .header;
 }
 
 // ── B0.3 rank-adaptive --for payload budget (R1 hypothesis #4) ────────────────────────────────────────

@@ -110,6 +110,15 @@ ROSTER = [
     # the exact decay class the chip-trio merge found in forbudgetmonotoncheck/fordisclosurecheck.
     ("for",                [SMALL, "--for=rank symbols by pagerank"]),
     ("for-auto",           [SMALL, "--for=escapeXml"]),
+    # …and a BUDGETED one (0.6.1, the L1 lane). Both rows above run unbudgeted, so no run in this roster
+    # ever climbed a rung of the --for ceiling ladder — and the ladder is where legend clauses get DROPPED.
+    # Rung zero drops the confidence=/margin_pct=/budget_tokens= clause and the r=/tail clause to buy the
+    # bytes back, which is the right trade (METHODOLOGY §9: inside the budget beats over it) and was
+    # entirely silent: the attributes stayed on the root with nothing defining them and nothing saying so.
+    # 1300 sits well inside the measured rung-zero band on this tree (rung zero fires from ~1100 to ~1340),
+    # so the row keeps exercising the rung under ordinary drift; if the band moves off it, the row degrades
+    # into an ordinary budgeted --for and arm (A) still holds — it just stops proving this particular thing.
+    ("for-budgeted",       [SMALL, "--for=rank symbols by pagerank", "--token-budget=1300"]),
     ("pack-task",          [SMALL, "--pack-task=rank symbols by pagerank"]),
     ("exemplar",           [SMALL, "--exemplar=rank symbols"]),
     ("hotspots",           [ROOT,  "--hotspots"]),
