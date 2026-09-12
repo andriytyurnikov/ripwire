@@ -66,6 +66,12 @@
 #                       no-follow create and carries the site's unchanged DEGRADED_PATH_ALERT for the ELOOP
 #                       case, the writer takes its descriptor from it and opens nothing itself, and neither
 #                       body holds an ofstream/fopen following primitive or a pre-open symlink predicate
+#                   (e5/e6) WRITE INTEGRITY: the writer RETURNS pathguard::writeAllAndClose's verdict over the
+#                       bytes it assembled (e5), and no stdio stream survives in its body — no fdopen, fclose,
+#                       emitRaw or emitTo (e6). Red on archWriteBaseline before it took that shape: its FILE*
+#                       emitters report no failed write, and fclose answers only for its own final flush, so a
+#                       failed EARLIER flush could still come back true. The two siblings already had the shape,
+#                       so on them these rows are green before and after — a regression guard there
 #     once:         (f) MECHANISM: src/pathguard.h has exactly ONE ::open and it carries all four of
 #                       O_WRONLY/O_CREAT/O_TRUNC/O_NOFOLLOW; and refuseSymlinkWrite — the advisory
 #                       check-then-open guard — is gone from src/ entirely, not merely unused
@@ -84,6 +90,22 @@
 #         before and after; it exists because moving to ::open means naming the mode by hand, and 0644
 #         written there is invisible under the usual umask 022 (0666 & ~022 == 0644 & ~022). Observed RED
 #         with a deliberate 0600 in the open.
+#     (w) BYTES (arch baseline): the sidecar equals a file this gate computes from NUMBERS, never one captured
+#         from a build — the header line, then one 16-digit zero-padded lowercase hex hash per line, ascending and
+#         deduplicated, the shape archReadBaseline and every committed sidecar depend on. (w1) is a plain
+#         --baseline over the fixture (no violations, so the header alone); (w2) plants 304 hashes through
+#         --baseline-update, spelled so that dropping the padding, upper-casing, or skipping the sort or the
+#         dedupe each moves a byte, and past 4096 B so the stdio writer needed more than one flush for it. Green
+#         before and after by design: it is the evidence that moving archWriteBaseline onto writeAllAndClose
+#         moved no byte. Observed RED with a deliberate `{:x}` in the writer: exit 0, and the 21 rows that
+#         start with a zero digit came back unpadded.
+#     (x) WRITE FAILURE, a REGRESSION GUARD and not a proof (arch baseline): the (w2) update again under a zero
+#         file-size limit with SIGXFSZ ignored, so every write(2) to the sidecar fails. The verb must exit
+#         non-zero, name the sidecar it could not write, claim no update, and leave no bytes. The pre-change
+#         binary passes it too: swept at every planted size from 1 to 600 rows on macOS, it never reported
+#         success, because when EVERY write is refused its fclose still returns the failure. The defect (e5)/(e6)
+#         pin needs an earlier failed flush followed by a final one that succeeds — a transient failure no gate
+#         can schedule deterministically — so (e5)/(e6) are the proof and (x) only holds the contract in place.
 #
 # Usage:
 #   bash test/sidecarsymlinkcheck.sh                 |  bash test/sidecarsymlinkcheck.sh asan/ripwire
@@ -265,7 +287,7 @@ mechArm()
     if [ "$acqLines" -ge 4 ] && [ "$bodyLines" -ge 5 ] && grep -q 'return' "$acq" && grep -q 'return' "$body"; then
         ok "$label: (e0/guard) extracted $acqLines code lines of $acquireFn and $bodyLines of the writer from $src"
     else
-        no "$label: (e0/guard) could not extract both bodies from $src (acquire=$acqLines writer=$bodyLines) — (e1)-(e4) are void"
+        no "$label: (e0/guard) could not extract both bodies from $src (acquire=$acqLines writer=$bodyLines) — (e1)-(e6) are void"
         return
     fi
 
@@ -302,6 +324,25 @@ mechArm()
         ok "$label: (e4) the writer takes its descriptor from $acquireFn and opens nothing itself"
     else
         no "$label: (e4) the writer does not call $acquireFn — it acquires its destination some other way"
+    fi
+
+    # (e5)/(e6) WRITE INTEGRITY — a writer's result has to answer for its bytes, and a stdio stream adopted from
+    # the descriptor cannot: the FILE* emitters report no failed write, and fclose answers only for its OWN final
+    # flush. Anchored on `return`, because a writeAllAndClose whose verdict is dropped would pass a bare grep.
+    if grep -Eq 'return[[:space:]]+(rw::pathguard::)?writeAllAndClose\(' "$body"; then
+        ok "$label: (e5) the writer returns writeAllAndClose's verdict over the bytes it assembled"
+    else
+        no "$label: (e5) the writer does not return writeAllAndClose's verdict — its result does not answer for a failed write"
+    fi
+    local streams=""
+    grep -qh 'fdopen'  "$body" && streams="$streams fdopen"
+    grep -qh 'fclose'  "$body" && streams="$streams fclose"
+    grep -qh 'emitRaw' "$body" && streams="$streams emitRaw"
+    grep -qh 'emitTo'  "$body" && streams="$streams emitTo"
+    if [ -z "$streams" ]; then
+        ok "$label: (e6) no stdio stream survives in the writer (no fdopen, fclose, emitRaw or emitTo)"
+    else
+        no "$label: (e6) the writer still writes through a stdio stream:$streams"
     fi
 }
 
@@ -406,6 +447,127 @@ notLinkArm()
 notLinkArm qualitybaseline .ripwire_quality_baseline runQualityBaseline
 notLinkArm notes           .ripwire_notes            runNoteAdd
 notLinkArm archbaseline    .ripwire_arch_baseline    runArchBaseline
+
+# ── (w) BYTES and (x) WRITE FAILURE: what archWriteBaseline puts on disk, and what it says when it cannot ────
+# What each proves, and what (x) cannot, is in the header. Every expected row is rendered by THIS script's own
+# printf from a number — never copied from the planted text or from any build's output — so (w) is not the
+# writer compared against itself.
+ARCH_HEADER='# ripwire arch baseline — do not edit by hand. Regenerate with --baseline or --baseline-update.'
+ARCH_MUL=$(( 0x9E3779B97F4A7C15 ))   # 2^64/φ: i × this (mod 2^64) spreads 1..300 over the whole 64-bit range
+
+runArchBaselineUpdate(){ ( cd "$1" && "$BIN" "$1" --arch=rules.txt --baseline-update --no-cache ); }
+
+ARCH_DIR="$TMP/archbytes"
+ARCH_TREE="$TMP/archbytes/tree"
+ARCH_SIDE="$TMP/archbytes/tree/.ripwire_arch_baseline"
+ARCH_PLANTED="$TMP/archbytes/planted.txt"
+ARCH_WANT="$TMP/archbytes/want.txt"
+
+# The planted sidecar and its expectation. Returns non-zero, having said why, when the population (w2) and (x)
+# need is not there — so neither runs over a void fixture.
+archPlant()
+{
+    local i rows lead0 bytes
+
+    mkTree "$ARCH_TREE"
+    # Planted: 300 generated rows in DESCENDING i, which is not ascending value; then the rows a renderer gets
+    # wrong — small values (padding), one spelled unpadded, one upper-case, all ones, and a duplicate of 1 in its
+    # canonical spelling; and a comment and a blank line, which the reader skips.
+    {
+        printf '# planted by sidecarsymlinkcheck (w2)\n\n'
+        for (( i = 300; i >= 1; i-- )); do printf '%016x\n' $(( i * ARCH_MUL )); done
+        printf '1\nFF\n00000000DEADBEEF\nffffffffffffffff\n0000000000000001\n'
+    } >"$ARCH_PLANTED"
+    # Expected, from the VALUES: the 300 generated plus 1, 255, 0xdeadbeef and 2^64-1 (bash's -1), each rendered
+    # as 16 lowercase digits, then byte-sorted and deduplicated — which for fixed-width lowercase hex IS ascending
+    # numeric order.
+    {
+        printf '%s\n' "$ARCH_HEADER"
+        {
+            for (( i = 1; i <= 300; i++ )); do printf '%016x\n' $(( i * ARCH_MUL )); done
+            printf '%016x\n' 1 255 3735928559 -1
+        } | LC_ALL=C sort -u
+    } >"$ARCH_WANT"
+
+    # GUARD — 304 distinct well-formed rows (a collapsed generator would dedupe to fewer), deep zero padding and
+    # hex letters present, past one 4096-byte stdio buffer, and different from the planted text, so a writer that
+    # left the file alone cannot match it.
+    rows="$( tail -n +2 "$ARCH_WANT" | grep -c '^[0-9a-f]\{16\}$' )"
+    lead0="$( tail -n +2 "$ARCH_WANT" | grep -c '^0' )"
+    bytes="$( wc -c <"$ARCH_WANT" | tr -d ' ' )"
+    if [ "$rows" = 304 ] && [ "$( wc -l <"$ARCH_WANT" | tr -d ' ' )" = 305 ] && grep -q '^00000000' "$ARCH_WANT" \
+       && tail -n +2 "$ARCH_WANT" | grep -q '[a-f]' && [ "$bytes" -gt 4096 ] && ! cmp -s "$ARCH_PLANTED" "$ARCH_WANT"; then
+        ok "archbaseline: (w2/guard) the expectation holds 304 distinct 16-digit rows ($lead0 with a leading zero, hex letters present, $bytes B) and differs from the planted text"
+        return 0
+    fi
+    no "archbaseline: (w2/guard) the expectation is not the population (w2) needs (rows=$rows lead0=$lead0 bytes=$bytes) — (w1), (w2) and (x) are void"
+    return 1
+}
+
+# (w1) a plain --baseline over the fixture, which has no violations, is the header line and nothing else — read
+# from the (d) control's sidecar rather than running the verb again. (w2) the planted set through
+# --baseline-update, compared with the expectation archPlant computed.
+archBytesArm()
+{
+    local ctlSide="$TMP/archbaseline_ctl/tree/.ripwire_arch_baseline" rc=0
+
+    printf '%s\n' "$ARCH_HEADER" >"$ARCH_DIR/header_only.txt"
+    if ! grep -qF '(0 violation(s) accepted)' "$TMP/archbaseline_ctl.err"; then
+        no "archbaseline: (w1/guard) the (d) control did not accept 0 violations, so header-only is not the expectation: $( head -c 160 "$TMP/archbaseline_ctl.err" )"
+    elif cmp -s "$ARCH_DIR/header_only.txt" "$ctlSide"; then
+        ok "archbaseline: (w1) --baseline with no violations wrote exactly the header line"
+    else
+        no "archbaseline: (w1) the --baseline sidecar is not exactly the header line: $( head -c 160 "$ctlSide" | tr '\n' ' ' )"
+    fi
+
+    cp "$ARCH_PLANTED" "$ARCH_SIDE"
+    runArchBaselineUpdate "$ARCH_TREE" >"$ARCH_DIR/w2.out" 2>"$ARCH_DIR/w2.err" || rc=$?
+    if [ "$rc" -eq 0 ] && cmp -s "$ARCH_WANT" "$ARCH_SIDE"; then
+        ok "archbaseline: (w2) --baseline-update rewrote the planted set byte-identical to the computed expectation"
+    else
+        no "archbaseline: (w2) rc=$rc and the sidecar is not the expected bytes: $( diff "$ARCH_WANT" "$ARCH_SIDE" 2>&1 | head -n 6 | tr '\n' ' ' )"
+    fi
+}
+
+# (x) The same update under a zero file-size limit. Both streams go to a PIPE and the limit is set inside the
+# subshell that execs the verb: RLIMIT_FSIZE applies to every regular file the limited process writes, so a file
+# redirect would make the failure message fail to land too. `trap '' XFSZ` turns the signal into an EFBIG return
+# from write(2) instead of a kill; an ignored disposition survives exec.
+archWriteFailArm()
+{
+    local rc
+    cp "$ARCH_PLANTED" "$ARCH_SIDE"
+    ( cd "$ARCH_TREE" || exit 97; ulimit -f 0 || exit 98; trap '' XFSZ; exec "$BIN" "$ARCH_TREE" --arch=rules.txt --baseline-update --no-cache ) 2>&1 | cat >"$ARCH_DIR/x.log"
+    rc="${PIPESTATUS[0]}"
+
+    # GUARD — the limit took and nothing landed. Without it, the non-zero exit below could be a failed cd or
+    # ulimit, or a failure somewhere other than the sidecar write.
+    if [ "$rc" = 97 ] || [ "$rc" = 98 ] || [ ! -s "$ARCH_PLANTED" ] || [ ! -f "$ARCH_SIDE" ] || [ -s "$ARCH_SIDE" ]; then
+        no "archbaseline: (x0/guard) the limit did not take (rc=$rc, sidecar $( wc -c <"$ARCH_SIDE" 2>/dev/null | tr -d ' ' ) B) — (x1)-(x3) are void"
+        return
+    fi
+    ok "archbaseline: (x0/guard) under a zero file-size limit the sidecar was truncated and no byte landed"
+    if [ "$rc" -ne 0 ]; then
+        ok "archbaseline: (x1) the failed write exits non-zero ($rc)"
+    else
+        no "archbaseline: (x1) exit 0 although no byte of the baseline reached the disk"
+    fi
+    if grep -qF -e '--baseline-update cannot write sidecar: .ripwire_arch_baseline' "$ARCH_DIR/x.log"; then
+        ok "archbaseline: (x2) the verb names the sidecar it could not write"
+    else
+        no "archbaseline: (x2) no 'cannot write sidecar' line: $( head -c 200 "$ARCH_DIR/x.log" | tr '\n' ' ' )"
+    fi
+    if grep -qF -e 'baseline updated' -e 'baseline-update mode' "$ARCH_DIR/x.log"; then
+        no "archbaseline: (x3) the verb claimed an update it did not make: $( grep -F 'baseline' "$ARCH_DIR/x.log" | head -c 200 | tr '\n' ' ' )"
+    else
+        ok "archbaseline: (x3) no success claim on either stream"
+    fi
+}
+
+if archPlant; then
+    archBytesArm
+    archWriteFailArm
+fi
 
 # ── (r) THE RACE, run for real ────────────────────────────────────────────────────────────────────────
 # The swapper is python3 and not shell on purpose: a fork per swap is too slow to land in the window

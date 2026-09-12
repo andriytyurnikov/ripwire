@@ -723,22 +723,27 @@ inline bool archWriteBaseline( const std::string&                         sideca
         return false;
     }
 
-    // The rest of this function is unchanged: the descriptor becomes the same FILE* it always wrote through,
-    // and std::fclose closes both. The stream is adopted, never re-resolved from the path.
-    std::FILE* f = ::fdopen( fd, "w" );
-    if( !f )
-    {
-        ::close( fd );
-        return false;
-    }
-    rw::emitRaw( f, "# ripwire arch baseline — do not edit by hand. Regenerate with --baseline or --baseline-update.\n" );
+    // The whole sidecar is assembled here and handed to the descriptor in one call — the shape notes::writeNotes
+    // and quality::writeBaseline already had. It used to write through a FILE* adopted with ::fdopen: the
+    // emitters report no failed write, and std::fclose answers only for its own final flush, so an EARLIER flush
+    // that failed followed by one that succeeded came back true for a baseline that was not on disk.
+    // writeAllAndClose fails on any short or failed write and on a failed close.
+    //
+    // The bytes are the ones it always wrote — the header line, then one 16-digit zero-padded lowercase hex hash
+    // per line, ascending — and test/sidecarsymlinkcheck.sh (w) holds them. The buffer allocates, as the sorted
+    // copy above already does: the same exposure under noexcept this function has always had.
+    const std::string_view header = "# ripwire arch baseline — do not edit by hand. Regenerate with --baseline or --baseline-update.\n";
+    std::string            content;
+    content.reserve( header.size() + sorted.size() * 17 ); // 16 hex digits + '\n' per hash
+    content += header;
     for( std::uint64_t h : sorted )
     {
-        rw::emitTo( f, "{:016x}\n", static_cast<unsigned long long>( h ) );
+        char hex[ 17 ]; // 16 digits + NUL: a 64-bit value never needs a 17th digit, so formatTo cannot truncate
+        rw::formatTo( hex, sizeof( hex ), "{:016x}", static_cast<unsigned long long>( h ) );
+        content += hex;
+        content += '\n';
     }
-    // fclose flushes, so its return value is the last chance to learn the bytes did not land. Was an
-    // unconditional `return true`, which reported a written baseline after a failed flush.
-    return std::fclose( f ) == 0;
+    return rw::pathguard::writeAllAndClose( fd, content );
 }
 
 // ── ABS-4: Robert C. Martin package metrics + reachability, per MODULE (= directory) ──────────────────
