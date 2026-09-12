@@ -403,14 +403,21 @@ inline constexpr const char* kCallHierarchyLegendOpen =
 inline constexpr const char* kCallHierarchyLegendCalleesOnly =
     "callees-only: bodyless_defs= (when present) counts defs= that are bodyless declarations (header-only or forward-declared); zero callees may mean no body to read callees from, not truly no dependencies. ";
 
+// The callers answer's next= reading in its two forms. callHierarchyNextSelector (callhierarchy.h) decides which
+// one the emitter printed, and callHierarchyLegendOpen repeats that decision rather than re-deriving it.
+inline constexpr const char* kCallersNextSelectorLegend = "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). ";
+inline constexpr const char* kCallersNextBareNameLegend = "next= is the one pasteable follow-up (the uses verb on the called name: all same-named definitions' call sites, including sites bound to other definitions, because a declined call names no single definition). ";
+
 // The composed opener, one call for the caller — keeps the wantCallers/callees branch out of
 // runCallHierarchy (already this file's largest dispatcher) rather than adding a ternary at the call site.
-inline std::string callHierarchyLegendOpen( bool wantCallers )
+inline std::string callHierarchyLegendOpen( bool wantCallers, bool nextUsesBareName = false )
 {
+    const char* const callersNextClause = nextUsesBareName ? kCallersNextBareNameLegend : kCallersNextSelectorLegend;
     // F-02: the blind-spot clause rides with hop_tested=/hop_untested=, which both forms always carry.
     // P3 (L7): next= defined where the reader meets it — callers hand over the SITES (the uses verb on the same
     // selector, its @FILE:LINE spelling mirrored), callees the BODY whose callees these are (expand).
-    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). "
+    // nextUsesBareName is the emitter's OWN decision, never re-derived here; no double hyphen in comment text.
+    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + callersNextClause
                        : std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + kCallHierarchyLegendCalleesOnly + "next= is the one pasteable follow-up (expand on this selector: the body). ";
 }
 
@@ -496,6 +503,53 @@ inline std::string unprovenDefsAttrXml( std::size_t unprovenDefs )
 inline std::string unprovenDefsKeyJson( std::size_t unprovenDefs )
 {
     return unprovenDefs > 0 ? ",\"unproven_defs\":" + std::to_string( unprovenDefs ) : std::string();
+}
+
+// ── THE SAME RESIDUE ON THE VERBS THAT READ THE SAME RESOLVER — safe-delete, impact, path (decltodefcheck arm E2e) ──
+// resolveAllByNameQualified serves --safe-delete, --impact (and the MCP impact twin) and --path (and path_between)
+// exactly as it serves --callers, so a `file:name` selector whose definitions were dropped reached THOSE readers as
+// callers="0" risk="none-found", reaches="0" and reachable="0": the silent zero E2 closed on the callers form, on the
+// verb whose answer a reader acts on as "safe to delete". The attribute is the one the callers form carries —
+// unprovenDefsAttrXml / unprovenDefsKeyJson above, and compactlegend.h's existing unproven_defs row reads it off any
+// root — so the vocabulary does not grow. What differs per verb is what the dropped definitions are MISSING FROM, and
+// that is the clause: the callers sentence names defs= and rows, while --path has from_defs=/to_defs= and a yes/no,
+// and --safe-delete has a risk= value computed from counts that never walked them.
+//
+// One clause per verb, one shared proof-and-widen tail, emitted exactly when the attribute is (the caller passes its
+// own attribute-present condition, the unprovenDefsLegend( bool ) rule above). kUnprovenDefsLegend states the same
+// proof rule inline and is left byte-for-byte as it is: the callers/callees emitter that selects it is not this
+// change's, and its bytes are pinned there.
+//
+// G4: inside an XML comment, so no double hyphen anywhere. Each clause OPENS with `unproven_defs=` — the house form,
+// and the attribute test/compactlegendcheck.sh (S) reduces a conditionally-selected clause to.
+inline constexpr const char* kUnprovenDefsImpactLegend =
+    "unproven_defs=K (absent when 0) counts same-named DEFINITIONS this file:name selector found and could not tie to the file it named: they are NOT in defs=, the walk never started from them, and so none of their callers or importers is in reaches=, importers=, the radius partition or any row. ";
+inline constexpr const char* kUnprovenDefsPathLegend =
+    "unproven_defs=K (absent when 0) counts same-named DEFINITIONS a file:name endpoint found and could not tie to the file it named, summed over from= and to= (a bare NAME endpoint never adds to it): they are NOT in from_defs= or to_defs=, the search neither started nor ended at them, and so reachable= and hops= say nothing about a path through them. ";
+inline constexpr const char* kUnprovenDefsSafeDeleteLegend =
+    "unproven_defs=K (absent when 0) counts same-named DEFINITIONS this file:name selector found and could not tie to the file it named: they are NOT in defs=, and callers=, impact_reaches=, uses=, the tested partition and dead_code_candidate= were all read without them. So risk= describes defs= alone, and risk=none-found beside unproven_defs= is an INCOMPLETE read, never a sign that the name can go. ";
+inline constexpr const char* kUnprovenDefsProofTail =
+    "A declaration widens to the definitions it stands for only where the definition is IN the named file, or its own file includes the named file, resolved path-precisely; a same-named body anywhere else is not evidence and is never served. Widen the file:name spelling to the bare NAME, or to Scope::name, to include them. ";
+
+enum class UnprovenDefsVerb : std::uint8_t
+{
+    Impact,
+    Path,
+    SafeDelete,
+};
+
+// `on` is the emitter's own `unprovenDefs > 0`, never a re-derivation; "" otherwise, so an answer that dropped
+// nothing stays byte-identical on every one of these verbs.
+inline std::string unprovenDefsVerbLegend( UnprovenDefsVerb verb, bool on )
+{
+    if( !on )
+    {
+        return {};
+    }
+    const char* const clause = verb == UnprovenDefsVerb::Impact ? kUnprovenDefsImpactLegend
+                               : verb == UnprovenDefsVerb::Path ? kUnprovenDefsPathLegend
+                                                                : kUnprovenDefsSafeDeleteLegend;
+    return std::string( clause ) + kUnprovenDefsProofTail;
 }
 
 // M12's writeMultiRootTable/multiRootTableLegend (the multi-root roots-table disclosure --callers/--uses
