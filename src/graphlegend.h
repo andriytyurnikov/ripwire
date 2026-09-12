@@ -540,8 +540,8 @@ inline std::string unprovenDefsVerbLegend( UnprovenDefsVerb verb, bool on )
         return {};
     }
     const char* const clause = verb == UnprovenDefsVerb::Impact ? kUnprovenDefsImpactLegend
-                             : verb == UnprovenDefsVerb::Path   ? kUnprovenDefsPathLegend
-                             :                                    kUnprovenDefsSafeDeleteLegend;
+                               : verb == UnprovenDefsVerb::Path ? kUnprovenDefsPathLegend
+                                                                : kUnprovenDefsSafeDeleteLegend;
     return std::string( clause ) + kUnprovenDefsProofTail;
 }
 
