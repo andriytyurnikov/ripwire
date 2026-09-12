@@ -37,18 +37,15 @@
 # refusing. lstat survives only INSIDE pathguard.h, after a failed open, to decide which sentence ELOOP
 # earns; it cannot decide whether to write.
 #
-# THE RACE IS EXERCISED FOR REAL — and here is exactly what that arm can and cannot prove. The (r) arms
-# below plant nothing and instead run a syscall-tight swapper (python3: symlink/unlink in a loop, no fork
-# per swap) alongside repeated verb runs, so the destination flickers between ABSENT and SYMLINK while the
-# writer resolves it. On the check-then-open build that is enough to land in the window between lstat(2)
-# returning and open(2) being entered: measured on this tree, 28 of 40 runs came back with the victim file
-# destroyed. A fork-per-swap loop (`ln -sfn` / `rm` in shell) hit 1 in 400 — worth recording, because the
-# cheap version of this experiment is the one that concludes "not exploitable".
+# The (r) arms exercise the race directly, and it is worth being exact about what they can prove. They plant
+# nothing: a fast swapper (python3 symlink/unlink in a loop) runs alongside repeated verb runs, so the
+# destination alternates between absent and a symlink while the writer opens it. The swapper has to be fast —
+# a fork-per-swap shell loop rarely lands in the window, and would let this arm pass against the defect it
+# exists to catch.
 #
 # WHAT IT CANNOT PROVE. The arm is ONE-SIDED. Its green means "nothing was observed", not "no window
-# exists": a window narrower than the swapper's cycle would pass it. It is a detector with measured power
-# against THE defect we are closing (~70% per run, so ~1 - 0.3^25 over the arm's minimum run count), not a
-# proof of atomicity. The proof is structural and lives in the (e)/(f) arms, which assert the MECHANISM: the
+# exists": a window narrower than the swapper's cycle would pass it. It is a detector for the defect being
+# closed, not a proof of atomicity. The proof is structural and lives in the (e)/(f) arms, which assert the MECHANISM: the
 # one open carries O_NOFOLLOW, all three writers go through it, and no pre-open symlink predicate survives
 # at any of them to be relied on again. (e)/(f) are SOURCE arms — they read $ROOT/src and do NOT move when
 # $BIN points at another build, which is worth knowing when reading a red-first run against a base binary.
@@ -57,9 +54,9 @@
 #
 #     per sidecar:  (a) the victim's bytes are UNTOUCHED after the verb runs
 #                   (b) the tool REFUSED — non-zero exit AND a stderr line naming the symlink
-#                   (r) THE RACE: with the destination flickering absent↔symlink under a syscall-tight
-#                       swapper, the victim survives EVERY run — red on the check-then-open build at 28
-#                       hits in 40 runs, and one-sided by construction (see above)
+#                   (r) THE RACE: with the destination alternating absent↔symlink under a fast swapper,
+#                       the victim survives EVERY run — red on the check-then-open build, and one-sided
+#                       by construction (see above)
 #                   (h) a non-symlink open failure (a DIRECTORY at the sidecar name) is reported with the
 #                       real OS reason and is NOT dressed up as a symlink — round 2 added the errno
 #                       distinction, so this arm was red before it and is what stops "every failure is a
@@ -411,10 +408,9 @@ notLinkArm notes           .ripwire_notes            runNoteAdd
 notLinkArm archbaseline    .ripwire_arch_baseline    runArchBaseline
 
 # ── (r) THE RACE, run for real ────────────────────────────────────────────────────────────────────────
-# The swapper is python3 and not shell on purpose: `ln -sfn` + `rm` is a fork per swap (~3 ms a cycle) and
-# lands in the window about once in 400 runs, which is the run count at which this experiment quietly
-# concludes the wrong thing. os.symlink/os.unlink in a loop cycles in single-digit microseconds and hit 28
-# times in 40 runs against the check-then-open build. python3 is a documented suite prerequisite
+# The swapper is python3 and not shell on purpose: a fork per swap is too slow to land in the window
+# reliably, so a shell swapper would pass this arm against the defect it exists to catch. python3 is a
+# documented suite prerequisite
 # (CONTRIBUTING §1), so its absence is a FAILURE here, never a skip — a skipped arm reports success for
 # work it did not do.
 #
