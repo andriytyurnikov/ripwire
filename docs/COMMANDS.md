@@ -1999,11 +1999,11 @@ $ ./build/ripwire . --naming-calibration
 <r n="naming-predicate" old="0" new="0" fired="0"/>
 <r n="naming-setter" old="0" new="0" fired="0"/>
 <r n="naming-confusable" scope="group-rule"/>
-<p o="ARM_CTXPACK" n="ARM_RIPWIRE" sup="3" at="./bench/agentloop/analyze.py:31"/>
-<p o="CTXPACK" n="RIPWIRE" sup="12" at="./bench/headtohead/r3-headroom-2026-08-03/harness.py:42"/>
-<p o="CTXPACK_BASH_RE" n="RIPWIRE_BASH_RE" sup="1" at="./bench/mine_traces.py:47"/>
-<p o="CTXPACK_REPO" n="RIPWIRE_REPO" sup="4" at="./bench/headtohead/r2-2026-08-03/worker.py:20"/>
-... [17 more line(s); run it to see the whole thing]
+<!-- 6 rename rows withheld: the project's own rebrand, which names a private pre-release identifier -->
+<p o="PACK_MAGIC" n="payload" sup="1" at="./test/legendcostcheck.sh:48"/>
+<p o="advice" n="next" sup="1" at="./bench/bench_svector_diff.cpp:76"/>
+<p o="atomicWriteQSnap" n="atomicWriteFile" sup="5" at="./src/quality.h:2910"/>
+... [12 more line(s); run it to see the whole thing]
 ```
 
 **Caveats (stated by the binary):**
