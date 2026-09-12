@@ -360,7 +360,12 @@ while IFS="$( printf '\t' )" read -r flag kind example policy; do
         fi
     done
     for a in $( leg headattrs "$TMP/u.c" ); do
-        case "$a" in counts_floor|est_tokens|at|root|graph_ambiguous|graph_unresolved|hits_capped|limit|offset|over_ceiling|tier_partial) ;; *) continue ;; esac
+        # graph_unindexed joined this list with issue #66's clause-parity fix. It is INERT on this gate's
+        # corpus — the fixture copy carries no file a grammar cannot read, so the attribute never appears and
+        # this row never fires. Said out loud rather than left to be re-discovered: the arm that actually
+        # exercises the compact reading is test/blindspotcheck.sh (F), on a corpus built to carry one. The
+        # name is listed here anyway so the enumeration matches the term table, not the fixture.
+        case "$a" in counts_floor|est_tokens|at|root|graph_ambiguous|graph_unresolved|graph_unindexed|hits_capped|limit|offset|over_ceiling|tier_partial) ;; *) continue ;; esac
         case "$legtxt" in *"$a="*) ;; *) no "(U) $probe compact legend does not name $a= although the root carries it" ;; esac
     done
     if command -v xmllint >/dev/null 2>&1; then

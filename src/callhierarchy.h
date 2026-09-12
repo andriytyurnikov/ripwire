@@ -63,11 +63,16 @@ inline HopTestedPartition computeHopTestedPartition( const IngestResult& ing, co
 // `declinedCalls` is the tier-3 declines the rows cannot show (graph.h): for callers, declined calls that named a
 // match among their candidates; for callees, declined calls a match made. Counted here with bodylessDefs, so the
 // CLI and MCP twins cannot disagree about the number printed beside count=.
+// `unprovenDefs` (H1) is the decl→def widening's RESIDUE: same-named definitions a `file:name` selector found
+// and could not tie to the file it named, so they are in neither `matches` nor `rows`. It belongs here, beside
+// the two counts that qualify the same answer, for the same reason they do — and it is meaningful in BOTH
+// directions, where bodylessDefs is callees-only.
 struct CallHierarchyRows
 {
     std::vector<NodeId> matches;
     std::vector<NodeId> rows;
     std::size_t         bodylessDefs  = 0;
+    std::size_t         unprovenDefs  = 0;
     std::size_t         declinedCalls = 0;
 };
 
@@ -102,7 +107,9 @@ inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph
     CallHierarchyRows out;
     // X9(b): "file:name" disambiguates here (the same rule --around/--lego/--edit-check use through
     // resolveFocus) — a same-named symbol living in more than one file must be pickable on either surface.
-    out.matches = resolveAllByNameQualified( ing, selector );
+    // H1: the resolver's residue travels WITH the matches it is the complement of — always written (0 on
+    // every tier that never reaches the widening), so no emitter can read a stale value.
+    out.matches = resolveAllByNameQualified( ing, selector, &out.unprovenDefs );
     if( out.matches.empty() )
     {
         return out;   // the caller owns the refusal: a CLI stderr line, or a JSON-RPC -32602

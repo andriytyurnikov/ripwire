@@ -127,11 +127,22 @@ inline constexpr const char* kGraphUnindexedLegend =
 inline const char* graphUnindexedLegend( bool on ) noexcept { return on ? kGraphUnindexedLegend : ""; }
 
 // The same sentence as its OWN XML comment, for the legends that are one closed <!-- ... --> literal rather
-// than a %s inside one (--connect). Wrapped, never re-spelled: a second copy of this sentence is the drift
+// than a %s inside one. Wrapped, never re-spelled: a second copy of this sentence is the drift
 // this header exists to stop, and splicing the bare clause after a closing "-->" is not a wording bug but a
 // WELL-FORMEDNESS one (test/floormarkcheck.sh arm (9) caught exactly that during this change).
 // legendcoveragecheck reads the whole LEADING RUN of comments as the legend, so an adjacent comment IS the
 // legend -- the rule kRootRelPathsLegend already relies on.
+//
+// FOUR USERS, and the fourth-to-first of them is why this paragraph is here. #66 landed the clause into the
+// three SHARED legend builders below (graphCountDisclosure, graphCountFloorBrief, graphUnindexedTextClause)
+// plus --connect through this wrapper -- but the ATTRIBUTE rides a different code path entirely
+// (graph.h graphCountFloorAttrXml/Json, whose only condition is g.unindexedFiles > 0). So every verb whose
+// legend is a hand-spelled closed literal rather than a call into a builder got the attribute and no clause:
+// --lego (kLegoLegend below, CLI and MCP), --verify (verify.h kVerifyLegend) and --nonlocal-state
+// (nonlocalstate.h kNonLocalStateLegend) shipped that way in v0.6.0. They now take this wrapper, which is
+// what it was written for. `on` is always the emitter's own g.unindexedFiles > 0, never a re-derivation.
+// Gate: test/blindspotcheck.sh arm (F) (attribute => clause, every surface, both dialects) and (G) (the
+// mirror: neither, on a corpus with nothing unindexed).
 inline std::string graphUnindexedLegendComment( bool on )
 {
     return on ? std::string( "<!-- " ) + kGraphUnindexedLegend + "-->" : std::string();
@@ -457,6 +468,37 @@ inline std::string declinedCallsAttrXml( std::size_t declinedCalls )
 inline std::string declinedCallsKeyJson( std::size_t declinedCalls )
 {
     return declinedCalls > 0 ? ",\"declined_calls\":" + std::to_string( declinedCalls ) : std::string();
+}
+
+// ── THE DECL→DEF RESIDUE — unproven_defs= on the callers/callees answers (test/decltodefcheck.sh arm E2) ──
+// H1's fix (graph.h::declToDefFollowThrough) stopped a `file:name` selector from answering with same-named
+// definitions it could not tie to the file it named. What it DROPS has to be said: without this clause and
+// its attribute a dropped candidate reaches the reader as `count="0"`, which is the silent zero #63 exists to
+// kill — the fix would have traded one honesty defect for another. BOTH directions carry it, unlike
+// bodyless_defs= above: that one is callees-only because a declaration has no callees to read, and the
+// residue has no such asymmetry — a selector whose definitions could not be tied to its file is equally
+// unanswered whichever edge direction was asked.
+//
+// EMITTED EXACTLY WHEN THE ATTRIBUTE IS (unprovenDefsLegend takes the emitter's own condition, never a
+// re-derivation) — this header's own rootRelPathsLegend rule: a legend that defines an attribute the
+// document did not emit is the mirror-image false claim. That is also why graphlegendbudgetcheck's pins did
+// not move: it measures a BARE-NAME selector, which never reaches the widening, so the shared essay is
+// byte-identical there. Same shape graphUnindexedLegend( bool ) already uses, and for the same two reasons.
+//
+// G4: inside an XML comment, so no double hyphen — `file:name` is written without dashes for that reason.
+inline constexpr const char* kUnprovenDefsLegend =
+    "unproven_defs=K (absent when 0) counts same-named DEFINITIONS this file:name selector found and could not tie to the file it named: they are NOT in defs= and no row or count here includes them. A declaration widens to the definitions it stands for only where the definition is IN the named file, or its own file includes the named file, resolved path-precisely; a same-named body anywhere else is not evidence and is never served. Widen the selector to the bare NAME, or to Scope::name, to see them. ";
+inline const char* unprovenDefsLegend( bool on ) noexcept { return on ? kUnprovenDefsLegend : ""; }
+
+// The attribute and the key, one spelling each, absent at zero — through the shared countAttrXmlOrEmpty
+// above, so this cannot become a second spelling of bodyless_defs='s hand-rolled idiom.
+inline std::string unprovenDefsAttrXml( std::size_t unprovenDefs )
+{
+    return countAttrXmlOrEmpty( "unproven_defs", unprovenDefs );
+}
+inline std::string unprovenDefsKeyJson( std::size_t unprovenDefs )
+{
+    return unprovenDefs > 0 ? ",\"unproven_defs\":" + std::to_string( unprovenDefs ) : std::string();
 }
 
 // M12's writeMultiRootTable/multiRootTableLegend (the multi-root roots-table disclosure --callers/--uses
