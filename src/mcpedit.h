@@ -1213,9 +1213,15 @@ inline mcpedit::Outcome runEditVerb( const std::string& root, mcpedit::Op op, co
     // surprise: the agent thinks it edited the target, but it edited nothing it can see).
     //
     // The DETECTION is rw::pathguard::isSymlink (lstat, not stat — inspect the link itself rather than
-    // following it), shared with the three sidecar writers so the rule has one spelling; the MESSAGE stays
-    // here because this seam fails the OPPOSITE way round — rename replaces the link and spares the target,
-    // a sidecar's truncating open follows the link and destroys it. See src/pathguard.h.
+    // following it); the MESSAGE stays here because this seam fails the OPPOSITE way round — rename replaces
+    // the link and spares the target, a sidecar's truncating open follows the link and destroys it.
+    //
+    // A CHECK IS THE RIGHT SHAPE *HERE*, and only here. The three sidecar writers used to ask this same
+    // question before their own open, which was check-then-open and raceable (CWE-367); their guard is now
+    // the open itself (O_NOFOLLOW, src/pathguard.h). This seam never opens `disk` at all — it refuses into a
+    // JSON-RPC error object and returns — so there is no second resolution for a replacement to land in
+    // front of, and nothing here to make atomic. atomicWrite's own publish then goes to a fresh temp path
+    // and a rename, which cannot follow a link into someone else's file. See src/pathguard.h.
     if( rw::pathguard::isSymlink( disk ) )
     {
         oc.ok = false; oc.errCode = -32602;

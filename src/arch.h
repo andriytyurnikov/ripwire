@@ -31,13 +31,16 @@
 //   --baseline-update merges current violations into the sidecar and exits 0 (accept new debt deliberately).
 
 #include "model.h"
-#include "pathguard.h"          // CWE-59: rw::pathguard::refuseSymlinkWrite — THE one symlink rule the sidecar writers share
+#include "pathguard.h"          // CWE-59/367: rw::pathguard::openNoFollowTruncate — THE one atomic no-follow open the sidecar writers share
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — graceful-degrade on a malformed path-regex (never throw at match time)
 #include "infra/hashutil.h"     // sanitizer-clean modulo-2^64 FNV multiplication
+
+#include <unistd.h>    // ::close — the descriptor is released by hand when fdopen refuses to adopt it
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>      // ELOOP — the one errno archWriteBaseline re-words into its own symlink alert
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -683,6 +686,29 @@ inline std::unordered_set<std::uint64_t> archReadBaseline( const std::string& si
     return hashes;
 }
 
+// THE ONE PLACE THE ARCH BASELINE SIDECAR IS OPENED, and the whole of its CWE-59/CWE-367 story.
+//
+// The write TRUNCATES and `sidecarPath` is a fixed name (see archBaselinePath), so a link planted at it
+// turned --arch --baseline into an arbitrary-file overwrite. The refusal is the OPEN itself — O_NOFOLLOW,
+// one syscall, nothing between deciding and creating for a replacement to land in. The first fix asked lstat
+// and then opened anyway, which is check-then-open and was raced in 8 of 25 attempts; see src/pathguard.h.
+//
+// Only the ELOOP case gets an alert here, because only it had one: a plain open failure has always been this
+// site's silent `return false`, which its caller turns into "--baseline cannot write sidecar". The user-
+// facing sentence for both now comes from pathguard, on stderr, naming the real reason either way.
+//
+// noexcept, like its caller — matching the contract archWriteBaseline has always had (the emitter can in
+// principle throw on allocation; that exposure predates this round and is unchanged by it).
+inline int openArchBaselineSidecar( const std::string& sidecarPath ) noexcept
+{
+    auto [ fd, openErr ] = rw::pathguard::openNoFollowTruncate( "the arch baseline sidecar", sidecarPath );
+    if( fd < 0 && openErr == ELOOP )
+    {
+        DEGRADED_PATH_ALERT( "arch: refusing to write the arch baseline sidecar through a symlink" );
+    }
+    return fd;
+}
+
 // Write (or overwrite) the baseline sidecar with exactly the given hash set, sorted for determinism.
 // Returns true on success.
 inline bool archWriteBaseline( const std::string&                         sidecarPath,
@@ -691,18 +717,18 @@ inline bool archWriteBaseline( const std::string&                         sideca
     std::vector<std::uint64_t> sorted( hashes.begin(), hashes.end() );
     std::sort( sorted.begin(), sorted.end() );
 
-    // CWE-59: fopen( …, "w" ) truncates, and a truncating open follows a symlink at the final path
-    // component. `sidecarPath` is a fixed name (see archBaselinePath), so a link planted at it turned
-    // --arch --baseline into an arbitrary-file overwrite. Refused before the open (src/pathguard.h).
-    if( rw::pathguard::refuseSymlinkWrite( "the arch baseline sidecar", sidecarPath ) )
+    const int fd = openArchBaselineSidecar( sidecarPath );
+    if( fd < 0 )
     {
-        DEGRADED_PATH_ALERT( "arch: refusing to write the arch baseline sidecar through a symlink" );
         return false;
     }
 
-    std::FILE* f = std::fopen( sidecarPath.c_str(), "w" );
+    // The rest of this function is unchanged: the descriptor becomes the same FILE* it always wrote through,
+    // and std::fclose closes both. The stream is adopted, never re-resolved from the path.
+    std::FILE* f = ::fdopen( fd, "w" );
     if( !f )
     {
+        ::close( fd );
         return false;
     }
     rw::emitRaw( f, "# ripwire arch baseline — do not edit by hand. Regenerate with --baseline or --baseline-update.\n" );
@@ -710,8 +736,9 @@ inline bool archWriteBaseline( const std::string&                         sideca
     {
         rw::emitTo( f, "{:016x}\n", static_cast<unsigned long long>( h ) );
     }
-    std::fclose( f );
-    return true;
+    // fclose flushes, so its return value is the last chance to learn the bytes did not land. Was an
+    // unconditional `return true`, which reported a written baseline after a failed flush.
+    return std::fclose( f ) == 0;
 }
 
 // ── ABS-4: Robert C. Martin package metrics + reachability, per MODULE (= directory) ──────────────────
