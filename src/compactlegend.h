@@ -159,7 +159,9 @@ inline constexpr std::string_view kCompactProsePrefixes[] =
     "<!-- max_tokens=",                // --max-tokens' fit_bytes block
     "<!-- with-profile: ",             // --with-profile's heat_* block
     "<!-- slice-",                     // slice's seed/flow/since FULL-dialect tiers (slice-seed:/slice-flow:/slice-since:)
-    "<!-- root rows: ",                // --stray-content's root-row block
+    "<!-- root rows: ",                // the multi-root roots table's reading (serialize.h kMultiRootTableLegend, the one
+                                       // emitter of this opener); the completeness table's element-qualified label= row
+                                       // restates it
     "<!-- multi-root workspace: ",     // the multi-root churn note
     "<!-- hdr:",                       // the map header's ignored_files definition
     "<!-- format=columnar: ",          // the columnar re-serialization block
@@ -198,6 +200,8 @@ struct CompactCompletenessTerm
     std::string_view attr;
     std::string_view reading;
     bool             wholeDoc = false;   // a ROW-level term (amb=, parse_degraded=, dangling=): read anywhere in the payload
+    std::string_view onTag    = {};      // read ONLY on this element and never on the head: label= on the multi-root <root>
+                                         // rows is not the label= --communities carries on its first child
 };
 
 inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
@@ -210,6 +214,20 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     // which is also what kept it invisible: the compact dialect stripped the full clause and had nothing to
     // put back, on every verb, for the whole of v0.6.0.
     { "graph_unindexed",   "graph_unindexed=N: N files no grammar could read (the map header's unindexed=); their calls raise neither gauge" },
+    // THE COUNT QUALIFIERS the graph_unindexed row above did not bring along (2026-09-12). Each is absent at zero and
+    // its full clause rides only a document that carries it (graphlegend.h declinedCallsLegend( bool ),
+    // unprovenDefsLegend( bool ), the callees-only clause of callHierarchyLegendOpen( bool )), so the prose strip removed
+    // a definition this table never put back: --callers/--callees/--impact, their columnar forms and the MCP impact
+    // default all printed these numbers undefined. test/compactlegendcheck.sh (S) reads every conditional attribute the
+    // graphlegend.h family emits from source and fails the next one that lands without a row here.
+    // Written to the shortest honest form: a document carrying these is already near the 400 B ceiling, and the
+    // callees answer can carry the first two at once.
+    { "bodyless_defs",     "bodyless_defs=K: K of defs= have no body, so no callees to read" },
+    { "unproven_defs",     "unproven_defs=K: K same-named defs not tied to that file, in no count or row (bare name shows them)" },
+    { "declined_calls",    "declined_calls=K: K call sites left unbound (several defs, none chosen), in no count or row" },
+    // --uses=Owner.field's member form (fielduses.h appends kUsesFieldLegend to that answer alone). owner_candidates= is a
+    // row attribute that exists only beside member=, so one head term defines the whole form.
+    { "member",            "member=Owner.field: rows use that field; pinned=/amb_sites= rows with one owner/with owner_candidates=K; owners_of_name= fields so named" },
     { "hits_capped",       "hits_capped=1: hits= is a floor" },
     { "est_tokens",        "est_tokens=: price as emitted (an upper bound under compact)" },
     { "over_ceiling",      "over_ceiling=1: budget not met" },
@@ -221,6 +239,9 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     { "withheld",          "withheld=: rows the budget cut" },
     { "at",                "at=: commit+dirty+shallow" },
     { "root",              "root=: p= relative to it" },
+    // The multi-root roots table (serialize.h writeMultiRootTable): its `<!-- root rows:` clause is prose-stripped above
+    // and nothing put the reading back. ELEMENT-qualified, because --communities carries a different label= on its rows.
+    { "label",             "<root label= p=>: a workspace root; label= prefixes every p=/id=", true, "root" },
     { "parse_degraded",    "parse_degraded=1: ERROR nodes in that parse", true },
     { "tier_partial",      "tier_partial=1: tier elected under a partial classification" },
     { "dangling",          "dangling=1: matches nothing indexed", true },
@@ -231,6 +252,11 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     // always rides and can define hub="1" in the same clause — two terms did not fit the 400 B ceiling, and
     // the ceiling is the point of this dialect. The full legend carries the derivation.
     { "hub_floor",         "hub_floor=D: connects= >= D is hub=1, vacuous" },
+    // --lego's contract caveat (serialize.h, on the <iface> row): the attribute pair rides only a NAMED interface whose
+    // language's method contract is not read, and no purpose line names it. ELEMENT-qualified, not a head term: the head
+    // span holds the full legend comment between <ctx> and its first child, and kLegoLegend spells caveat="…" in it, so
+    // a head read fired on every --lego answer (compactlegendcheck (D7) caught it on --lego=Point).
+    { "caveat",            "methods=0 caveat=not-extracted-for-lang: no <m> contract read for this language", true, "iface" },
     { "next",              "next=: the one pasteable follow-up", true },
     { "scrubbed",          "scrubbed=1: this CDATA is not the bytes (]]> split or C0 replaced)", true },
     { "preview",           "preview=1: an UNWRITTEN payload; <overwrite l= end= bytes=> = the span an apply replaces, CDATA as on disk (shown=/capped=1/elided_lines= when cut)" },
@@ -388,8 +414,23 @@ inline std::string payloadSubCapAttrs( std::string_view doc )
     return names;
 }
 
-// Row-level terms: does ANY tag outside comments/CDATA carry ` <attr>="`?
-inline bool payloadHasAnyAttr( std::string_view doc, std::string_view attr )
+// Is `tag` (one `<…>` span) an element named `name`? An empty name matches every element.
+inline bool isElementNamed( std::string_view tag, std::string_view name ) noexcept
+{
+    if( name.empty() )
+    {
+        return true;
+    }
+    if( tag.size() < name.size() + 2 || tag[ 0 ] != '<' || tag.substr( 1, name.size() ) != name )
+    {
+        return false;
+    }
+    const char next = tag[ name.size() + 1 ];
+    return next == ' ' || next == '/' || next == '>';
+}
+
+// Row-level terms: does ANY tag outside comments/CDATA carry ` <attr>="`? With `onTag`, only a `<onTag …>` element counts.
+inline bool payloadHasAnyAttr( std::string_view doc, std::string_view attr, std::string_view onTag = {} )
 {
     std::string needle;
     needle.reserve( attr.size() + 3 );
@@ -413,7 +454,7 @@ inline bool payloadHasAnyAttr( std::string_view doc, std::string_view attr )
         {
             const std::size_t j = doc.find( '>', i );
             const std::string_view tag = doc.substr( i, j == std::string_view::npos ? doc.size() - i : j + 1 - i );
-            if( tag.find( needle ) != std::string_view::npos ) { return true; }
+            if( tag.find( needle ) != std::string_view::npos && isElementNamed( tag, onTag ) ) { return true; }
             i = j == std::string_view::npos ? doc.size() : j + 1;
         }
         else
@@ -472,7 +513,10 @@ inline std::string compactLegendText( const CompactLegendSpec& spec, std::string
     }
     for( const CompactCompletenessTerm& t : kCompactCompletenessTerms )
     {
-        if( headHasAttr( head, t.attr ) || ( t.wholeDoc && payloadHasAnyAttr( doc, t.attr ) ) )
+        // an element-qualified term reads its element alone: the head can carry the same NAME as a different attribute
+        const bool isPresent = t.onTag.empty() ? ( headHasAttr( head, t.attr ) || ( t.wholeDoc && payloadHasAnyAttr( doc, t.attr ) ) )
+                                               : payloadHasAnyAttr( doc, t.attr, t.onTag );
+        if( isPresent )
         {
             out += ' ';
             out.append( t.reading );

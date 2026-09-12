@@ -25,6 +25,10 @@
 # defaults on a tmp git fixture; whatever answers with an XML root is an XML verb and must honor compact,
 # everything else must refuse it. LOOP arm (L): the ten-verb loop's compact legend bill ≤ 4,100 B (was 29,824
 # on the ripwire tree). MCP arm (M): edit_check with legend:"compact" answers in ≤ 900 B on a clean tree.
+# CONDITIONAL arm (D): an absent-at-zero or form-conditional attribute (declined_calls=, unproven_defs=, bodyless_defs=,
+# the member form, the multi-root <root label=> rows, --lego's caveat=) is DEFINED by the compact legend of a document
+# that carries it, and by none that does not. STRUCTURAL arm (S): every conditional attribute the graphlegend.h helper
+# family emits, read from source, has a compact reading — so the next one cannot land undefined.
 #
 # Usage:  RIPWIRE_BIN=build/ripwire bash test/compactlegendcheck.sh
 
@@ -547,6 +551,262 @@ for verb in $LEGEND_VERBS; do
 done
 [ "$nVerbs" -ge 17 ] && ok "(N) the family was read from source: $nVerbs verbs declare legend" \
                      || no "(N) only $nVerbs verbs were extracted from kMcpVerbFields — the family read is broken, so every PASS above means nothing"
+
+echo
+echo "=== (D) CONDITIONAL attributes: a document that CARRIES one defines it under compact too (CLI, columnar, MCP default) ==="
+# THE DEFECT CLASS (2026-09-12). Each attribute here is absent at zero or form-conditional, and its full-dialect clause
+# rides ONLY a document that carries it: graphlegend.h declinedCallsLegend( bool ) / unprovenDefsLegend( bool ) and the
+# callees-only bodyless_defs= clause inside callHierarchyLegendOpen( bool ), fielduses.h's kUsesFieldLegend (the member
+# form), serialize.h multiRootTableLegend( bool ) (the <root label=> rows), and --lego's caveat= sentence. The compact
+# layer strips that clause as prose and rebuilds definitions from kCompactCompletenessTerms, which had a row for NONE of
+# them — so each reached a compact reader, and every MCP caller (whose default posture IS compact), as a number the
+# document never defined. PR #169 fixed graph_unindexed= alone; #173's unproven_defs= repeated the miss, because nothing
+# tied the helper family to the term table. Arm (S) below is that tie; these rows are the behaviour it stands for.
+#
+# EACH ROW, CONTROL FIRST: the attribute is CARRIED by both postures' payloads and DEFINED by the full legend. Without
+# that a green compact assertion could be an answer that never carried the attribute, or a demand for a definition the
+# tool never had. Then the compact legend must define it, read LEFT-ANCHORED (`defs=` is a suffix of unproven_defs= and
+# bodyless_defs=, the trap test/decltodefcheck.sh records). A tag-qualified spec (root:label) reads only that element.
+# RED on origin/main 28ee1df3: every (D1)..(D6) row FAILed (the red output is in the landing commit); (D7) is the mirror
+# the fix must KEEP, so it is green on both binaries by construction and is written as its own row for that reason.
+cat > "$TMP/condattr.py" <<'PY'
+import re, sys
+op, path, spec = sys.argv[1], sys.argv[2], sys.argv[3]
+buf = open( path, encoding = "utf-8", errors = "replace" ).read()
+legend, tags = [], []
+i = 0; n = len( buf )
+while i < n:
+    if buf.startswith( "<![CDATA[", i ):
+        j = buf.find( "]]>", i ); i = n if j < 0 else j + 3
+    elif buf.startswith( "<!--", i ):
+        j = buf.find( "-->", i ); j = n if j < 0 else j + 3; legend.append( buf[ i:j ] ); i = j
+    elif buf[ i ] == "<":
+        j = buf.find( ">", i ); j = n if j < 0 else j + 1; tags.append( buf[ i:j ] ); i = j
+    else:
+        j = buf.find( "<", i ); i = n if j < 0 else j
+tag, _, attr = spec.rpartition( ":" )
+def on( t ):   # a tag-qualified spec reads only that element: <root label=> is not <community label=>
+    return not tag or re.match( r"<" + re.escape( tag ) + r"[\s/>]", t ) is not None
+vals = [ m.group( 1 ) for t in tags if on( t ) for m in [ re.search( r"\s" + re.escape( attr ) + r"=\"([^\"]*)\"", t ) ] if m ]
+leg = " ".join( legend )
+if op == "carries":    print( 1 if vals else 0 )
+elif op == "value":    print( vals[ 0 ] if vals else "" )
+elif op == "defines":  print( 1 if re.search( r"(?<![A-Za-z0-9_])" + re.escape( attr ) + "=", leg ) else 0 )
+elif op == "mentions": print( 1 if spec in leg else 0 )   # a literal needle anywhere in the legend
+PY
+ca(){ python3 "$TMP/condattr.py" "$@"; }
+# condArm ID LABEL FULL COMPACT SPEC… — the control, then the compact definition, one verdict row per document
+condArm()
+{
+    local id="$1" label="$2" full="$3" comp="$4" spec attr bad=0 got=""
+    shift 4
+    for spec in "$@"; do
+        attr="${spec#*:}"
+        if [ "$( ca carries "$full" "$spec" )" != 1 ] || [ "$( ca carries "$comp" "$spec" )" != 1 ]; then
+            no "($id) $label: control broken — the answer does not carry $attr= in both postures, so its definition row would be vacuous: $( head -c 160 "$comp" )"
+            bad=1; continue
+        fi
+        if [ "$( ca defines "$full" "$attr" )" != 1 ]; then
+            no "($id) $label: control broken — the FULL legend does not define $attr= either, so this row asserts nothing compact-specific"
+            bad=1; continue
+        fi
+        if [ "$( ca defines "$comp" "$attr" )" != 1 ]; then
+            no "($id) $label: $attr=\"$( ca value "$comp" "$spec" )\" is carried but the compact legend never defines it: $( leg legend "$comp" | head -c 260 )"
+            bad=1; continue
+        fi
+        got="$got $attr="
+    done
+    [ "$bad" -eq 0 ] && ok "($id) $label: carried, and defined by the compact legend:$got"
+    return 0
+}
+cdRun(){ local out="$1" dir="$2"; shift 2; ( cd "$dir" && "$BIN" . "$@" >"$out" 2>"$TMP/derr" </dev/null ); }
+# condPair ID LABEL DIR "ARGS" SPEC… — one answer in both postures (ARGS word-split on purpose: no spaces in any of them)
+condPair(){ local id="$1" label="$2" dir="$3" args="$4"; shift 4; cdRun "$TMP/d.full" "$dir" $args; cdRun "$TMP/d.comp" "$dir" $args --legend=compact; condArm "$id" "$label" "$TMP/d.full" "$TMP/d.comp" "$@"; }
+
+# H1's own corpus (test/decltodefcheck.sh arm A): a/Store.h declares a putObject whose one same-named body is b::Store's,
+# in a file that never includes a/Store.h — so a/Store.h:putObject is a bodyless declaration with one unproven candidate.
+H1="$TMP/h1"; mkdir -p "$H1/a" "$H1/b"
+printf '#pragma once\nnamespace a {\nclass Store {\npublic:\n    int putObject(int x);\n};\n}\n' >"$H1/a/Store.h"
+printf '#pragma once\nnamespace b {\nclass Store {\npublic:\n    int putObject(int x);\n};\n}\n' >"$H1/b/Store.h"
+printf '#include "Store.h"\nnamespace b {\nint Store::putObject(int x)\n{\n    return x + 1;\n}\n}\nint callB(int x)\n{\n    b::Store s;\n    return s.putObject(x);\n}\n' >"$H1/b/Store.cpp"
+# --lego's caveat= rides a NAMED interface in a language whose method contract is not read (only C++/ObjC are).
+LEGOJ="$TMP/legojava"; mkdir -p "$LEGOJ"
+printf 'interface Shape {\n    double area();\n}\n' >"$LEGOJ/Shape.java"
+printf 'class Circle implements Shape {\n    public double area() { return 3.0; }\n}\n' >"$LEGOJ/Circle.java"
+DECL="$ROOT/test/declinefix"; FIELDS="$ROOT/test/fieldusesfix"
+for d in "$DECL" "$FIELDS"; do [ -d "$d" ] || no "(D) fixture missing: $d — every row reading it would be vacuous"; done
+
+condPair D1 "--callers=a/Store.h:putObject" "$H1" "--callers=a/Store.h:putObject" unproven_defs
+condPair D2 "--callees=a/Store.h:putObject" "$H1" "--callees=a/Store.h:putObject" bodyless_defs unproven_defs
+condPair D2 "--callees=a/Store.h:putObject --format=columnar" "$H1" "--callees=a/Store.h:putObject --format=columnar" bodyless_defs unproven_defs
+condPair D3 "--callers=java/alpha/Alpha.java:jbody" "$DECL" "--callers=java/alpha/Alpha.java:jbody" declined_calls
+condPair D3 "--callees=javaDeclined" "$DECL" "--callees=javaDeclined" declined_calls
+condPair D3 "--impact=java/alpha/Alpha.java:jbody" "$DECL" "--impact=java/alpha/Alpha.java:jbody" declined_calls
+condPair D3 "--impact=java/alpha/Alpha.java:jbody --format=columnar" "$DECL" "--impact=java/alpha/Alpha.java:jbody --format=columnar" declined_calls
+mcp_text impact "{\"path\":\"$DECL\",\"symbol\":\"java/alpha/Alpha.java:jbody\",\"legend\":\"full\"}" >"$TMP/d.full"
+mcp_text impact "{\"path\":\"$DECL\",\"symbol\":\"java/alpha/Alpha.java:jbody\"}" >"$TMP/d.comp"
+condArm D3 "MCP impact at its DEFAULT posture (compact) vs legend:\"full\"" "$TMP/d.full" "$TMP/d.comp" declined_calls
+condPair D4 "--uses=Counter.count (the member form)" "$FIELDS" "--uses=Counter.count" member pinned amb_sites owners_of_name u:owner_candidates
+"$BIN" "$FIX" "$H1" --callers=distance >"$TMP/d.full" 2>/dev/null </dev/null
+"$BIN" "$FIX" "$H1" --callers=distance --legend=compact >"$TMP/d.comp" 2>/dev/null </dev/null
+condArm D5 "two roots, --callers=distance (the <root label= p=> table)" "$TMP/d.full" "$TMP/d.comp" root:label
+condPair D6 "--lego=Shape (Java: no method contract read)" "$LEGOJ" "--lego=Shape" iface:caveat iface:methods
+
+# (D7) THE MIRROR — present-only. A reading printed on a document WITHOUT its attribute is the opposite false claim, and
+# these single-root answers are the (L) loop's own shapes. --communities is the row that proves the <root label=>
+# reading is ELEMENT-qualified: it carries label= on every <community> row, a different attribute under the same name.
+rrun --communities --legend=compact >"$TMP/d7.comm"
+[ "$( ca carries "$TMP/d7.comm" community:label )" = 1 ] \
+    || no "(D7) control: --communities carries no <community label=> any more, so the element-qualification row proves nothing"
+d7bad=0; d7n=0
+for v in "--callers=distance" "--callees=distance" "--impact=distance" "--uses=distance" "--lego=Point" "--communities"; do
+    rrun "$v" --legend=compact >"$TMP/d7.c"
+    if [ ! -s "$TMP/d7.c" ]; then
+        no "(D7) $v --legend=compact answered nothing — its mirror row would be vacuous"; d7bad=1; continue
+    fi
+    d7n=$(( d7n + 1 ))
+    for pair in "unproven_defs=|unproven_defs" "bodyless_defs=|bodyless_defs" "declined_calls=|declined_calls" "member=|member" "<root label=|root:label" "caveat=|caveat"; do
+        needle="${pair%%|*}"; spec="${pair#*|}"
+        if [ "$( ca mentions "$TMP/d7.c" "$needle" )" = 1 ] && [ "$( ca carries "$TMP/d7.c" "$spec" )" != 1 ]; then
+            no "(D7) $v: the compact legend spells '$needle' but the document carries no ${spec#*:}= — a definition of an attribute that is not there"
+            d7bad=1
+        fi
+    done
+done
+[ "$d7bad" -eq 0 ] && [ "$d7n" -eq 6 ] && ok "(D7) mirror: no conditional reading prints on $d7n single-root answers that lack its attribute (incl. --communities' <community label=>)"
+
+echo
+echo "=== (S) STRUCTURAL: every conditional attribute the graphlegend.h helper family emits has a compact reading ==="
+# The (D) rows prove today's members; this row keeps the NEXT one from landing undefined. The population is READ FROM
+# SOURCE, never listed here, from the two places the family spells a conditional attribute:
+#   1. every `countAttrXmlOrEmpty( "NAME"` call, tree-wide — the one absent-at-zero spelling graphlegend.h mandates;
+#   2. every legend constant graphlegend.h selects CONDITIONALLY — named in exactly one arm of a `?:` (a clause against
+#      "", or the callees-only half of callHierarchyLegendOpen) — reduced to the attribute its text opens with, the
+#      house form ("declined_calls=K (absent when 0) …", "callees-only: bodyless_defs= …").
+# Each must have a kCompactCompletenessTerms row, a paging-window name, or the *_capped rule (all read from
+# src/compactlegend.h). The one other way to be defined is a full clause the compact layer KEEPS because it is not
+# prose-prefixed — --skipped's `<!-- why=…` health comments — and that is never taken on trust: each such name is run
+# live here and must be carried AND defined by the compact document, or the row fails.
+# WHAT IT DOES NOT SEE, said so the arm is not read as wider than it is (CONTRIBUTING §2 shape 7): a clause made
+# conditional at its CALL SITE rather than inside graphlegend.h (fielduses.h's member form, serialize.h's multi-root
+# table, --lego's caveat=) — rows (D4)/(D5)/(D6) are what guard those.
+# RED on origin/main 28ee1df3: bodyless_defs=, declined_calls= and unproven_defs= FAILed. Shown able to fail on the fix
+# too: with the declined_calls row deleted from kCompactCompletenessTerms this arm went red on that name (landing commit).
+cat > "$TMP/struct.py" <<'PY'
+import os, re, sys
+root = sys.argv[1]
+def lex( text ):
+    # comments dropped; every string/char literal replaced by a numbered placeholder whose body is kept in lits
+    out, lits = [], []
+    i = 0; n = len( text )
+    while i < n:
+        if text.startswith( "//", i ):
+            j = text.find( "\n", i ); i = n if j < 0 else j
+        elif text.startswith( "/*", i ):
+            j = text.find( "*/", i + 2 ); i = n if j < 0 else j + 2
+        elif text[ i ] in "\"'":
+            q = text[ i ]; j = i + 1
+            while j < n and text[ j ] != q:
+                j += 2 if text[ j ] == "\\" else 1
+            if q == '"':
+                out.append( '"S%d"' % len( lits ) ); lits.append( text[ i + 1:j ] )
+            else:
+                out.append( "'?'" )
+            i = j + 1
+        else:
+            out.append( text[ i ] ); i += 1
+    return "".join( out ), lits
+def arms( code, q ):
+    # the two arms of the ternary whose '?' is at q: up to the first depth-0 ':' that is not '::', then to its end
+    depth = 0; i = q + 1; n = len( code ); mid = -1
+    while i < n:
+        c = code[ i ]
+        if code.startswith( "::", i ):
+            i += 2; continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and ( c == ";" or ( c == "," and mid >= 0 ) ):
+            break
+        elif depth == 0 and c == ":" and mid < 0:
+            mid = i
+        i += 1
+    return ( code[ q + 1:mid ], code[ mid + 1:i ] ) if mid >= 0 else None
+def opens( body ):
+    m = re.search( r"(?<![A-Za-z0-9_])([a-z][a-z0-9_]*)=", body )
+    return m.group( 1 ) if m else None
+
+code, lits = lex( open( os.path.join( root, "src", "graphlegend.h" ), encoding = "utf-8" ).read() )
+consts = {}
+for m in re.finditer( r"\b(k[A-Z]\w*)\s*=\s*((?:\"S\d+\"\s*)+);", code ):
+    consts[ m.group( 1 ) ] = "".join( lits[ int( k ) ] for k in re.findall( r"\"S(\d+)\"", m.group( 2 ) ) )
+pop = {}
+for q in [ m.start() for m in re.finditer( r"\?", code ) ]:
+    both = arms( code, q )
+    if both is None:
+        continue
+    a, b = ( set( re.findall( r"\bk[A-Z]\w*", x ) ) for x in both )
+    for k in sorted( a ^ b ):
+        if k in consts and opens( consts[ k ] ):
+            pop.setdefault( opens( consts[ k ] ), "graphlegend.h selects %s conditionally" % k )
+for dirpath, dirnames, files in os.walk( os.path.join( root, "src" ) ):
+    dirnames.sort()
+    for f in sorted( files ):
+        if f.endswith( ( ".h", ".cpp" ) ):
+            p = os.path.join( dirpath, f )
+            for m in re.finditer( r"countAttrXmlOrEmpty\(\s*\"([a-z][a-z0-9_]*)\"", open( p, encoding = "utf-8", errors = "replace" ).read() ):
+                pop.setdefault( m.group( 1 ), "countAttrXmlOrEmpty in %s" % os.path.relpath( p, root ) )
+
+ccode, clits = lex( open( os.path.join( root, "src", "compactlegend.h" ), encoding = "utf-8" ).read() )
+def table( name ):
+    m = re.search( r"\b" + name + r"\s*\[\s*\]\s*=\s*\{(.*?)\};", ccode, re.S )
+    return m.group( 1 ) if m else ""
+terms  = set( clits[ int( k ) ] for k in re.findall( r"\{\s*\"S(\d+)\"\s*,", table( "kCompactCompletenessTerms" ) ) )
+paging = set( clits[ int( k ) ] for t in ( "kCompactPagingAttrs", "kCompactPagingHeadAttrs" ) for k in re.findall( r"\"S(\d+)\"", table( t ) ) )
+# presence guards: a reader that broke returns an empty set, and an empty population agrees with any table
+if not { "counts_floor", "graph_unindexed", "root" } <= terms or not { "shown", "limit" } <= paging:
+    print( "FAIL|the term/paging tables read from src/compactlegend.h are incomplete (terms=%d paging=%d) — the reader broke, so no row here means anything" % ( len( terms ), len( paging ) ) )
+    sys.exit( 0 )
+if not { "graph_unindexed", "declined_calls", "unproven_defs", "bodyless_defs", "extent_suspect_files" } <= set( pop ):
+    print( "FAIL|the helper-family population read from src/ lacks a known member (got: %s) — the reader broke" % " ".join( sorted( pop ) ) )
+    sys.exit( 0 )
+covered = []
+for attr in sorted( pop ):
+    if attr in terms or attr in paging or attr.endswith( "_capped" ):
+        covered.append( attr + "=" )
+    else:
+        print( "LIVE|%s|%s" % ( attr, pop[ attr ] ) )
+print( "PASS|%d of %d helper-family conditional attributes have a compact reading in the term table: %s" % ( len( covered ), len( pop ), " ".join( covered ) ) )
+PY
+python3 "$TMP/struct.py" "$ROOT" >"$TMP/s.rows" 2>"$TMP/s.err" || no "(S) the source reader crashed: $( head -c 300 "$TMP/s.err" )"
+[ -s "$TMP/s.rows" ] || no "(S) the source reader printed no rows — the structural arm would be vacuous"
+XHOT="$TMP/xhot"; XLEAK="$TMP/xleak"; mkdir -p "$XHOT" "$XLEAK"
+for f in leak.cpp head.c orphan.cpp plain.cpp; do cp "$ROOT/test/extentfix/$f" "$XHOT/" 2>/dev/null || no "(S) fixture missing: test/extentfix/$f"; done
+for f in leak_anon.cpp leak_plain.cpp leak_lambda.cpp leak_c.c leak_objc.m leak_cuda.cu leak_partial.cpp; do
+    cp "$ROOT/test/macroreparsefix/$f" "$XLEAK/" 2>/dev/null || no "(S) fixture missing: test/macroreparsefix/$f"
+done
+"$BIN" "$XHOT"  --skipped --legend=compact >"$TMP/s.hot"  2>/dev/null </dev/null
+"$BIN" "$XLEAK" --skipped --legend=compact >"$TMP/s.leak" 2>/dev/null </dev/null
+liveDoc(){ case "$1" in extent_suspect_files|extent_suspect_syms) printf '%s' "$TMP/s.hot" ;; macro_blanked_files|macro_blanked) printf '%s' "$TMP/s.leak" ;; *) printf '' ;; esac; }
+while IFS='|' read -r kind name where <&3; do
+    case "$kind" in
+        PASS) ok "(S) $name" ;;
+        FAIL) no "(S) $name" ;;
+        LIVE)
+            doc="$( liveDoc "$name" )"
+            if [ -z "$doc" ]; then
+                no "(S) $name= ($where) has NO kCompactCompletenessTerms row — under --legend=compact it reaches the reader undefined"
+            elif [ "$( ca carries "$doc" "$name" )" = 1 ] && [ "$( ca defines "$doc" "$name" )" = 1 ]; then
+                ok "(S) $name= ($where) needs no term: its --skipped clause is a comment compact KEEPS, verified live (carried and defined)"
+            else
+                no "(S) $name= ($where) has no term, and its live --skipped compact document does not carry and define it (carried=$( ca carries "$doc" "$name" ) defined=$( ca defines "$doc" "$name" ))"
+            fi ;;
+        *) no "(S) unreadable row from the source reader: $kind|$name|$where" ;;
+    esac
+done 3<"$TMP/s.rows"
 
 [ "$fail" -eq 0 ] && echo 'ALL PASS' || echo 'FAILURES ABOVE'
 exit "$fail"
