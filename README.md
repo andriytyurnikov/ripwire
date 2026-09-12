@@ -54,16 +54,12 @@ and cut answers now say so, instead of returning a quiet zero.
 **[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
 contributors named there; this release is largely theirs.
 
-*The first commit, on 2026-06-19, was 34 files: a tree-sitter ingest, a symbol graph, Personalized PageRank, a
-minified XML map, and a gate that demanded two runs be byte-identical. It shipped three MCP verbs that day —
-`analyze`, `find_symbol`, `find_referencing_symbols` — and all three are still here, among 31.*
-
 ---
 
-> **Want to help?** ripwire is twelve weeks old — first commit 2026-06-19, public since 2026-07-31 — and there is a
-> lot worth doing. Twenty open problems are written up as starter kits: the research is done, the file and line
-> pointers are in the prompt, and **each prompt writes a plan and stops**, so we can agree the approach before you
-> write any code.
+> **Want to help?** Start anywhere on the spectrum. At the ready-made end, twenty open problems — languages,
+> resolver bugs, fuzzers, docs — are written up as starter kits: the research is done, the file and line pointers
+> are in the prompt, and **each prompt writes a plan and stops**, so we can agree the approach before you write any
+> code.
 >
 > ```bash
 > git clone https://github.com/redhat-et/ripwire && cd ripwire
@@ -72,9 +68,24 @@ minified XML map, and a gate that demanded two runs be byte-identical. It shippe
 > claude "follow prompts/help-wanted/zig-language.md"     # or your agent of choice
 > ```
 >
-> Plenty of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. The part we would most
-> like help thinking about is the quality lens: measuring what a change makes *worse* — duplication, dead code,
-> nesting, a helper quietly reinvented — and handing that back while the code is still being written.
+> In the middle, a few prompts hand your agent the whole repository and a job to do:
+>
+> - **[Full audit](prompts/full-audit.md)** — six independent lenses over the codebase; take one, or all six.
+> - **[Add a language](prompts/add-a-language.md)** — a vendored grammar, extraction and gates, start to finish.
+> - **[Use it for real, log every gap](prompts/dogfood-gaps.md)** — do an actual task with ripwire and write down
+>   every place it let you down.
+>
+> At the other end, bring your own:
+>
+> - research an idea you have been turning over
+> - bring in a paper that deserves to be in a tool
+> - show how AI agents could read and write better code
+> - automate something decades of software engineering already know
+> - check software algorithmically — a smell nobody measures yet, a way to prove an answer is complete, a bug class
+>   a tool could catch before a reviewer does
+>
+> Open an issue; we want to hear it. The part we would most like help thinking about is the quality lens: measuring
+> what a change makes *worse*, and handing that back while the code is still being written.
 >
 > [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) ·
 > [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue) (three) ·
