@@ -36,9 +36,12 @@
 #       an attribute nothing defines is a number an agent has to guess at, which is the same
 #       reader-facing failure #66 itself reported one level up.
 #   (G) #66 CLAUSE PARITY, the negative half — on a corpus with nothing unindexed, neither the attribute
-#       NOR a clause defining it appears on any of those surfaces. The mirror-image false claim
-#       graphlegend.h's rootRelPathsLegend rule already names: a legend that defines an attribute the
-#       document did not emit.
+#       NOR a clause defining it appears on any of those surfaces, CLI and MCP alike. The mirror-image
+#       false claim graphlegend.h's rootRelPathsLegend rule already names: a legend that defines an
+#       attribute the document did not emit. (F) and (G) walk the SAME surface list and, for MCP, the same
+#       posture list through the same args builder — a half that probed fewer surfaces than its twin is a
+#       hole shaped exactly like the one #66 came through, and the MCP postures were that hole until
+#       2026-09-11.
 #
 # WHAT (F)/(G) DO NOT COVER, said here rather than discovered later. They read XML COMMENTS, so they judge
 # the XML dialects only. --situ's blast-radius report is prose, not XML, and carries the same fact through
@@ -122,6 +125,20 @@ try:    d=json.loads(sys.stdin.read() or "{}")
 except Exception as e: sys.stdout.write("__ERROR__ unparseable: %s"%e);  raise SystemExit
 if "error" in d: sys.stdout.write("__ERROR__ %s"%d["error"].get("message",""));  raise SystemExit
 sys.stdout.write(d.get("result",{}).get("content",[{}])[0].get("text",""))'; }
+
+# The MCP lego postures, and the one args builder, that arms (F) and (G) SHARE. One enumeration and one args
+# shape on purpose. (F) probed the MCP surface and (G) probed CLI surfaces only, so an MCP answer could have
+# carried graph_unindexed= — or a clause defining it — on the corpus with nothing unindexed and no arm would
+# have read it. Both halves now iterate this list with the same extraction and the same rejections; a posture
+# added here is probed on BOTH corpora or on neither, which is the drift the shared list exists to stop.
+# An unknown posture yields EMPTY args, so the round trip fails loudly rather than silently falling back to
+# `default` and reporting a posture it never probed.
+MCP_LEGO_POSTURES="default full"
+mcpLegoArgs(){ case "$2" in
+        default) printf '{"path":"%s","type":"CloudStorage"}' "$1" ;;
+        full)    printf '{"path":"%s","type":"CloudStorage","legend":"full"}' "$1" ;;
+        *)       printf '' ;;
+    esac; }
 
 # ── corpora ───────────────────────────────────────────────────────────────────────────────────────────
 # Built here, not committed: each is the reporter's own minimal repro, and a committed .astro/.h fixture
@@ -440,12 +457,8 @@ EOF
 
 # the MCP twin of the worst case: the CLI --lego legend and its MCP copy are one literal, and the MCP
 # surface defaults to the compact posture, so both dialects are probed there too.
-for posture in default full; do
-    case "$posture" in
-        default) ARGS="{\"path\":\"$TMP/cxx\",\"type\":\"CloudStorage\"}" ;;
-        full)    ARGS="{\"path\":\"$TMP/cxx\",\"type\":\"CloudStorage\",\"legend\":\"full\"}" ;;
-    esac
-    mcp_text lego "$ARGS" >"$TMP/f_mcp.xml"
+for posture in $MCP_LEGO_POSTURES; do
+    mcp_text lego "$( mcpLegoArgs "$TMP/cxx" "$posture" )" >"$TMP/f_mcp.xml"
     MT="$( cat "$TMP/f_mcp.xml" )"
     case "$MT" in
         __ERROR__*) no "(F) MCP lego [$posture]: the verb refused — $MT" ;;
@@ -487,6 +500,29 @@ while IFS= read -r spec; do
 done <<EOF
 $SURFACES
 EOF
+
+# The MCP half of the mirror. (F) probes the MCP lego verb in both legend postures and (G) probed CLI
+# surfaces only, so an MCP response was free to carry graph_unindexed= — or a clause defining it — on the
+# clean corpus with nothing reading it. Same posture list, same args builder, same extraction and the same
+# four rejections as (F)'s MCP loop (refusal, empty payload, the attribute, a clause defining it); the ONLY
+# difference between the two loops is the corpus, which is what makes them a matched pair rather than two
+# checks that happen to be nearby.
+for posture in $MCP_LEGO_POSTURES; do
+    mcp_text lego "$( mcpLegoArgs "$TMP/cxxclean" "$posture" )" >"$TMP/g_mcp.xml"
+    GT="$( cat "$TMP/g_mcp.xml" )"
+    case "$GT" in
+        __ERROR__*) no "(G) MCP lego [$posture]: the verb refused — $GT" ;;
+        "")         no "(G) MCP lego [$posture]: empty payload (the absence arms reading it would have been vacuous)" ;;
+        *)
+            if grep -q 'graph_unindexed="' "$TMP/g_mcp.xml"; then
+                no "(G) MCP lego [$posture]: graph_unindexed= present on a corpus with nothing unindexed"
+            elif clauseDefines "$TMP/g_mcp.xml"; then
+                no "(G) MCP lego [$posture]: a clause DEFINES graph_unindexed= on an answer that never emits it — the mirror-image false claim"
+            else
+                ok "(G) MCP lego [$posture]: attribute absent, and no clause claims it"
+            fi ;;
+    esac
+done
 
 echo
 [ "$fail" -eq 0 ] && { echo "blindspotcheck: ALL PASS"; exit 0; }
