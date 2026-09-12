@@ -692,31 +692,71 @@ struct CeilingLadderNotes { std::string_view echoDropped, echoAndRouteDropped, o
 // exceeds budget_tokens. Those bytes change with the shape, so no fixed payload can stand in for them, and pricing
 // the BUILT header let a bundle ship 70 B past the allowance with no rung fired (PR #135, estchargecheck #11 A7).
 // climbCeilingLadderBy climbs the same rungs against `fits( candidateHeader )`. climbCeilingLadder is its
-// fixed-payload form, so the two cannot climb different ladders.
+// fixed-payload form, so the two cannot climb different ladders — and it returns the same CeilingLadderChoice,
+// because a caller that needs the rung must not have to go looking for it in the string (see below).
+//
+// M3 — THE RUNG IS RETURNED, NOT LEFT TO BE GUESSED. A caller needs the verdict (--for puts over_ceiling="1" on
+// its root when the last rung fires) and the only other place to read it from is the finished document, by
+// searching it for the rung's own note. That is FORGEABLE: the header carries the caller's task echoed verbatim
+// by contract (routeoncecheck), so a task containing the note text is indistinguishable from a rung that really
+// fired — --for shipped `budget_tokens="100000" est_tokens="3932" over_ceiling="1"` on a 9.8 KB document for
+// exactly that reason, a root contradicting itself in one unit, and --pack-task shipped the same label off the
+// 13-character substring `over_ceiling:` typed into a task. The branch that BUILDS a candidate is the branch
+// that knows its rung, so carrying that value OUT is what makes the forgery impossible rather than merely
+// unlikely. Gate: test/ceilingverdictcheck.sh, both lenses.
+//
+// `fits` is NOT told the rung, and the first version of M3 was wrong to pass it one. The terminal rung (d) is
+// the branch that never asks — it is what the ladder lands on when nothing fit — so `fits` can only ever be
+// called with (a), (b) or (c), and a predicate that tested for (d) was testing a value it could not receive.
+// --for had one, pricing over_ceiling="1"'s 70 B "onto the candidate that will actually carry them": invariantly
+// false, and harmless only because the caller's real predicate (est_tokens > budget_tokens) prices those bytes
+// on every candidate anyway. A branch that cannot fire is deleted here rather than documented.
+enum class CeilingRung : std::uint8_t
+{
+    AsBuilt = 0,           // (a) it already fitted — the overwhelmingly common case
+    EchoDropped,           // (b) the comment's task echo dropped — a byte-for-byte duplicate of task=
+    EchoAndRouteDropped,   // (c) that plus the verbatim route= attribute — the first unique-information loss
+    OverCeiling            // (d) nothing reached the allowance: the complete bundle, honestly labelled
+};
+
+struct CeilingLadderChoice
+{
+    std::string header;
+    CeilingRung rung = CeilingRung::AsBuilt;
+};
+
 template<typename BuildFn, typename FitsFn>
-inline std::string climbCeilingLadderBy( BuildFn&& build, std::string_view builtHeader, FitsFn&& fits, bool hasRouteAttr,
-                                         const CeilingLadderNotes& notes )
+inline CeilingLadderChoice climbCeilingLadderBy( BuildFn&& build, std::string_view builtHeader, FitsFn&& fits, bool hasRouteAttr,
+                                                 const CeilingLadderNotes& notes )
 {
     if( fits( builtHeader ) )
     {
-        return std::string( builtHeader );
+        return { std::string( builtHeader ), CeilingRung::AsBuilt };
     }
 
-    std::string candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/false, notes.echoDropped );
-    if( !fits( std::string_view( candidate ) ) && hasRouteAttr )
+    // ONE fit test per candidate. The rung-(b) shape used to be priced twice — harmless when `fits` is the
+    // fixed-payload comparison below, but --for's predicate rebuilds and re-prices a whole header through
+    // finishForLensHeader, so the second call was a duplicated fixpoint on every budgeted run.
+    CeilingLadderChoice choice{ build( /*withRouteAttr=*/true, /*withTaskEcho=*/false, notes.echoDropped ), CeilingRung::EchoDropped };
+    bool                candidateFits = fits( std::string_view( choice.header ) );
+    if( !candidateFits && hasRouteAttr )
     {
-        candidate = build( /*withRouteAttr=*/false, /*withTaskEcho=*/false, notes.echoAndRouteDropped );
+        choice        = { build( /*withRouteAttr=*/false, /*withTaskEcho=*/false, notes.echoAndRouteDropped ), CeilingRung::EchoAndRouteDropped };
+        candidateFits = fits( std::string_view( choice.header ) );
     }
-    if( !fits( std::string_view( candidate ) ) )
+    if( !candidateFits )
     {
-        candidate = build( /*withRouteAttr=*/true, /*withTaskEcho=*/true, notes.overCeiling );
+        choice = { build( /*withRouteAttr=*/true, /*withTaskEcho=*/true, notes.overCeiling ), CeilingRung::OverCeiling };
     }
-    return candidate;
+    return choice;
 }
 
+// The fixed-payload form — same rungs, same return. It hands back the CHOICE and not the header alone because
+// both of its callers need the rung: --pack-task labels its root from it, and reading that label back out of
+// the chosen string is the forgery above (`chosen.find( "over_ceiling:" )`, live until 0.6.1).
 template<typename BuildFn>
-inline std::string climbCeilingLadder( BuildFn&& build, std::string_view builtHeader, std::size_t payloadBytes,
-                                       std::size_t byteCeiling, bool hasRouteAttr, const CeilingLadderNotes& notes )
+inline CeilingLadderChoice climbCeilingLadder( BuildFn&& build, std::string_view builtHeader, std::size_t payloadBytes,
+                                               std::size_t byteCeiling, bool hasRouteAttr, const CeilingLadderNotes& notes )
 {
     return climbCeilingLadderBy( build, builtHeader,
                                  [ & ]( std::string_view header ) { return header.size() + payloadBytes <= byteCeiling; },
