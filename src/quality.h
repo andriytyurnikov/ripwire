@@ -25,6 +25,7 @@
 #include "cloneidiom.h"         // idiom-class demotion — the closed 3-idiom shape classifier that turns an idiom-COLLISION clone group into a minor row instead of a gating one
 #include "lintrules.h"          // findErrorMasking — the built-in error-masking rule table (GitClear +47% kind)
 #include "arch.h"               // fnv1a64
+#include "pathguard.h"          // CWE-59: rw::pathguard::refuseSymlinkWrite — writeBaseline truncates, so it must not follow a link
 #include "gitmine.h"            // shSingleQuote + gitFileCommitCountsInDayWindow — short-horizon-churn window mining
 #include "docparse.h"           // docparse::detail::readWholeFile — THE canonical whole-file byte read (commentcoherence.h names it that); reused rather than re-rolled, see forEachSymbolBody
 #include "filter.h"             // B10.1a: isTestPath — the general test-dir convention behind isTestScriptPath
@@ -3602,6 +3603,15 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
 inline bool writeBaseline( const Snapshot& s, const std::string& path, std::string_view headSha = {},
                            std::size_t absorbedGating = 0 )
 {
+    // CWE-59: the ofstream below TRUNCATES, and a truncating open follows a symlink at the final component.
+    // `path` is a fixed name inside a crawled repository, so without this the tool's own write is an
+    // arbitrary-file overwrite for anyone who can commit a link into the tree. Refused before the open —
+    // see src/pathguard.h for why the predicate is shared and the sentence is not.
+    if( rw::pathguard::refuseSymlinkWrite( "the quality baseline sidecar", path ) )
+    {
+        DEGRADED_PATH_ALERT( "quality: refusing to write the baseline sidecar through a symlink" );
+        return false;
+    }
     std::ofstream f( path, std::ios::trunc );
     if( !f ) { DEGRADED_PATH_ALERT( "quality: cannot write baseline file" ); return false; }
     // v2 adds the Q1 kinds (loc/nest/params/api). Format is line-oriented + kind-tagged, so a v1 baseline (no

@@ -19,6 +19,7 @@
 #include "infra/gitblob.h"    // E2: the receipt's blob_sha — the git id of the bytes it wrote
 #include "nextverb.h"         // E2: ONE next= on the receipt (nextFlag / nextFieldJson)
 #include "redact.h"           // R1 (V3): kRedactRules — the marker table the write gate's predicate is derived FROM
+#include "pathguard.h"        // A4-F14: rw::pathguard::isSymlink — THE symlink predicate, shared with the sidecar writers
 
 #include <climits>            // PATH_MAX — the AbsHintFrame realpath/getcwd buffers (A2)
 
@@ -1209,10 +1210,13 @@ inline mcpedit::Outcome runEditVerb( const std::string& root, mcpedit::Op op, co
     // A4-F14: refuse to edit through a symlink. atomicWrite's temp-then-rename lands the new bytes at
     // `disk` by swapping the inode the LAST path component names — for a symlink that REPLACES the link
     // entry with a plain file, leaving the real target file completely untouched (a silent, data-losing
-    // surprise: the agent thinks it edited the target, but it edited nothing it can see). lstat (not stat)
-    // so we inspect the link itself rather than following it.
-    struct stat linkSt{};
-    if( ::lstat( disk.c_str(), &linkSt ) == 0 && S_ISLNK( linkSt.st_mode ) )
+    // surprise: the agent thinks it edited the target, but it edited nothing it can see).
+    //
+    // The DETECTION is rw::pathguard::isSymlink (lstat, not stat — inspect the link itself rather than
+    // following it), shared with the three sidecar writers so the rule has one spelling; the MESSAGE stays
+    // here because this seam fails the OPPOSITE way round — rename replaces the link and spares the target,
+    // a sidecar's truncating open follows the link and destroys it. See src/pathguard.h.
+    if( rw::pathguard::isSymlink( disk ) )
     {
         oc.ok = false; oc.errCode = -32602;
         oc.message = "refusing to edit '" + path + "': it is a symlink, and editing through it would replace "

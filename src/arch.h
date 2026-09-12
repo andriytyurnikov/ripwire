@@ -31,6 +31,7 @@
 //   --baseline-update merges current violations into the sidecar and exits 0 (accept new debt deliberately).
 
 #include "model.h"
+#include "pathguard.h"          // CWE-59: rw::pathguard::refuseSymlinkWrite — THE one symlink rule the sidecar writers share
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — graceful-degrade on a malformed path-regex (never throw at match time)
 #include "infra/hashutil.h"     // sanitizer-clean modulo-2^64 FNV multiplication
 
@@ -638,8 +639,17 @@ inline std::uint64_t archViolHash( std::string_view srcFile,
     return h;
 }
 
-// Sidecar file name written next to the rules file (or in CWD when rules file has no dir component).
-// Using a fixed name in CWD keeps it repo-committable and rules-file-independent; the user adds it to .gitignore or commits it.
+// Sidecar file name for the arch baseline. A BARE name, so it resolves against the process CWD — NOT
+// against the crawl root, and NOT next to the rules file. Fixed and rules-file-independent keeps it
+// repo-committable; the user adds it to .gitignore or commits it.
+//
+// The comment here used to say "written next to the rules file (or in CWD when the rules file has no dir
+// component)", which the body has never done — `rulesPath` is unused. Corrected rather than implemented:
+// changing WHERE this resolves moves the read half (archReadBaseline) with it, so a user whose committed
+// sidecar stops being found gets their accepted debt re-reported as new violations and a CI exit 2. That
+// is a deliberate behaviour decision with a migration to design (read the old location when the new one
+// is absent), not a rider on a security fix. The CWE-59 guard in archWriteBaseline closes the reported
+// vulnerability wherever this resolves, so the two questions are genuinely separable — and separated.
 inline std::string archBaselinePath( const std::string& /*rulesPath*/ ) noexcept
 {
     return ".ripwire_arch_baseline";
@@ -680,6 +690,15 @@ inline bool archWriteBaseline( const std::string&                         sideca
 {
     std::vector<std::uint64_t> sorted( hashes.begin(), hashes.end() );
     std::sort( sorted.begin(), sorted.end() );
+
+    // CWE-59: fopen( …, "w" ) truncates, and a truncating open follows a symlink at the final path
+    // component. `sidecarPath` is a fixed name (see archBaselinePath), so a link planted at it turned
+    // --arch --baseline into an arbitrary-file overwrite. Refused before the open (src/pathguard.h).
+    if( rw::pathguard::refuseSymlinkWrite( "the arch baseline sidecar", sidecarPath ) )
+    {
+        DEGRADED_PATH_ALERT( "arch: refusing to write the arch baseline sidecar through a symlink" );
+        return false;
+    }
 
     std::FILE* f = std::fopen( sidecarPath.c_str(), "w" );
     if( !f )

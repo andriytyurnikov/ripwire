@@ -46,6 +46,7 @@
 #include "model.h"              // HashMap<> — the flat, cache-friendly lookup index (never std::unordered_map)
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — the degrade path for a malformed line / unwritable file
 #include "arch.h"               // D5: relForHash — the SAME lexical, no-I/O root-relative strip the baseline sidecars use
+#include "pathguard.h"          // CWE-59: rw::pathguard::refuseSymlinkWrite — writeNotes truncates, so it must not follow a link
 #include "infra/blanktext.h"    // §S3: rw::hasVisibleContent — the ONE "present but carries nothing" predicate
 
 #include <algorithm>
@@ -376,6 +377,14 @@ inline std::string noteLine( const Note& n )
 inline bool writeNotes( const std::string& path, std::vector<Note> notes )
 {
     sortNotes( notes );
+    // CWE-59: `.ripwire_notes` is a fixed name at the root of a crawled repository, and the ofstream below
+    // TRUNCATES — a truncating open follows a symlink at the final component, so a link committed at that
+    // name turned --note-add into an arbitrary-file overwrite. Refused before the open (src/pathguard.h).
+    if( rw::pathguard::refuseSymlinkWrite( "the field-notes sidecar", path ) )
+    {
+        DEGRADED_PATH_ALERT( "notes: refusing to write the notes sidecar through a symlink" );
+        return false;
+    }
     std::ofstream f( path, std::ios::trunc );
     if( !f ) { DEGRADED_PATH_ALERT( "notes: cannot write notes file" ); return false; }
     f << "# ripwire field notes v1 — one per line: <canonical-id or path> <TAB> <ISO-date> <TAB> <text> [<TAB> <HEAD sha> <TAB> <branch>]. Kept SORTED (merge-friendly union); dates are git committer-clock, not wall time; the trailing sha/branch pair is present only on provenance-stamped notes.\n";
