@@ -662,6 +662,18 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
     {
         out += ",\"bodyless_defs\":" + std::to_string( chRows.bodylessDefs );
     }
+    // H1: the decl→def widening's residue, the CLI root's unproven_defs=. These two verbs take the SAME
+    // `file:name` selectors through the SAME resolver, so an MCP client asking about `api.h:helper` met the
+    // identical silent zero the CLI did. Absent at zero, both directions, through the same spelling helper
+    // the CLI root uses, so the two surfaces cannot disagree about the number.
+    //
+    // NOT named in the tools/list key lists, and that is a decision, not an omission: a draft that added it
+    // to find_symbol's and find_referencing_symbols's descriptions took the manifest to 42,433 B against
+    // mcpmanifestcheck's 42,200 B per-session ceiling, and that gate's standing rule is that the ceiling
+    // moves for a DECLARED argument's obliged bytes and never for prose (it has a recorded precedent of
+    // deleting a 43 B clause rather than re-anchoring around it). The key travels self-named in the payload,
+    // which is where the disclosure has to be — the same posture bodyless_defs= already holds here.
+    out += unprovenDefsKeyJson( chRows.unprovenDefs );
     out += pageDisclosure( pab, sizeof( pab ), pwPrimary.end - pwPrimary.begin, rowTotal, pwPrimary.end,
                            page.limit, page.offset, discloseCap, kJsonPageSyntax );
     out += ",\"calledBy\":" + rowArray( calledBy, referencingOnly ? pwPrimary : pwSecond );
