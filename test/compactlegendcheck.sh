@@ -26,9 +26,11 @@
 # everything else must refuse it. LOOP arm (L): the ten-verb loop's compact legend bill ≤ 4,100 B (was 29,824
 # on the ripwire tree). MCP arm (M): edit_check with legend:"compact" answers in ≤ 900 B on a clean tree.
 # CONDITIONAL arm (D): an absent-at-zero or form-conditional attribute (declined_calls=, unproven_defs=, bodyless_defs=,
-# the member form, the multi-root <root label=> rows, --lego's caveat=) is DEFINED by the compact legend of a document
-# that carries it, and by none that does not. STRUCTURAL arm (S): every conditional attribute the graphlegend.h helper
-# family emits, read from source, has a compact reading — so the next one cannot land undefined.
+# the member form, the multi-root <root label=> rows, --lego's caveat=; on the map family and --impact: pr_iters=,
+# pr_converged=, the map header's gauges, --around's defs=, --rank-by's rank_by=/window=) is DEFINED by the compact legend
+# of a document that carries it, and by none that does not. STRUCTURAL arm (S): every conditional attribute the
+# graphlegend.h helper family emits, the PageRank disclosure, and every conditional hdr: field of the map header, read
+# from source, has a compact reading — so the next one cannot land undefined.
 #
 # Usage:  RIPWIRE_BIN=build/ripwire bash test/compactlegendcheck.sh
 
@@ -573,21 +575,28 @@ cat > "$TMP/condattr.py" <<'PY'
 import re, sys
 op, path, spec = sys.argv[1], sys.argv[2], sys.argv[3]
 buf = open( path, encoding = "utf-8", errors = "replace" ).read()
-legend, tags = [], []
+legend, tags, header = [], [], []
 i = 0; n = len( buf )
 while i < n:
     if buf.startswith( "<![CDATA[", i ):
         j = buf.find( "]]>", i ); i = n if j < 0 else j + 3
     elif buf.startswith( "<!--", i ):
-        j = buf.find( "-->", i ); j = n if j < 0 else j + 3; legend.append( buf[ i:j ] ); i = j
+        # the map header (serialize.h buildStats, the one `<!-- files=` emitter) is DATA: a `#name` spec reads its fields,
+        # and it is never a definition — else every header row would be "defined" by the very number it asks about
+        j = buf.find( "-->", i ); j = n if j < 0 else j + 3
+        ( header if buf.startswith( "<!-- files=", i ) else legend ).append( buf[ i:j ] ); i = j
     elif buf[ i ] == "<":
         j = buf.find( ">", i ); j = n if j < 0 else j + 1; tags.append( buf[ i:j ] ); i = j
     else:
         j = buf.find( "<", i ); i = n if j < 0 else j
-tag, _, attr = spec.rpartition( ":" )
+isHdr = spec.startswith( "#" )   # `#name`: an UNQUOTED field of the map header, not an element attribute
+tag, _, attr = ( "", "", spec[ 1: ] ) if isHdr else spec.rpartition( ":" )
 def on( t ):   # a tag-qualified spec reads only that element: <root label=> is not <community label=>
     return not tag or re.match( r"<" + re.escape( tag ) + r"[\s/>]", t ) is not None
-vals = [ m.group( 1 ) for t in tags if on( t ) for m in [ re.search( r"\s" + re.escape( attr ) + r"=\"([^\"]*)\"", t ) ] if m ]
+if isHdr:
+    vals = [ m.group( 1 ) for h in header for m in [ re.search( r"\s" + re.escape( attr ) + r"=([^\s\"]+)", h ) ] if m ]
+else:
+    vals = [ m.group( 1 ) for t in tags if on( t ) for m in [ re.search( r"\s" + re.escape( attr ) + r"=\"([^\"]*)\"", t ) ] if m ]
 leg = " ".join( legend )
 if op == "carries":    print( 1 if vals else 0 )
 elif op == "value":    print( vals[ 0 ] if vals else "" )
@@ -601,7 +610,7 @@ condArm()
     local id="$1" label="$2" full="$3" comp="$4" spec attr bad=0 got=""
     shift 4
     for spec in "$@"; do
-        attr="${spec#*:}"
+        attr="${spec#*:}"; attr="${attr#\#}"
         if [ "$( ca carries "$full" "$spec" )" != 1 ] || [ "$( ca carries "$comp" "$spec" )" != 1 ]; then
             no "($id) $label: control broken — the answer does not carry $attr= in both postures, so its definition row would be vacuous: $( head -c 160 "$comp" )"
             bad=1; continue
@@ -652,6 +661,82 @@ condPair D4 "--uses=Counter.count (the member form)" "$FIELDS" "--uses=Counter.c
 condArm D5 "two roots, --callers=distance (the <root label= p=> table)" "$TMP/d.full" "$TMP/d.comp" root:label
 condPair D6 "--lego=Shape (Java: no method contract read)" "$LEGOJ" "--lego=Shape" iface:caveat iface:methods
 
+# ── THE MAP FAMILY AND --impact (2026-09-12, the second sweep of the class) ──────────────────────────────────────────
+# (D1)..(D6) closed the navigation verbs. The ranked documents carried the same defect in three more shapes, each
+# established by running 34a97f66 (carried, compact legend silent — the red rows are in the landing commit):
+#   • THE PAGERANK DISCLOSURE (prconverge.h). Its clause rides as the map's own `<!-- pr_iters=` comment and inside the
+#     verb legend of --impact and the ranked reports, prose either way — so pr_iters= reached every compact PageRank root
+#     undefined (--impact is an (L) loop verb), and pr_converged="0" with it on the one document whose order is an
+#     unfinished computation. That exit is unreachable by any INPUT at the shipped ceiling (test/prconvergecheck.sh
+#     derives the bound), so (D9) arms it the way that gate does: RIPWIRE_TEST_PR_MAXITERS lowers the ceiling in every
+#     build flavour, and --no-cache keeps the truncated ranking out of this gate's warm blob.
+#   • THE MAP HEADER. `<!-- files=… -->` is DATA and compact keeps it, while the `<!-- hdr:` clauses (and the absent-if-0
+#     half of `<!-- ripwire v1`) that define its gauges are prose and go — declined=17 or over_ceiling=1 stayed on the
+#     page with no reading. A `#name` spec reads such a field; the data comment is never counted as its definition.
+#   • FORM-CONDITIONAL MAP ROOTS: --around's defs= (only when the seed name has >1 def), --rank-by's rank_by=, churn's
+#     window=. Each name is a DIFFERENT quoted attribute on other verbs (defs= on --callers, window= on --hotspots), so the
+#     `r:` spec reads the map root alone, as the reading must.
+IGN="$TMP/ignored"; mkdir -p "$IGN/gen"; cp -R "$FIX"/. "$IGN"/
+printf 'def hidden():\n    return 1\n' >"$IGN/hidden.py"; printf 'def g():\n    return 1\n' >"$IGN/gen/g.py"; printf 'hidden.py\ngen/\n' >"$IGN/.gitignore"
+( cd "$IGN" && git init -q && git config user.email "t@example.com" && git config user.name "t" && git add -A && git commit -q -m one ) >/dev/null 2>&1 \
+    || no "(D10) the .gitignore fixture's git setup failed — its ignored_files=/ignored_dirs= row would be vacuous"
+MHOT="$TMP/maphot"; MLEAK="$TMP/mapleak"; LPIN="$ROOT/test/lpinfix"; mkdir -p "$MHOT" "$MLEAK"
+cp "$ROOT"/test/extentfix/{leak.cpp,head.c,orphan.cpp,plain.cpp} "$MHOT/" 2>/dev/null || no "(D10) fixture missing: test/extentfix"
+cp "$ROOT"/test/macroreparsefix/{leak_anon.cpp,leak_plain.cpp,leak_lambda.cpp,leak_c.c,leak_objc.m,leak_cuda.cu,leak_partial.cpp} "$MLEAK/" 2>/dev/null \
+    || no "(D10) fixture missing: test/macroreparsefix"
+[ -d "$LPIN" ] || no "(D10) fixture missing: $LPIN — its locality_pinned= row would be vacuous"
+
+condPair D8 "the flagless map" "$FIX" "" pr_iters
+condPair D8 "--impact=distance (an (L) loop verb)" "$FIX" "--impact=distance" pr_iters
+condPair D8 "--communities (a ranked report root)" "$FIX" "--communities" pr_iters
+mcp_text impact "{\"path\":\"$FIX\",\"symbol\":\"distance\",\"legend\":\"full\"}" >"$TMP/d.full"
+mcp_text impact "{\"path\":\"$FIX\",\"symbol\":\"distance\"}" >"$TMP/d.comp"
+condArm D8 "MCP impact at its DEFAULT posture (compact) vs legend:\"full\"" "$TMP/d.full" "$TMP/d.comp" pr_iters
+export RIPWIRE_TEST_PR_MAXITERS=2
+condPair D9 "the flagless map under a lowered PageRank ceiling" "$FIX" "--no-cache" pr_converged pr_iters
+condPair D9 "--impact=distance under a lowered PageRank ceiling" "$FIX" "--impact=distance --no-cache" pr_converged pr_iters
+unset RIPWIRE_TEST_PR_MAXITERS
+condPair D10 "the map over test/declinefix" "$DECL" "" "#declined" "#external"
+condPair D10 "the map over test/lpinfix" "$LPIN" "" "#locality_pinned"
+condPair D10 "the map over test/extentfix" "$MHOT" "" "#extent_suspect_syms"
+condPair D10 "the map over test/macroreparsefix" "$MLEAK" "" "#macro_blanked_files"
+condPair D10 "the map over a git tree whose .gitignore cuts a file and a subtree" "$IGN" "" "#ignored_files" "#ignored_dirs"
+condPair D10 "--max-tokens=50 (the fit_bytes form)" "$FIX" "--max-tokens=50" "#max_tokens" "#fit_bytes" "#over_ceiling"
+condPair D10 "--order=stable (est_tokens= rides the trailing header alone)" "$FIX" "--order=stable" "#est_tokens"
+condPair D11 "--around=distance (the seed name has two defs)" "$FIX" "--around=distance" r:defs
+condPair D11 "--rank-by=hub (a HITS order)" "$FIX" "--rank-by=hub" r:rank_by
+condPair D11 "--rank-by=churn (a git-weighted PageRank)" "$REPO" "--rank-by=churn" r:rank_by r:window pr_iters
+
+# (D12) THE MIRROR for those readings — present-only, on documents chosen for what they LACK, and each lack is asserted
+# before it is relied on: --query=distance is a lexical order (no pr_iters=), --rank-by=hub a HITS order (rank_by= with no
+# pr_iters= or window=), --around=total_area a seed with one def (no defs=), --impact=distance the loop verb with no map
+# header at all, and the flagless map none of the header gauges this fixture never produces. Green on 34a97f66 by
+# construction, like (D7); its failing state is shown in the landing commit on a legend with a reading spliced in.
+[ "$( rrun --query=distance --legend=compact | grep -c ' pr_iters="' )" = 0 ] \
+    || no "(D12) control: --query=distance now carries pr_iters=, so it no longer proves the pr_iters= reading is present-only"
+rrun --rank-by=hub --legend=compact >"$TMP/d12.hub"
+[ "$( ca carries "$TMP/d12.hub" r:rank_by )" = 1 ] && [ "$( ca carries "$TMP/d12.hub" r:window )" != 1 ] \
+    || no "(D12) control: --rank-by=hub no longer carries rank_by= without window=, so its mirror row proves nothing"
+[ "$( rrun --around=total_area --legend=compact | grep -c '<r [^>]* defs="' )" = 0 ] \
+    || no "(D12) control: --around=total_area now carries defs=, so it no longer proves the defs= reading is present-only"
+d12bad=0; d12n=0
+for v in "" "--query=distance" "--rank-by=hub" "--around=total_area" "--impact=distance"; do
+    rrun $v --legend=compact >"$TMP/d12.c"
+    if [ ! -s "$TMP/d12.c" ]; then
+        no "(D12) ${v:-the flagless map} --legend=compact answered nothing — its mirror row would be vacuous"; d12bad=1; continue
+    fi
+    d12n=$(( d12n + 1 ))
+    for spec in pr_iters pr_converged "#declined" "#external" "#locality_pinned" "#extent_suspect_syms" "#macro_blanked_files" \
+                "#ignored_files" "#ignored_dirs" "#max_tokens" "#fit_bytes" "#over_ceiling" r:defs r:rank_by r:window; do
+        attr="${spec#*:}"; attr="${attr#\#}"
+        if [ "$( ca defines "$TMP/d12.c" "$attr" )" = 1 ] && [ "$( ca carries "$TMP/d12.c" "$spec" )" != 1 ]; then
+            no "(D12) ${v:-the flagless map}: the compact legend defines $attr= but the document carries no $spec — a reading of a field that is not there"
+            d12bad=1
+        fi
+    done
+done
+[ "$d12bad" -eq 0 ] && [ "$d12n" -eq 5 ] && ok "(D12) mirror: no map-family reading prints on $d12n answers that lack its field (lexical, HITS, one-def seed, --impact, the plain map)"
+
 # (D7) THE MIRROR — present-only. A reading printed on a document WITHOUT its attribute is the opposite false claim, and
 # these single-root answers are the (L) loop's own shapes. --communities is the row that proves the <root label=>
 # reading is ELEMENT-qualified: it carries label= on every <community> row, a different attribute under the same name.
@@ -665,7 +750,8 @@ for v in "--callers=distance" "--callees=distance" "--impact=distance" "--uses=d
         no "(D7) $v --legend=compact answered nothing — its mirror row would be vacuous"; d7bad=1; continue
     fi
     d7n=$(( d7n + 1 ))
-    for pair in "unproven_defs=|unproven_defs" "bodyless_defs=|bodyless_defs" "declined_calls=|declined_calls" "member=|member" "<root label=|root:label" "caveat=|caveat"; do
+    for pair in "unproven_defs=|unproven_defs" "bodyless_defs=|bodyless_defs" "declined_calls=|declined_calls" "member=|member" "<root label=|root:label" "caveat=|caveat" \
+                "pr_converged=|pr_converged"; do
         needle="${pair%%|*}"; spec="${pair#*|}"
         if [ "$( ca mentions "$TMP/d7.c" "$needle" )" = 1 ] && [ "$( ca carries "$TMP/d7.c" "$spec" )" != 1 ]; then
             no "(D7) $v: the compact legend spells '$needle' but the document carries no ${spec#*:}= — a definition of an attribute that is not there"
@@ -676,22 +762,35 @@ done
 [ "$d7bad" -eq 0 ] && [ "$d7n" -eq 6 ] && ok "(D7) mirror: no conditional reading prints on $d7n single-root answers that lack its attribute (incl. --communities' <community label=>)"
 
 echo
-echo "=== (S) STRUCTURAL: every conditional attribute the graphlegend.h helper family emits has a compact reading ==="
+echo "=== (S) STRUCTURAL: every conditional attribute the graphlegend.h family, the PageRank disclosure and the map header emit has a compact reading ==="
 # The (D) rows prove today's members; this row keeps the NEXT one from landing undefined. The population is READ FROM
-# SOURCE, never listed here, from the two places the family spells a conditional attribute:
+# SOURCE, never listed here, from the places a conditional attribute is spelled:
 #   1. every `countAttrXmlOrEmpty( "NAME"` call, tree-wide — the one absent-at-zero spelling graphlegend.h mandates;
 #   2. every legend constant graphlegend.h selects CONDITIONALLY — named in exactly one arm of a `?:` (a clause against
 #      "", or the callees-only half of callHierarchyLegendOpen) — reduced to the attribute its text opens with, the
-#      house form ("declined_calls=K (absent when 0) …", "callees-only: bodyless_defs= …").
-# Each must have a kCompactCompletenessTerms row, a paging-window name, or the *_capped rule (all read from
+#      house form ("declined_calls=K (absent when 0) …", "callees-only: bodyless_defs= …");
+#   3. (2026-09-12) the PageRank disclosure's XML spelling in src/prconverge.h, and every map-HEADER field src/serialize.h
+#      defines as `hdr:NAME=` in a clause charged only to a map that carries it, or marked absent-if-0 inside the
+#      always-on `<!-- ripwire v1` legend. pr_iters=/pr_converged= need a row that reads the head; a header field needs a
+#      row that reads the kept `<!-- files=` comment (MapHeaderRead::Only/Also), because a head-only row never sees an
+#      unquoted field — and a header-ONLY row is not coverage for a (1)/(2) name, which is a quoted attribute.
+# Each (1)/(2) name must have a kCompactCompletenessTerms row, a paging-window name, or the *_capped rule (all read from
 # src/compactlegend.h). The one other way to be defined is a full clause the compact layer KEEPS because it is not
 # prose-prefixed — --skipped's `<!-- why=…` health comments — and that is never taken on trust: each such name is run
 # live here and must be carried AND defined by the compact document, or the row fails.
 # WHAT IT DOES NOT SEE, said so the arm is not read as wider than it is (CONTRIBUTING §2 shape 7): a clause made
 # conditional at its CALL SITE rather than inside graphlegend.h (fielduses.h's member form, serialize.h's multi-root
-# table, --lego's caveat=) — rows (D4)/(D5)/(D6) are what guard those.
+# table, --lego's caveat=) — rows (D4)/(D5)/(D6) are what guard those; nor a map-family clause not spelled `hdr:`
+# (kMaxTokensFitLegend's max_tokens=/fit_bytes=/over_ceiling=, est_tokens= under order=stable, --around's defs=,
+# --rank-by's rank_by=/window=) — (D10)/(D11) guard those. And BY CONSTRUCTION not the always-on header field unresolved=
+# (no absent-if-0 marker), which the reader prints as INFO on every run because it is STILL undefined under compact: its
+# shortest reading, "unresolved=: resolver gauge", costs 29 B on every map and puts two (U) probes over the 400 B ceiling
+# (--max-tokens=3 379 -> 408, --rank-by=churn 376 -> 405 over their measured legends). No ceiling is raised for it.
 # RED on origin/main 28ee1df3: bodyless_defs=, declined_calls= and unproven_defs= FAILed. Shown able to fail on the fix
 # too: with the declined_calls row deleted from kCompactCompletenessTerms this arm went red on that name (landing commit).
+# RED on 34a97f66 for population 3: pr_iters=, pr_converged= and all seven hdr: fields FAILed. Shown able to fail on the
+# fix: deleting the declined row, making pr_iters header-only, or dropping ignored_dirs' header read each went red on
+# exactly that name, and on nothing else (landing commit).
 cat > "$TMP/struct.py" <<'PY'
 import os, re, sys
 root = sys.argv[1]
@@ -766,6 +865,12 @@ def table( name ):
     return m.group( 1 ) if m else ""
 terms  = set( clits[ int( k ) ] for k in re.findall( r"\{\s*\"S(\d+)\"\s*,", table( "kCompactCompletenessTerms" ) ) )
 paging = set( clits[ int( k ) ] for t in ( "kCompactPagingAttrs", "kCompactPagingHeadAttrs" ) for k in re.findall( r"\"S(\d+)\"", table( t ) ) )
+# A row that reads the map header ALONE (MapHeaderRead::Only) defines an unquoted header field, never a quoted attribute:
+# extent_suspect_syms= and macro_blanked_files= are --skipped attributes too, and their live check below must still run.
+rows      = table( "kCompactCompletenessTerms" )
+hdrTerms  = set( clits[ int( k ) ] for k in re.findall( r"\{\s*\"S(\d+)\"\s*,(?:[^{}]|\{\})*?MapHeaderRead::(?:Only|Also)", rows ) )
+onlyHdr   = set( clits[ int( k ) ] for k in re.findall( r"\{\s*\"S(\d+)\"\s*,(?:[^{}]|\{\})*?MapHeaderRead::Only", rows ) )
+headTerms = terms - onlyHdr
 # presence guards: a reader that broke returns an empty set, and an empty population agrees with any table
 if not { "counts_floor", "graph_unindexed", "root" } <= terms or not { "shown", "limit" } <= paging:
     print( "FAIL|the term/paging tables read from src/compactlegend.h are incomplete (terms=%d paging=%d) — the reader broke, so no row here means anything" % ( len( terms ), len( paging ) ) )
@@ -775,11 +880,46 @@ if not { "graph_unindexed", "declined_calls", "unproven_defs", "bodyless_defs", 
     sys.exit( 0 )
 covered = []
 for attr in sorted( pop ):
-    if attr in terms or attr in paging or attr.endswith( "_capped" ):
+    if attr in headTerms or attr in paging or attr.endswith( "_capped" ):
         covered.append( attr + "=" )
     else:
         print( "LIVE|%s|%s" % ( attr, pop[ attr ] ) )
 print( "PASS|%d of %d helper-family conditional attributes have a compact reading in the term table: %s" % ( len( covered ), len( pop ), " ".join( covered ) ) )
+
+# 3. THE MAP FAMILY (2026-09-12). Two more places a ranked document spells a field whose clause compact strips, both read
+#    from source: the PageRank disclosure's XML spelling in src/prconverge.h (` pr_iters="`, ` pr_converged="0"`, on every
+#    PageRank-ordered root), and every map-HEADER field src/serialize.h defines as `hdr:NAME=` CONDITIONALLY — in a clause
+#    charged only to a map that carries it, or marked absent-if-0 inside the always-on `<!-- ripwire v1` legend. A header
+#    field needs a row that READS the map header (MapHeaderRead::Only/Also); a row that reads only the head never sees
+#    an unquoted field of a comment, and one that reads the header alone does not cover a quoted root attribute above.
+pcode, plits = lex( open( os.path.join( root, "src", "prconverge.h" ), encoding = "utf-8" ).read() )
+prs = sorted( set( m.group( 1 ) for s in plits for m in [ re.match( r' ([a-z][a-z0-9_]*)=\\"', s ) ] if m ) )
+scode, slits = lex( open( os.path.join( root, "src", "serialize.h" ), encoding = "utf-8" ).read() )
+hdr, always = {}, set()
+for s in slits:
+    for m in re.finditer( r"hdr:([a-z][a-z0-9_]*)=", s ):
+        clause = re.split( r" (?:hdr|r):| -->", s[ m.end(): ] )[ 0 ]
+        if s.startswith( "<!-- ripwire v1" ) and "absent-if-0" not in clause:
+            always.add( m.group( 1 ) )
+        else:
+            hdr.setdefault( m.group( 1 ), "serialize.h defines hdr:%s= conditionally" % m.group( 1 ) )
+if not { "pr_iters", "pr_converged" } <= set( prs ) or not { "declined", "ignored_files", "extent_suspect_syms" } <= set( hdr ) or "unresolved" not in always:
+    print( "FAIL|the map-family population read from src/prconverge.h and src/serialize.h lacks a known member (pr: %s; hdr: %s; always-on: %s) — the reader broke" % ( " ".join( prs ), " ".join( sorted( hdr ) ), " ".join( sorted( always ) ) ) )
+    sys.exit( 0 )
+mapCovered = []
+for attr in prs:
+    if attr in headTerms:
+        mapCovered.append( attr + "=" )
+    else:
+        print( "FAIL|%s= (prconverge.h spells it on every PageRank-ordered root) has NO kCompactCompletenessTerms row that reads the head — every compact ranked answer carries it undefined" % attr )
+for attr in sorted( hdr ):
+    if attr in hdrTerms:
+        mapCovered.append( "hdr:" + attr + "=" )
+    else:
+        print( "FAIL|%s= (%s) has no kCompactCompletenessTerms row that reads the map header — a compact map keeps the field and drops its clause" % ( attr, hdr[ attr ] ) )
+if len( mapCovered ) == len( prs ) + len( hdr ):
+    print( "PASS|map family: %d of %d PageRank attributes and conditional map-header fields have a compact reading: %s" % ( len( mapCovered ), len( prs ) + len( hdr ), " ".join( mapCovered ) ) )
+print( "INFO|outside that population by construction (unconditional on every map, no absent-if-0 marker): %s — still undefined under compact, see the arm's comment" % " ".join( a + "=" for a in sorted( always ) ) )
 PY
 python3 "$TMP/struct.py" "$ROOT" >"$TMP/s.rows" 2>"$TMP/s.err" || no "(S) the source reader crashed: $( head -c 300 "$TMP/s.err" )"
 [ -s "$TMP/s.rows" ] || no "(S) the source reader printed no rows — the structural arm would be vacuous"
@@ -795,6 +935,7 @@ while IFS='|' read -r kind name where <&3; do
     case "$kind" in
         PASS) ok "(S) $name" ;;
         FAIL) no "(S) $name" ;;
+        INFO) printf '  INFO  (S) %s\n' "$name" ;;
         LIVE)
             doc="$( liveDoc "$name" )"
             if [ -z "$doc" ]; then
