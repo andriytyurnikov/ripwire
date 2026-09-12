@@ -39,16 +39,21 @@
 #       already holds a bodied def there, so the widening short-circuits; the arm exists because that
 #       short-circuit is what makes the proof's same-file clause a guard rather than the live path.)
 #   (E) THE RESIDUE IS COUNTED — when candidates were found and dropped, the count of dropped candidates is
-#       reported; when nothing was dropped it is 0. Asserted through a standalone unit driver, because the
-#       number is produced in graph.h and this lane does not own an emitter: see THE DISCLOSURE GAP below.
+#       reported; when nothing was dropped it is 0. Asserted through a standalone unit driver, at the
+#       resolver seam where the number is produced.
+#   (E2) THE RESIDUE IS DISCLOSED — the same number reaches the READER, as `unproven_defs="N"` on the
+#       --callers/--callees root, on all three dialects (XML, --json, --format=columnar), with the clause
+#       that defines it in the legend beside it; and BOTH are absent when nothing was dropped. The arm is
+#       there because a dropped candidate that the answer does not mention is a plain zero — which is the
+#       silence #63 exists to kill, so shipping (E) without (E2) would trade one honesty defect for another.
 #   (F) MUTATION — every assertion SHAPE above is shown able to fail, against hand-built inputs.
 #
-# THE DISCLOSURE GAP, stated here rather than left to a commit message. graph.h has ZERO emit sites: every
-# root that could carry `unproven_defs="N"` is composed in src/verbs_*.h. This gate therefore proves the
-# NUMBER (arm E, at the resolver seam where it is produced) and cannot yet prove the ATTRIBUTE. Until the
-# one-line splice lands at those roots, a dropped candidate reaches the reader as a plain zero — correct,
-# and less wrong than the over-count it replaces, but undisclosed. Do not read arm (E) as covering the
-# rendered answer; it does not (CONTRIBUTING §2, shape 7 — naming the limit where a reader will meet it).
+# WHAT (E) AND (E2) EACH COVER, since between them they close what was once a stated gap. (E) reads the
+# number at the seam in graph.h that produces it; (E2) reads the RENDERED answer, which is composed in
+# src/verbs_navigate.h and was, until the disclosure landed, incapable of carrying it — graph.h has zero
+# emit sites, so for one commit the count existed and no reader could see it. Neither arm subsumes the
+# other: (E) would stay green if every emitter dropped the attribute, and (E2) would stay green on a
+# rendered constant. Keep both (CONTRIBUTING §2, shape 7).
 #
 # Usage:
 #   bash test/decltodefcheck.sh                     # build/ripwire
@@ -79,10 +84,27 @@ d=open(sys.argv[1]).read()
 m=re.search(r"<"+sys.argv[2]+r"\b[^>]*>",d)
 sys.stdout.write(m.group(0) if m else "")' "$1" "$2"; }
 
+# LEFT-ANCHORED on purpose: `defs` is a proper suffix of `unproven_defs` and of `bodyless_defs`, so an
+# unanchored search would read one attribute's value out of another's name — and arm (E2) below asserts the
+# ABSENCE of one of them, which is exactly the assertion a suffix match makes vacuous.
 attr(){ python3 -c '
 import re,sys
-m=re.search(sys.argv[2]+r"=\"([^\"]*)\"",sys.argv[1])
+m=re.search(r"(?<![A-Za-z0-9_])"+sys.argv[2]+r"=\"([^\"]*)\"",sys.argv[1])
 sys.stdout.write(m.group(1) if m else "")' "$1" "$2"; }
+
+# The LEADING comment block — the legend a reader meets before the first element, read as a span because G4
+# minifies the whole document onto one line (the same extraction test/graphlegendbudgetcheck.sh uses).
+legendOf(){ python3 -c '
+import re,sys
+d=open(sys.argv[1]).read()
+m=re.match(r"\A(?:\s*<!--.*?-->)+",d,re.S)
+sys.stdout.write(m.group(0) if m else "")' "$1"; }
+
+# One JSON key off the top-level object, as text; empty when the key is absent.
+jsonKey(){ python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+sys.stdout.write("" if sys.argv[2] not in d else str(d[sys.argv[2]]))' "$1" "$2"; }
 
 # Every `n="…"` row name in a document, one per line — the arms below assert on the NAME SET, never on a
 # substring of the whole document (of="…" echoes the selector, so a bare grep matches itself).
@@ -96,6 +118,9 @@ nonempty(){ [ -n "$2" ] && return 0; no "$1 (empty capture — the arm reading i
 
 run(){ # run <corpus> <selector-flag>  → stdout to $2out
     "$BIN" "$1" --no-cache "$2" 2>/dev/null; }
+
+run2(){ # run <corpus> <selector-flag> <dialect-flag> — the --json / --format=columnar spellings of the same answer
+    "$BIN" "$1" --no-cache "$2" "$3" 2>/dev/null; }
 
 # ── corpora, built here rather than committed: each is a minimal repro and a committed .h/.cpp fixture
 #    would also join every OTHER gate's view of test/. ────────────────────────────────────────────────
@@ -417,6 +442,89 @@ if [ "$UNIT_OK" = 1 ]; then
 fi
 
 echo
+echo "=== (E2) the residue is DISCLOSED — unproven_defs= on the rendered answer, absent when nothing dropped ==="
+# The numbers pinned here are the ones arm (E)'s driver reads at the seam (1 for a/Store.h:putObject, 2 for
+# api.h:helper): the point of this arm is that the SAME number survives to the reader, so a disagreement
+# between the two arms is the defect, not a tolerance.
+run  "$TMP/ns"   --callers=a/Store.h:putObject                   >"$TMP/e2_x_callers.xml"
+run  "$TMP/ns"   --callees=a/Store.h:putObject                   >"$TMP/e2_x_callees.xml"
+run  "$TMP/free" --callers=api.h:helper                          >"$TMP/e2_free.xml"
+run  "$TMP/free" --callers=helper                                >"$TMP/e2_bare.xml"
+run  "$TMP/hdr"  --callers=Store.h:putObject                     >"$TMP/e2_clean.xml"
+run2 "$TMP/ns"   --callers=a/Store.h:putObject --json            >"$TMP/e2_json.json"
+run2 "$TMP/ns"   --callers=a/Store.h:putObject --format=columnar >"$TMP/e2_col.xml"
+
+# (E2a) PRESENT, with the seam's own number, on both directions of the 1-hop question. The callees half is
+# the one that would have been lost to a copy of bodyless_defs=: that attribute is gated behind !wantCallers
+# because a declaration has no callees, and the residue has no such asymmetry — a selector that could not
+# tie its definitions to the file it named is equally unanswered whichever edge direction was asked.
+for pair in "e2_x_callers.xml:callers:1" "e2_x_callees.xml:callees:1" "e2_free.xml:callers:2"; do
+    f="${pair%%:*}"; rest="${pair#*:}"; el="${rest%%:*}"; want="${rest#*:}"
+    R="$( rootEl "$TMP/$f" "$el" )"
+    nonempty "(E2a) no <$el> root in $f" "$R" || continue
+    GOT="$( attr "$R" unproven_defs )"
+    CNT="$( attr "$R" count )"
+    if [ "$GOT" = "$want" ]; then
+        ok "(E2a) $f <$el> carries unproven_defs=\"$GOT\" beside count=\"$CNT\""
+    else
+        no "(E2a) $f <$el> unproven_defs=\"${GOT:-<absent>}\", expected \"$want\" — the dropped candidates reach the reader as a bare count=\"$CNT\""
+    fi
+done
+
+# (E2b) ABSENT when nothing was dropped — the other half of "absent at zero", and the arm that stops the
+# attribute from becoming noise on every answer. CONTROL FIRST in both cases: a document with no answer in
+# it has no attribute either, and would pass this vacuously.
+R_CLEAN="$( rootEl "$TMP/e2_clean.xml" callers )"
+R_BARE="$( rootEl "$TMP/e2_bare.xml" callers )"
+if nonempty "(E2b) no <callers> root for Store.h:putObject" "$R_CLEAN" \
+   && nonempty "(E2b) no <callers> root for the bare helper" "$R_BARE"; then
+    C_CLEAN="$( attr "$R_CLEAN" count )"; C_BARE="$( attr "$R_BARE" count )"
+    if [ "$C_CLEAN" != "1" ] || [ "$C_BARE" != "2" ]; then
+        no "(E2b) control broken — every candidate proven: count=\"$C_CLEAN\" (expected 1); bare name: count=\"$C_BARE\" (expected 2). Both absence arms would be vacuous"
+    elif [ -n "$( attr "$R_CLEAN" unproven_defs )" ]; then
+        no "(E2b) Store.h:putObject carries unproven_defs=\"$( attr "$R_CLEAN" unproven_defs )\" — every candidate was PROVEN, so there is no residue to disclose"
+    elif [ -n "$( attr "$R_BARE" unproven_defs )" ]; then
+        no "(E2b) the bare-name selector carries unproven_defs= — the widening never runs on that tier, so the attribute is a claim about nothing"
+    else
+        ok "(E2b) absent at zero: neither the fully-proven file:name answer nor the bare-name answer carries unproven_defs="
+    fi
+fi
+
+# (E2c) THE OTHER TWO DIALECTS. --help promises the same content in each; an honesty attribute that only the
+# default XML carries is a disclosure a --json caller never receives.
+J="$( jsonKey "$TMP/e2_json.json" unproven_defs )"
+if [ "$J" = "1" ]; then ok "(E2c) --json carries \"unproven_defs\":1"; else no "(E2c) --json unproven_defs is \"${J:-<absent>}\", expected 1"; fi
+R_COL="$( rootEl "$TMP/e2_col.xml" callers )"
+if nonempty "(E2c) no <callers> root in the columnar answer" "$R_COL"; then
+    G_COL="$( attr "$R_COL" unproven_defs )"
+    if [ "$G_COL" = "1" ]; then ok "(E2c) --format=columnar carries unproven_defs=\"1\""; else no "(E2c) columnar unproven_defs=\"${G_COL:-<absent>}\", expected 1"; fi
+fi
+
+# (E2d) THE LEGEND, emitted exactly when the attribute is — graphlegend.h's own rule (rootRelPathsLegend: a
+# legend that defines an attribute the document did not emit is the mirror-image false claim), which is also
+# what keeps this clause off every bare-name answer and out of the shared essay's byte budget.
+L_HAS="$( legendOf "$TMP/e2_x_callers.xml" )"
+L_NOT="$( legendOf "$TMP/e2_clean.xml" )"
+if nonempty "(E2d) the disclosing answer has no leading legend comment" "$L_HAS" \
+   && nonempty "(E2d) the clean answer has no leading legend comment" "$L_NOT"; then
+    case "$L_HAS" in
+        *'unproven_defs='*) HAS_DEF=1 ;;
+        *)                  HAS_DEF=0 ;;
+    esac
+    case "$L_NOT" in
+        *'unproven_defs='*) NOT_DEF=1 ;;
+        *)                  NOT_DEF=0 ;;
+    esac
+    if [ "$HAS_DEF" != 1 ]; then
+        no "(E2d) the answer carrying unproven_defs= does not DEFINE it in the legend the reader meets first"
+    elif [ "$NOT_DEF" != 0 ]; then
+        no "(E2d) an answer with no residue still defines unproven_defs= — a legend defining an attribute the document did not emit"
+    else
+        ok "(E2d) the unproven_defs= clause is present exactly when the attribute is"
+    fi
+fi
+
+echo
 echo "=== (F) MUTATION — every assertion shape above is shown able to fail ==="
 # (A)/(B) shape: the row-name reader must SEE a wrong caller when one is present…
 printf '<callers of="a/Store.h:putObject" defs="2" count="1"><s t="fn" n="callB" p="b/Store.cpp:8"/></callers>' >"$TMP/m_a.xml"
@@ -438,6 +546,34 @@ printf '<callers of="Store.h:putObject" count="0"></callers>' >"$TMP/m_c.xml"
 [ "$( attr "$( rootEl "$TMP/m_c.xml" callers )" count )" != "1" ] \
     && ok "(F) C-shape: a header count that DISAGREES with the .cpp count is detected" \
     || no "(F) the (C) equality comparison cannot tell 0 from 1"
+# (E2) shape: the attribute reader must SEE the attribute when it is there…
+printf '<callers of="a/Store.h:putObject" defs="1" count="0" unproven_defs="7"></callers>' >"$TMP/m_e2.xml"
+[ "$( attr "$( rootEl "$TMP/m_e2.xml" callers )" unproven_defs )" = "7" ] \
+    && ok "(F) E2-shape: unproven_defs=\"7\" IS read off a root that carries it" \
+    || no "(F) the unproven_defs reader cannot see the attribute — every (E2a) arm would be inert"
+# …must report ABSENCE as empty, so (E2b) is an assertion and not a tautology…
+printf '<callers of="Store.h:putObject" defs="2" count="1"></callers>' >"$TMP/m_e2b.xml"
+[ -z "$( attr "$( rootEl "$TMP/m_e2b.xml" callers )" unproven_defs )" ] \
+    && ok "(F) E2-shape: a root WITHOUT the attribute reads as empty" \
+    || no "(F) the reader invents a value for an absent attribute — (E2b) would pass on anything"
+# …and must not confuse the two attributes whose names end in the same six bytes (`defs`). Both directions:
+# the suffix must not be read as the whole name, and the whole name must not be read as the suffix.
+printf '<callers of="x" bodyless_defs="3" unproven_defs="5" defs="9" count="0"></callers>' >"$TMP/m_e2c.xml"
+RM="$( rootEl "$TMP/m_e2c.xml" callers )"
+[ "$( attr "$RM" defs )" = "9" ] && [ "$( attr "$RM" unproven_defs )" = "5" ] && [ "$( attr "$RM" bodyless_defs )" = "3" ] \
+    && ok "(F) E2-shape: defs=/bodyless_defs=/unproven_defs= are read as three distinct attributes" \
+    || no "(F) the attribute reader matches a NAME SUFFIX — defs=$( attr "$RM" defs ) unproven=$( attr "$RM" unproven_defs ) bodyless=$( attr "$RM" bodyless_defs )"
+# (E2c) shape: the JSON reader must tell a present key from an absent one.
+printf '{"of":"x","defs":1,"count":0,"unproven_defs":4}' >"$TMP/m_e2j.json"
+printf '{"of":"x","defs":1,"count":0}'                   >"$TMP/m_e2j0.json"
+[ "$( jsonKey "$TMP/m_e2j.json" unproven_defs )" = "4" ] && [ -z "$( jsonKey "$TMP/m_e2j0.json" unproven_defs )" ] \
+    && ok "(F) E2-shape: the JSON key reader distinguishes present from absent" \
+    || no "(F) the JSON key reader cannot tell a present key from an absent one"
+# (E2d) shape: the legend reader must return nothing for a document with no leading comment, or its
+# present/absent comparison is two empty strings agreeing with each other (CONTRIBUTING §2, shape 3).
+[ -z "$( legendOf "$TMP/m_e2.xml" )" ] \
+    && ok "(F) E2-shape: legendOf returns empty for a document with no leading comment" \
+    || no "(F) legendOf invents a legend — the (E2d) comparison could be empty==empty"
 # (E) shape: the driver's own reporter must be able to say FAIL — a run that prints no verdict is not a pass.
 printf 'UNIT FAIL\n' >"$TMP/m_e.out"
 grep -q '^UNIT ALL PASS$' "$TMP/m_e.out" \
