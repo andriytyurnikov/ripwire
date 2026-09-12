@@ -669,9 +669,12 @@ inline ScipOverlay buildScipOverlay( const IngestResult& ing, const std::vector<
 }
 
 // ---- top-level entry: path → overlay (degrade to empty on any failure) -----------------------------
-// The ONE seam main.cpp calls. Unreadable (empty file, directory) / corrupt / truncated / mismatched-tree index →
-// exactly one DEGRADED_PATH_ALERT + an empty overlay (the pipeline proceeds name-based, byte-identical to a
-// no---scip run). A path that cannot be opened never gets here: main.cpp refuses it first, exit 1. Never throws.
+// The ONE seam main.cpp calls, and only after main.cpp has REFUSED (exit 1) every path that cannot be read as an index at
+// all: one that cannot be opened, a directory, an empty regular file (scipIndexUnreadableReason, owner decision 2026-09-12).
+// What still arrives and degrades here — exactly one DEGRADED_PATH_ALERT + an empty overlay, the pipeline proceeding
+// name-based, byte-identical to a no---scip run: a read that yields no bytes (a FIFO or device the fseek/ftell sizing
+// cannot measure, an index over the 256 MiB bound, a short read, a file emptied after main.cpp's probe) and a corrupt /
+// truncated / mismatched-tree index. Never throws.
 inline ScipOverlay loadScipOverlay( std::string_view path, const IngestResult& ing )
 {
     const std::string             p( path );

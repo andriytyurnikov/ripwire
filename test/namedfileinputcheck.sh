@@ -11,11 +11,13 @@
 # Their eight siblings — --from-trace --batch --arch --plan-lint --lint-rules --with-profile --edit-plan
 # --scan-skill(s) — all refuse the same shape of mistake. That is the asymmetry, not a policy.
 #
-# WHY THE SPLIT IS "CANNOT BE OPENED", NOT "IS NOT USABLE". A SCIP index that opens and fails to DECODE is a
-# different fact: the file the caller named exists, and degrading to name-based (byte-identically, with the
-# alert) is the robustness contract the fuzz arm of scipcheck.sh depends on. This gate asserts only the
-# open() failure — the case where nothing the caller named was ever read. scipcheck.sh arm 5 (corrupt index)
-# still pins the degrade; its arm 5b (MISSING index) is re-pinned to the refusal in the same commit.
+# WHY THE SPLIT IS "CANNOT BE READ AS AN INDEX", NOT "IS NOT USABLE". A SCIP index that has bytes and fails to
+# DECODE is a different fact: the file the caller named exists, and degrading to name-based (byte-identically,
+# with the alert) is the robustness contract the fuzz arm of scipcheck.sh depends on. Arms A-D assert the open()
+# failure — the case where nothing the caller named was ever read. scipcheck.sh arm 5 (corrupt index) still
+# pins the degrade; its arm 5b (MISSING index) is re-pinned to the refusal in the same commit. OWNER DECISION
+# 2026-09-12 moved the line one step: an EMPTY file or a DIRECTORY opens, but holds nothing that could be read
+# as an index at all, so it is the same caller mistake as a missing path and refuses too (arm F).
 #
 # ARMS
 #   A  every user-named FILE/DIR input, given an unopenable path, exits NON-ZERO
@@ -31,9 +33,16 @@
 #      CONTINUED in a reduced mode; printing it immediately before a refusal tells the reader the opposite of
 #      what happened, and it leaked on --scip, --scan-skill and --cache.
 #   E  the negative: a readable file of the same kind still works.
+#   F  --scip only: a path that OPENS but cannot be read as an index at all — an empty file, a directory —
+#      refuses: exit 1, the reason right after the flag and path ("is empty" / "is a directory"), nothing on
+#      stdout, no degrade log. Contrast: a 1-byte file (one byte from empty) is a corrupt index and still
+#      degrades at exit 0; a valid index still overlays.
 #
 # RED-FIRST (base binary ec5e3c3): A/B/C/D fail on --scip and --cache, C fails on --scan-skill and
 # --scan-skills, D fails on --scan-skill.
+# RED-FIRST for F (base binary 8c805661): both refusal rows failed all four checks — exit 0, the name-based map on
+# stdout, "[math degraded] --scip: index missing or unreadable" and "cannot read index … proceeding name-based" on
+# stderr. The presence guard and both contrasts passed there, as they must.
 #
 # Usage:  bash test/namedfileinputcheck.sh [BIN]
 # Exits non-zero on any failure.
@@ -101,6 +110,56 @@ printf 'not a scip index at all\n' > "$TMP/corrupt.scip"
 "$BIN" "$FIX" --scip="$TMP/corrupt.scip" --no-cache >/dev/null 2>&1 \
   && ok "E --scip=<unparseable but readable> still degrades at exit 0 (a different fact from cannot-open)" \
   || no "E --scip=<unparseable but readable> refused — the corrupt-index degrade contract was widened too far"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+echo
+echo "=== F: --scip=<empty file> and --scip=<directory> refuse — both open, neither can be read as an index ==="
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# OWNER DECISION 2026-09-12. Both paths pass A-D's open() probe, so they used to reach loadScipOverlay's "cannot
+# read index … proceeding name-based" and serve the name-based map at exit 0 — the M7 defect one step later.
+# The two rows after the refusals are the contrast: a ONE-byte file differs from the empty one by exactly one
+# byte and is a corrupt index (degrade, exit 0), and a valid index still overlays.
+SCIPFIX="$ROOT/test/scipfix"
+: > "$TMP/empty.scip"
+printf 'x' > "$TMP/onebyte.scip"
+mkdir -p "$TMP/scipdir"
+[ -f "$TMP/empty.scip" ] && [ "$( wc -c <"$TMP/empty.scip" | tr -d ' ' )" -eq 0 ] && [ "$( wc -c <"$TMP/onebyte.scip" | tr -d ' ' )" -eq 1 ] \
+  && [ -d "$TMP/scipdir" ] && [ -s "$SCIPFIX/index.scip" ] \
+  && ok "F presence: a 0-byte file, a 1-byte file, a directory and the scipfix index all exist" \
+  || no "F presence: a fixture is missing — the F rows below would prove nothing"
+
+refuses_unreadable_scip(){ # $1 = label, $2 = the path, $3 = the reason the refusal must state right after the flag and path
+    local label="$1" path="$2" reason="$3" rc
+    "$BIN" "$FIX" "--scip=$path" --no-cache >"$TMP/f.out" 2>"$TMP/f.err"; rc=$?
+    if [ "$rc" -eq 1 ]; then ok "F --scip=<$label>: exit 1"; else no "F --scip=<$label>: exit $rc, expected the refusal code 1"; fi
+    if grep -qF -- "--scip=$path: $reason" "$TMP/f.err"; then
+        ok "F --scip=<$label>: the refusal names the flag, echoes the path and says it $reason"
+    else
+        no "F --scip=<$label>: stderr never says '--scip=<path>: $reason': $( cat "$TMP/f.err" )"
+    fi
+    if [ -s "$TMP/f.out" ]; then
+        no "F --scip=<$label>: $( wc -c <"$TMP/f.out" | tr -d ' ' ) B on stdout — a refusal serves no map"
+    else
+        ok "F --scip=<$label>: stdout empty (no map served)"
+    fi
+    if grep -qF '[math degraded]' "$TMP/f.err"; then
+        no "F --scip=<$label>: an internal degrade log in a refusal (nothing degraded — the run refused): $( cat "$TMP/f.err" )"
+    else
+        ok "F --scip=<$label>: no internal degrade log in a refusal"
+    fi
+}
+refuses_unreadable_scip "empty file" "$TMP/empty.scip" "is empty"
+refuses_unreadable_scip "directory"  "$TMP/scipdir"    "is a directory"
+
+"$BIN" "$FIX" --scip="$TMP/onebyte.scip" --no-cache >"$TMP/f1.out" 2>"$TMP/f1.err"; rc=$?
+[ "$rc" -eq 0 ] && [ -s "$TMP/f1.out" ] && grep -qF 'corrupt or truncated index' "$TMP/f1.err" \
+  && ok "F contrast: a 1-byte --scip file (one byte from empty) is a corrupt index — warns, serves the map, exit 0" \
+  || no "F contrast: a 1-byte --scip file should degrade as corrupt at exit 0 with a map; got exit $rc, $( wc -c <"$TMP/f1.out" | tr -d ' ' ) B, stderr: $( cat "$TMP/f1.err" )"
+
+"$BIN" "$SCIPFIX" --scip="$SCIPFIX/index.scip" --exclude=make_index.py --no-cache >"$TMP/fv.out" 2>"$TMP/fv.err"; rc=$?
+[ "$rc" -eq 0 ] && grep -qF 'prov="scip"' "$TMP/fv.out" \
+  && ok "F contrast: a valid index still overlays (exit 0, prov=\"scip\" on stdout)" \
+  || no "F contrast: the valid scipfix index did not overlay: exit $rc, stderr: $( cat "$TMP/fv.err" )"
 
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"

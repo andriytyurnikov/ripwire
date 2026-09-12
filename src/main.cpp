@@ -2687,6 +2687,39 @@ static bool cachePathIsDirectory( const std::string& cachePath )
     return true;
 }
 
+// OWNER DECISION 2026-09-12 — the three ways a --scip path the caller NAMED cannot be read as an index AT ALL, decided in
+// one place from ONE open: it does not open; it opens but is a directory; it opens but is an empty regular file. Returns
+// the reason for dispatchMain's refusal sentence, or an empty view when the path goes on to loadScipOverlay. The directory
+// and the empty file used to open, reach loadScipOverlay's "cannot read index" and serve the name-based map at exit 0.
+// fstat answers on the descriptor fopen returned — no second path resolution, so a rename between the checks cannot make
+// them describe two different files. Still a degrade, decided in scip.h: bytes that do not DECODE (corrupt/truncated), and
+// a non-regular path that is not a directory (a FIFO, a device) whose read yields nothing.
+static std::string_view scipIndexUnreadableReason( const std::string& scipPath )
+{
+    std::FILE* probe = std::fopen( scipPath.c_str(), "rb" );
+    if( probe == nullptr )
+    {
+        return "cannot open the index";
+    }
+    struct stat probeStat;
+    const bool  isStatted = ::fstat( ::fileno( probe ), &probeStat ) == 0;
+    std::fclose( probe );
+    if( !isStatted )
+    {
+        DEGRADED_PATH_ALERT( "--scip: fstat on the opened index failed — directory/empty undecided, loadScipOverlay's read decides" );
+        return {};
+    }
+    if( S_ISDIR( probeStat.st_mode ) )
+    {
+        return "is a directory, not an index file";
+    }
+    if( S_ISREG( probeStat.st_mode ) && probeStat.st_size == 0 )
+    {
+        return "is empty (0 bytes), not an index";
+    }
+    return {};
+}
+
 static int dispatchMain( const rw::Config& cfg, char** argv );
 
 // the key for a SHARED root (`r` = the map family, `ctx` = the bundle family), from the flags that shaped it
@@ -3416,22 +3449,23 @@ static int dispatchMain( const rw::Config& cfg, char** argv )
     //   --cache=/nope/x.bin served the map at exit 0 and never wrote the path, so every later run paid a
     //                       cold parse while the caller believed a cache existed.
     // Eight siblings (--from-trace --batch --arch --plan-lint --lint-rules --with-profile --edit-plan
-    // --scan-skill) already refused. Degrade-and-continue stays the contract for inputs the tool DISCOVERED
-    // (the default cache path, the default skill homes) and for a --scip index that opens but does not
-    // DECODE — that file exists, and scipcheck.sh's corrupt/fuzz arms depend on the byte-identical degrade.
-    // Gate: namedfileinputcheck.sh.
+    // --scan-skill) already refused. OWNER DECISION 2026-09-12: for --scip the refusal covers every path that cannot
+    // be read as an index AT ALL — one that does not open, a directory, an empty file — all three decided by
+    // scipIndexUnreadableReason from one open. Degrade-and-continue stays the contract for inputs the tool DISCOVERED
+    // (the default cache path, the default skill homes) and for a --scip index that has bytes but does not DECODE —
+    // that file exists, and scipcheck.sh's corrupt/fuzz arms depend on the byte-identical degrade.
+    // Gate: namedfileinputcheck.sh (arms A-D, F).
     if( !cfg.scipIndex.empty() )
     {
-        const std::string scipPath( cfg.scipIndex );
-        std::FILE*        probe = std::fopen( scipPath.c_str(), "rb" );
-        if( probe == nullptr )
+        const std::string      scipPath( cfg.scipIndex );
+        const std::string_view unreadableReason = scipIndexUnreadableReason( scipPath );
+        if( !unreadableReason.empty() )
         {
-            rw::emitTo( stderr, "ripwire: --scip={}: cannot open the index — refusing rather than serving the name-based map "
+            rw::emitTo( stderr, "ripwire: --scip={}: {} — refusing rather than serving the name-based map "
                                   "you named a precision index to improve on (generate one with scip-clang/scip-python, or drop --scip)\n",
-                          scipPath.c_str() );
+                          scipPath.c_str(), unreadableReason );
             return 1;
         }
-        std::fclose( probe );
     }
     // M8 (capture-audit 2026-09-04, lens 6 F7/F7b, lens 7 F-SINCE-1) — --since is a GLOBAL flag with four
     // consumers (--hotspots, --slice, --cochange, --rank-by=churn[-decay]), and the §P0.5c ruling that "a
@@ -3627,8 +3661,9 @@ static int dispatchMain( const rw::Config& cfg, char** argv )
             total, bytes, ing.files.size(), pathB, ing.symbols.size(), nameB, ing.references.size(), calleeB, ing.includes.size(), incB );
     }
     // SCIP precision overlay: parse the index (if --scip given) → map to ripwire ids → hand to buildGraph as an optional
-    // parameter. An unreadable/corrupt/mismatched index (a path that cannot be opened was refused above, exit 1) yields an
-    // EMPTY overlay (one DEGRADED_PATH_ALERT + stderr note) and the build proceeds name-based, byte-identical to no --scip.
+    // parameter. An unreadable/corrupt/mismatched index yields an EMPTY overlay (one DEGRADED_PATH_ALERT + stderr note) and
+    // the build proceeds name-based, byte-identical to no --scip. A path that cannot be opened, a directory and an empty
+    // file never get here: they were refused above, exit 1.
     ScipOverlay scipOverlay;
     if( !cfg.scipIndex.empty() )
     {
