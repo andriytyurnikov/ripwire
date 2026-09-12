@@ -403,17 +403,21 @@ inline constexpr const char* kCallHierarchyLegendOpen =
 inline constexpr const char* kCallHierarchyLegendCalleesOnly =
     "callees-only: bodyless_defs= (when present) counts defs= that are bodyless declarations (header-only or forward-declared); zero callees may mean no body to read callees from, not truly no dependencies. ";
 
+// The callers answer's next= reading in its two forms. callHierarchyNextSelector (callhierarchy.h) decides which
+// one the emitter printed, and callHierarchyLegendOpen repeats that decision rather than re-deriving it.
+inline constexpr const char* kCallersNextSelectorLegend = "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). ";
+inline constexpr const char* kCallersNextBareNameLegend = "next= is the one pasteable follow-up (the uses verb on the called name: all same-named definitions' call sites, including sites bound to other definitions, because a declined call names no single definition). ";
+
 // The composed opener, one call for the caller — keeps the wantCallers/callees branch out of
 // runCallHierarchy (already this file's largest dispatcher) rather than adding a ternary at the call site.
 inline std::string callHierarchyLegendOpen( bool wantCallers, bool nextUsesBareName = false )
 {
+    const char* const callersNextClause = nextUsesBareName ? kCallersNextBareNameLegend : kCallersNextSelectorLegend;
     // F-02: the blind-spot clause rides with hop_tested=/hop_untested=, which both forms always carry.
     // P3 (L7): next= defined where the reader meets it — callers hand over the SITES (the uses verb on the same
     // selector, its @FILE:LINE spelling mirrored), callees the BODY whose callees these are (expand).
     // nextUsesBareName is the emitter's OWN decision, never re-derived here; no double hyphen in comment text.
-    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + ( nextUsesBareName
-                           ? "next= is the one pasteable follow-up (the uses verb on the called name: all same-named definitions' call sites, including sites bound to other definitions, because a declined call names no single definition). "
-                           : "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). " )
+    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + callersNextClause
                        : std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + kCallHierarchyLegendCalleesOnly + "next= is the one pasteable follow-up (expand on this selector: the body). ";
 }
 
