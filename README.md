@@ -1284,105 +1284,13 @@ cmake --build build 2>&1 | ./build/ripwire . --from-trace=-
 
 ## What's new
 
-<details>
-<summary><b>New (2026-08-30)</b> — each measured, dated, and re-derivable; the losses and caveats stated in place</summary>
+**0.6.0 — 2026-09-11.** Kotlin and Dart bring the vendored grammars to 24; Ruby now reads the dependencies a
+Rails application actually has — superclasses, mixins, `autoload`, and the constant receivers an autoloader
+loads through. On llvm-project, 182,555 files, the cold parse drops from 194 s to 156 s. Declined calls,
+derailed parses and cut answers say so now, instead of returning a quiet zero.
 
-- **`--slice-flow=back|fwd|both` — cross-statement data-flow slicing (ARISE rung 2, arXiv:2605.03117).**
-  A bounded BFS from one variable over line-granular reaching-definition edges — backward to the
-  statements whose values feed it, forward to the statements its value reaches — that **stops at
-  function boundaries**, exactly as the paper's own slicer does. `--slice-depth=1..32` bounds it
-  (default 8, always disclosed as `depth=`); a bound that cuts a row says `flow_truncated="1"`;
-  without the new flags the v1 output is byte-identical. Measured on the registered fix-commit
-  protocol over this repository's own history (**7 commits / 38 instances, cpp only — a thin corpus,
-  reported as thin**): flow rows lift function-level added-line recall **0.163 → 0.198**, at a mean
-  4,993 output bytes — **25% of the 20,034-byte `--expand` whole-body baseline** whose recall is 1.0
-  by construction. (`bench/slice/run_slicerecall.py`; protocol, per-instance ledger and caveats in
-  [`docs/EVALS.md`](docs/EVALS.md).)
-- **The `--slice` v1 contract got its first measured numbers** (registered 2026-08-28, no numbers
-  until now): per-variable line-recall **0.726**, hit-all rate 0.632, over-inclusion 3.77×. The
-  misses were inspected one by one and are dominated by the measurement's own relevance oracle — a
-  word-regex that matches short identifiers inside comments and string literals, occurrences the
-  slicer correctly refuses to call variable uses — so 0.726 is a **floor under a noisy oracle**; no
-  inspected instance showed a real occurrence the slice dropped.
-- **`--expand` no longer hangs on minified bundles: the secret-redaction sweep was quadratic in LINE
-  length.** Invisible on ~100-byte source lines, fatal on a 2.9 KB-average-line minified bundle: one
-  selector in babel's 2.1 MB / 768-line yarn bundle **never completed** (killed at 1,343.9 s of user
-  CPU with an empty output file; 196.7 s is the only clean lower bound) and now answers in **0.46 s
-  warm**; the self-contained 20 KB single-line fixture went **23.02 s → 0.017 s (~1350×)**. A pure
-  memoization, so an output no-op — **120/120 invocations byte-identical** across 24 corpora × 5 verb
-  shapes — gated on behaviour only (`test/redactfixcheck.sh`), with the timings a ledger row in
-  [`bench/PROFILE.md`](bench/PROFILE.md), never a red-CI threshold.
-
-</details>
-
-<details>
-<summary><b>New (2026-08-23)</b> — each measured on this tree's binary, with the command that re-derives it</summary>
-
-- **`--pattern` — structural search written in CODE, not in node kinds.** `--pattern='foo($X, ...)'`
-  where `$NAME` binds one node, `$_` binds nothing and `...` is an ellipsis over siblings; comments
-  are transparent, everything else is kind- and text-exact. Served across **13 grammar objects (11
-  languages)**, and it *refuses* rather than lying: a pattern no served grammar resolves, or that
-  collapses to a bare token, exits 1 naming the served and unserved families — never `hits=0`.
-  (`./build/ripwire . --pattern='VERIFY($X)'` on this repo: **101 hits over 625 eligible files**,
-  each row carrying its enclosing symbol; `--pattern='$X'` exits **1** with the refusal text.)
-- **`--safe-delete=SYM` — "can I delete this?" in ONE call.** Composes the signals the tool already
-  computes for a resolved symbol: 1-hop callers, the transitive blast radius, every read/write/
-  import/call site, how much of that radius any test reaches, and `--dead-code`'s own shape — then
-  reports `risk=` as a **fact**, never a go/no-go verdict. (`--safe-delete=coversOrEquals`:
-  `callers="2" impact_reaches="17" uses="2" radius_tested="0" radius_untested="17"
-  dead_code_candidate="0" risk="untested-radius"`.)
-- **`--impact` grew a disclosed import tier.** A class whose consumers `#include` or `require` the
-  file that defines it used to look like it had no blast radius at all. `importers=` is now a second,
-  weaker reach beside `reaches=` — with its own cap pair and `<f via="import">` rows, and **never
-  summed into `reaches=`**, because files and symbols are different units.
-  (`--impact=IngestResult` on this repo: `reaches="0" importers="70" shown_importers="40"
-  importers_capped="1"` — a symbol that reads as unreachable by calls and is included by 70 files.)
-- **Conceptual `--for` queries serve a compact map instead of inline bodies.** Bodies were **52.7% of
-  every conceptual-query byte** — the one class that missed the byte target — so the subtoken+body
-  route now ships the ranked map plus one-hop `<hops>` edge context and no body CDATA, disclosed on
-  the root as `bundle="compact" bodies="0" reason="compact-route"`. Across the frozen 15-query class-B
-  set that is **184,857 B → 95,256 B, −48.5%**, with all 11 judged-decisive markers still present
-  (better than either pre-existing lever's 10/11). `--auto-bodies` is a permanent opt-out, not a
-  migration aid. (One pair on this repo, re-derived 2026-08-23:
-  `--for="incremental cache invalidation"` **8,487 B** compact vs **12,044 B** with `--auto-bodies`,
-  **−29.5%**; the 15-query total is [`docs/EVALS.md` §5](docs/EVALS.md).)
-- **`--pack-task` orders callers by corroboration.** A neighbour reached by several of the bundle's
-  top anchors is more likely to be the thing you must touch than one reached by exactly one, so rows
-  sort by `shared=` — the count of top-K anchors that reach them — omitted at 1 because that is what
-  every 1-hop row satisfies by construction. (`--pack-task="emit the minified xml map"` puts
-  `escapeXml` first at `shared="4"`.)
-- **`--lint` rolls up per rule, so a capped view stops hiding whole rules.** Every rule gets a
-  `<rule name= count= shown_rows= rows_capped=/>` row, and a rule whose registered languages match
-  nothing in the corpus carries `applicable="0"` so its zero reads as structural inertness rather
-  than a measurement. On this repository the default view shows 692 of 3,332 findings — and **14 of
-  the 31 rules that fired contribute zero shown rows**, 368 findings whose only evidence is their
-  `count=`. (`./build/ripwire . --lint`, counted from the `<rule>` rows.)
-- **PHP and Lua joined the language line**, with their floors stated rather than implied: PHP's
-  dynamic dispatch (`$fn()`, `call_user_func`, `__call`) names its callee at run time and is a
-  declared floor; a Lua corpus reports no inheritance edges, because metatable inheritance is a
-  runtime call with no syntax to read.
-</details>
-
-<details>
-<summary>Earlier — <b>New (2026-08-15)</b>, kept with its own dates rather than overwritten</summary>
-
-- **`--expand` answers "show me this function" in one call, −47.3% tokens** — an exact-name ask now
-  skips the ranked-map preamble by default and the body arrives with its file's sibling symbols and
-  imports inline (`sibs=`/`inc=`), so the follow-up "what else is in this file?" call never happens.
-  (Re-derived 2026-08-15 fix-expand round: `--expand=emitGrepReport` — 47,252 B classic 200-row-map
-  bundle vs 24,911 B today's exact-name default, on this repo; the figure moves as the corpus grows
-  and is not itself CI-gated, so re-measure before citing it in a future round.)
-- **`--grep` groups, deduplicates, and speaks boolean** — per-file grouping, identical-line collapse
-  ("this exact guard appears at 6 call sites" is the finding), and `--and=`/`--not=`/`--grep-scope=`:
-  a two-term ask returns the *complete* answer at **−78%** of the single-term dump. Default view now
-  runs at ~clean-grep cost while naming the enclosing symbol for every hit.
-- **C++ maps got materially truer**: out-of-line definitions past one qualifier
-  (`Outer::Inner::method(){}` — the house style of large C++ codebases) were silently invisible;
-  on one 6,600-file production tree that was ~15% of qualified definitions. Now indexed at any depth.
-- **Compound `--graph-query` filters run ~25× faster** via predicate pushdown — an exact algebraic
-  identity, byte-identical output, gate-enforced.
-
-</details>
+Every release, with its measurements and its caveats, is in **[CHANGELOG.md](CHANGELOG.md)** — that file is the
+record, and this line is only the pointer to it.
 
 ## Measured
 
