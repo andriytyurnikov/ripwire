@@ -3670,8 +3670,8 @@ static int dispatchMain( const rw::Config& cfg, char** argv )
     // SCIP precision overlay: parse the index (if --scip given) → map to ripwire ids → hand to buildGraph as an optional
     // parameter. An unreadable/corrupt/mismatched index yields an EMPTY overlay (one DEGRADED_PATH_ALERT + stderr note) and
     // the build proceeds name-based, byte-identical to no --scip. A path that cannot be opened, is not a regular file or is
-    // empty never gets here: it was refused above, exit 1. So scipReadFile's plain blocking fopen reopens only a path that
-    // was a regular file at the probe, and opening a regular file never blocks — no O_NONBLOCK is needed there.
+    // empty never gets here: it was refused above, exit 1. The probe closed its descriptor, though, so scipReadFile opens the
+    // path again itself — O_NONBLOCK, reading a regular file only — and a path replaced since by a FIFO degrades, never hangs.
     ScipOverlay scipOverlay;
     if( !cfg.scipIndex.empty() )
     {

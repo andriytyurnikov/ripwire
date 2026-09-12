@@ -39,7 +39,10 @@
 #      "is not a regular file"), nothing on stdout, no degrade log. Every F refusal run is bounded at 20 s: a
 #      FIFO with no writer blocks a plain open() for ever, and a hang must FAIL as a hang rather than stall the
 #      gate. Contrast: a 1-byte file (one byte from empty) is a corrupt index and still degrades at exit 0; a
-#      valid index still overlays.
+#      valid index still overlays. F MECHANISM (structural): the probe closes its descriptor and scipReadFile opens
+#      the path again, so that open is pinned on its own — one ::open carrying O_NONBLOCK, S_ISREG tested on an
+#      ::fstat of that descriptor before any read, no fopen. A path swapped after the probe is a race no run here
+#      can hold, so the pin is on the source.
 #
 # RED-FIRST (base binary ec5e3c3): A/B/C/D fail on --scip and --cache, C fails on --scan-skill and
 # --scan-skills, D fails on --scan-skill.
@@ -50,6 +53,9 @@
 # for a writer, killed at 20 s (exit 124 under GNU timeout, 142 under the perl-alarm fallback); /dev/null failed all four
 # checks — exit 0, 2338 B of name-based map on stdout, "[math degraded] --scip: index missing or unreadable" on stderr.
 # The empty-file, directory and contrast rows passed there.
+# RED-FIRST for the F MECHANISM rows (source and both binaries at 58a33819): m1, m2 and m3 failed — scipReadFile opened
+# the path with a plain std::fopen, with no ::open, no ::fstat and no S_ISREG; the extraction row passed. 66 PASS / 3 FAIL
+# on the plain and the ASan binary alike.
 #
 # Usage:  bash test/namedfileinputcheck.sh [BIN]
 # Exits non-zero on any failure.
@@ -180,6 +186,50 @@ refuses_unreadable_scip "device"     "/dev/null"       "is not a regular file"
 [ "$rc" -eq 0 ] && grep -qF 'prov="scip"' "$TMP/fv.out" \
   && ok "F contrast: a valid index still overlays (exit 0, prov=\"scip\" on stdout)" \
   || no "F contrast: the valid scipfix index did not overlay: exit $rc, stderr: $( cat "$TMP/fv.err" )"
+
+# ── F MECHANISM: the load's own open, which the probe cannot cover ─────────────────────────────────────────────────────────
+# The probe above closes its descriptor, and loadScipOverlay's scipReadFile (src/scip.h) then opens the path a second time,
+# so whatever is at the path by then reaches that open unprobed. With a plain fopen there, a FIFO put at the path after the
+# probe blocked the run waiting for a writer. No user-reachable caller reaches scipReadFile without the probe (dispatchMain
+# is loadScipOverlay's one caller, after the refusal), and the swap is a race across the whole crawl with no point a gate
+# can hold it at, so no run here can reach that open deterministically. These rows pin the MECHANISM instead, as
+# sidecarsymlinkcheck.sh (f) does, on scipReadFile's code with every // comment stripped: its one ::open carries O_NONBLOCK,
+# S_ISREG is tested on an ::fstat of THAT descriptor before anything reads it, and fopen is gone from it.
+scip_read_mechanism(){
+    local code="$TMP/scipreadfile_code.txt" openLines fdVar regLine readLine
+    awk '/^inline std::vector<std::uint8_t> scipReadFile\(/ { inFn = 1 } inFn { print } inFn && /^}/ { exit }' "$ROOT/src/scip.h" \
+      | sed -E 's#//.*$##' >"$code"
+    if ! grep -q 'scipReadFile(' "$code" || ! grep -q '^}' "$code"; then
+        # an empty extraction would PASS the fopen row on silence — report the missing body alone
+        no "F mechanism: scipReadFile's body could not be extracted from src/scip.h — the rows below would prove nothing"
+        return
+    fi
+    ok "F mechanism: scipReadFile's body extracted from src/scip.h ($( grep -c '[^[:space:]]' "$code" | tr -d ' ' ) non-blank code lines)"
+
+    openLines="$( grep -c '::open(' "$code" | tr -d ' ' )"
+    if [ "$openLines" = "1" ] && grep '::open(' "$code" | grep -q 'O_NONBLOCK'; then
+        ok "F mechanism (m1): scipReadFile opens the path once, with an ::open carrying O_NONBLOCK — a FIFO there returns at once"
+    else
+        no "F mechanism (m1): expected exactly one ::open carrying O_NONBLOCK in scipReadFile, found $openLines: $( grep -E 'open\(' "$code" | tr -s ' ' | head -c 200 )"
+    fi
+
+    fdVar="$( sed -n -E 's/.*[^A-Za-z0-9_]([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*::open\(.*/\1/p' "$code" | head -1 )"
+    regLine="$( grep -n 'S_ISREG' "$code" | head -1 | cut -d: -f1 )"
+    readLine="$( grep -n -E 'fdopen\(|fread\(|::read\(' "$code" | head -1 | cut -d: -f1 )"
+    if [ -n "$fdVar" ] && grep -q -E "::fstat\([[:space:]]*$fdVar[[:space:]]*," "$code" \
+       && [ -n "$regLine" ] && [ -n "$readLine" ] && [ "$regLine" -lt "$readLine" ]; then
+        ok "F mechanism (m2): S_ISREG is tested on ::fstat( $fdVar, … ) — the opened descriptor — before anything reads it"
+    else
+        no "F mechanism (m2): expected S_ISREG on an ::fstat of the ::open's descriptor before the first read (descriptor '${fdVar:-none}', S_ISREG line ${regLine:-none}, first read line ${readLine:-none})"
+    fi
+
+    if grep -q 'fopen(' "$code"; then
+        no "F mechanism (m3): scipReadFile still calls fopen, which blocks on a FIFO waiting for a writer: $( grep 'fopen(' "$code" | tr -s ' ' | head -c 160 )"
+    else
+        ok "F mechanism (m3): no fopen left in scipReadFile — the path is opened once, by the non-blocking ::open"
+    fi
+}
+scip_read_mechanism
 
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
