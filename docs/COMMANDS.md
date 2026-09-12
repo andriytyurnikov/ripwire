@@ -1205,7 +1205,7 @@ $ ./build/ripwire . --grep=DEGRADED_PATH_ALERT --grep-context=1
 
 ### `--and=STR`
 
-**Answers:** (repeatable)   modifies --grep=STR: keep only hits where STR is ALSO present (literal-only, no --regex)
+**Answers:** (repeatable)     modifies --grep=STR: keep only hits where STR is ALSO present (literal-only, no --regex)
 
 **Try it**
 
@@ -1234,7 +1234,7 @@ $ ./build/ripwire . --grep=DEGRADED_PATH_ALERT --and=cache
 
 ### `--not=STR`
 
-**Answers:** (repeatable)   modifies --grep=STR: drop hits where STR IS present (literal-only, no --regex)
+**Answers:** (repeatable)     modifies --grep=STR: drop hits where STR IS present (literal-only, no --regex)
 
 **Try it**
 
@@ -1263,7 +1263,7 @@ $ ./build/ripwire . --grep=DEGRADED_PATH_ALERT --not=test --grep-scope=file
 
 ### `--grep-scope=line|file`
 
-**Answers:** modifies --and=/--not=: line (default) requires the SAME matched line;
+**Answers:** modifies --and=/--not=: must the other term hit the SAME line (default) or anywhere in the file modifies --and=/--not=: line (default) requires the SAME matched line;
 
 file requires anywhere in the same file. Second occurrence of --grep=/--regex= itself REFUSES (naming --and= as the AND spelling) rather than silently overwriting the pattern.
 
@@ -1296,7 +1296,7 @@ $ ./build/ripwire . --grep=DEGRADED_PATH_ALERT --not=test --grep-scope=file
 
 ### `--grep-in=code|any`
 
-**Answers:** SPAN TIERS: which tree-sitter span a hit must sit in to print.
+**Answers:** SPAN TIERS: which tree-sitter span a hit must sit in — code (default) or any (exhaustive) SPAN TIERS: which tree-sitter span a hit must sit in to print.
 
 code (default) serves the CODE tier when any hit is code, and otherwise comment AND string TOGETHER (tier= "comment+string"), disclosing what it held back (suppressed_comment=/suppressed_string=); a pattern living only in prose is still answered, never silently emptied. any turns tiering off entirely -- the exhaustive view. Hit files are parsed on demand under a fixed budget; tier_budget= says so when it stops, and hits it never classified are emitted, never suppressed.
 
@@ -2924,7 +2924,7 @@ $ ./build/ripwire . --quality-delta --quality-ack --ack-only=zzznope
 
 ### `--ack-only=SUBSTR[,SUBSTR]`
 
-**Answers:** (with --quality-ack) ack only SOME findings — those whose KIND, canonical id, or FACET contains one of these;
+**Answers:** (with --quality-ack) ack only SOME findings — those whose KIND, canonical id or FACET matches (with --quality-ack) ack only SOME findings — those whose KIND, canonical id, or FACET contains one of these;
 
 the pseudo-token 'gating' selects exactly what would exit 2. Bare --quality-ack accepts the WHOLE report, so accepting one deliberate change silently accepts the rest — how a ratchet turns into a rubber stamp. Prefer the facet: --ack-only=contract-change acks the deliberate arity changes WITHOUT the never-gating api-surface new-symbol rows. Matching nothing refuses (exit 1) rather than falling back to acking everything. Whatever you leave unacked stays visible.
 
@@ -2946,7 +2946,7 @@ $ ./build/ripwire . --ack-only=gating
 
 ### `--scope=GLOB[,GLOB...]`
 
-**Answers:** (with --quality-delta/--quality-ack) OWNERSHIP partition for a working tree that has MORE THAN ONE WRITER in it — N agent sessions sharing one checkout.
+**Answers:** (with --quality-delta/--quality-ack) file findings by OWNERSHIP when one tree has several writers (with --quality-delta/--quality-ack) OWNERSHIP partition for a working tree that has MORE THAN ONE WRITER in it — N agent sessions sharing one checkout.
 
 The delta compares the working tree against HEAD, so every concurrent writer's uncommitted rows land in YOUR report; this files each finding by its p= path. Rows in scope gate as usual; rows outside it are STILL PRINTED, under an out-of-scope element with a do-not-ack banner, and never gate. The header carries scope=, scoped-out= and scoped-out-gating= (how many disclosed rows WOULD have gated — do not read a green exit as a clean tree). THE POINT IS THE ACK: bare --quality-ack in a dirty shared tree accepts the WHOLE report, which silently absorbs a sibling session's debt into a committed ledger under your reason string — that is how a ratchet becomes a rubber stamp. Under --scope, an out-of-scope row is never written, and an --ack-only that NAMES one refuses (exit 1, naming the rows, writing nothing). Each row written under a scope records by=<scope>, and a later run flags an ack whose by= does not cover what it suppresses (foreign-acks= plus an sa row with why="foreign-scope"). THE GLOB, EXACTLY (a pattern that silently fails to match is worse than a documented prefix): each comma-separated pattern is matched against the ROOT-RELATIVE path p= prints, and the list is an OR. NO wildcard = a ROOT-ANCHORED path prefix ending on a / boundary (scope=alpha matches alpha/lib.h, never alphabet/lib.h and never a nested src/alpha/ — stricter than the dead-code directory filter, on purpose). With * or ? = matched against the WHOLE path, * spanning / and ? exactly one character. NOT SUPPORTED: ** (it is two stars, and one already spans /), character classes, brace expansion, negation; whitespace and XML metacharacters in a pattern are REFUSED, not mangled. FLOORS: a clone group is in scope iff ANY member matches; a finding with no locator at all is filed OUT of scope (not provably yours); a scope naming nothing indexed REFUSES (exit 1) rather than reporting a clean zero. ONE RESERVED WORD: --scope=diff is the files the WORKING TREE changes vs the baseline, expanded to one path per changed INDEXED file (the count travels with the report as scope-diff-files=). It composes by UNION: --scope=diff,src/quality.h is that set plus that file. A directory really called diff must be spelled ./diff or diff/. IT IS SUGAR FOR THE SINGLE-WRITER CASE and wrong on its own in the shared tree this flag exists for — a sibling's edits are "changed" too, so name your own paths when the tree has more than one writer. Refused, never silently widened, when there is no git, when the range form is in play (it compares two COMMITTED trees), or when it expands to nothing. An ack written under it records by=diff, which a later run does NOT sweep: an auto-scope meant one file set then and another now, so re-checking it would invent findings.
 
@@ -3096,7 +3096,7 @@ $ ./build/ripwire . --replace-symbol-body=DoesNotExist --edit-payload=<scratch>/
 
 ### `--edit-target-file=PATH`
 
-**Answers:** optional file-path substring disambiguating a same-named definition.
+**Answers:** optional file-path substring disambiguating a same-named definition (relative or absolute) optional file-path substring disambiguating a same-named definition.
 
 RELATIVE (matched against the indexed spelling) or ABSOLUTE (matched against the file's resolved on-disk path), so the path a receipt or a trace hands you works verbatim. These three CLI verbs reuse the MCP edit engine: freshness hash, lock, pre-rename recheck, fsync, mode preservation and atomic rename. Every refusal leaves the target byte-identical. Success prints a JSON receipt whose span is the POST-EDIT byte range (where the payload now sits in the new file), NOT the region overwritten in the old one — for --replace-symbol-body those two lengths usually differ; replaced_bytes is the count of old bytes actually overwritten (0 for the two insert verbs, which never overwrite), lines={start,end} is that same region as FILE:LINE, and trailing_newline_folded / separator_padded say what the seam rules did to the payload. region={start,end,context,text} is the post-edit region as it is ON DISK (the applied lines plus context=3 each side; over 2 KB it carries head, tail, elided_lines and capped=true) and blob_sha is the git blob id of the written bytes (== git hash-object FILE) — the Read an agent would make to see what landed is already in hand. The receipt also carries the POST-EDIT VERIFICATION the tool would otherwise tell you to run: edit_check={status,callers,incompatible,sites} — the same answer --edit-check=FILE:SYM gives, sites naming each broken caller's call LINES — and tests_to_run, the same rows --affected=FILE gives, run recipe included; and exactly ONE next= (a contract-change with broken callers: --uses=FILE:SYM; else the first run= recipe in EVIDENCE order (a changed or partner test outranks a deeper graph hop); else --test-gate=FILE; under --no-post-check: --edit-check=FILE:SYM). Edit, see what landed, verify and find the tests to run is ONE call.
 
@@ -3121,13 +3121,13 @@ $ ./build/ripwire . --insert-before-symbol=nonNegativeFloatDescKey --edit-payloa
 
 **Caveats (stated by the binary):**
 
-- optional file-path substring disambiguating a same-named definition.
+- optional file-path substring disambiguating a same-named definition (relative or absolute) optional file-path substring disambiguating a same-named definition.
 - replaced_bytes is the count of old bytes actually overwritten (0 for the two insert verbs, which never overwrite), lines={start,end} is that same region as FILE:LINE, and trailing_newline_folded / separator_padded say what the seam rules did to the payload.
 - over 2 KB it carries head, tail, elided_lines and capped=true) and blob_sha is the git blob id of the written bytes (== git hash-object FILE) — the Read an agent would make to see what landed is already in hand.
 
 ### `--no-post-check`
 
-**Answers:** skip that folded verification (the index refresh it needs is the one the next verb call would pay for anyway;
+**Answers:** skip that folded verification — pass it when you are about to edit again immediately skip that folded verification (the index refresh it needs is the one the next verb call would pay for anyway;
 
 pass this when you are about to edit again immediately). The MCP spelling is post_check:false. Single-root only.
 
@@ -3144,7 +3144,7 @@ $ ./build/ripwire . --insert-after-symbol=lessByScoreDescId --edit-payload=<scra
 
 **Caveats (stated by the binary):**
 
-- skip that folded verification (the index refresh it needs is the one the next verb call would pay for anyway;
+- skip that folded verification — pass it when you are about to edit again immediately skip that folded verification (the index refresh it needs is the one the next verb call would pay for anyway;
 
 ### `--edit-plan=FILE`
 
@@ -3163,9 +3163,9 @@ $ ./build/ripwire . --edit-plan=<scratch>/aux/edit_plan.json
 
 ### `--dry-run | --apply`
 
-**Answers:** the plan's explicit mode: --dry-run preflights and prints the receipt without writing, --apply commits;
+**Answers:** the plan's mode: --dry-run preflights, --apply commits;
 
-exactly one of the two is required. Payload paths are relative to the plan file and CONFINED to its directory: a path resolving outside it (an absolute path, a '..' escape, or a symlink pointing out) refuses, naming the path it resolved to, and the receipt's payload_path shows what each op will READ. Every target/payload/span is preflighted before any write; overlaps refuse. Apply holds sorted per-file locks and atomically renames each file, re-verifying EACH file's bytes immediately before ITS OWN write (recheck_before_each_write in the receipt) so a non-cooperating external writer is detected rather than clobbered. Prior files roll back on a later write failure or such a detection; the message says which happened and how many files it restored, and ends with the ONE call that shows the state — next: a git diff (exit-code mode) over the plan's files from <root>; exit 0 IS the claim, checked against git. A crash between file renames remains a disclosed limit.
+exactly one of the two is required the plan's explicit mode: --dry-run preflights and prints the receipt without writing, --apply commits; exactly one of the two is required. Payload paths are relative to the plan file and CONFINED to its directory: a path resolving outside it (an absolute path, a '..' escape, or a symlink pointing out) refuses, naming the path it resolved to, and the receipt's payload_path shows what each op will READ. Every target/payload/span is preflighted before any write; overlaps refuse. Apply holds sorted per-file locks and atomically renames each file, re-verifying EACH file's bytes immediately before ITS OWN write (recheck_before_each_write in the receipt) so a non-cooperating external writer is detected rather than clobbered. Prior files roll back on a later write failure or such a detection; the message says which happened and how many files it restored, and ends with the ONE call that shows the state — next: a git diff (exit-code mode) over the plan's files from <root>; exit 0 IS the claim, checked against git. A crash between file renames remains a disclosed limit.
 
 **Try it**
 
@@ -3967,7 +3967,7 @@ $ ./build/ripwire . --pack-task="add a new output format flag to the CLI"
 
 ### `--partition=N`
 
-**Answers:** (with --pack-task, N=2..16) FAN-OUT form: instead of one bundle, emit ONE shared common core plus N per-agent slices, so N parallel agents stop re-deriving the same orientation.
+**Answers:** (with --pack-task, N=2..16) FAN OUT: one shared core plus N per-agent slices, not one bundle (with --pack-task, N=2..16) FAN-OUT form: instead of one bundle, emit ONE shared common core plus N per-agent slices, so N parallel agents stop re-deriving the same orientation.
 
 The task's ranked surface is carved along the call graph's own Louvain communities — a partition is a union of WHOLE modules (largest-first packing) so it reads coherently; when there are fewer modules than agents the widest is cut at its rank median and split="K" says so. The core is exactly the anchors a plain --pack-task would have bodied. --token-budget then means ONE AGENT's budget (core + its partition), not the document's — total_bytes reports the rest. Each inner <ctx> is byte-identical to a standalone call with that slice, so an orchestrator hands one bundle to one agent verbatim. LIMITS: overlap_mean/overlap_max are pairwise Jaccard over the ids each partition NAMES (window + bodies + their 1-hop neighbors) measured BEFORE budget trimming — a ceiling, not the trimmed truth; and on a task whose surface sits inside one module the split is a rank cut, not a semantic one (read split= and overlap_max before trusting the slices). Refuses loudly without --pack-task, or outside 2..16; --with-graph does not compose with it (N+1 bundles, no single graph — says so on stderr).
 

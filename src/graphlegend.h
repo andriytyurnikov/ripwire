@@ -127,11 +127,22 @@ inline constexpr const char* kGraphUnindexedLegend =
 inline const char* graphUnindexedLegend( bool on ) noexcept { return on ? kGraphUnindexedLegend : ""; }
 
 // The same sentence as its OWN XML comment, for the legends that are one closed <!-- ... --> literal rather
-// than a %s inside one (--connect). Wrapped, never re-spelled: a second copy of this sentence is the drift
+// than a %s inside one. Wrapped, never re-spelled: a second copy of this sentence is the drift
 // this header exists to stop, and splicing the bare clause after a closing "-->" is not a wording bug but a
 // WELL-FORMEDNESS one (test/floormarkcheck.sh arm (9) caught exactly that during this change).
 // legendcoveragecheck reads the whole LEADING RUN of comments as the legend, so an adjacent comment IS the
 // legend -- the rule kRootRelPathsLegend already relies on.
+//
+// FOUR USERS, and the fourth-to-first of them is why this paragraph is here. #66 landed the clause into the
+// three SHARED legend builders below (graphCountDisclosure, graphCountFloorBrief, graphUnindexedTextClause)
+// plus --connect through this wrapper -- but the ATTRIBUTE rides a different code path entirely
+// (graph.h graphCountFloorAttrXml/Json, whose only condition is g.unindexedFiles > 0). So every verb whose
+// legend is a hand-spelled closed literal rather than a call into a builder got the attribute and no clause:
+// --lego (kLegoLegend below, CLI and MCP), --verify (verify.h kVerifyLegend) and --nonlocal-state
+// (nonlocalstate.h kNonLocalStateLegend) shipped that way in v0.6.0. They now take this wrapper, which is
+// what it was written for. `on` is always the emitter's own g.unindexedFiles > 0, never a re-derivation.
+// Gate: test/blindspotcheck.sh arm (F) (attribute => clause, every surface, both dialects) and (G) (the
+// mirror: neither, on a corpus with nothing unindexed).
 inline std::string graphUnindexedLegendComment( bool on )
 {
     return on ? std::string( "<!-- " ) + kGraphUnindexedLegend + "-->" : std::string();

@@ -61,19 +61,24 @@ minified XML map, and a gate that demanded two runs be byte-identical. It shippe
 ---
 
 > **Want to help?** ripwire is twelve weeks old — first commit 2026-06-19, public since 2026-07-31 — and there is a
-> lot worth doing. Some of what we know needs doing is written up as a starter kit: the research is done, the file
-> and line pointers are in the prompt, and the prompt writes a plan and stops, so we can agree the approach before
-> you write any code.
+> lot worth doing. Twenty open problems are written up as starter kits: the research is done, the file and line
+> pointers are in the prompt, and **each prompt writes a plan and stops**, so we can agree the approach before you
+> write any code.
 >
-> Some of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. One part we think has much
-> further to go is the quality lens: measuring what a change makes *worse* — duplication, dead code, nesting, a
-> helper quietly reinvented — and handing that back while the code is still being written. That is the most direct
-> lever we know on whether an agent writes code you would keep, and it is the part we would most like help thinking
-> about.
+> ```bash
+> git clone https://github.com/redhat-et/ripwire && cd ripwire
+> cmake -S . -B build && cmake --build build -j     # plain build, no build type
+> ls prompts/help-wanted/                           # twenty kits — pick one
+> claude "follow prompts/help-wanted/zig-language.md"     # or your agent of choice
+> ```
 >
-> Browse [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) — three are marked
-> [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue). Languages, performance,
-> correctness, fuzzing, docs: pick what you enjoy.
+> Plenty of it is ordinary and useful — a language, a resolver bug, a fuzzer, better docs. The part we would most
+> like help thinking about is the quality lens: measuring what a change makes *worse* — duplication, dead code,
+> nesting, a helper quietly reinvented — and handing that back while the code is still being written.
+>
+> [help wanted](https://github.com/redhat-et/ripwire/labels/help%20wanted) ·
+> [good first issue](https://github.com/redhat-et/ripwire/labels/good%20first%20issue) (three) ·
+> [all twenty prompts](prompts/help-wanted/)
 
 ---
 
