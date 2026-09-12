@@ -1,7 +1,7 @@
 #pragma once
 
-// pathguard.h — THE ONE RULE for "this write destination is a symlink, so do not write through it", and
-// the single atomic open that ENFORCES it rather than merely describing it.
+// pathguard.h — THE ONE RULE for "this sidecar name is a symlink, so do not write OR read through it", and
+// the two atomic opens that ENFORCE it rather than merely describing it (round 3 added the read; see below).
 //
 // WHY IT IS ITS OWN HEADER. The rule was born at the MCP edit seam (mcpedit.h, A4-F14) because that is
 // where following a link loses an agent's edit. It was never given to the SIDECAR writers, and that gap was
@@ -28,7 +28,7 @@
 //
 // The stated reason for stopping there was that std::ofstream cannot express O_NOFOLLOW portably. True of
 // ofstream, and not true of the problem: the writers do not need ofstream, they need a descriptor. So the
-// check and the create are now ONE syscall, and it is the only one:
+// check and the create are now ONE syscall, and it is the only one a writer makes:
 //
 //     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666 )
 //
@@ -76,13 +76,71 @@
 // asserted: test/sidecarsymlinkcheck.sh's (g) arms create each sidecar under `umask 000` and require 0666,
 // which is the only umask under which a wrong 0644 is visible at all.
 //
+// ── ROUND 3: THE READERS OF THE SAME NAMES REFUSE A LINK TOO — A DECISION, NOT A DEFAULT ─────────────
+//
+// Rounds 1-2 guarded the writes and left every reader of these three names following a link:
+// notes::readNotes, quality::readBaseline / readBaselineHeadSha / readBaselineAbsorbed, archReadBaseline,
+// and a bare stream the arch verb opened only to learn whether the sidecar existed. So a link at one of the
+// names still decided which file those readers opened, inside the tree or out of it, and its lines were read
+// as sidecar records.
+//
+// No privilege is crossed; the user could read those files anyway. The boundary is the one the crawl already
+// holds (ingest.h, withinCanonicalRoot): repository content does not choose which of the user's files the
+// tool reads. Three answers were on the table, and the choice is pinned by the round-3 arms of
+// test/sidecarsymlinkcheck.sh rather than left to whoever next edits a reader:
+//
+//   (a) Leave the readers following. REJECTED: a link would keep deciding what is read at three fixed names,
+//       right beside a crawl that no longer lets one.
+//   (c) Refuse only a link that leaves the crawl root, which is the crawl's own rule. REJECTED, three ways:
+//       - It does not keep the setup that argues for it. A sidecar symlinked into a SHARED config directory
+//         points outside the tree, and (c) refuses that as well. What (c) keeps beyond (b) is a link to
+//         another file INSIDE the tree — which the writers already refuse, so it is readable and never
+//         again updatable.
+//       - It cannot be one syscall. "Where does the link lead" is realpath() followed by an open: the
+//         check-then-open shape round 2 removed from the writers, or a descriptor-then-verify dance to close
+//         that same race a second time.
+//       - It has no single anchor. The arch baseline resolves against the process CWD (archBaselinePath),
+//         not the crawl root, so "leaves the root" is not even defined for one of the three.
+//   (b) Refuse a link on READ exactly as on write: O_NOFOLLOW at the open. CHOSEN. One sentence covers every
+//       site — a sidecar is a regular file at its fixed name, read or written — and the kernel enforces it
+//       in the very syscall that would otherwise have followed the link.
+//
+// The crawl follows an in-tree link and these readers do not, and that is not an inconsistency. A source
+// tree's links are the user's content; a sidecar is this tool's own state file, which it never creates as
+// a link and, since round 1, will not write through one. git draws the same line: since 2.32 it opens the
+// in-tree .gitattributes, .gitignore and .mailmap with O_NOFOLLOW.
+//
+// MIGRATION. A repository that symlinks one of these sidecars on purpose now gets a stderr refusal on every
+// read and no sidecar in force: no notes surface, quality-delta reports baseline="git-HEAD (symlinked
+// sidecar refused)" and compares against HEAD, and the arch verb reports every violation as new. Replace
+// the link with a regular copy of its target — copy the target to a temporary name beside the link, then
+// mv that over the link — and if it must track a shared original, copy it in as a CI step instead.
+//
+// NOT COVERED, and why:
+//   - `.ripwire_quality_acks` (readAckRecords). Its writer publishes by tmp+rename, which REPLACES a link
+//     instead of following it, so what a refused read should make that writer do belongs to the lane that
+//     guards the writer. The reader moves with it.
+//   - `.ripwire_config` (readRegisterMacrosConfig). User-authored, never written by the tool, and the one
+//     of these names where a link into a shared directory is the ordinary setup. Whether it takes this rule
+//     is its own decision.
+//   - An in-document disclosure where the document has no channel for one. The refusal reaches stderr from
+//     every surface, and the document only where a marker already tells "no sidecar" from "a sidecar not
+//     used" (quality-delta, CLI and MCP). A refused note is simply absent from --for, --expand and the MCP
+//     verbs, and an MCP client never sees the server's stderr.
+//   - Directory components. O_NOFOLLOW constrains the final component only, exactly as for the writes.
+//
+// Each sidecar keeps ONE read seam (readNotesSidecar / readBaselineSidecar / readArchBaselineSidecar) that
+// calls readWholeFileNoFollow below and carries its own DEGRADED_PATH_ALERT, for the same once-per-site
+// reason the write seams keep theirs.
+//
 // It carries no index/graph dependency on purpose — the emitter and the degrade macro are the whole of it —
 // so it stays includable from any layer, which is the property that let the rule be missing in the first
 // place. It is NOT under src/infra/: that layer is vendored into a sibling repo and may not name this
 // project (test/infraportcheck.sh rule (C)), and every sentence below has to.
 //
 // Gated by test/sidecarsymlinkcheck.sh, whose three symlink arms were observed RED before this header
-// existed and whose (e)/(f) mechanism arms were observed RED before the open below replaced the check.
+// existed, whose (e)/(f) mechanism arms were observed RED before the open below replaced the check, and
+// whose round-3 read arms were observed RED against the round-2 binary before the read below existed.
 
 #include "infra/emit.h"   // rw::emitTo — the refusal goes to stderr through THE emitter, not fprintf
 
@@ -207,6 +265,90 @@ inline bool writeAllAndClose( int fd, std::string_view bytes ) noexcept
         wrote = false;
     }
     return wrote;
+}
+
+// ── the read half (round 3) ───────────────────────────────────────────────────────────────────────────
+
+// What the no-follow read produced. `opened` is the OPEN, not the content: a directory at the name opens and
+// then fails its first read, exactly as the std::ifstream this replaces did, so a caller that tells "a
+// sidecar is there" from "no sidecar" (readBaseline's `present`, the arch verb's baseline-in-force) keeps
+// telling them apart the way it always has.
+struct NoFollowRead
+{
+    std::string bytes;             // every byte read before EOF or the first read error
+    bool        opened  = false;   // the open succeeded: something that is not a symlink sits at the name
+    bool        refused = false;   // the open failed with ELOOP — nothing was followed, and stderr says why
+    int         err     = 0;       // errno of the open or read that failed; 0 when neither did
+};
+
+// Read all of `path` WITHOUT following a symlink at the final component — openNoFollowTruncate's read twin:
+// the same O_NOFOLLOW, the same single syscall with no lstat in front of it to race, and the same rule that a
+// refusal is loud.
+//
+// ONLY THE REFUSAL IS LOUD. An absent file is every sidecar's first-run case and says nothing, and any other
+// open or read failure stays exactly as silent as the stream this replaces — the callers already read those as
+// "no sidecar", and making them loud is a behaviour change with questions of its own, not a rider on this
+// one. A read refused over a link is different in kind: the file is RIGHT THERE, and a caller that went quiet
+// about it would leave the user believing there is no sidecar at all.
+//
+// `what` names the sidecar in the user's words, as for the write.
+inline NoFollowRead readWholeFileNoFollow( std::string_view what, const std::string& path )
+{
+    NoFollowRead result;
+    const int    fd = ::open( path.c_str(), O_RDONLY | O_NOFOLLOW );
+    if( fd < 0 )
+    {
+        result.err = errno;
+        if( result.err != ELOOP )
+        {
+            return result;
+        }
+        result.refused = true;
+        if( isSymlink( path ) )
+        {
+            rw::emitTo( stderr,
+                        "ripwire: refusing to read {} at '{}': that path is a symlink, and reading through it would open whatever it points at\n"
+                        "  — outside this tree, if that is where it leads — and use its contents as {}. Nothing was read. A sidecar behind a\n"
+                        "  symlink is refused on read exactly as on write: replace the link with a regular copy of its target (or remove it) and re-run.\n",
+                        what, path, what );
+        }
+        else
+        {
+            // As for the write: ELOOP with no link at the final component is a loop in an earlier directory
+            // component, and "that path is a symlink" would be a claim about a component that is not one.
+            rw::emitTo( stderr,
+                        "ripwire: refusing to read {} at '{}': the path could not be resolved without following a symlink loop\n"
+                        "  in one of its directory components (ELOOP). Nothing was read.\n",
+                        what, path );
+        }
+        return result;
+    }
+
+    result.opened = true;
+    constexpr std::size_t kReadChunkBytes = 64 * 1024;   // how much one read(2) asks for, not how much is kept
+    std::size_t           used            = 0;
+    for( ;; )
+    {
+        result.bytes.resize( used + kReadChunkBytes );
+        const ssize_t n = ::read( fd, result.bytes.data() + used, kReadChunkBytes );
+        if( n > 0 )
+        {
+            used += static_cast<std::size_t>( n );
+            continue;
+        }
+        if( n < 0 && errno == EINTR )
+        {
+            continue;
+        }
+        if( n < 0 )
+        {
+            result.err = errno;
+        }
+        break;
+    }
+    result.bytes.resize( used );
+    ::close( fd );
+    return result;
 }
 
 } // namespace rw::pathguard
