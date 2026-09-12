@@ -35,12 +35,10 @@
 #include "infra/Diagnostics.h"  // DEGRADED_PATH_ALERT — graceful-degrade on a malformed path-regex (never throw at match time)
 #include "infra/hashutil.h"     // sanitizer-clean modulo-2^64 FNV multiplication
 
-#include <unistd.h>    // ::close — the descriptor is released by hand when fdopen refuses to adopt it
-
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cerrno>      // ELOOP — the one errno archWriteBaseline re-words into its own symlink alert
+#include <cerrno>      // ELOOP — the one errno openArchBaselineSidecar re-words into its own symlink alert
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -691,14 +689,14 @@ inline std::unordered_set<std::uint64_t> archReadBaseline( const std::string& si
 // The write TRUNCATES and `sidecarPath` is a fixed name (see archBaselinePath), so a link planted at it
 // turned --arch --baseline into an arbitrary-file overwrite. The refusal is the OPEN itself — O_NOFOLLOW,
 // one syscall, nothing between deciding and creating for a replacement to land in. The first fix asked lstat
-// and then opened anyway, which is check-then-open and was raced in 8 of 25 attempts; see src/pathguard.h.
+// and then opened anyway, which is check-then-open; see src/pathguard.h.
 //
 // Only the ELOOP case gets an alert here, because only it had one: a plain open failure has always been this
 // site's silent `return false`, which its caller turns into "--baseline cannot write sidecar". The user-
 // facing sentence for both now comes from pathguard, on stderr, naming the real reason either way.
 //
-// noexcept, like its caller — matching the contract archWriteBaseline has always had (the emitter can in
-// principle throw on allocation; that exposure predates this round and is unchanged by it).
+// noexcept, like its caller — matching the contract archWriteBaseline has always had (the caller allocates — the
+// sorted copy, the sidecar buffer — and an allocation can in principle throw; allocating under noexcept predates this round).
 inline int openArchBaselineSidecar( const std::string& sidecarPath ) noexcept
 {
     auto [ fd, openErr ] = rw::pathguard::openNoFollowTruncate( "the arch baseline sidecar", sidecarPath );

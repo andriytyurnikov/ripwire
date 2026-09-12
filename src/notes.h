@@ -379,7 +379,7 @@ inline std::string noteLine( const Note& n )
 // `.ripwire_notes` is a fixed name at the root of a crawled repository and the write TRUNCATES, so a link
 // committed at that name turned --note-add into an arbitrary-file overwrite. The refusal is the OPEN itself
 // — O_NOFOLLOW, one syscall, nothing between deciding and creating for a replacement to land in. The first
-// fix asked lstat and then opened anyway, which is check-then-open and was raced in 18 of 25 attempts; see
+// fix asked lstat and then opened anyway, which is check-then-open; see
 // src/pathguard.h. The two alerts are this site's two failure kinds, unchanged, and they stay macros HERE so
 // each keeps its own file/line.
 inline int openNotesSidecar( const std::string& path )

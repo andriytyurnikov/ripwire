@@ -3600,7 +3600,7 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
 // `path` is a fixed name inside a crawled repository and the write TRUNCATES, so a link planted at it turns
 // the tool's own write into an arbitrary-file overwrite. The refusal is the OPEN itself — O_NOFOLLOW, one
 // syscall, nothing between deciding and creating for a replacement to land in. The first fix asked lstat and
-// then opened anyway, which is check-then-open and was raced in 12 of 25 attempts; see src/pathguard.h.
+// then opened anyway, which is check-then-open; see src/pathguard.h.
 //
 // It is a named seam rather than four lines inside writeBaseline for a reason a reviewer should be able to
 // check: acquiring a safe descriptor and serializing a snapshot are two jobs, and the security-relevant one
