@@ -1396,7 +1396,11 @@ std::optional<int> runVerify( const MainDispatch& d )
     const auto openRoot = [ & ]( const char* verdict, const std::string& facts, const char* limit, const char* honesty, const char* pageTail )
     {
         VERIFY( std::size_t( claim.shape ) < std::size( verify::kShapeTags ) );   // the parser is the only producer, every value in range
-        rw::emitTo( stdout, "{}{}<verify claim=\"{}\" shape=\"{}\" verdict=\"{}\"{}{}", verify::kVerifyLegend,
+        // #66: vfFloor above can carry graph_unindexed=, and kVerifyLegend is one closed literal that cannot
+        // splice a conditional clause — so the clause rides as its own adjacent comment, emitted exactly when
+        // the attribute is (graphlegend.h graphUnindexedLegendComment), ahead of the root= block.
+        rw::emitTo( stdout, "{}{}{}<verify claim=\"{}\" shape=\"{}\" verdict=\"{}\"{}{}", verify::kVerifyLegend,
+                     rw::graphUnindexedLegendComment( g.unindexedFiles > 0 ).c_str(),
                      rw::rootRelPathsLegend( verSingleRoot ),
                      ex( cfg.verifyClaim ).c_str(), verify::kShapeTags[ std::size_t( claim.shape ) ], verdict, facts.c_str(),
                      verRootAttr.c_str() );

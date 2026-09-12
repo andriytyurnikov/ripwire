@@ -139,6 +139,14 @@ inline constexpr std::string_view kCompactProsePrefixes[] =
                                        // native compact legends of grep/slice (`<!-- ripwire slice ripwire.slice/v1: …`),
                                        // which this layer restates at ≤400 B; --for's is never routed here (main.cpp)
     "<!-- root= ",                     // the shared root-relative-paths block (graphlegend.h)
+    "<!-- graph_unindexed=",           // the #66 third-gauge clause where it rides as its OWN comment
+                                       // (graphlegend.h graphUnindexedLegendComment — connect/lego/verify/
+                                       // nonlocal-state): prose like every other legend sentence, and the
+                                       // completeness table below carries its compact reading. Without this
+                                       // row the full ~200 B sentence survived into the compact dialect on
+                                       // --connect alone, one verb paying full price for a fact the table
+                                       // states in a third of the bytes.
+
     "<!-- r:root=",                    // the map header's terse spelling of the same block
     "<!-- pr_iters=",                  // the PageRank convergence block on map-family roots
     "<!-- at= is the git commit",      // the churn/quality provenance block
@@ -196,6 +204,12 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
 {
     { "counts_floor",      "counts_floor=1: every count is a FLOOR, never a total" },
     { "graph_ambiguous",   "graph_ambiguous=/graph_unresolved=: resolver gauge" },
+    // Issue #66's third gauge, and it needs its OWN row rather than a widening of the one above: the pair is
+    // unconditional on a graph-floored root while this one is OMITTED AT ZERO, so folding it into the gauge
+    // sentence would define an attribute most documents do not carry. Present-only, like every term here —
+    // which is also what kept it invisible: the compact dialect stripped the full clause and had nothing to
+    // put back, on every verb, for the whole of v0.6.0.
+    { "graph_unindexed",   "graph_unindexed=N: N files no grammar could read (the map header's unindexed=); their calls raise neither gauge" },
     { "hits_capped",       "hits_capped=1: hits= is a floor" },
     { "est_tokens",        "est_tokens=: price as emitted (an upper bound under compact)" },
     { "over_ceiling",      "over_ceiling=1: budget not met" },
