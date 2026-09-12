@@ -394,12 +394,15 @@ inline constexpr const char* kCallHierarchyLegendCalleesOnly =
 
 // The composed opener, one call for the caller — keeps the wantCallers/callees branch out of
 // runCallHierarchy (already this file's largest dispatcher) rather than adding a ternary at the call site.
-inline std::string callHierarchyLegendOpen( bool wantCallers )
+inline std::string callHierarchyLegendOpen( bool wantCallers, bool nextUsesBareName = false )
 {
     // F-02: the blind-spot clause rides with hop_tested=/hop_untested=, which both forms always carry.
     // P3 (L7): next= defined where the reader meets it — callers hand over the SITES (the uses verb on the same
     // selector, its @FILE:LINE spelling mirrored), callees the BODY whose callees these are (expand).
-    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). "
+    // nextUsesBareName is the emitter's OWN decision, never re-derived here; no double hyphen in comment text.
+    return wantCallers ? std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + ( nextUsesBareName
+                           ? "next= is the one pasteable follow-up (the uses verb on the called name: all same-named definitions' call sites, including sites bound to other definitions, because a declined call names no single definition). "
+                           : "next= is the one pasteable follow-up (the uses verb on this selector: the call sites). " )
                        : std::string( kCallHierarchyLegendOpen ) + kTestedRowLegend + kTestedLensBlindSpotLegend + kCallHierarchyLegendCalleesOnly + "next= is the one pasteable follow-up (expand on this selector: the body). ";
 }
 

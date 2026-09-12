@@ -124,6 +124,8 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         const bool        chDiscloseCap = ( pw.end - pw.begin ) < result.size();
         char              pab[ kPageDisclosureCap ];
 
+        const auto [ chNextSelector, chNextIsBare ] = rw::callHierarchyNextSelector( ing, chRows, sym, wantCallers );
+
         // §H4 §3.4: the FIRST legend these two verbs have ever shipped (0 bytes before — which is why every
         // one of their root attributes sits in test/legendcoverage_baseline.txt), and the floor marker that
         // is the round's honest half. ONE opener for both forms, printed BEFORE the format branches so the
@@ -138,7 +140,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
         {
             // M12: under multi-root this verb carries no root= at all (correctly — no single root exists)
             // and, before this, disclosed nothing about the `<label>/` prefix every p= below carries.
-            rw::emitTo( stdout, "{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers ).c_str(),
+            rw::emitTo( stdout, "{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers, chNextIsBare ).c_str(),
                          rw::capLegendClause( rw::computePageDisclosure( pw.end - pw.begin, result.size(), pw.end,
                                                                         cfg.pageLimit, cfg.pageOffset, chDiscloseCap ).active ),
                          rw::declinedCallsLegend( chRows.declinedCalls > 0 ),   // exactly when the root carries declined_calls=
@@ -146,10 +148,10 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
                          rw::multiRootTableLegend( ing.rootLabels.size() >= 2 ) );
         }
 
-        // P3 (L7, nextverb.h): the one follow-up on this root, on both dialects. callers → --uses=SELECTOR (the
-        // call SITES; the @FILE:LINE spelling the caller typed is mirrored, so the paste resolves the same
-        // definition); callees → --expand=SELECTOR (the body whose callees these are, with their signatures inline).
-        const std::string chNextAttr = rw::nextAttrXml( rw::nextFlag( wantCallers ? "--uses=" : "--expand=", sym ) );
+        // P3 (L7, nextverb.h): ONE follow-up, shared with MCP. Callers preserve SELECTOR unless a narrowed
+        // selector has declined calls: the shared derivation then names their wider bare-name site list.
+        // Callees keep expand on the original selector; nextFlag retains quoting and the 120-byte contract.
+        const std::string chNextAttr = rw::nextAttrXml( rw::nextFlag( wantCallers ? "--uses=" : "--expand=", chNextSelector ) );
         // The tier-3 declines count= does not include (callhierarchy.h), on every dialect; absent at zero.
         const std::string chDeclinedAttr = rw::declinedCallsAttrXml( chRows.declinedCalls );
 
