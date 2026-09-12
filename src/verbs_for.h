@@ -2730,7 +2730,11 @@ std::optional<int> runTargetedViews( const MainDispatch& d )
         // R-E fix (2026-08-19): the document root DISCLOSES the root its p= are now relative to. The first
         // R-E landing made packLego's p= root-relative and left the root undisclosed, so a --lego bundle
         // carried relative paths against a root the reader could not name — the honesty rule this tool sells.
-        rw::emitTo( stdout, "{}{}", rw::ctxRootOpen( {}, {}, tvRootArg ).c_str(), rw::kLegoLegend );   // H5: --lego had no legend at all
+        // H5: --lego had no legend at all. The #66 clause rides as its own adjacent comment (graphlegend.h
+        // graphUnindexedLegendComment) because kLegoLegend is one closed literal: the attribute below is
+        // conditional on g.unindexedFiles, so its definition has to be too.
+        rw::emitTo( stdout, "{}{}{}", rw::ctxRootOpen( {}, {}, tvRootArg ).c_str(), rw::kLegoLegend,
+                     rw::graphUnindexedLegendComment( g.unindexedFiles > 0 ).c_str() );
         packLego( stdout, ing, g.implementors, flat, 1, d.redactPtr, &legoImpure, focus, /*withPaths=*/true, tvRootArg,
                   rw::graphCountFloorAttrXml( g ) );   // M15: gauge + marker on the targeted root
         rw::emitRaw( stdout, "</ctx>" );

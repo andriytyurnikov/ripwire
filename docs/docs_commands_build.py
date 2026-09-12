@@ -244,15 +244,22 @@ def parse_help( helpText ):
     """--help -> ( preamble, [ ( sectionTitle, [ entry, ... ] ) ] ).
 
     An entry is { 'flags': [ '--for', ... ], 'spec': '--for=TASK', 'text': 'the prose' }.
-    Section headings are 2-space indented; flag entries are 4- to 6-space indented and start with a
-    dash; everything else at those indents is continuation prose for the entry above it.
+    Section headings are 2-space indented; a flag entry is indented EXACTLY four and starts with a
+    dash; everything deeper is continuation prose for the entry above it.
+
+    The four is not a style choice, it is the same single definition src/cli.h's classifyHelpLine()
+    applies — and this parser used to accept 4..6 while the binary accepted only 4. Being the more
+    permissive of the two is what hid the divergence: twelve six-space flag rows read as entries here
+    (so docs/COMMANDS.md listed them) and as continuation prose there (so `--help` culled fifteen real
+    flags, and `--help=--and` refused while --and worked). Two readers of one text must not disagree
+    about what a row is; test/helpbudgetcheck.sh arm (K) is the fence that now says so out loud.
     """
     sections   = []
     preamble   = []
     current    = None
     entry      = None
     reSection  = re.compile( r'^  (\S.*?)\s*$' )
-    reIndent   = re.compile( r'^( {4,6})(\S.*)$' )
+    reIndent   = re.compile( r'^( {4})(\S.*)$' )
 
     for line in helpText.split( '\n' ):
         mSection = reSection.match( line ) if not line.startswith( '   ' ) else None
