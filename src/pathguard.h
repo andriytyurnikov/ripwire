@@ -30,7 +30,7 @@
 // ofstream, and not true of the problem: the writers do not need ofstream, they need a descriptor. So the
 // check and the create are now ONE syscall, and it is the only one a writer makes:
 //
-//     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666 )
+//     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 )   (O_NONBLOCK and the fstat after it: round 4)
 //
 // O_NOFOLLOW makes the KERNEL refuse a final component that is a symlink, at the instant of resolution.
 // There is no window because there is no second resolution — whatever the entry is when the kernel looks
@@ -130,25 +130,50 @@
 //   - Directory components. O_NOFOLLOW constrains the final component only, exactly as for the writes.
 //
 // Each sidecar keeps ONE read seam (readNotesSidecar / readBaselineSidecar / readArchBaselineSidecar) that
-// calls readWholeFileNoFollow below and carries its own DEGRADED_PATH_ALERT, for the same once-per-site
-// reason the write seams keep theirs.
+// calls openNoFollowRead below and carries its own DEGRADED_PATH_ALERT, for the same once-per-site reason the
+// write seams keep theirs.
 //
-// It carries no index/graph dependency on purpose — the emitter and the degrade macro are the whole of it —
-// so it stays includable from any layer, which is the property that let the rule be missing in the first
-// place. It is NOT under src/infra/: that layer is vendored into a sibling repo and may not name this
-// project (test/infraportcheck.sh rule (C)), and every sentence below has to.
+// ── ROUND 4: A NON-REGULAR FILE AT THE NAME, AND A READ THAT HOLDS ONE LINE ─────────────────────────────
+//
+// Two review findings on round 3, both confirmed before anything changed.
+//
+// A FIFO planted AT a sidecar name, with no link involved, blocked BOTH opens: a read open waits for a writer
+// and a write open waits for a reader. It predates round 3 (the streams these descriptors replaced blocked the
+// same way) and a git checkout cannot contain a FIFO, but a blocked open is still wrong, and fixing the reader
+// alone would have been half a fix.
+// So both opens carry O_NONBLOCK, which lets the open RETURN whatever sits at the name, and both then ask
+// fstat whether it is a regular file before a byte moves. A writer refuses anything else, loudly, with nothing
+// written. A reader treats it as a sidecar that is there but unreadable, which is what the stream it replaced
+// reported for a directory at the name. O_NONBLOCK changes nothing about a regular file's reads or writes.
+//
+// The round-3 read also held the WHOLE file in memory before parsing began, where the std::ifstream it
+// replaced held one line. The remedy is streaming, not a size cap: the crawl's --max-file-size is a ceiling
+// for SOURCE files, and applying it here would refuse a legitimately large quality baseline, which is a wrong
+// answer rather than a guard. The read now hands its caller one line at a time through POSIX getline over the
+// descriptor's stream, which costs what the std::ifstream readers cost. Two other shapes were ruled out first:
+// a call per byte (rw::readByteSafeLine's fgetc loop) measured ~15× slower on 64 MB of sidecar lines, and a
+// custom std::streambuf under std::getline would narrow a high byte through libc++'s no-get-area fallback,
+// which aborts the sanitizer build (src/infra/stdinline.h records that trap).
+//
+// It carries no index/graph dependency on purpose — the emitter and the degrade macro are the whole of it — so
+// it stays includable from any layer, which is the property that let the rule be missing in the first place.
+// It is NOT under src/infra/: that layer is vendored into a sibling repo and may not name this project
+// (test/infraportcheck.sh rule (C)), and every sentence below has to.
 //
 // Gated by test/sidecarsymlinkcheck.sh, whose three symlink arms were observed RED before this header
-// existed, whose (e)/(f) mechanism arms were observed RED before the open below replaced the check, and
-// whose round-3 read arms were observed RED against the round-2 binary before the read below existed.
+// existed, whose (e)/(f) mechanism arms were observed RED before the open below replaced the check, whose
+// round-3 read arms were observed RED against the round-2 binary before the read below existed, and whose
+// round-4 arms were observed RED against the round-3 binary and source.
 
 #include "infra/emit.h"   // rw::emitTo — the refusal goes to stderr through THE emitter, not fprintf
 
-#include <fcntl.h>        // ::open + O_NOFOLLOW — the whole mechanism, in one syscall
-#include <sys/stat.h>     // ::lstat + S_ISLNK — mcpedit's predicate, and the post-ELOOP wording decision
+#include <fcntl.h>        // ::open + O_NOFOLLOW + O_NONBLOCK — the whole mechanism, in one syscall
+#include <sys/stat.h>     // ::lstat + S_ISLNK (mcpedit, and the post-ELOOP wording); ::fstat + S_ISREG (round 4)
 #include <unistd.h>       // ::write / ::close — the descriptor the writers hold instead of a stream
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>         // std::FILE / ::fdopen / ::getline / std::fclose — the read half's line stream
+#include <cstdlib>        // std::free — POSIX getline's buffer
 #include <cstring>        // std::strerror — an honest reason for a failure that is not a link
 #include <string>
 #include <string_view>
@@ -195,12 +220,28 @@ struct OpenedFile
 // O_NOFOLLOW constrains the FINAL component only; an intermediate symlinked directory is still traversed.
 // That is the same reach the lstat check had, so nothing regressed with the change — and widening it would
 // mean refusing every repository that lives under a symlinked path, which is most of them.
+//
+// NOT A REGULAR FILE (round 4). O_NONBLOCK lets the open return for a FIFO instead of waiting for a reader:
+// with nobody reading, it fails at once with ENXIO and takes the plain-errno branch below. The fstat then
+// refuses whatever DID open but is not a regular file, before any byte is written. O_TRUNC has run by that
+// point and does nothing to a FIFO; on a regular file nothing here is refused. That refusal reports EINVAL,
+// because no syscall failed: the name holds something a sidecar cannot be.
 inline OpenedFile openNoFollowTruncate( std::string_view what, const std::string& path )
 {
-    const int fd = ::open( path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666 );
+    const int fd = ::open( path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 );
     if( fd >= 0 )
     {
-        return { fd, 0 };
+        struct stat openedSt{};
+        if( ::fstat( fd, &openedSt ) == 0 && S_ISREG( openedSt.st_mode ) )
+        {
+            return { fd, 0 };
+        }
+        ::close( fd );
+        rw::emitTo( stderr,
+                    "ripwire: refusing to write {} at '{}': that path is not a regular file (a FIFO, for example), so there is no\n"
+                    "  sidecar there to write. Nothing was written. Remove it and re-run.\n",
+                    what, path );
+        return { -1, EINVAL };
     }
     const int err = errno;
 
@@ -269,33 +310,89 @@ inline bool writeAllAndClose( int fd, std::string_view bytes ) noexcept
 
 // ── the read half (round 3) ───────────────────────────────────────────────────────────────────────────
 
-// What the no-follow read produced. `opened` is the OPEN, not the content: a directory at the name opens and
-// then fails its first read, exactly as the std::ifstream this replaces did, so a caller that tells "a
-// sidecar is there" from "no sidecar" (readBaseline's `present`, the arch verb's baseline-in-force) keeps
-// telling them apart the way it always has.
+// What the no-follow open produced, and the handle the caller reads through. `opened` is the OPEN, not the
+// content: something that is not a symlink sits at the name and it opened, so a caller that tells "a sidecar is
+// there" from "no sidecar" (readBaseline's `present`, the arch verb's baseline-in-force) reads that. readLine then
+// yields the sidecar one line at a time, and yields nothing at all when what opened is not a regular file —
+// which is how a directory or a FIFO at the name reads: present, and unreadable.
+//
+// It OWNS the stream, so it moves and never copies, and the stream closes with the handle. The shape follows
+// ingest_cache.h's ReadFd, which this header cannot include without taking on the cache layer.
 struct NoFollowRead
 {
-    std::string bytes;             // every byte read before EOF or the first read error
-    bool        opened  = false;   // the open succeeded: something that is not a symlink sits at the name
-    bool        refused = false;   // the open failed with ELOOP — nothing was followed, and stderr says why
-    int         err     = 0;       // errno of the open or read that failed; 0 when neither did
+    std::FILE*  file    = nullptr;   // the sidecar, open for reading — null unless it opened as a regular file
+    bool        opened  = false;     // the open succeeded: something that is not a symlink sits at the name
+    bool        refused = false;     // the open failed with ELOOP — nothing was followed, and stderr says why
+    int         err     = 0;         // errno of the open or fdopen that failed; 0 when neither did
+    char*       lineBuf = nullptr;   // POSIX getline's buffer: grown by getline, reused for every line, freed here
+    std::size_t lineCap = 0;         // its capacity, as getline tracks it
+
+    NoFollowRead() = default;
+    NoFollowRead( const NoFollowRead& )            = delete;
+    NoFollowRead& operator=( const NoFollowRead& ) = delete;
+    NoFollowRead& operator=( NoFollowRead&& )      = delete;
+    NoFollowRead( NoFollowRead&& other ) noexcept
+        : file( other.file ), opened( other.opened ), refused( other.refused ), err( other.err ),
+          lineBuf( other.lineBuf ), lineCap( other.lineCap )
+    {
+        other.file    = nullptr;
+        other.lineBuf = nullptr;
+        other.lineCap = 0;
+    }
+    ~NoFollowRead()
+    {
+        if( file != nullptr )
+        {
+            std::fclose( file );
+        }
+        std::free( lineBuf );
+    }
+
+    // One line into `line`, with std::getline's contract: the '\n' is consumed and not kept, a '\r' before it IS
+    // kept, an embedded NUL is kept, and a last line with no '\n' is still delivered once. False only at the end of
+    // the stream or on a read error — and always false when no regular file opened.
+    //
+    // WHY POSIX getline. It scans the stream's own buffer, so this costs what the std::ifstream readers cost; a
+    // call per byte (fgetc) measured ~15× slower on 64 MB of sidecar lines. And it is the C API, so no byte goes
+    // through libc++ std::getline's no-get-area fallback, which narrows a high byte and aborts the sanitizer build
+    // (src/infra/stdinline.h records that trap).
+    bool readLine( std::string& line )
+    {
+        if( file == nullptr )
+        {
+            return false;
+        }
+        const ssize_t got = ::getline( &lineBuf, &lineCap, file );
+        if( got < 0 )
+        {
+            return false;
+        }
+        std::size_t length = static_cast<std::size_t>( got );
+        if( length > 0 && lineBuf[length - 1] == '\n' )
+        {
+            --length;
+        }
+        line.assign( lineBuf, length );
+        return true;
+    }
 };
 
-// Read all of `path` WITHOUT following a symlink at the final component — openNoFollowTruncate's read twin:
-// the same O_NOFOLLOW, the same single syscall with no lstat in front of it to race, and the same rule that a
-// refusal is loud.
+// Open `path` for reading WITHOUT following a symlink at the final component — openNoFollowTruncate's read
+// twin: the same O_NOFOLLOW, the same single syscall with no lstat in front of it to race, the same O_NONBLOCK
+// and fstat check, and the same rule that a refusal is loud.
 //
 // ONLY THE REFUSAL IS LOUD. An absent file is every sidecar's first-run case and says nothing, and any other
-// open or read failure stays exactly as silent as the stream this replaces — the callers already read those as
-// "no sidecar", and making them loud is a behaviour change with questions of its own, not a rider on this
-// one. A read refused over a link is different in kind: the file is RIGHT THERE, and a caller that went quiet
-// about it would leave the user believing there is no sidecar at all.
+// open failure stays exactly as silent as the stream this replaced — the callers already read those as "no
+// sidecar", and making them loud is a behaviour change with questions of its own, not a rider on this one. A
+// read refused over a link is different in kind: the file is RIGHT THERE, and a caller that went quiet about it
+// would leave the user believing there is no sidecar at all. Something at the name that is not a regular file
+// is quiet the way the stream was about a directory there: present, and it yields no lines.
 //
 // `what` names the sidecar in the user's words, as for the write.
-inline NoFollowRead readWholeFileNoFollow( std::string_view what, const std::string& path )
+inline NoFollowRead openNoFollowRead( std::string_view what, const std::string& path )
 {
     NoFollowRead result;
-    const int    fd = ::open( path.c_str(), O_RDONLY | O_NOFOLLOW );
+    const int    fd = ::open( path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK );
     if( fd < 0 )
     {
         result.err = errno;
@@ -325,29 +422,18 @@ inline NoFollowRead readWholeFileNoFollow( std::string_view what, const std::str
     }
 
     result.opened = true;
-    constexpr std::size_t kReadChunkBytes = 64 * 1024;   // how much one read(2) asks for, not how much is kept
-    std::size_t           used            = 0;
-    for( ;; )
+    struct stat openedSt{};
+    if( ::fstat( fd, &openedSt ) != 0 || !S_ISREG( openedSt.st_mode ) )
     {
-        result.bytes.resize( used + kReadChunkBytes );
-        const ssize_t n = ::read( fd, result.bytes.data() + used, kReadChunkBytes );
-        if( n > 0 )
-        {
-            used += static_cast<std::size_t>( n );
-            continue;
-        }
-        if( n < 0 && errno == EINTR )
-        {
-            continue;
-        }
-        if( n < 0 )
-        {
-            result.err = errno;
-        }
-        break;
+        ::close( fd );   // a FIFO, a directory, a device: present, and no lines — never a read that could wait
+        return result;
     }
-    result.bytes.resize( used );
-    ::close( fd );
+    result.file = ::fdopen( fd, "r" );
+    if( result.file == nullptr )
+    {
+        result.err = errno;
+        ::close( fd );   // fdopen did not take the descriptor, so it is still this function's to close
+    }
     return result;
 }
 

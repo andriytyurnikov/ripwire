@@ -662,7 +662,7 @@ inline std::string archBaselinePath( const std::string& /*rulesPath*/ ) noexcept
 // noexcept like its neighbours, with the same allocation exposure openArchBaselineSidecar describes.
 inline rw::pathguard::NoFollowRead readArchBaselineSidecar( const std::string& sidecarPath ) noexcept
 {
-    rw::pathguard::NoFollowRead sidecar = rw::pathguard::readWholeFileNoFollow( "the arch baseline sidecar", sidecarPath );
+    rw::pathguard::NoFollowRead sidecar = rw::pathguard::openNoFollowRead( "the arch baseline sidecar", sidecarPath );
     if( sidecar.refused ) { DEGRADED_PATH_ALERT( "arch: refusing to read the arch baseline sidecar through a symlink" ); }
     return sidecar;
 }
@@ -689,9 +689,8 @@ inline ArchBaselineRead archReadBaseline( const std::string& sidecarPath ) noexc
         return baseline;
     }
     baseline.present = true;
-    std::istringstream f( std::move( sidecar.bytes ) );
-    std::string        line;
-    while( std::getline( f, line ) )
+    std::string line;
+    while( sidecar.readLine( line ) )
     {
         // skip comment lines (start with '#') and blank lines
         if( line.empty() || line[0] == '#' )

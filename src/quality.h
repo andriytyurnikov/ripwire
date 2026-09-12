@@ -3752,7 +3752,7 @@ struct BaselineReadStats
 // the floor. Why an in-tree link is refused too is round 3 of src/pathguard.h.
 inline rw::pathguard::NoFollowRead readBaselineSidecar( const std::string& path )
 {
-    rw::pathguard::NoFollowRead sidecar = rw::pathguard::readWholeFileNoFollow( "the quality baseline sidecar", path );
+    rw::pathguard::NoFollowRead sidecar = rw::pathguard::openNoFollowRead( "the quality baseline sidecar", path );
     if( sidecar.refused ) { DEGRADED_PATH_ALERT( "quality: refusing to read the baseline sidecar through a symlink" ); }
     return sidecar;
 }
@@ -3767,10 +3767,9 @@ inline bool readBaseline( const std::string& path, Snapshot& out, BaselineReadSt
         return false;
     }
     stats.present = true;
-    std::istringstream f( std::move( sidecar.bytes ) );
     std::size_t recognizedLineCount = 0;
     std::string line;
-    while( std::getline( f, line ) )
+    while( sidecar.readLine( line ) )
     {
         if( line.empty() )
         {
@@ -3894,9 +3893,8 @@ inline std::string readBaselineHeadSha( const std::string& path )
     {
         return {};
     }
-    std::istringstream f( std::move( sidecar.bytes ) );
     std::string line;
-    while( std::getline( f, line ) )
+    while( sidecar.readLine( line ) )
     {
         if( line.rfind( "head ", 0 ) == 0 )
         {
@@ -3929,9 +3927,8 @@ inline std::size_t readBaselineAbsorbed( const std::string& path )
     {
         return 0;
     }
-    std::istringstream f( std::move( sidecar.bytes ) );
     std::string line;
-    while( std::getline( f, line ) )
+    while( sidecar.readLine( line ) )
     {
         if( line.rfind( "absorbed ", 0 ) != 0 )
         {

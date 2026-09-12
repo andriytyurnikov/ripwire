@@ -19,7 +19,8 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 - **A sidecar must be a regular file: a symlink at a sidecar name is refused, on read as well as on write.**
   `.ripwire_notes`, `.ripwire_quality_baseline` and `.ripwire_arch_baseline` are opened with `O_NOFOLLOW`, so a
-  link at one of those names is not opened, wherever its target is. If you symlinked one on purpose (into a shared
+  link at one of those names is not opened, wherever its target is. Anything else at the name that is not a regular
+  file, a FIFO for example, is refused as well instead of being waited on. If you symlinked one on purpose (into a shared
   config directory, say), replace the link with a regular copy of its target. Until you do, every read of it prints
   a refusal on stderr, no notes surface, `--quality-delta` reports `baseline="git-HEAD (symlinked sidecar refused)"`
   and compares against HEAD, `--arch` reports every violation as new, and `--note-add`, `--quality-baseline`,

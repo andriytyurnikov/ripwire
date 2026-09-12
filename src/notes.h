@@ -317,7 +317,7 @@ inline void splitNoteTail( std::string_view rest, std::string& text, std::string
 // absent, the caller reads no notes, and only the refusal says anything.
 inline rw::pathguard::NoFollowRead readNotesSidecar( const std::string& path )
 {
-    rw::pathguard::NoFollowRead sidecar = rw::pathguard::readWholeFileNoFollow( "the field-notes sidecar", path );
+    rw::pathguard::NoFollowRead sidecar = rw::pathguard::openNoFollowRead( "the field-notes sidecar", path );
     if( sidecar.refused ) { DEGRADED_PATH_ALERT( "notes: refusing to read the notes sidecar through a symlink" ); }
     return sidecar;
 }
@@ -332,9 +332,8 @@ inline std::vector<Note> readNotes( const std::string& path )
     {
         return notes;
     }
-    std::istringstream f( std::move( sidecar.bytes ) );
     std::string line;
-    while( std::getline( f, line ) )
+    while( sidecar.readLine( line ) )
     {
         while( !line.empty() && ( line.back() == '\r' || line.back() == '\n' ) )
         {

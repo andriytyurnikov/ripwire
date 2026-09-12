@@ -29,7 +29,7 @@
 # made the write follow a link after all. The guard was ADVISORY — it described the destination, it did not
 # constrain the open. The remedy is that the check and the create are now ONE syscall:
 #
-#     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666 )   (src/pathguard.h)
+#     ::open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0666 )   (src/pathguard.h; O_NONBLOCK since round 4)
 #
 # and the three writers hold the resulting descriptor. There is no window because there is no second
 # resolution. The pre-open lstat is GONE from all three writers — which is what makes the (a)/(b) arms
@@ -136,6 +136,25 @@
 #                       seam, the seam reads through pathguard's O_NOFOLLOW read and carries the site's own
 #                       DEGRADED_PATH_ALERT, and no following open survives in a reader or in the arch verb;
 #                       (f3) pins the read open's flags
+#
+# ROUND 4 — A NON-REGULAR FILE AT THE NAME, AND A READ THAT HOLDS ONE LINE. A FIFO planted AT a sidecar name
+# (no link involved) blocked both opens, read and write, and the round-3 read kept the whole file in memory
+# where the stream it replaced held one line. Both opens now carry
+# O_NONBLOCK and refuse anything fstat does not report as a regular file, and the readers stream from the
+# descriptor:
+#
+#     per sidecar:  (v1) a READ verb finishes with a FIFO at the name — red on the round-3 binary, which blocked
+#                   (v2) a WRITE verb finishes too, exits non-zero, and leaves the FIFO in place — red likewise
+#                   (v3) a WRITE verb with a READER holding that FIFO open — the one case where the open succeeds —
+#                       exits non-zero and puts no byte into the pipe. Red on the round-3 binary, which wrote the
+#                       sidecar into the pipe and exited 0 (or, for --note-add, waited in its read first)
+#     once:         (f4) MECHANISM: both opens carry O_NONBLOCK and an fstat S_ISREG check decides before any
+#                       byte moves — the pin for non-regular files this gate cannot plant (a device node needs root)
+#                   (f5) MECHANISM: the read half holds no whole-file buffer and reads a line at a time through
+#                       POSIX getline — neither a buffered copy of the file nor a call per byte
+#     per reader:   (m5) MECHANISM: the reader parses a line at a time from the sidecar handle
+#     (f5) and (m5) pin memory and cost by SHAPE. Nothing here measures either: RSS and timing are not comparable
+#     between the dev and ASan builds this gate runs on, so a threshold would be a guess.
 #
 # Usage:
 #   bash test/sidecarsymlinkcheck.sh                 |  bash test/sidecarsymlinkcheck.sh asan/ripwire
@@ -410,6 +429,33 @@ if [ "$readOpens" = "1" ] \
     ok "pathguard: (f3) exactly one read ::open, carrying O_RDONLY|O_NOFOLLOW and nothing that creates or truncates"
 else
     no "pathguard: (f3) expected exactly one read ::open carrying O_RDONLY|O_NOFOLLOW — found $readOpens: $( grep '::open(' "$PGCODE" | tr '\n' ' ' | head -c 240 )"
+fi
+
+# Round 4: a descriptor that is not a regular file is refused before a byte moves. O_NONBLOCK is what lets the
+# open RETURN for a FIFO with nobody at the other end; the fstat check is what refuses it, and any other
+# non-regular file, once it has. Either half alone is wrong: without the first the open still waits, without
+# the second the tool reads from, or writes into, a pipe.
+nonblockOpens="$( grep '::open(' "$PGCODE" | grep -c 'O_NONBLOCK' | tr -d ' ' )"
+fstatCalls="$( grep -c '::fstat(' "$PGCODE" | tr -d ' ' )"
+regChecks="$( grep -c 'S_ISREG' "$PGCODE" | tr -d ' ' )"
+if [ "$nonblockOpens" = "2" ] && [ "$fstatCalls" -ge 2 ] && [ "$regChecks" -ge 2 ]; then
+    ok "pathguard: (f4) both opens carry O_NONBLOCK, and an fstat S_ISREG check follows each"
+else
+    no "pathguard: (f4) expected O_NONBLOCK on both opens and an fstat S_ISREG check after each — found O_NONBLOCK on $nonblockOpens open(s), $fstatCalls fstat call(s), $regChecks S_ISREG test(s)"
+fi
+
+# Round 4: the read half hands its caller a LINE at a time. The round-3 read accumulated the whole file into a
+# string (`std::string bytes`, grown by `resize( used + … )`) before any parsing began; the stream it replaced
+# held one line. It now reads through POSIX getline over the descriptor's stream, a buffered read as cheap as the
+# std::ifstream readers. Not rw::readByteSafeLine: a call per byte measured ~15× slower on 64 MB of sidecar
+# lines. Not a custom streambuf under std::getline: libc++ narrows a high byte through its no-get-area fallback,
+# which aborts the sanitizer build (src/infra/stdinline.h). This arm pins the SHAPE; it measures no cost.
+if grep -qE 'std::string[[:space:]]+bytes|resize\( used' "$PGCODE"; then
+    no "pathguard: (f5) the read half still accumulates the whole file: $( grep -nE 'std::string[[:space:]]+bytes|resize\( used' "$PGCODE" | tr '\n' ' ' | head -c 200 )"
+elif ! grep -q '::getline(' "$PGCODE" || grep -q 'readByteSafeLine(' "$PGCODE"; then
+    no "pathguard: (f5) the read half does not read a line at a time through POSIX ::getline — a per-byte reader, or some other shape whose cost is unpinned"
+else
+    ok "pathguard: (f5) the read half holds no whole-file buffer and reads a line at a time through POSIX ::getline"
 fi
 
 if grep -rq 'refuseSymlinkWrite' "$ROOT/src"; then
@@ -1047,6 +1093,12 @@ readMechArm()
     else
         no "$label: (m1) $readerFn does not read through $seamFn, or still opens the sidecar itself: $( grep -E 'std::ifstream|std::fopen|readWholeFile\(' "$rd" | head -c 160 )"
     fi
+    # Round 4: a line at a time from the sidecar handle, never a buffered copy of the whole file.
+    if grep -q 'sidecar\.readLine(' "$rd" && ! grep -q 'sidecar\.bytes' "$rd"; then
+        ok "$label: (m5) $readerFn parses a line at a time from the sidecar handle, not a buffered copy of the file"
+    else
+        no "$label: (m5) $readerFn still parses a buffered copy of the whole sidecar: $( grep -E 'sidecar\.bytes|istringstream f\(' "$rd" | head -c 160 )"
+    fi
 
     [ "$checkSeam" = 1 ] || return
     extractFn "$ROOT/$src" "$seamSig" >"$sm"
@@ -1055,10 +1107,12 @@ readMechArm()
         no "$label: (m2/guard) could not extract the read seam $seamFn from $src ($smLines lines) — (m2)/(m3) are void"
         return
     fi
-    if grep -q 'readWholeFileNoFollow' "$sm"; then
-        ok "$label: (m2) $seamFn reads through pathguard's O_NOFOLLOW read"
+    # Round 4 renamed the read half: it no longer reads the WHOLE file, so the old name would have been a claim
+    # about a shape the code no longer has.
+    if grep -q 'openNoFollowRead' "$sm"; then
+        ok "$label: (m2) $seamFn opens through pathguard's O_NOFOLLOW read"
     else
-        no "$label: (m2) $seamFn does not read through rw::pathguard::readWholeFileNoFollow"
+        no "$label: (m2) $seamFn does not open through rw::pathguard::openNoFollowRead"
     fi
     if grep -qF "$alert" "$sm"; then
         ok "$label: (m3) $seamFn carries the site's own DEGRADED_PATH_ALERT for the refused link"
@@ -1091,6 +1145,122 @@ elif grep -qE 'ifstream[^;]*sidecarPath' "$VRCODE"; then
     no "archbaseline: (m4) the arch verb still opens the sidecar with a following stream: $( grep -E 'ifstream[^;]*sidecarPath' "$VRCODE" | head -c 160 )"
 else
     ok "archbaseline: (m4) the arch verb holds no following open of the sidecar — presence comes from the reader"
+fi
+
+# ── (v) A NON-REGULAR FILE AT THE NAME: no sidecar verb may wait on it ────────────────────────────────────
+# A FIFO planted AT a sidecar name, with no link involved, used to block both opens: a read open waits for a
+# writer, a write open for a reader. Each verb runs under a 20 s deadline. The fixed build finishes in well under a second and the guarded failure is an UNBOUNDED wait, so the
+# deadline never has to decide a close call. A write verb must also exit non-zero and leave the FIFO in place.
+if ! command -v python3 >/dev/null 2>&1; then
+    no "nonregular: python3 is not on PATH — the (v) arms cannot run, and a skipped arm proves nothing"
+else
+    cat >"$TMP/bounded.py" <<'PY'
+import subprocess, sys
+deadline, cwd, argv = float( sys.argv[1] ), sys.argv[2], sys.argv[3:]
+try:
+    r = subprocess.run( argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=deadline )
+    print( 'rc=%d' % r.returncode )
+except subprocess.TimeoutExpired:
+    print( 'hung' )
+PY
+
+    # nonRegularArm LABEL SIDECAR MAKER READ_ARG -- WRITE_ARGS... — run from inside the tree, so the CWD-relative
+    # arch sidecar resolves to the planted FIFO like the root-qualified ones do.
+    nonRegularArm()
+    {
+        local label="$1" sidecar="$2" maker="$3" readArg="$4"
+        shift 4
+        [ "$1" = "--" ] && shift
+        local tree="$TMP/${label}_fifoname/tree" res
+        "$maker" "$tree"
+        mkfifo "$tree/$sidecar"
+        if [ ! -p "$tree/$sidecar" ] || [ -L "$tree/$sidecar" ]; then
+            no "$label: (v/guard) could not plant a FIFO at $sidecar — (v1)/(v2) are void"
+            return
+        fi
+
+        res="$( python3 "$TMP/bounded.py" 20 "$tree" "$BIN" "$tree" "$readArg" --no-cache 2>&1 )"
+        case "$res" in
+            rc=*) ok "$label: (v1) $readArg finished with a FIFO at $sidecar ($res)" ;;
+            *)    no "$label: (v1) $readArg did not finish with a FIFO at $sidecar — the read open waited for a writer ($res)" ;;
+        esac
+
+        res="$( python3 "$TMP/bounded.py" 20 "$tree" "$BIN" "$tree" "$@" --no-cache 2>&1 )"
+        case "$res" in
+            rc=0) no "$label: (v2) $* exited 0 with a FIFO at $sidecar — a write that could not happen reported success" ;;
+            rc=*) if [ -p "$tree/$sidecar" ] && [ ! -L "$tree/$sidecar" ]; then
+                      ok "$label: (v2) $* refused a FIFO at $sidecar without waiting ($res), and left it in place"
+                  else
+                      no "$label: (v2) $* finished ($res) but the FIFO at $sidecar was replaced or removed"
+                  fi ;;
+            *)    no "$label: (v2) $* did not finish with a FIFO at $sidecar — the write open waited for a reader ($res)" ;;
+        esac
+    }
+
+    nonRegularArm notes           .ripwire_notes            mkTree         --notes          -- "--note-add=a.c: fifo at the name"
+    nonRegularArm qualitybaseline .ripwire_quality_baseline mkTree         --quality-delta  -- --quality-baseline
+    nonRegularArm archbaseline    .ripwire_arch_baseline    mkArchViolTree --arch=rules.txt -- --arch=rules.txt --baseline
+
+    # (v3) A READER ALREADY HOLDS THE FIFO OPEN. That is the one case where a write open on a FIFO SUCCEEDS, so only
+    # the regular-file check stands between the verb and writing the sidecar into somebody else's pipe. The probe
+    # opens the FIFO for reading (non-blocking), runs the write verb, and counts every byte that arrives. A verb that
+    # waits instead (a read before its write, say) is killed at the deadline and reported as a failure, never passed.
+    cat >"$TMP/fifowriter.py" <<'PY'
+import os, subprocess, sys, time
+deadline, fifo, cwd, argv = float( sys.argv[1] ), sys.argv[2], sys.argv[3], sys.argv[4:]
+rfd = os.open( fifo, os.O_RDONLY | os.O_NONBLOCK )
+p = subprocess.Popen( argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL )
+got, end = 0, time.time() + deadline
+def drain():
+    n = 0
+    while True:
+        try:
+            chunk = os.read( rfd, 65536 )
+        except BlockingIOError:
+            return n
+        if not chunk:
+            return n
+        n += len( chunk )
+while True:
+    got += drain()
+    if p.poll() is not None:
+        got += drain()
+        break
+    if time.time() > end:
+        p.kill(); p.wait(); os.close( rfd )
+        print( 'hung bytes=%d' % got ); sys.exit( 0 )
+    time.sleep( 0.005 )
+os.close( rfd )
+print( 'rc=%d bytes=%d' % ( p.returncode, got ) )
+PY
+
+    # readerAttachedArm LABEL SIDECAR MAKER WRITE_ARGS...
+    readerAttachedArm()
+    {
+        local label="$1" sidecar="$2" maker="$3" tree res
+        shift 3
+        tree="$TMP/${label}_fiforeader/tree"
+        "$maker" "$tree"
+        mkfifo "$tree/$sidecar"
+        if [ ! -p "$tree/$sidecar" ] || [ -L "$tree/$sidecar" ]; then
+            no "$label: (v3/guard) could not plant a FIFO at $sidecar — (v3) is void"
+            return
+        fi
+        res="$( python3 "$TMP/fifowriter.py" 20 "$tree/$sidecar" "$tree" "$BIN" "$tree" "$@" --no-cache 2>&1 )"
+        case "$res" in
+            'rc=0 '*)       no "$label: (v3) $* exited 0 with a reader on the FIFO at $sidecar — $res" ;;
+            rc=*' bytes=0') if [ -p "$tree/$sidecar" ] && [ ! -L "$tree/$sidecar" ]; then
+                                ok "$label: (v3) $* refused a FIFO a reader held open ($res): no byte reached the pipe"
+                            else
+                                no "$label: (v3) $* finished ($res) but the FIFO at $sidecar was replaced or removed"
+                            fi ;;
+            *)              no "$label: (v3) $* with a reader on the FIFO at $sidecar: $res — it wrote into the pipe, or waited" ;;
+        esac
+    }
+
+    readerAttachedArm notes           .ripwire_notes            mkTree         "--note-add=a.c: fifo with a reader"
+    readerAttachedArm qualitybaseline .ripwire_quality_baseline mkTree         --quality-baseline
+    readerAttachedArm archbaseline    .ripwire_arch_baseline    mkArchViolTree --arch=rules.txt --baseline
 fi
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
