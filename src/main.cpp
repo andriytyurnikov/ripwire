@@ -2687,33 +2687,39 @@ static bool cachePathIsDirectory( const std::string& cachePath )
     return true;
 }
 
-// OWNER DECISION 2026-09-12 — the three ways a --scip path the caller NAMED cannot be read as an index AT ALL, decided in
-// one place from ONE open: it does not open; it opens but is a directory; it opens but is an empty regular file. Returns
-// the reason for dispatchMain's refusal sentence, or an empty view when the path goes on to loadScipOverlay. The directory
-// and the empty file used to open, reach loadScipOverlay's "cannot read index" and serve the name-based map at exit 0.
-// fstat answers on the descriptor fopen returned — no second path resolution, so a rename between the checks cannot make
-// them describe two different files. Still a degrade, decided in scip.h: bytes that do not DECODE (corrupt/truncated), and
-// a non-regular path that is not a directory (a FIFO, a device) whose read yields nothing.
+// OWNER DECISION 2026-09-12 — the ways a --scip path the caller NAMED cannot be read as an index AT ALL, decided in one
+// place from ONE open: it does not open; it is a directory; it is any other kind of file that is not a regular file (a
+// FIFO, a device); it is an empty regular file. Returns the reason for dispatchMain's refusal sentence, or an empty view
+// when the path goes on to loadScipOverlay. A directory, a device and an empty file used to reach loadScipOverlay's
+// "cannot read index" and serve the name-based map at exit 0. A FIFO with no writer HUNG instead, inside a blocking open
+// that waits for a writer for ever, so the probe opens O_NONBLOCK: a read-only open of a FIFO then returns at once. fstat
+// answers on that descriptor — no second path resolution, so a rename between the checks cannot make them describe two
+// different files. Still a degrade, decided in scip.h: bytes that do not DECODE (corrupt/truncated), an index over its
+// size bound, a short read.
 static std::string_view scipIndexUnreadableReason( const std::string& scipPath )
 {
-    std::FILE* probe = std::fopen( scipPath.c_str(), "rb" );
-    if( probe == nullptr )
+    const int probeFd = ::open( scipPath.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC );
+    if( probeFd < 0 )
     {
         return "cannot open the index";
     }
     struct stat probeStat;
-    const bool  isStatted = ::fstat( ::fileno( probe ), &probeStat ) == 0;
-    std::fclose( probe );
+    const bool  isStatted = ::fstat( probeFd, &probeStat ) == 0;
+    ::close( probeFd );
     if( !isStatted )
     {
-        DEGRADED_PATH_ALERT( "--scip: fstat on the opened index failed — directory/empty undecided, loadScipOverlay's read decides" );
+        DEGRADED_PATH_ALERT( "--scip: fstat on the opened index failed — file kind and size undecided, loadScipOverlay's read decides" );
         return {};
     }
     if( S_ISDIR( probeStat.st_mode ) )
     {
         return "is a directory, not an index file";
     }
-    if( S_ISREG( probeStat.st_mode ) && probeStat.st_size == 0 )
+    if( !S_ISREG( probeStat.st_mode ) )
+    {
+        return "is not a regular file (a FIFO or a device), not an index file";
+    }
+    if( probeStat.st_size == 0 )
     {
         return "is empty (0 bytes), not an index";
     }
@@ -3450,10 +3456,11 @@ static int dispatchMain( const rw::Config& cfg, char** argv )
     //                       cold parse while the caller believed a cache existed.
     // Eight siblings (--from-trace --batch --arch --plan-lint --lint-rules --with-profile --edit-plan
     // --scan-skill) already refused. OWNER DECISION 2026-09-12: for --scip the refusal covers every path that cannot
-    // be read as an index AT ALL — one that does not open, a directory, an empty file — all three decided by
-    // scipIndexUnreadableReason from one open. Degrade-and-continue stays the contract for inputs the tool DISCOVERED
-    // (the default cache path, the default skill homes) and for a --scip index that has bytes but does not DECODE —
-    // that file exists, and scipcheck.sh's corrupt/fuzz arms depend on the byte-identical degrade.
+    // be read as an index AT ALL — one that does not open, a directory, any other file that is not a regular file (a
+    // FIFO, a device), an empty file — all decided by scipIndexUnreadableReason from one non-blocking open.
+    // Degrade-and-continue stays the contract for inputs the tool DISCOVERED (the default cache path, the default skill
+    // homes) and for a --scip index that has bytes but does not DECODE — that file exists, and scipcheck.sh's
+    // corrupt/fuzz arms depend on the byte-identical degrade.
     // Gate: namedfileinputcheck.sh (arms A-D, F).
     if( !cfg.scipIndex.empty() )
     {
@@ -3662,8 +3669,9 @@ static int dispatchMain( const rw::Config& cfg, char** argv )
     }
     // SCIP precision overlay: parse the index (if --scip given) → map to ripwire ids → hand to buildGraph as an optional
     // parameter. An unreadable/corrupt/mismatched index yields an EMPTY overlay (one DEGRADED_PATH_ALERT + stderr note) and
-    // the build proceeds name-based, byte-identical to no --scip. A path that cannot be opened, a directory and an empty
-    // file never get here: they were refused above, exit 1.
+    // the build proceeds name-based, byte-identical to no --scip. A path that cannot be opened, is not a regular file or is
+    // empty never gets here: it was refused above, exit 1. So scipReadFile's plain blocking fopen reopens only a path that
+    // was a regular file at the probe, and opening a regular file never blocks — no O_NONBLOCK is needed there.
     ScipOverlay scipOverlay;
     if( !cfg.scipIndex.empty() )
     {

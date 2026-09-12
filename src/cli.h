@@ -2455,7 +2455,7 @@ inline constexpr char kHelpTail[] =
         "    --scip=index.scip          consume a SCIP index as a precision overlay: exact call edges replace name guesses\n"
         "                               consume a SCIP index as a PRECISION overlay: precise call edges replace\n"
         "                               name-based guesses (tagged prov=\"scip\"), ambiguous= drops. A path that is missing,\n"
-        "                               empty or a directory refuses (exit 1). A corrupt index warns on stderr and\n"
+        "                               empty or not a regular file refuses (exit 1). A corrupt index warns on stderr and\n"
         "                               degrades to name-based. Zero deps (hand-rolled reader).\n"
         "    --pin-census=FILE          eval only: record which mechanism resolved each call site\n"
         "                               eval-only: write a per-call-site census of WHICH mechanism resolved each call\n"

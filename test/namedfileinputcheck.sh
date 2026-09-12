@@ -16,8 +16,9 @@
 # with the alert) is the robustness contract the fuzz arm of scipcheck.sh depends on. Arms A-D assert the open()
 # failure — the case where nothing the caller named was ever read. scipcheck.sh arm 5 (corrupt index) still
 # pins the degrade; its arm 5b (MISSING index) is re-pinned to the refusal in the same commit. OWNER DECISION
-# 2026-09-12 moved the line one step: an EMPTY file or a DIRECTORY opens, but holds nothing that could be read
-# as an index at all, so it is the same caller mistake as a missing path and refuses too (arm F).
+# 2026-09-12 moved the line one step: an EMPTY file, a DIRECTORY and any other path that is not a regular file (a
+# FIFO, a device) hold nothing that could be read as an index at all, so each is the same caller mistake as a
+# missing path and refuses too (arm F).
 #
 # ARMS
 #   A  every user-named FILE/DIR input, given an unopenable path, exits NON-ZERO
@@ -33,16 +34,22 @@
 #      CONTINUED in a reduced mode; printing it immediately before a refusal tells the reader the opposite of
 #      what happened, and it leaked on --scip, --scan-skill and --cache.
 #   E  the negative: a readable file of the same kind still works.
-#   F  --scip only: a path that OPENS but cannot be read as an index at all — an empty file, a directory —
-#      refuses: exit 1, the reason right after the flag and path ("is empty" / "is a directory"), nothing on
-#      stdout, no degrade log. Contrast: a 1-byte file (one byte from empty) is a corrupt index and still
-#      degrades at exit 0; a valid index still overlays.
+#   F  --scip only: a path that cannot be read as an index at all — an empty file, a directory, a FIFO, a
+#      device — refuses: exit 1, the reason right after the flag and path ("is empty" / "is a directory" /
+#      "is not a regular file"), nothing on stdout, no degrade log. Every F refusal run is bounded at 20 s: a
+#      FIFO with no writer blocks a plain open() for ever, and a hang must FAIL as a hang rather than stall the
+#      gate. Contrast: a 1-byte file (one byte from empty) is a corrupt index and still degrades at exit 0; a
+#      valid index still overlays.
 #
 # RED-FIRST (base binary ec5e3c3): A/B/C/D fail on --scip and --cache, C fails on --scan-skill and
 # --scan-skills, D fails on --scan-skill.
 # RED-FIRST for F (base binary 8c805661): both refusal rows failed all four checks — exit 0, the name-based map on
 # stdout, "[math degraded] --scip: index missing or unreadable" and "cannot read index … proceeding name-based" on
 # stderr. The presence guard and both contrasts passed there, as they must.
+# RED-FIRST for the FIFO and device rows (base binary 1d9d1aa6): the FIFO run HUNG — the probe's fopen blocked waiting
+# for a writer, killed at 20 s (exit 124 under GNU timeout, 142 under the perl-alarm fallback); /dev/null failed all four
+# checks — exit 0, 2338 B of name-based map on stdout, "[math degraded] --scip: index missing or unreadable" on stderr.
+# The empty-file, directory and contrast rows passed there.
 #
 # Usage:  bash test/namedfileinputcheck.sh [BIN]
 # Exits non-zero on any failure.
@@ -113,24 +120,35 @@ printf 'not a scip index at all\n' > "$TMP/corrupt.scip"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════════
 echo
-echo "=== F: --scip=<empty file> and --scip=<directory> refuse — both open, neither can be read as an index ==="
+echo "=== F: --scip=<empty file|directory|FIFO|device> refuses — none of them can be read as an index ==="
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════════
-# OWNER DECISION 2026-09-12. Both paths pass A-D's open() probe, so they used to reach loadScipOverlay's "cannot
-# read index … proceeding name-based" and serve the name-based map at exit 0 — the M7 defect one step later.
+# OWNER DECISION 2026-09-12. The empty file, the directory and the device pass A-D's open() probe, so they used to
+# reach loadScipOverlay's "cannot read index … proceeding name-based" and serve the name-based map at exit 0 — the
+# M7 defect one step later. The FIFO (no writer, ever) never got that far: a plain open() of it blocks for ever.
 # The two rows after the refusals are the contrast: a ONE-byte file differs from the empty one by exactly one
 # byte and is a corrupt index (degrade, exit 0), and a valid index still overlays.
 SCIPFIX="$ROOT/test/scipfix"
 : > "$TMP/empty.scip"
 printf 'x' > "$TMP/onebyte.scip"
 mkdir -p "$TMP/scipdir"
+mkfifo "$TMP/pipe.scip"
 [ -f "$TMP/empty.scip" ] && [ "$( wc -c <"$TMP/empty.scip" | tr -d ' ' )" -eq 0 ] && [ "$( wc -c <"$TMP/onebyte.scip" | tr -d ' ' )" -eq 1 ] \
-  && [ -d "$TMP/scipdir" ] && [ -s "$SCIPFIX/index.scip" ] \
-  && ok "F presence: a 0-byte file, a 1-byte file, a directory and the scipfix index all exist" \
+  && [ -d "$TMP/scipdir" ] && [ -p "$TMP/pipe.scip" ] && [ -c /dev/null ] && [ -s "$SCIPFIX/index.scip" ] \
+  && ok "F presence: a 0-byte file, a 1-byte file, a directory, a FIFO, the /dev/null character device and the scipfix index all exist" \
   || no "F presence: a fixture is missing — the F rows below would prove nothing"
+
+# GNU timeout exits 124 when it kills the run; a runner without coreutils takes the house perl-alarm idiom, whose
+# SIGALRM death is 142.
+bounded_run(){ if command -v timeout >/dev/null 2>&1; then timeout 20 "$@"; else perl -e 'alarm 20; exec @ARGV' "$@"; fi; }
 
 refuses_unreadable_scip(){ # $1 = label, $2 = the path, $3 = the reason the refusal must state right after the flag and path
     local label="$1" path="$2" reason="$3" rc
-    "$BIN" "$FIX" "--scip=$path" --no-cache >"$TMP/f.out" 2>"$TMP/f.err"; rc=$?
+    bounded_run "$BIN" "$FIX" "--scip=$path" --no-cache >"$TMP/f.out" 2>"$TMP/f.err"; rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then
+        # a killed run wrote nothing, so the stdout and degrade-log rows below would PASS on silence — report the hang alone
+        no "F --scip=<$label>: HUNG — killed after 20 s (exit $rc), expected the refusal code 1"
+        return
+    fi
     if [ "$rc" -eq 1 ]; then ok "F --scip=<$label>: exit 1"; else no "F --scip=<$label>: exit $rc, expected the refusal code 1"; fi
     if grep -qF -- "--scip=$path: $reason" "$TMP/f.err"; then
         ok "F --scip=<$label>: the refusal names the flag, echoes the path and says it $reason"
@@ -150,6 +168,8 @@ refuses_unreadable_scip(){ # $1 = label, $2 = the path, $3 = the reason the refu
 }
 refuses_unreadable_scip "empty file" "$TMP/empty.scip" "is empty"
 refuses_unreadable_scip "directory"  "$TMP/scipdir"    "is a directory"
+refuses_unreadable_scip "FIFO"       "$TMP/pipe.scip"  "is not a regular file"
+refuses_unreadable_scip "device"     "/dev/null"       "is not a regular file"
 
 "$BIN" "$FIX" --scip="$TMP/onebyte.scip" --no-cache >"$TMP/f1.out" 2>"$TMP/f1.err"; rc=$?
 [ "$rc" -eq 0 ] && [ -s "$TMP/f1.out" ] && grep -qF 'corrupt or truncated index' "$TMP/f1.err" \
