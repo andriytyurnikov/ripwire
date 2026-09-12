@@ -2609,17 +2609,20 @@ std::optional<int> runForLens( const MainDispatch& d )
             const std::size_t emittedNonHeaderBytes = sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + tailStr.size()
                                                     + detailSection.xml.size() + ( autoSection.isRendered ? autoSection.xml.size() : 0u )
                                                     + graphSection.xml.size() + 6;   // + "</ctx>"
-            // M3: the rung comes IN, so the shape-dependent 70 B (over_ceiling="1" + the clause defining it, owed
-            // on the last rung alone) are priced onto the candidate that will actually carry them. This used to be
-            // decided inside finishForLensHeader by looking for the rung's note in the candidate's text, which the
-            // verbatim task echo could supply — injected text then added those bytes to EVERY rung's price and
-            // could push an honest bundle down the ladder for no reason.
-            const auto fitsCeiling = [ & ]( std::string_view candidate, rw::CeilingRung rung )
+            // The 70 B of over_ceiling="1" + the clause defining it are priced by finishForLensHeader itself, from
+            // the TOKEN comparison (est_tokens > budget_tokens) it makes on every candidate — so a candidate that
+            // will carry the label is measured carrying it. Nothing here decides that from text: the ladder's own
+            // verdict used to be recovered inside finishForLensHeader by looking for the rung's note in the
+            // candidate, which the verbatim task echo could supply, and injected text then added those bytes to
+            // EVERY rung's price and could push an honest bundle down the ladder for no reason.
+            // `rootFinish.lastRungFired` is FALSE here and stays false, because it is the ladder's answer and the
+            // ladder has not answered yet. M3's first version passed the candidate's rung in and set the flag from
+            // `rung == OverCeiling`, which no call could ever satisfy — the terminal rung is the branch that never
+            // asks `fits` — so the flag was invariantly false while a comment claimed it was doing the pricing.
+            const auto fitsCeiling = [ & ]( std::string_view candidate )
             {
-                ForLensRootFinish pricedAs = rootFinish;
-                pricedAs.lastRungFired     = ( rung == rw::CeilingRung::OverCeiling );
                 return candidate.size() + ladderPayloadBytes <= ladderCeiling
-                    && finishForLensHeader( std::string( candidate ), pricedAs ).size() + emittedNonHeaderBytes <= ladderCeiling;
+                    && finishForLensHeader( std::string( candidate ), rootFinish ).size() + emittedNonHeaderBytes <= ladderCeiling;
             };
             // RUNG ZERO — the confidence LEGEND clause, before any of the ladder's own rungs: it is the one
             // header string whose loss costs NO unique information (confidence=/margin_pct= stay on the root
@@ -2634,7 +2637,7 @@ std::optional<int> runForLens( const MainDispatch& d )
             // kForLegendDroppedNote, naming the attributes whose definitions just went. Silence here was the
             // reader seeing confidence= margin_pct= budget_tokens= r= and the <tail> counts with nothing in the
             // legend about any of them and no way to tell a budget cut from a feature that does not exist.
-            if( !fitsCeiling( headerStr, rw::CeilingRung::AsBuilt ) && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
+            if( !fitsCeiling( headerStr ) && ( !headerParts.confidenceNote.empty() || headerParts.tailLegend ) )
             {
                 headerParts.confidenceNote = {};
                 headerParts.tailLegend     = false;   // deep-tail: the explainer falls with the confidence clause —
