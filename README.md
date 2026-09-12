@@ -1684,7 +1684,8 @@ When a mark says the cheap answer is not enough, escalate on purpose — never b
 2. **`--uses=SYM` / `--impact=SYM`** — every read, write and import site, and the transitive blast
    radius. `--callers` alone under-counts, and says so.
 3. **`--scip=index.scip`** — hand it a compiler-grade index and precise edges *replace* the
-   name-based guesses, tagged `prov="scip"`. Missing or corrupt index degrades; it never fails.
+   name-based guesses, tagged `prov="scip"`. A missing index refuses (exit 1); a corrupt one warns
+   on stderr and proceeds name-based.
 
 </details>
 
