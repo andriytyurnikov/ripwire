@@ -77,7 +77,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 FIX="$ROOT/test/rubyargfix"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 [ -d "$FIX" ] || { echo "no test/rubyargfix — fixture missing"; exit 2; }
@@ -134,7 +134,11 @@ printf '%s' "$DEPS" | grep -q '<f p="lib/app/dynamic.rb"' \
 importers(){ "$BIN" "$FIX" --impact="$1" --no-cache 2>/dev/null | sed 's/<!--[^>]*-->//g' | grep -oE '<f via="import" p="[^"]*" lazy="[01]"/>' | tr '\n' ' '; }
 expect(){ # expect SYM 'rows'  — exact importer set
     local got; got="$( importers "$1" )"
-    [ "$got" = "$2" ] && ok "$3" || no "$3 — importers of $1: ${got:-<none>}"
+    if [ "$got" = "$2" ]; then
+        ok "$3"
+    else
+        no "$3 — importers of $1: ${got:-<none>}"
+    fi
 }
 # The importer tier is per FILE (the files that import a file defining SYM), so Boom and Bust — both in errors.rb —
 # share one importer set; lazy= is per (importer, errors.rb) pair. floor.rb and admin/audit.rb name errors.rb nowhere.
@@ -234,12 +238,24 @@ cmp -s "$TMP/dots" "$TMP/abs" \
     && ok 'root spelling: a relative and an absolute crawl root resolve identically' \
     || { no 'root spelling: the two spellings disagree'; diff "$TMP/dots" "$TMP/abs" | head -4; }
 "$BIN" "$FIX" --deps --limit=100000 --no-cache >"$TMP/d2" 2>/dev/null
-cmp -s "$TMP/deps" "$TMP/d2" && ok "deterministic (two --no-cache runs identical)" || no "non-deterministic"
+if cmp -s "$TMP/deps" "$TMP/d2"; then
+    ok "deterministic (two --no-cache runs identical)"
+else
+    no "non-deterministic"
+fi
 "$BIN" "$FIX" --deps --limit=100000 --cache="$TMP/c.bin" >"$TMP/cold" 2>/dev/null
 "$BIN" "$FIX" --deps --limit=100000 --cache="$TMP/c.bin" >"$TMP/warm" 2>/dev/null
-cmp -s "$TMP/cold" "$TMP/warm" && ok "warm == cold (argument and rescue directives survive the cache round-trip)" || no "warm != cold"
+if cmp -s "$TMP/cold" "$TMP/warm"; then
+    ok "warm == cold (argument and rescue directives survive the cache round-trip)"
+else
+    no "warm != cold"
+fi
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/deps" 2>/dev/null && ok "xml well-formed" || no "xml malformed"
+    if xmllint --noout "$TMP/deps" 2>/dev/null; then
+        ok "xml well-formed"
+    else
+        no "xml malformed"
+    fi
 else
     ok "xml well-formed (xmllint absent — skipped)"
 fi
