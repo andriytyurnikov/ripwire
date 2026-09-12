@@ -54,7 +54,7 @@ set -u
 BIN="${1:-${RIPWIRE_BIN:-./build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$PWD/$BIN"
 fail=0
-ok(){ echo "  PASS  $1"; }
+ok(){ echo "  PASS  $1" || { fail=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; fail=1; }
 
 REPO="$(mktemp -d)"; SHIMDIR="$(mktemp -d)"; trap 'rm -rf "$REPO" "$SHIMDIR"' EXIT
@@ -232,11 +232,11 @@ done
 
 r1="$("$BIN" "$REPO" --hotspots --since=HEAD~3 --no-cache 2>/dev/null)"
 r2="$("$BIN" "$REPO" --hotspots --since=HEAD~3 --no-cache 2>/dev/null)"
-[ "$r1" = "$r2" ] && ok "--since=HEAD~3 deterministic run-to-run" || no "--since=HEAD~3 not deterministic"
+if [ "$r1" = "$r2" ]; then ok "--since=HEAD~3 deterministic run-to-run"; else no "--since=HEAD~3 not deterministic"; fi
 
 rm -f "$REPO/PWNED"
 "$BIN" "$REPO" --hotspots --since='HEAD~3; touch '"$REPO"'/PWNED' --no-cache >/dev/null 2>&1
-[ ! -f "$REPO/PWNED" ] && ok "shell-metacharacter --since executes nothing (quoted safely)" || no "shell injection via --since!"
+if [ ! -f "$REPO/PWNED" ]; then ok "shell-metacharacter --since executes nothing (quoted safely)"; else no "shell injection via --since!"; fi
 
 # ── the git SINK (2026-09-10): git is handed the RESOLVED commit, never the caller's --since string ────────────
 # resolveSinceScope proved a revision with `rev-parse --verify --quiet '<val>^{commit}'`, kept the RAW value, and
@@ -279,7 +279,7 @@ while read -r flag needsBaseline <&3; do
   done
   s1Rows=$(( s1Rows + 1 ))
 done 3<<< "$SINCE_ROWS"
-[ "$s1Rows" -ge 5 ] && ok "S1 covered $s1Rows kSinceHosts rows" || no "S1 covered only $s1Rows host row(s) — the table enumeration did not run"
+if [ "$s1Rows" -ge 5 ]; then ok "S1 covered $s1Rows kSinceHosts rows"; else no "S1 covered only $s1Rows host row(s) — the table enumeration did not run"; fi
 
 REALGIT="$( command -v git )"
 SHIMLOG="$SHIMDIR/argv.log"

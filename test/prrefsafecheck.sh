@@ -48,7 +48,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -95,7 +95,7 @@ optref_refused()   # $1 = the option-shaped ref, $2 = label
 {
     local ref="$1" label="$2" rc
     "$BIN" "$REPO" "--pr-context=$ref" >"$TMP/opt.out" 2>"$TMP/opt.err"; rc=$?
-    [ "$rc" = 1 ] && ok "$label: exit 1" || no "$label: expected exit 1, got $rc"
+    if [ "$rc" = 1 ]; then ok "$label: exit 1"; else no "$label: expected exit 1, got $rc"; fi
 }
 
 optref_refused "--output=$VICTIM" "option-shaped ref (--output=EXISTING)"
@@ -119,7 +119,7 @@ git -C "$REPO" checkout -q -- base.py
 
 # ── P2.8: a typo'd ref refuses loudly, names the ref, and writes NO payload to stdout ──────────────────
 "$BIN" "$REPO" --pr-context=nosuchrefzzz >"$TMP/bad.out" 2>"$TMP/bad.err"; rc=$?
-[ "$rc" = 1 ] && ok "unknown base ref exits 1 (not 0-with-an-empty-bundle)" || no "unknown base ref: expected exit 1, got $rc"
+if [ "$rc" = 1 ]; then ok "unknown base ref exits 1 (not 0-with-an-empty-bundle)"; else no "unknown base ref: expected exit 1, got $rc"; fi
 grep -q 'nosuchrefzzz' "$TMP/bad.err" && ok "the refusal names the offending ref on stderr" \
                                       || no "the refusal must name the offending ref on stderr"
 [ -s "$TMP/bad.out" ] && no "a refusal must not also write a bundle to stdout" || ok "refusal writes no stdout payload"
@@ -128,26 +128,26 @@ grep -q '<pr-context' "$TMP/bad.out" 2>/dev/null && no 'refusal must not emit <p
 
 # ── the multi-root branch, which had no !ok check at all ───────────────────────────────────────────────
 "$BIN" "$REPO" "$REPO2" --pr-context=nosuchrefzzz >"$TMP/mr.out" 2>"$TMP/mr.err"; rc=$?
-[ "$rc" = 1 ] && ok "multi-root: unknown base ref exits 1" || no "multi-root: expected exit 1, got $rc"
+if [ "$rc" = 1 ]; then ok "multi-root: unknown base ref exits 1"; else no "multi-root: expected exit 1, got $rc"; fi
 printf 'PRECIOUS DATA DO NOT DELETE\n' >"$VICTIM"
 BEFORE="$( cksum <"$VICTIM" )"
 "$BIN" "$REPO" "$REPO2" "--pr-context=--output=$VICTIM" >/dev/null 2>&1; rc=$?
-[ "$rc" = 1 ] && ok "multi-root: option-shaped ref exits 1" || no "multi-root: option-shaped ref expected exit 1, got $rc"
+if [ "$rc" = 1 ]; then ok "multi-root: option-shaped ref exits 1"; else no "multi-root: option-shaped ref expected exit 1, got $rc"; fi
 [ "$( cksum <"$VICTIM" )" = "$BEFORE" ] && ok "multi-root: the victim file is byte-identical (nothing written)" \
                                         || no "DATA LOSS: multi-root rewrote the victim file"
 
 # ── the valid path still works exactly as before ──────────────────────────────────────────────────────
 OUT="$TMP/good.xml"
 "$BIN" "$REPO" --pr-context=mainline >"$OUT" 2>/dev/null; rc=$?
-[ "$rc" = 0 ] && ok "a VALID base ref still exits 0" || no "a valid base ref must still exit 0, got $rc"
+if [ "$rc" = 0 ]; then ok "a VALID base ref still exits 0"; else no "a valid base ref must still exit 0, got $rc"; fi
 grep -q 'anchor="merge-base"' "$OUT" && ok 'a valid base ref still anchors at the merge base' \
                                      || no 'a valid base ref must still report anchor="merge-base"'
-grep -q '<file p="[^"]*extra\.py"' "$OUT" && ok "the changed file is still reported" || no "the changed file must still be reported"
+if grep -q '<file p="[^"]*extra\.py"' "$OUT"; then ok "the changed file is still reported"; else no "the changed file must still be reported"; fi
 
 # a sha, a tag and HEAD~1 are all committish spellings the resolve must accept, not just branch names
 SHA="$( git -C "$REPO" rev-parse mainline )"
-"$BIN" "$REPO" "--pr-context=$SHA" >/dev/null 2>&1 && ok "a raw sha is accepted" || no "a raw sha must be accepted"
-"$BIN" "$REPO" --pr-context=HEAD~1 >/dev/null 2>&1 && ok "a rev expression (HEAD~1) is accepted" || no "HEAD~1 must be accepted"
+if "$BIN" "$REPO" "--pr-context=$SHA" >/dev/null 2>&1; then ok "a raw sha is accepted"; else no "a raw sha must be accepted"; fi
+if "$BIN" "$REPO" --pr-context=HEAD~1 >/dev/null 2>&1; then ok "a rev expression (HEAD~1) is accepted"; else no "HEAD~1 must be accepted"; fi
 
 # ── a non-git root is a DEGRADE (exit 0), never a bad-ref refusal ──────────────────────────────────────
 PLAIN="$TMP/plain"
@@ -242,17 +242,17 @@ while IFS='|' read -r mode kind ref needle <&3; do
         grep -qF -- "$needle" "$TMP/argv.log" \
             && no "$label reached a git argv: $( grep -F -- "$needle" "$TMP/argv.log" | head -1 | head -c 300 )" \
             || ok "$label never appears in any git argv (refused before git is asked)"
-        [ ! -e "$needle" ] && ok "$label: nothing was written at the payload path" || no "$label created $needle"
+        if [ ! -e "$needle" ]; then ok "$label: nothing was written at the payload path"; else no "$label created $needle"; fi
     fi
 done 3<<< "$ROWS"
 
 # ── determinism + G4 on the success path ──────────────────────────────────────────────────────────────
 "$BIN" "$REPO" --pr-context=mainline >"$TMP/a.xml" 2>/dev/null
 "$BIN" "$REPO" --pr-context=mainline >"$TMP/b.xml" 2>/dev/null
-cmp -s "$TMP/a.xml" "$TMP/b.xml" && ok "deterministic (byte-identical run-to-run)" || no "deterministic"
+if cmp -s "$TMP/a.xml" "$TMP/b.xml"; then ok "deterministic (byte-identical run-to-run)"; else no "deterministic"; fi
 
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$OUT" >/dev/null 2>&1 && ok "G4: xmllint-clean" || no "G4: xmllint-clean"
+    if xmllint --noout "$OUT" >/dev/null 2>&1; then ok "G4: xmllint-clean"; else no "G4: xmllint-clean"; fi
 else
     ok "G4: xmllint unavailable — skipped"
 fi

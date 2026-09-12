@@ -41,7 +41,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){   printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){   printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -276,7 +276,7 @@ a_witnesses=0
 for d_sym in "f2:bar" "f4:run"; do
     [ "$( all_edges "$F/${d_sym%%:*}" "${d_sym#*:}" )" -ge 1 ] && a_witnesses=$(( a_witnesses + 1 ))
 done
-[ "$a_witnesses" = 2 ] && ok "[A] precondition: both confident witnesses still emit >=1 <c> edge (arm is not inert)"                        || no "[A] precondition GONE: only $a_witnesses of 2 confident witnesses emit an edge — the omit-at-confident arm cannot observe what it asserts"
+if [ "$a_witnesses" = 2 ]; then ok "[A] precondition: both confident witnesses still emit >=1 <c> edge (arm is not inert)"; else no "[A] precondition GONE: only $a_witnesses of 2 confident witnesses emit an edge — the omit-at-confident arm cannot observe what it asserts"; fi
 for pair in "f2:bar:same-file unique" "f4:run:Rule-3 pin"; do
     d="${pair%%:*}"; rest="${pair#*:}"; sym="${rest%%:*}"; label="${rest#*:}"
     n="$( all_edges "$F/$d" "$sym" )"; k="$( split_edges "$F/$d" "$sym" )"
@@ -346,7 +346,7 @@ done
 
 # ── well-formed XML on a representative case ─────────────────────────────────────────────────────
 if command -v xmllint >/dev/null 2>&1; then
-    run "$F/f9" | xmllint --noout - 2>/dev/null && ok "xml well-formed (F9)" || no "xml malformed (F9)"
+    if run "$F/f9" | xmllint --noout - 2>/dev/null; then ok "xml well-formed (F9)"; else no "xml malformed (F9)"; fi
 else
     ok "xml well-formed (xmllint absent — skipped)"
 fi

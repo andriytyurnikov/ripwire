@@ -36,7 +36,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -97,7 +97,7 @@ OUT="$( "$BIN" "$REPO" --merge-scout=A,B,C --no-cache 2>/dev/null )"
 if [ -z "$OUT" ]; then no "merge-scout: output is empty"; echo; echo "SOME CHECKS FAILED"; exit 1; fi
 echo "merge-scout output:"; echo "$OUT"; echo
 
-echo "$OUT" | grep -q 'arms="3"' && ok "3 arms reported" || no "expected arms=3: $( echo "$OUT" | grep -o 'arms="[0-9]*"' | head -1 )"
+if echo "$OUT" | grep -q 'arms="3"'; then ok "3 arms reported"; else no "expected arms=3: $( echo "$OUT" | grep -o 'arms="[0-9]*"' | head -1 )"; fi
 
 # §A10.4: base= is a 9-hex-char sha, matching the at=/head= width every other repo-reading verb uses
 # (gitstamp.h) — it used to print the full 40-char merge-base sha, the one width outlier next to
@@ -136,13 +136,13 @@ echo "$OUT" | grep -q '<landing order="C,A,B"/>' \
 
 # ── §P11.13: F (changed="0" — no divergent work vs merge-base) is annotated and dropped from landing= ──
 FOUT="$( "$BIN" "$REPO" --merge-scout=A,B,C,F --no-cache 2>/dev/null )"
-echo "$FOUT" | grep -q 'arms="4"' && ok "4 arms reported (A,B,C,F)" || no "expected arms=4: $( echo "$FOUT" | grep -o 'arms="[0-9]*"' | head -1 )"
+if echo "$FOUT" | grep -q 'arms="4"'; then ok "4 arms reported (A,B,C,F)"; else no "expected arms=4: $( echo "$FOUT" | grep -o 'arms="[0-9]*"' | head -1 )"; fi
 # split the (minified, single-line) XML at every `<arm ` boundary so each arm's own block — up to but
 # NOT including the next `<arm `/`<pair`/`<landing` — can be grepped in isolation (a naive greedy
 # `<arm ref="X".*</arm>` would swallow every LATER arm's content too, since arms don't nest).
 ARM_F="$( printf '%s' "$FOUT" | sed 's/<arm /\n<arm /g; s/<pair /\n<pair /g; s/<landing /\n<landing /g' | grep '^<arm ref="F"' )"
 ARM_A="$( printf '%s' "$FOUT" | sed 's/<arm /\n<arm /g; s/<pair /\n<pair /g; s/<landing /\n<landing /g' | grep '^<arm ref="A"' )"
-echo "$ARM_F" | grep -q 'changed="0"' && ok "arm F reports changed=\"0\"" || no "arm F did not report changed=0: $ARM_F"
+if echo "$ARM_F" | grep -q 'changed="0"'; then ok "arm F reports changed=\"0\""; else no "arm F did not report changed=0: $ARM_F"; fi
 echo "$ARM_F" | grep -q '<no-work note="no divergent work vs merge-base — see --stray-content"/>' \
     && ok "arm F (changed=0) carries the no-divergent-work <no-work note=.../> child" \
     || no "arm F missing the <no-work note=.../> child: $ARM_F"
@@ -174,12 +174,12 @@ git -C "$REPO" checkout -q "$MAIN"
 
 GOUT="$( "$BIN" "$REPO" --merge-scout=A,G --no-cache 2>/dev/null )"
 ARM_G="$( printf '%s' "$GOUT" | sed 's/<arm /\n<arm /g; s/<pair /\n<pair /g; s/<landing /\n<landing /g' | grep '^<arm ref="G"' )"
-echo "$ARM_G" | grep -q 'ok="0"' && ok "arm G (unrelated history) reports ok=\"0\"" || no "arm G did not report ok=0: $ARM_G"
-echo "$ARM_G" | grep -q 'changed="0"' && ok "arm G reports changed=\"0\" (never compared, not compared-and-clean)" || no "arm G did not report changed=0: $ARM_G"
+if echo "$ARM_G" | grep -q 'ok="0"'; then ok "arm G (unrelated history) reports ok=\"0\""; else no "arm G did not report ok=0: $ARM_G"; fi
+if echo "$ARM_G" | grep -q 'changed="0"'; then ok "arm G reports changed=\"0\" (never compared, not compared-and-clean)"; else no "arm G did not report changed=0: $ARM_G"; fi
 echo "$ARM_G" | grep -q '<no-work' \
     && no "arm G (ok=\"0\", never compared) wrongly carries <no-work> — reads as compared-and-clean" \
     || ok "arm G (ok=\"0\") carries no <no-work> — the comparison never ran, so no verdict is claimed"
-echo "$GOUT" | xmllint --noout - 2>/dev/null && ok "xmllint clean (G fixture)" || no "xmllint reported malformed XML (G fixture)"
+if echo "$GOUT" | xmllint --noout - 2>/dev/null; then ok "xmllint clean (G fixture)"; else no "xmllint reported malformed XML (G fixture)"; fi
 
 # ── xmllint ─────────────────────────────────────────────────────────────────────────────────────────
 echo "$OUT" | xmllint --noout - 2>/dev/null \
@@ -190,7 +190,7 @@ echo "$OUT" | xmllint --noout - 2>/dev/null \
 D1="$( "$BIN" "$REPO" --merge-scout=A,B,C --no-cache 2>/dev/null )"
 D2="$( "$BIN" "$REPO" --merge-scout=A,B,C --no-cache 2>/dev/null )"
 D3="$( "$BIN" "$REPO" --merge-scout=A,B,C --no-cache 2>/dev/null )"
-{ [ "$D1" = "$D2" ] && [ "$D2" = "$D3" ]; } && ok "determinism ×3: byte-identical" || no "determinism: output differs across runs"
+if { [ "$D1" = "$D2" ] && [ "$D2" = "$D3" ]; }; then ok "determinism ×3: byte-identical"; else no "determinism: output differs across runs"; fi
 
 # ── textual risk: D and E touch DIFFERENT symbols in the SAME file ─────────────────────────────────────
 git -C "$REPO" checkout -qb D
@@ -322,24 +322,24 @@ while IFS='|' read -r kind ref needle <&3; do
         grep -qF -- "$needle" "$TMP/argv.log" \
             && no "'$ref' reached a git argv: $( grep -F -- "$needle" "$TMP/argv.log" | head -1 | head -c 300 )" \
             || ok "'$ref' never appears in any git argv (refused before git is asked)"
-        [ ! -e "$needle" ] && ok "'$ref': nothing was written at the payload path" || no "'$ref' created $needle"
+        if [ ! -e "$needle" ]; then ok "'$ref': nothing was written at the payload path"; else no "'$ref' created $needle"; fi
     fi
 done 3<<< "$ROWS"
 
 # ── empty ref list refuses loudly ───────────────────────────────────────────────────────────────────
 EMPTYOUT="$( "$BIN" "$REPO" --merge-scout= --no-cache 2>&1 )"; EMPTYRC=$?
-[ "$EMPTYRC" -ne 0 ] && ok "empty --merge-scout= refuses loudly (rc=$EMPTYRC)" || no "empty --merge-scout= should refuse (rc=$EMPTYRC)"
+if [ "$EMPTYRC" -ne 0 ]; then ok "empty --merge-scout= refuses loudly (rc=$EMPTYRC)"; else no "empty --merge-scout= should refuse (rc=$EMPTYRC)"; fi
 
 # ── reserved arm name as a ref token refuses loudly ─────────────────────────────────────────────────
 RESOUT="$( "$BIN" "$REPO" --merge-scout=working-tree --no-cache 2>&1 )"; RESRC=$?
-[ "$RESRC" -ne 0 ] && ok "'working-tree' as a REF token refuses loudly (rc=$RESRC)" || no "'working-tree' ref should refuse (rc=$RESRC)"
+if [ "$RESRC" -ne 0 ]; then ok "'working-tree' as a REF token refuses loudly (rc=$RESRC)"; else no "'working-tree' ref should refuse (rc=$RESRC)"; fi
 
 # ── non-git root refuses loudly (X9(a)): exit 1, a clear message, no XML ───────────────────────────────
 NG="$TMP/nongit"; mkdir -p "$NG"; echo 'int f(){return 0;}' >"$NG/a.cpp"
 NGOUT="$( "$BIN" "$NG" --merge-scout=A --no-cache 2>/dev/null )"; NGRC=$?
 NGERR="$( "$BIN" "$NG" --merge-scout=A --no-cache 2>&1 1>/dev/null )"
-[ "$NGRC" -eq 1 ] && ok "non-git root refuses loudly (exit 1)" || no "non-git root should exit 1 (got rc=$NGRC)"
-[ -z "$NGOUT" ] && ok "non-git root refusal emits no XML" || no "non-git root refusal unexpectedly emitted output: $NGOUT"
+if [ "$NGRC" -eq 1 ]; then ok "non-git root refuses loudly (exit 1)"; else no "non-git root should exit 1 (got rc=$NGRC)"; fi
+if [ -z "$NGOUT" ]; then ok "non-git root refusal emits no XML"; else no "non-git root refusal unexpectedly emitted output: $NGOUT"; fi
 echo "$NGERR" | grep -qi 'not a git repository' \
     && ok "non-git root refusal names the reason (not a git repository)" \
     || no "non-git root refusal missing a clear message: $NGERR"

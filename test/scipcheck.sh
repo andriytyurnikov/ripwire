@@ -28,7 +28,7 @@ IDX="$CORPUS/index.scip"
 EXC="--exclude=make_index.py"                         # keep the python generator out of the C++ map
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -98,10 +98,10 @@ fi
 NOSCIP="$( "$BIN" "$CORPUS" $EXC --no-cache 2>/dev/null )"
 head -c 40 "$IDX" >"$TMP/trunc.scip"
 "$BIN" "$CORPUS" --scip="$TMP/trunc.scip" $EXC --no-cache >"$TMP/corrupt.out" 2>"$TMP/corrupt.err"; rc=$?
-[ $rc -eq 0 ] && ok "corrupt index → exit 0 (did not fail)" || no "corrupt index → nonzero exit ($rc)"
+if [ $rc -eq 0 ]; then ok "corrupt index → exit 0 (did not fail)"; else no "corrupt index → nonzero exit ($rc)"; fi
 diff -q <(printf '%s' "$NOSCIP") "$TMP/corrupt.out" >/dev/null && ok "corrupt index → output IDENTICAL to no---scip" \
     || { no "corrupt index changed the map"; diff <(printf '%s' "$NOSCIP") "$TMP/corrupt.out" | head; }
-grep -qi 'scip' "$TMP/corrupt.err" && ok "corrupt index → stderr alert emitted" || no "corrupt index → no stderr alert"
+if grep -qi 'scip' "$TMP/corrupt.err"; then ok "corrupt index → stderr alert emitted"; else no "corrupt index → no stderr alert"; fi
 
 # 5b) MISSING index → a REFUSAL, not a degrade. RE-PINNED 2026-09-04 (capture-audit M7, lens 6 F6): this
 #     arm used to assert "exit 0, output identical, alert emitted", i.e. the caller who named a precision
@@ -134,7 +134,7 @@ for i in $( seq 1 20 ); do
     # a crash is signal-death (rc >= 128); a clean degrade is rc 0. Anything 128+ (SIGSEGV/SIGABRT) fails.
     if [ $rcf -ge 128 ]; then crashes=$(( crashes + 1 )); echo "    fuzz iter $i: crash (rc=$rcf)"; fi
 done
-[ "$crashes" -eq 0 ] && ok "fuzz: 20 mangled indexes, ZERO crashes" || no "fuzz: $crashes/20 mangled indexes crashed"
+if [ "$crashes" -eq 0 ]; then ok "fuzz: 20 mangled indexes, ZERO crashes"; else no "fuzz: $crashes/20 mangled indexes crashed"; fi
 
 # 7) S5 FRESH-INDEX MATCH RATIO — the overlay run now emits a one-line match-ratio note on STDERR (only
 #    when --scip is active), and it must NOT leak into stdout (the map). Fresh index → 100%, no stale hint.
@@ -162,7 +162,7 @@ printf '%s\n' "$OV_ERR" | grep -q 'older commit' \
 python3 "$GEN" --external "$TMP/external.scip" 2>/dev/null && ok "make_index.py --external generated an index with one external occurrence" \
     || no "make_index.py --external failed"
 EXT_ERR="$( "$BIN" "$CORPUS" --scip="$TMP/external.scip" $EXC --no-cache 2>&1 >"$TMP/external.out" )"; rce=$?
-[ $rce -eq 0 ] && ok "external-occurrence index → exit 0" || no "external-occurrence index → nonzero exit ($rce)"
+if [ $rce -eq 0 ]; then ok "external-occurrence index → exit 0"; else no "external-occurrence index → nonzero exit ($rce)"; fi
 printf '%s\n' "$EXT_ERR" | grep -q 'SCIP matched 100% of occurrences (1/1)' \
     && ok "A4-F21: external occurrence excluded from denominator — still reports 100% (1/1), not 50% (1/2)" \
     || { no "A4-F21: ratio deflated by the external occurrence"; printf '    %s\n' "$EXT_ERR"; }
@@ -186,7 +186,7 @@ grep -q 'n="handler" prov="scip"' "$TMP/external.out" \
 python3 "$GEN" --stale "$TMP/stale.scip" 2>/dev/null && ok "make_index.py --stale generated a stale index" \
     || no "make_index.py --stale failed"
 STALE_ERR="$( "$BIN" "$CORPUS" --scip="$TMP/stale.scip" $EXC --no-cache 2>&1 >"$TMP/stale.out" )"; rcs=$?
-[ $rcs -eq 0 ] && ok "stale index → exit 0 (degrades, never fails)" || no "stale index → nonzero exit ($rcs)"
+if [ $rcs -eq 0 ]; then ok "stale index → exit 0 (degrades, never fails)"; else no "stale index → nonzero exit ($rcs)"; fi
 printf '%s\n' "$STALE_ERR" | grep -Eq 'SCIP matched [0-9]+% of occurrences.*older commit' \
     && ok "stale index → match-ratio note fires with 'older commit' staleness hint" \
     || { no "stale index → no staleness match-ratio note"; printf '    %s\n' "$STALE_ERR"; }

@@ -35,7 +35,7 @@ BIN="${RIPWIRE_BIN:-$ROOT/build/ripwire}"
 FIX="$ROOT/test/fixture"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 # ── ONE INGEST FOR THE WHOLE GATE (2026-09-05, terminality round A lane V2) ───────────────────────────────
@@ -176,8 +176,8 @@ else
 fi
 for_kind_bytes="$( wc -c <"$TMP/for.default" | tr -d ' ' ) $( wc -c <"$TMP/for.compact" | tr -d ' ' )"
 grep_kind_bytes="$( wc -c <"$TMP/grep.default" | tr -d ' ' ) $( wc -c <"$TMP/grep.compact" | tr -d ' ' )"
-set -- $for_kind_bytes; [ "$2" -lt "$1" ] && ok "--for compact is smaller ($2 < $1 bytes)" || no "--for compact did not shrink ($2 >= $1 bytes)"
-set -- $grep_kind_bytes; [ "$2" -lt "$1" ] && ok "--grep compact is smaller ($2 < $1 bytes)" || no "--grep compact did not shrink ($2 >= $1 bytes)"
+if set -- $for_kind_bytes; [ "$2" -lt "$1" ]; then ok "--for compact is smaller ($2 < $1 bytes)"; else no "--for compact did not shrink ($2 >= $1 bytes)"; fi
+if set -- $grep_kind_bytes; [ "$2" -lt "$1" ]; then ok "--grep compact is smaller ($2 < $1 bytes)"; else no "--grep compact did not shrink ($2 >= $1 bytes)"; fi
 grep -q '<grep[^>]* complete="1"' "$TMP/grep.compact" \
     && grep -q '<grep[^>]* hits_capped="0"' "$TMP/grep.compact" \
     && grep -q '<grep[^>]* root="' "$TMP/grep.compact" \
@@ -376,7 +376,7 @@ echo
 echo "=== (F) full stays byte-identical: default == --legend=full on the new members ==="
 for v in --callers=distance --edit-check=total_area --quality-delta --impact=distance --test-gate=geometry.cpp; do
     rrun $v >"$TMP/f.def"; rrun $v --legend=full >"$TMP/f.full"
-    cmp -s "$TMP/f.def" "$TMP/f.full" && ok "(F) $v: default == --legend=full" || no "(F) $v: explicit --legend=full changed the default output"
+    if cmp -s "$TMP/f.def" "$TMP/f.full"; then ok "(F) $v: default == --legend=full"; else no "(F) $v: explicit --legend=full changed the default output"; fi
 done
 
 echo

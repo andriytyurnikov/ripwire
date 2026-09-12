@@ -15,7 +15,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"          # absolutize BEFORE we cd away
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "  SKIP  qualitykindscheck (git not available)"; exit 0; }
@@ -42,7 +42,7 @@ ecem(){ ( cd "$EM" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo 
 # 1b) add an EMPTY catch to handle() (uncommitted) → regression fires, exit 2
 printf 'void log_it(){}\nvoid handle(){ try { risky(); } catch( ... ) {} }\nvoid legacy(){ try { risky(); } catch( ... ) {} }\nvoid risky(){}\nvoid drive(){ handle(); legacy(); }\n' > "$EM/src/a.cpp"
 OEM="$( dem )"
-[ "$( ecem )" = 2 ] && ok "error-masking: new empty catch → exit 2" || no "error-masking: new empty catch should exit 2 (got $( ecem ))"
+if [ "$( ecem )" = 2 ]; then ok "error-masking: new empty catch → exit 2"; else no "error-masking: new empty catch should exit 2 (got $( ecem ))"; fi
 printf '%s' "$OEM" | grep -q 'kind="error-masking" sym="handle"' \
     && ok "error-masking: handle() flagged (empty catch added)" || { no "error-masking: handle() not flagged"; printf '%s\n' "$OEM" | tr '>' '\n' | grep '<r '; }
 printf '%s' "$OEM" | grep -q 'kind="error-masking" sym="legacy"' \
@@ -50,9 +50,9 @@ printf '%s' "$OEM" | grep -q 'kind="error-masking" sym="legacy"' \
     || ok "error-masking: pre-existing empty catch in untouched legacy() NOT flagged (contract)"
 
 # 1c) determinism + xml
-[ "$OEM" = "$( dem )" ] && ok "error-masking: delta byte-identical run-to-run" || no "error-masking: non-deterministic delta"
+if [ "$OEM" = "$( dem )" ]; then ok "error-masking: delta byte-identical run-to-run"; else no "error-masking: non-deterministic delta"; fi
 if command -v xmllint >/dev/null 2>&1; then
-    printf '%s' "$OEM" | xmllint --noout - 2>/dev/null && ok "error-masking: xml well-formed" || no "error-masking: xml malformed"
+    if printf '%s' "$OEM" | xmllint --noout - 2>/dev/null; then ok "error-masking: xml well-formed"; else no "error-masking: xml malformed"; fi
 fi
 
 # 1d) Python bare/pass except — a second-language sanity check on the rule table.
@@ -98,7 +98,7 @@ ecsh(){ ( cd "$SH" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo 
 printf 'int hot(){\n    int x = 3;\n    return x + 1;\n}\nint cold(){ return 1; }\nint drive(){ return hot()+cold(); }\n' > "$SH/src/f.cpp"
 printf 'int lone(){ return 9; }\nint uselone(){ return lone(); }\n' > "$SH/src/g.cpp"
 OSH="$( dsh )"
-[ "$( ecsh )" = 2 ] && ok "short-horizon-churn: rewrite of lines TWO in-window commits wrote → exit 2" || no "short-horizon-churn: should exit 2 (got $( ecsh ))"
+if [ "$( ecsh )" = 2 ]; then ok "short-horizon-churn: rewrite of lines TWO in-window commits wrote → exit 2"; else no "short-horizon-churn: should exit 2 (got $( ecsh ))"; fi
 printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="hot"' \
     && ok "short-horizon-churn: hot() flagged (file had ≥2 recent commits, rewritten again)" || { no "short-horizon-churn: hot() not flagged"; printf '%s\n' "$OSH" | tr '>' '\n' | grep '<r '; }
 printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="lone"' \
@@ -107,7 +107,7 @@ printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="lone"' \
 printf '%s' "$OSH" | grep -q 'kind="short-horizon-churn" sym="cold"' \
     && no "short-horizon-churn: cold() wrongly flagged (in a churny file but NOT rewritten this diff)" \
     || ok "short-horizon-churn: untouched symbol in a churny file NOT flagged (rewrite gate)"
-[ "$OSH" = "$( dsh )" ] && ok "short-horizon-churn: delta byte-identical run-to-run (deterministic)" || no "short-horizon-churn: non-deterministic delta"
+if [ "$OSH" = "$( dsh )" ]; then ok "short-horizon-churn: delta byte-identical run-to-run (deterministic)"; else no "short-horizon-churn: non-deterministic delta"; fi
 
 # ── 3) NEW-CLONE-OF-REUSED-HELPER ────────────────────────────────────────────────────────────────────────
 #   A helper accumulate() with fan-in ≥ 3 (called from three sites) is committed. The working tree adds a
@@ -130,13 +130,13 @@ ecrc(){ ( cd "$RC" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo 
 # 3b) add reinvent() — a byte-for-byte body clone of accumulate() (which has fan-in 3) in a new file.
 printf 'int reinvent(){ int x=0; x+=1; x+=2; x+=3; x+=4; x+=5; x+=6; return x*x+7; }\nint user(){ return reinvent(); }\n' > "$RC/src/dup.cpp"
 ORC="$( drc )"
-[ "$( ecrc )" = 2 ] && ok "reuse-connectivity: new clone of a reused helper → exit 2" || no "reuse-connectivity: should exit 2 (got $( ecrc ))"
+if [ "$( ecrc )" = 2 ]; then ok "reuse-connectivity: new clone of a reused helper → exit 2"; else no "reuse-connectivity: should exit 2 (got $( ecrc ))"; fi
 printf '%s' "$ORC" | grep -q 'kind="new-clone-of-reused-helper"' && printf '%s' "$ORC" | grep -q 'accumulate' \
     && ok "reuse-connectivity: new-clone-of-reused-helper flagged (reinvent duplicates accumulate, fan-in≥3)" \
     || { no "reuse-connectivity: new-clone-of-reused-helper missing"; printf '%s\n' "$ORC" | tr '>' '\n' | grep '<r '; }
-[ "$ORC" = "$( drc )" ] && ok "reuse-connectivity: delta byte-identical run-to-run (deterministic)" || no "reuse-connectivity: non-deterministic delta"
+if [ "$ORC" = "$( drc )" ]; then ok "reuse-connectivity: delta byte-identical run-to-run (deterministic)"; else no "reuse-connectivity: non-deterministic delta"; fi
 if command -v xmllint >/dev/null 2>&1; then
-    printf '%s' "$ORC" | xmllint --noout - 2>/dev/null && ok "reuse-connectivity: xml well-formed" || no "reuse-connectivity: xml malformed"
+    if printf '%s' "$ORC" | xmllint --noout - 2>/dev/null; then ok "reuse-connectivity: xml well-formed"; else no "reuse-connectivity: xml malformed"; fi
 fi
 
 # ── 4) SELF vs AMBIENT CHURN (B10.2d, signal-to-noise round 2) ─────────────────────────────────────────────
@@ -177,7 +177,7 @@ printf '%s' "$OSF" | grep -q 'kind="short-horizon-churn" sym="hot"[^/]*sev="mino
     && ok "self/ambient churn: ONE in-window rewrite is informational — sev=\"minor\", facet still self" \
     || { no "self/ambient churn: a single in-window rewrite must not gate"; printf '%s\n' "$OSF" | tr '>' '\n' | grep '<r '; }
 ESF="$( cd "$SF" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo $? )"
-[ "$ESF" = 0 ] && ok "self/ambient churn: a self-only finding does not gate exit 2" || no "self/ambient churn: self-only run should exit 0 (got $ESF)"
+if [ "$ESF" = 0 ]; then ok "self/ambient churn: a self-only finding does not gate exit 2"; else no "self/ambient churn: self-only run should exit 0 (got $ESF)"; fi
 
 # 4b) AMBIENT — adds lines: the working-tree edit only INSERTS a new statement, touching no existing line.
 AF="$WORK/ambientadd"; mkdir -p "$AF/src"
@@ -192,7 +192,7 @@ EAF="$( cd "$AF" && "$BIN" . --quality-delta --no-cache >/dev/null 2>&1; echo $?
 printf '%s' "$OAF" | grep -q 'kind="short-horizon-churn" sym="hot"[^/]*sev="minor"[^/]*churn="ambient"' \
     && ok "self/ambient churn: pure line-insertion edit → sev=\"minor\" churn=\"ambient\" (adds lines)" \
     || { no "self/ambient churn: pure-insert edit not downgraded to ambient"; printf '%s\n' "$OAF" | tr '>' '\n' | grep '<r '; }
-[ "$EAF" = 0 ] && ok "self/ambient churn: ambient-only finding does not gate exit 2" || no "self/ambient churn: ambient-only run should exit 0 (got $EAF)"
+if [ "$EAF" = 0 ]; then ok "self/ambient churn: ambient-only finding does not gate exit 2"; else no "self/ambient churn: ambient-only run should exit 0 (got $EAF)"; fi
 
 # 4c) AMBIENT — touches a cold line: the file is churn-hot (2 recent commits) via an UNRELATED line, but the
 #     working tree edits a line whose real last commit is a backdated, out-of-window commit.

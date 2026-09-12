@@ -28,7 +28,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 FIX="$ROOT/test/expandsibsfix"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -137,7 +137,7 @@ fi
 # ── (E) well-formedness + determinism ─────────────────────────────────────────────────────────────────
 if command -v xmllint >/dev/null 2>&1; then
     for f in basic lonely many; do
-        xmllint --noout "$TMP/$f.xml" 2>/dev/null && ok "(E) $f.xml well-formed" || no "(E) $f.xml fails xmllint"
+        if xmllint --noout "$TMP/$f.xml" 2>/dev/null; then ok "(E) $f.xml well-formed"; else no "(E) $f.xml fails xmllint"; fi
     done
 else
     printf '  SKIP  xmllint not installed\n'

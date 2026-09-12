@@ -56,7 +56,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 . "$ROOT/test/lib/headbinlib.sh"                       # ripwire_private_checkout, for arm (E)'s scratch tree
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT        # (E)'s tree is a private clone in here: nothing registered, nothing to prune
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 skip(){ printf '  SKIP  %s\n' "$*"; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN"; exit 2; }
@@ -134,7 +134,7 @@ hdr "$TMP/syn.xml" | grep -q ' at="' \
 
 # G4 well-formedness, and determinism on the exact same question
 if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$TMP/syn.xml" 2>/dev/null && ok "(A) output is well-formed XML" || no "(A) xmllint rejected the output"
+    if xmllint --noout "$TMP/syn.xml" 2>/dev/null; then ok "(A) output is well-formed XML"; else no "(A) xmllint rejected the output"; fi
 else
     skip "(A) xmllint not installed"
 fi
@@ -148,7 +148,7 @@ grep -q 'qdpair' "$TMP/syn.xml" \
 
 # ── (B) A==B is a legal, empty, exit-0 comparison ─────────────────────────────────────────────────────────
 "$BIN" . "--quality-delta=$B_SHA..$B_SHA" >"$TMP/same.xml" 2>/dev/null; sameRc=$?
-[ "$sameRc" = 0 ] && ok "(B) A==B exits 0" || no "(B) A==B exit was $sameRc, expected 0"
+if [ "$sameRc" = 0 ]; then ok "(B) A==B exits 0"; else no "(B) A==B exit was $sameRc, expected 0"; fi
 [ "$( attr "$TMP/same.xml" regressions )" = "0" ] && [ "$( attr "$TMP/same.xml" gating )" = "0" ] \
     && ok "(B) A==B is an empty delta" || { no "(B) A==B was not empty"; hdr "$TMP/same.xml"; }
 [ "$( attr "$TMP/same.xml" base_ref )" = "$( attr "$TMP/same.xml" target_ref )" ] \
@@ -156,7 +156,7 @@ grep -q 'qdpair' "$TMP/syn.xml" \
 
 # ── (C) refusals: a bad ref, the three-dot form, and a half-typed value ───────────────────────────────────
 "$BIN" . --quality-delta=nosuchref..HEAD >/dev/null 2>"$TMP/badrev.err"; badRc=$?
-[ "$badRc" = 1 ] && ok "(C) an unresolvable ref exits 1" || no "(C) unresolvable ref exit was $badRc, expected 1"
+if [ "$badRc" = 1 ]; then ok "(C) an unresolvable ref exits 1"; else no "(C) unresolvable ref exit was $badRc, expected 1"; fi
 grep -q "nosuchref" "$TMP/badrev.err" && ok "(C) the refusal NAMES the offending token" \
                                       || { no "(C) refusal does not name the bad token"; head -2 "$TMP/badrev.err"; }
 grep -qi "rev-parse" "$TMP/badrev.err" && ok "(C) the refusal offers an adjacent probe to run" \

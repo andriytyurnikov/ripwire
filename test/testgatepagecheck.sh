@@ -28,7 +28,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -112,14 +112,14 @@ BJROWS="$( printf '%s' "$BJ" | grep -o '"sym"' | wc -l | tr -d ' ' )"
 if command -v xmllint >/dev/null 2>&1; then
     xok=1
     for X in "$A" "$B" "$C" "$LAST"; do printf '%s' "$X" | xmllint --noout - 2>/dev/null || xok=0; done
-    [ "$xok" = 1 ] && ok "xml well-formed (all paged variants)" || no "xml malformed on a paged variant"
+    if [ "$xok" = 1 ]; then ok "xml well-formed (all paged variants)"; else no "xml malformed on a paged variant"; fi
 else
     printf '  SKIP  xml well-formed (no xmllint)\n'
 fi
 if command -v python3 >/dev/null 2>&1; then
     jok=1
     for J in "$AJ" "$BJ"; do printf '%s' "$J" | python3 -c 'import sys,json; json.load(sys.stdin)' 2>/dev/null || jok=0; done
-    [ "$jok" = 1 ] && ok "json well-formed (both paged variants)" || no "json malformed on a paged variant"
+    if [ "$jok" = 1 ]; then ok "json well-formed (both paged variants)"; else no "json malformed on a paged variant"; fi
 else
     printf '  SKIP  json well-formed (no python3)\n'
 fi
@@ -159,18 +159,18 @@ printf '%s' "$S2" | grep -qE 'across (0|[1-8]) files transitively depend on thes
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════════
 HELPTEXT="$( "$BIN" --help=all 2>&1 | tr '\n' ' ' )"
 HELPLIST="$( printf '%s' "$HELPTEXT" | sed -E 's/.*HONORED by: //; s/ Emit at most N rows.*//' )"
-[ -n "$HELPLIST" ] && ok "PC-2: --help's HONORED-by list extracted" || no "PC-2: could not find --help's HONORED-by list"
+if [ -n "$HELPLIST" ]; then ok "PC-2: --help's HONORED-by list extracted"; else no "PC-2: could not find --help's HONORED-by list"; fi
 
 # RE-PINNED 2026-09-05 (capture-audit P4, lane L7): --pr-context HONORS --limit/--offset now (its changed-file window),
 # so it no longer refuses — the probe is --dmm, a verb outside the paging set, which still produces the refusal.
 REFUSEMSG="$( "$BIN" "$R" --dmm --limit=1 2>&1 )"
 REFUSELIST="$( printf '%s' "$REFUSEMSG" | sed -E 's/.*honored only by: //; s/\. The default map.*//' )"
-[ -n "$REFUSELIST" ] && ok "PC-2: the runtime refusal message's honored-set list extracted" || no "PC-2: could not find the runtime refusal's honored-set list (msg: $REFUSEMSG)"
+if [ -n "$REFUSELIST" ]; then ok "PC-2: the runtime refusal message's honored-set list extracted"; else no "PC-2: could not find the runtime refusal's honored-set list (msg: $REFUSEMSG)"; fi
 
 helptoks="$( printf '%s' "$HELPLIST" | grep -oE -- '--[A-Za-z][A-Za-z/-]*' | sort -u )"
 runtoks="$(  printf '%s' "$REFUSELIST" | grep -oE -- '--[A-Za-z][A-Za-z/-]*' | sort -u )"
-[ -n "$helptoks" ] && ok "PC-2: --help list has $( printf '%s\n' "$helptoks" | wc -l | tr -d ' ' ) verb tokens" || no "PC-2: --help list yielded zero verb tokens"
-[ -n "$runtoks" ]  && ok "PC-2: runtime list has $( printf '%s\n' "$runtoks" | wc -l | tr -d ' ' ) verb tokens"  || no "PC-2: runtime list yielded zero verb tokens"
+if [ -n "$helptoks" ]; then ok "PC-2: --help list has $( printf '%s\n' "$helptoks" | wc -l | tr -d ' ' ) verb tokens"; else no "PC-2: --help list yielded zero verb tokens"; fi
+if [ -n "$runtoks" ]; then ok "PC-2: runtime list has $( printf '%s\n' "$runtoks" | wc -l | tr -d ' ' ) verb tokens"; else no "PC-2: runtime list yielded zero verb tokens"; fi
 
 DIFF="$( diff <( printf '%s\n' "$helptoks" ) <( printf '%s\n' "$runtoks" ) )"
 [ -z "$DIFF" ] \
@@ -187,8 +187,8 @@ done
 ok "PC-2: every runtime-honored verb is named in --help's HONORED-by list"
 
 # --test-gate itself must be a member of both (the item this round actually migrated)
-printf '%s\n' "$runtoks" | grep -qxF -- '--test-gate' && ok "PC-2: --test-gate is in the runtime honored set" || no "PC-2: --test-gate missing from the runtime honored set"
-printf '%s\n' "$helptoks" | grep -qxF -- '--test-gate' && ok "PC-2: --test-gate is in --help's HONORED-by list" || no "PC-2: --test-gate missing from --help's HONORED-by list"
+if printf '%s\n' "$runtoks" | grep -qxF -- '--test-gate'; then ok "PC-2: --test-gate is in the runtime honored set"; else no "PC-2: --test-gate missing from the runtime honored set"; fi
+if printf '%s\n' "$helptoks" | grep -qxF -- '--test-gate'; then ok "PC-2: --test-gate is in --help's HONORED-by list"; else no "PC-2: --test-gate missing from --help's HONORED-by list"; fi
 
 # ── (d) tests_capped= is DERIVED, not asserted ─────────────────────────────────────────────────────────────
 # It was the string literal "0" in both dialects (src/situ.h) — a disclosure that could never become "1",

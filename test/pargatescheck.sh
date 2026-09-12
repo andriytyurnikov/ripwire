@@ -27,7 +27,7 @@ set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 PARGATES="$ROOT/test/pargates.py"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -f "$PARGATES" ] || { echo "no test/pargates.py at $PARGATES"; exit 2; }
@@ -521,7 +521,7 @@ fi
 #   pre-fix     run_gate() put back to the subprocess.run(timeout=) call it replaced -> processes survive the TIMEOUT
 #   TERM only   the stop sends no KILL -> the child ignoring TERM survives
 #   KILL only   the stop sends no TERM -> the gate's EXIT trap never runs
-#   pipe grace  _stop_group() put back to that first version -> the grace probe's cleaning child is KILLed mid-cleanup
+#   leader only _stop_group() put back to that first version -> the grace probe's cleaning child is KILLed mid-cleanup
 #   read first  run_gate() put back to the loop that read for STOP_POLL_SEC before checking the stop -> the admission
 #               probe reaches its 0.3 s mark
 #   no handler  pargates installs no signal handler -> after Ctrl-C or SIGTERM the gate's processes are still running
@@ -608,33 +608,43 @@ PREFIX = '''def run_gate(argv, env, limit):
         return 124, e.stdout or b"", "timeout"
 '''
 
-# _stop_group() as #129 first shipped it: its grace ended as soon as the gate's bash was reaped and its pipe closed
-PREREVIEW = '''def _stop_group(p, out):
+# _stop_group() as #129 first shipped it: its grace ended as soon as the gate's bash was reaped, rather than running
+# until the whole process group was empty. Re-spelled 2026-09-11 against the file-backed capture -- the defect is the
+# LEADER-ONLY wait, which is what KILLs the grace probe's cleaning child mid-cleanup; the old spelling expressed the
+# same wait through p.communicate() only because stdout was still a pipe then.
+PREREVIEW = '''def _stop_group(p):
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(p.pid, sig)
         except OSError:
             pass
-        try:
-            out = p.communicate(timeout=KILL_GRACE_SEC)[0]
-        except subprocess.TimeoutExpired as e:
-            out = e.stdout if e.stdout is not None else out
-    return out or b""
+        _wait_for(p, KILL_GRACE_SEC)
 '''
-# run_gate() as e442a5d8 had it: the stop was checked only after a STOP_POLL_SEC read, so a gate admitted as the signal
-# was recorded ran that long before anything looked
+# run_gate() as e442a5d8 had it: the stop was checked only after a STOP_POLL_SEC wait, so a gate admitted as the signal
+# was recorded ran that long before anything looked. Re-spelled 2026-09-11 against the file-backed capture; the defect is
+# the ORDER of the two checks, not how the output is collected.
 READFIRST = '''def run_gate(argv, env, limit):
     deadline = time.monotonic() + limit
-    with subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          start_new_session=True) as p:
-        while True:
-            out, done = _read_for(p, None, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic())))
-            if done:
-                return p.returncode, out, "exited"
-            if stop_signal is not None:
-                return 128 + stop_signal, _stop_group(p, out), "stopped"
-            if time.monotonic() >= deadline:
-                return 124, _stop_group(p, out), "timeout"
+    fd, capture = tempfile.mkstemp(prefix="ripwire-pargates-capture-", suffix=".out")
+    os.close(fd)
+    try:
+        with open(capture, "wb") as fh, \
+             subprocess.Popen(argv, cwd=root, env=env, stdout=fh, stderr=subprocess.STDOUT,
+                              start_new_session=True) as p:
+            while True:
+                if _wait_for(p, max(0.0, min(STOP_POLL_SEC, deadline - time.monotonic()))):
+                    return p.returncode, _capture_read(capture), "exited"
+                if stop_signal is not None:
+                    _stop_group(p)
+                    return 128 + stop_signal, _capture_read(capture), "stopped"
+                if time.monotonic() >= deadline:
+                    _stop_group(p)
+                    return 124, _capture_read(capture), "timeout"
+    finally:
+        try:
+            os.unlink(capture)
+        except OSError:
+            pass
 '''
 TEMPLATES = {"prefix": ("run_gate", PREFIX), "prereview": ("_stop_group", PREREVIEW), "readfirst": ("run_gate", READFIRST)}
 
@@ -845,8 +855,8 @@ def rows(r):
             "injected": "admitted as pargates' own SIGTERM was recorded (after run()'s admission check, before the spawn)"}[r["mode"]]
     mut = {None: "", "prefix": ", run_gate() put back to the pre-fix subprocess.run(timeout=)", "termonly": ", the stop sending TERM only",
            "killonly": ", the stop sending KILL only", "nohandler": ", no signal handler installed",
-           "prereview": ", _stop_group() put back to #129's first version (its grace ends when the pipe closes)",
-           "readfirst": ", run_gate() put back to e442a5d8's loop (the stop checked only after a first read)"}[r["mutation"]]
+           "prereview": ", _stop_group() put back to #129's first version (its grace ends when the gate's bash is reaped)",
+           "readfirst": ", run_gate() put back to e442a5d8's loop (the stop checked only after a first wait)"}[r["mutation"]]
     head = "(%s%s) %s %s%s" % ("T" if r["mode"] == "timeout" else "I", "" if r["mutation"] is None else " control",
                               {"probecleangate": "grace probe gate", "probelategate": "admission probe gate"}.get(r["gate"], "probe gate"), what, mut)
     if r["err"]:
@@ -948,6 +958,60 @@ while IFS= read -r line; do
 done < "$TMP/groupstop.out"
 if [ "$groupRc" -ne 0 ] || ! grep -q '^DONE 12$' "$TMP/groupstop.out"; then
     no "group: the harness did not finish all 12 scenarios (rc=$groupRc): $( grep -v '^ROW ' "$TMP/groupstop.out" | tail -6 | tr '\n' '|' )"
+fi
+
+# ── (H) A GATE'S STDOUT MUST NOT BE A PIPE ────────────────────────────────────────────────────────────
+# The harness half of the fix in test/gateexitcheck.sh arm (G). A gate writes its verdict lines with
+# printf; whether that printf SUCCEEDS is a property of whatever the harness hands it as stdout.
+#
+# A pipe can refuse a write. This harness used to pass stdout=subprocess.PIPE, and the gate's fd 1 was
+# then a blocking pipe with a ~16 KiB kernel buffer, read by one Python thread per gate. If that reader
+# stalls -- GIL contention at -j 6, or the macOS runner starvation this repo has hit before -- a verbose
+# gate fills the buffer and its next printf BLOCKS inside write(2). bash installs its SIGCHLD handler
+# without SA_RESTART (set_signal_handler: sa_flags gets SA_RESTART only for sig != SIGCHLD), and a gate
+# forks constantly, so that blocked write comes back EINTR. Measured 2026-09-11 on a plain blocking pipe
+# with a deliberately stalled reader: 600 arms produced 600 PASS lines AND 21 spurious FAILs, errno
+# `Interrupted system call` on all 21. Contention alone was not enough -- 1500 arms with the pipe drained
+# one byte at a time produced none -- so it is specifically the BLOCKED write that fails.
+#
+# A regular file cannot do any of that: a write to it never blocks, so it can never be interrupted, and
+# there is no reader whose absence breaks the descriptor. Capturing into one removes the whole errno
+# family for every gate at once, verbose or not, whatever the runner is doing.
+#
+# This arm asserts the property rather than the spelling: run a real gate under the REAL harness and have
+# it report what kind of file its own fd 1 is. On the PIPE version it reports fifo and this arm is red --
+# that is the red this arm was written from. It also pins that stderr still arrives MERGED into the same
+# description, because that ordering is what makes a gate's stderr land beside the FAIL row it explains.
+cat > "$CORPUSROOT/test/probestdoutkindgate.sh" <<'EOF'
+#!/usr/bin/env bash
+# Reports what the harness handed it as stdout, then fails on purpose: pargates prints a gate's
+# transcript only when the gate is red, so a passing probe would report nothing at all.
+python3 -c 'import os, stat
+m = os.fstat( 1 ).st_mode
+print( "STDOUT_KIND=" + ( "fifo" if stat.S_ISFIFO( m ) else "regular" if stat.S_ISREG( m ) else "other" ) )
+print( "STDERR_SHARES_STDOUT=" + str( os.fstat( 2 ) == os.fstat( 1 ) ).lower() )'
+echo "to stderr, in write order" >&2
+echo "probestdoutkindgate: SOME CHECKS FAILED"
+exit 1
+EOF
+chmod +x "$CORPUSROOT/test/probestdoutkindgate.sh"
+
+outH="$( python3 "$PARGATES" "$CORPUSROOT" "$FAKEBIN" --only probestdoutkindgate 2>&1 )"
+if printf '%s\n' "$outH" | grep -q 'STDOUT_KIND=regular'; then
+    ok "stdout: the harness hands a gate a REGULAR FILE — its writes cannot block, so they cannot be interrupted"
+else
+    no "stdout: a gate's fd 1 is $( printf '%s\n' "$outH" | grep -o 'STDOUT_KIND=[a-z]*' | head -1 )
+        — a pipe write can return EINTR/EAGAIN and a gate's printf then reports a failure that never happened"
+fi
+if printf '%s\n' "$outH" | grep -q 'STDERR_SHARES_STDOUT=true'; then
+    ok "stdout: stderr is still the SAME description as stdout — a gate's stderr keeps landing beside the row it explains"
+else
+    no "stdout: stderr is no longer merged into stdout's description — write-order interleaving is lost"
+fi
+if printf '%s\n' "$outH" | grep -q 'to stderr, in write order'; then
+    ok "stdout: what a gate wrote to stderr still reaches the captured transcript"
+else
+    no "stdout: the gate's stderr line is missing from the transcript"
 fi
 
 [ "$fail" -eq 0 ] && echo "pargatescheck: ALL PASS" || { echo "pargatescheck: SOME CHECKS FAILED"; exit 1; }

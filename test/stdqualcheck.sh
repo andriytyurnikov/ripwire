@@ -43,6 +43,10 @@
 # M3 leaves the header at edges=6 external=12 — one edge swaps for one refusal — so only the per-function arms
 # catch it. Keep them; the totals alone cannot.
 #
+# §11 (added 2026-09-11) is a KNOWN GAP section for the help-wanted prompt prompts/help-wanted/cpp-nested-std-namespaces.md:
+# nested std namespaces and declaration-only std defs, on a corpus this gate writes into $TMP. Its KNOWN GAP arms
+# pass today by pinning the wrong answers. The 35-check counts above are #134's and do not include §11.
+#
 # Usage:  RIPWIRE_BIN=build/ripwire bash test/stdqualcheck.sh   |   bash test/stdqualcheck.sh asan/ripwire
 # Exits non-zero on any failure; prints PASS/FAIL per check, ALL PASS on success.
 
@@ -54,7 +58,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"      # BOTH seams: positional ar
 # `p="buffers.h:21"` and the literals below stay writable.
 FIX="test/stdqualfix"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -170,6 +174,8 @@ expect callees bareMove            0 "unqualified move( x ) binds nothing — th
 # tree-sitter-objc parses `std::move( x )` as an ERROR node `std::` beside a bare call. bridgeMove is refused by
 # the Phase-5 veto on both binaries; bridgeStop's std::unreachable is not a table name and still binds the lone
 # Cursor::unreachable. Pinned so that closing the floor (a parser change) is a visible decision, not drift.
+# KNOWN GAP (help wanted, the optional part of prompts/help-wanted/cpp-nested-std-namespaces.md): recovering the ObjC++
+# qualifier flips the FLOOR arm below — rewrite it to count=0 in the same commit.
 expect callees bridgeMove          0 "bridge.mm std::move — refused by the Phase-5 veto, not by this guard"
 BSTOP="$( run "$FIX" --callees=bridgeStop --no-cache )"
 { [ "$( cnt "$BSTOP" )" = 1 ] && printf '%s' "$BSTOP" | grep -q 'n="unreachable" p="buffers.h:38"'; } \
@@ -209,6 +215,193 @@ if command -v xmllint >/dev/null 2>&1; then
         && ok "xml well-formed (fixture map + --callers)" || no "xml malformed"
 else
     no "cannot verify G4: xmllint is NOT INSTALLED — this check did not run (install libxml2)"
+fi
+
+# ── §11 KNOWN GAP (help wanted: prompts/help-wanted/cpp-nested-std-namespaces.md) — NESTED std NAMESPACES ──────────────────
+# The arms labelled KNOWN GAP pin TODAY'S WRONG ANSWERS, so they PASS on the binary this gate ships with. Flipping
+# them is the acceptance test of prompts/help-wanted/cpp-nested-std-namespaces.md: a correct fix turns each one red, and the
+# fix's own commit rewrites it to the corrected literal named in its PASS message. The CONTROL arms hold on both
+# binaries; they are what proves a fix took only what it should.
+#
+# WHY THIS FIXTURE IS WRITTEN AT RUN TIME into $TMP instead of committed beside test/stdqualfix. ripwire's own
+# tracked sources call these names, so a committed decoy is not inert. Measured 2026-09-11 with a temporary,
+# uncommitted copy of these four files under test/: --callers=duration_cast on the whole repo counted 7, among them
+# ripwire's own now_ticks (src/infra/profileScope.h) and wallClockNs (src/ingest_crawl.h), whose
+# std::chrono::duration_cast calls bound to the decoy by exactly gap K2 below. The decoy move and the
+# declaration-only std::terminate took no caller outside the fixture in that run. A committed copy would plant K2's
+# false edges in ripwire's own map and move every live-tree capture that reads them. A heredoc is as literal as a
+# committed file, and invisible to the self-crawl.
+#
+# THE THREE GAPS, measured 2026-09-11 on a plain build of main 766913d0 (census mech in quotes):
+#   K1  std::ranges::move( from, to.begin() ) in shiftRange. The call arrives with qualifier "ranges", the IMMEDIATE
+#       segment, which cannot be told from a user namespace; the guard never applies and the bare-name spray hands
+#       the site to the LONE in-repo move, Pool::move ('unique'). #134 left exactly this shape as the one false
+#       caller of the large engine's SafeString::move.
+#   K2  std::chrono::duration_cast<…>( s ) in toMillis. Worse than K1: the canonical key chrono::duration_cast HITS a
+#       user namespace that mirrors std's layout (vendorlib::chrono; Boost.Chrono's boost::chrono::duration_cast is
+#       the real-world twin), and a canonical hit is exempt from the guard by design ('qualified', no amb=).
+#   K3  std::terminate() in bail, against compat.h's DECLARATION-ONLY `namespace std { void terminate() noexcept; }`.
+#       The guard keeps the candidate because its scope is std; nothing in the corpus defines it ('unique').
+# CONTROLS: drain's pool.move() -> Pool::move (a true member call); sampleTicks' vendorlib::chrono::duration_cast
+# -> the def K2 wrongly takes (a fix must read the WHOLE chain, not refuse every chrono::); hasAnswer's
+# std::ranges::contains -> a def INSIDE std::ranges (a polyfill), which a std-rooted rule must keep.
+NEST="$TMP/nested"
+mkdir -p "$NEST"
+cat >"$NEST/decoys.h" <<'EOF'
+#pragma once
+
+struct Pool
+{
+    int move() { return size; }
+    int size = 0;
+};
+
+namespace vendorlib
+{
+namespace chrono
+{
+inline long duration_cast( long ticks ) { return ticks / 1000; }
+}
+}
+EOF
+cat >"$NEST/compat.h" <<'EOF'
+#pragma once
+
+namespace std
+{
+[[noreturn]] void terminate() noexcept;
+}
+EOF
+cat >"$NEST/polyfill.h" <<'EOF'
+#pragma once
+
+#include <vector>
+
+namespace std
+{
+namespace ranges
+{
+inline bool contains( const std::vector<int>& r, int v )
+{
+    for( int x : r )
+    {
+        if( x == v )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+}
+}
+EOF
+cat >"$NEST/callers.cpp" <<'EOF'
+#include "compat.h"
+#include "decoys.h"
+#include "polyfill.h"
+
+#include <algorithm>
+#include <chrono>
+#include <vector>
+
+void shiftRange( std::vector<int>& from, std::vector<int>& to )
+{
+    std::ranges::move( from, to.begin() );
+}
+
+long toMillis( std::chrono::seconds s )
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>( s ).count();
+}
+
+void bail()
+{
+    std::terminate();
+}
+
+int drain( Pool& pool )
+{
+    return pool.move();
+}
+
+long sampleTicks( long ticks )
+{
+    return vendorlib::chrono::duration_cast( ticks );
+}
+
+bool hasAnswer( const std::vector<int>& v )
+{
+    return std::ranges::contains( v, 42 );
+}
+EOF
+nrun(){ run "$NEST" "$@" --no-cache; }
+# census "<mech>\t<targets>" per site for one caller, node ids stripped (a fix that changes extraction may renumber)
+ncrows(){ awk -F'\t' -v c="$1" '$1=="C" && index($6, c"#") > 0 {print $2 "\t" $8}' "$TMP/n.tsv" | sed 's/#[0-9]*//g'; }
+nedge(){   # $1 caller  $2 want count  $3 fixed-string callee row  $4 PASS prose  $5 FAIL prose
+    local out; out="$( nrun "--callees=$1" )"
+    if [ "$( cnt "$out" )" = "$2" ] && printf '%s' "$out" | grep -qF "$3"; then ok "$4"; else no "$5: $( el "$out" )"; fi
+}
+
+nrun --pin-census="$TMP/n.tsv" >"$TMP/nmap.xml"
+NMAP="$( cat "$TMP/nmap.xml" )"
+[ -s "$TMP/n.tsv" ] || no "§11: the nested-fixture census run wrote nothing — every census arm below would be vacuous"
+nmissing=""
+for want in 'id="decoys.h::Pool::move"' 'id="decoys.h::chrono::duration_cast"' 'id="compat.h::std::terminate"' \
+            'id="polyfill.h::ranges::contains"' 'n="shiftRange"' 'n="toMillis"' 'n="bail"' 'n="drain"' 'n="sampleTicks"' 'n="hasAnswer"'; do
+    printf '%s' "$NMAP" | grep -qF "$want" || nmissing="$nmissing $want"
+done
+[ -z "$nmissing" ] \
+    && ok "§11 presence: the four targets and six callers are indexed, so every count below is about resolution, not a lost file" \
+    || no "§11 presence: not indexed —$nmissing (the arms below would be vacuous)"
+
+nedge shiftRange 1 'n="move" p="decoys.h:5"' \
+    "KNOWN GAP K1: --callees=shiftRange count=1 -> Pool::move (decoys.h:5): std::ranges::move binds the lone in-repo move (fixed: count=0)" \
+    "KNOWN GAP K1 MOVED. If your change refuses std::ranges::move, this is the finish line: rewrite this arm to count=0 (prompts/help-wanted/cpp-nested-std-namespaces.md)"
+[ "$( ncrows shiftRange )" = "$( printf 'unique\tdecoys.h::Pool::move' )" ] \
+    && ok "KNOWN GAP K1 census: shiftRange's one site is 'unique' -> decoys.h::Pool::move (fixed: one 'external' row, no target)" \
+    || no "KNOWN GAP K1 census MOVED: '$( ncrows shiftRange | tr '\t\n' '  ' )' — if a fix refused it, rewrite this arm to one 'external' row"
+nedge toMillis 1 'n="duration_cast" p="decoys.h:13"' \
+    "KNOWN GAP K2: --callees=toMillis count=1 -> vendorlib::chrono::duration_cast (decoys.h:13): std::chrono:: hits a user chrono:: at the canonical tier (fixed: count=0)" \
+    "KNOWN GAP K2 MOVED. If your change refuses std::chrono::duration_cast, this is the finish line: rewrite this arm to count=0 (prompts/help-wanted/cpp-nested-std-namespaces.md)"
+[ "$( ncrows toMillis )" = "$( printf 'qualified\tdecoys.h::chrono::duration_cast' )" ] \
+    && ok "KNOWN GAP K2 census: toMillis's one site is 'qualified' -> decoys.h::chrono::duration_cast (fixed: one 'external' row)" \
+    || no "KNOWN GAP K2 census MOVED: '$( ncrows toMillis | tr '\t\n' '  ' )' — if a fix refused it, rewrite this arm to one 'external' row"
+nedge bail 1 'n="terminate" p="compat.h:5"' \
+    "KNOWN GAP K3: --callees=bail count=1 -> the DECLARATION-ONLY std::terminate (compat.h:5) (fixed: count=0)" \
+    "KNOWN GAP K3 MOVED. If your change refuses a declaration-only std def, this is the finish line: rewrite this arm to count=0 (prompts/help-wanted/cpp-nested-std-namespaces.md)"
+[ "$( ncrows bail )" = "$( printf 'unique\tcompat.h::std::terminate' )" ] \
+    && ok "KNOWN GAP K3 census: bail's one site is 'unique' -> compat.h::std::terminate (fixed: one 'external' row)" \
+    || no "KNOWN GAP K3 census MOVED: '$( ncrows bail | tr '\t\n' '  ' )' — if a fix refused it, rewrite this arm to one 'external' row"
+printf '%s' "$NMAP" | grep -qE 'files=4 symbols=11 edges=6 shown=11 est_tokens=[0-9]+ ambiguous=0 unresolved=0 order=' \
+    && ok "KNOWN GAP header: files=4 symbols=11 edges=6 ambiguous=0 unresolved=0 and no external= (fixed: edges=3 external=3)" \
+    || no "KNOWN GAP header MOVED: $( printf '%s' "$NMAP" | grep -oE 'files=4 [^-]*' | head -1 ) — expected edges=3 external=3 once K1-K3 are refused"
+
+nedge drain 1 'n="move" p="decoys.h:5"' \
+    "CONTROL: --callees=drain count=1 -> Pool::move (decoys.h:5): a true member call keeps its edge" \
+    "CONTROL LOST: drain no longer binds Pool::move — the change took a true member call"
+nedge sampleTicks 1 'n="duration_cast" p="decoys.h:13"' \
+    "CONTROL: --callees=sampleTicks count=1 -> vendorlib::chrono::duration_cast: a true nested user-namespace call keeps its canonical edge" \
+    "CONTROL LOST: sampleTicks lost vendorlib::chrono::duration_cast — a fix must read the whole chain, not refuse every chrono::"
+nedge hasAnswer 1 'n="contains" p="polyfill.h:9"' \
+    "CONTROL: --callees=hasAnswer count=1 -> std::ranges::contains (polyfill.h:9): a def INSIDE a nested std namespace survives" \
+    "CONTROL LOST: hasAnswer lost the def inside std::ranges — a std-rooted rule must keep a def whose own chain is rooted in std"
+# NON-VACUITY: --uses is name-based by contract, so every site above is still a use whatever the resolver decides.
+[ "$( cnt "$( nrun --uses=move )" )" = 2 ] && [ "$( cnt "$( nrun --uses=duration_cast )" )" = 2 ] && [ "$( cnt "$( nrun --uses=terminate )" )" = 1 ] \
+    && ok "§11 non-vacuity: --uses move=2 duration_cast=2 terminate=1 — every call site extracts (a refusal would be the resolver, not a lost reference)" \
+    || no "§11 non-vacuity: --uses counts moved (move/duration_cast/terminate expected 2/2/1)"
+
+nrun --pin-census="$TMP/n2.tsv" >"$TMP/nmap2.xml"
+cmp -s "$TMP/nmap.xml" "$TMP/nmap2.xml" && cmp -s "$TMP/n.tsv" "$TMP/n2.tsv" \
+    && ok "§11 deterministic: nested map + census byte-identical across two --no-cache runs" \
+    || no "§11 non-deterministic: nested map or census differs between two runs"
+run "$NEST" --cache="$TMP/n.bin" >"$TMP/ncold.xml"; run "$NEST" --cache="$TMP/n.bin" >"$TMP/nwarm.xml"
+cmp -s "$TMP/ncold.xml" "$TMP/nwarm.xml" \
+    && ok "§11 warm == cold on the nested fixture (a new per-reference field must survive the cache round-trip)" \
+    || no "§11 warm != cold on the nested fixture"
+if command -v xmllint >/dev/null 2>&1; then
+    if xmllint --noout "$TMP/nmap.xml" 2>/dev/null; then ok "§11 xml well-formed (nested fixture map)"; else no "§11 nested fixture map is malformed XML"; fi
+else
+    no "§11 cannot verify G4: xmllint is NOT INSTALLED — this check did not run (install libxml2)"
 fi
 
 [ "$fail" -eq 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }
