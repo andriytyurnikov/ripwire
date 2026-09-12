@@ -925,6 +925,9 @@ ripwire . --callers=someFunction                   # who calls it
 ripwire . --test-gate                              # before you commit: which tests must run
 ```
 
+> **Written for your agent.** Every command prints compact XML sized for an AI agent to read, not for a person
+> scanning a terminal. Human-readable output is on the roadmap.
+
 <details>
 <summary>CLI or MCP, the <code>-DCMAKE_BUILD_TYPE=Release</code> trap, and the honesty contract in one line</summary>
 
@@ -1684,8 +1687,8 @@ When a mark says the cheap answer is not enough, escalate on purpose — never b
 2. **`--uses=SYM` / `--impact=SYM`** — every read, write and import site, and the transitive blast
    radius. `--callers` alone under-counts, and says so.
 3. **`--scip=index.scip`** — hand it a compiler-grade index and precise edges *replace* the
-   name-based guesses, tagged `prov="scip"`. A missing index refuses (exit 1); a corrupt one warns
-   on stderr and proceeds name-based.
+   name-based guesses, tagged `prov="scip"`. A path that is missing, empty or not a regular file
+   refuses (exit 1); a corrupt index warns on stderr and proceeds name-based.
 
 </details>
 
