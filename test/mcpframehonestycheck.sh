@@ -528,130 +528,19 @@ echo "=== (I) the HTTP transport returns BYTE-IDENTICAL bodies for the same byte
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
 # The framing gate lives in dispatchMcpLine, which both transports route through — so this arm asserts EQUALITY
 # with the stdio answers above rather than re-listing the expectations (a second list is a second thing to drift).
-# ONE HTTP CLIENT, written once below and shared with (K2). It used to be two hand-copied clients (already
-# drifting), and both turned a request that got NO ANSWER into an answer: an uncaught recv timeout left stdout
-# empty, and that empty string was compared with the stdio body and reported as "transports DIFFER … http=" —
-# which is how one slow CI runner read on 2026-09-12 (release macos-14, shard 2/4, first frame only). The client
-# now reads the body to its Content-Length; a timeout, a refused connect, a close without a response or a short
-# body exits 3 with the sentence that names it. A no-answer is its own FAIL, never a body to compare.
-#
-# WAIT ON THE CONDITION — the RIGHT one. A port that ACCEPTS is not a server that ANSWERS: runMcpHttp
-# (src/mcpserver.h) listen()s, then warms the pinned index (getIndex), and only then enters its accept loop, while
-# the kernel completes handshakes into the backlog. Polling for an accept handed that whole warm-up to the FIRST
-# frame's 5 s recv timeout — which is why only the first frame failed. waitServing polls until the listener
-# answers a real request (GET /mcp: any status line proves the accept loop runs — 405 here, 401 under a token),
-# abandoning the wait the moment the child dies. Exit 1 covers both give-up reasons, which the caller tells apart.
-#
-# The two timeouts, measured 2026-09-12 (M-series, 18 cores, test/fixture, cold $TMPDIR, RIPWIRE_MCP_TIMINGS=1):
-# the port accepts 0.02–0.06 s after spawn and the first answer lands 0.09–0.11 s after that (0.11–0.19 s with
-# 36 nice-10 busy loops starving a nice-19 server); every later request answers in < 1 ms, dispatch 0.005–0.06 ms.
-# The 30 s serving ceiling is ~150x the starved warm-up, and the 5 s per-request timeout now bounds dispatch
-# alone, >= 5,000x its measured round trip. Both are hang tripwires, not performance bars.
-MCPHTTP="$TMP/mcphttp.py"
-cat >"$MCPHTTP" <<'PY'
-import os, socket, sys, time
-
-SERVING_CEILING_SEC = 30.0
-REQUEST_TIMEOUT_SEC = 5.0
-
-class NoAnswer( Exception ):
-    """There is no response body to compare; str() is the sentence that says why."""
-
-def waitServing( port, isAlive, ceilingSec = SERVING_CEILING_SEC ):
-    """'' once the listener on `port` ANSWERS an HTTP request, else the sentence naming why it never did."""
-    deadline = time.monotonic() + ceilingSec
-    while time.monotonic() < deadline:
-        if not isAlive():
-            return "the HTTP listener exited before it answered a request"
-        try:
-            s = socket.create_connection( ( "127.0.0.1", port ), 0.25 )
-        except OSError:
-            time.sleep( 0.02 )
-            continue
-        try:                                           # connected is not served: wait on THIS connection
-            s.settimeout( max( 0.05, deadline - time.monotonic() ) )
-            s.sendall( b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" )
-            if s.recv( 16 ).startswith( b"HTTP/1." ):
-                return ""
-        except OSError:
-            pass
-        finally:
-            s.close()
-        time.sleep( 0.02 )
-    return "the HTTP listener never ANSWERED a request on 127.0.0.1:%d within %g s" % ( port, ceilingSec )
-
-def contentLength( head ):
-    for line in head.split( b"\r\n" )[ 1: ]:
-        key, sep, value = line.partition( b":" )
-        if sep and key.strip().lower() == b"content-length" and value.strip().isdigit():
-            return int( value.strip() )
-    return None
-
-def post( port, body, extraHeaders = b"", timeoutSec = REQUEST_TIMEOUT_SEC ):
-    """The body of one POST /mcp, read to its Content-Length. Raises NoAnswer when there is no body to compare."""
-    req = ( b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n" + extraHeaders
-            + b"Accept: application/json, text/event-stream\r\nContent-Length: " + str( len( body ) ).encode()
-            + b"\r\n\r\n" + body )
-    try:
-        s = socket.create_connection( ( "127.0.0.1", port ), timeoutSec )
-    except OSError as e:
-        raise NoAnswer( "could not connect to 127.0.0.1:%d (%s) — not a transport difference" % ( port, e ) )
-    got = b""
-    try:
-        s.sendall( req )
-        while True:
-            head, sep, tail = got.partition( b"\r\n\r\n" )
-            length = contentLength( head ) if sep else None
-            if length is not None and len( tail ) >= length:
-                return tail[ :length ].decode( "utf-8", "replace" )
-            chunk = s.recv( 65536 )
-            if not chunk:
-                break
-            got += chunk
-    except socket.timeout:
-        raise NoAnswer( "HTTP request timed out after %g s with %d response bytes — not a transport difference"
-                        % ( timeoutSec, len( got ) ) )
-    except OSError as e:
-        raise NoAnswer( "HTTP request failed after %d response bytes (%s) — not a transport difference" % ( len( got ), e ) )
-    finally:
-        s.close()
-    head, sep, tail = got.partition( b"\r\n\r\n" )
-    if not sep:
-        raise NoAnswer( "the server closed the connection without an HTTP response (%d bytes) — not a transport difference"
-                        % len( got ) )
-    if contentLength( head ) is not None:
-        raise NoAnswer( "the server closed after %d of %d body bytes — not a transport difference"
-                        % ( len( tail ), contentLength( head ) ) )
-    return tail.decode( "utf-8", "replace" )
-
-if __name__ == "__main__":
-    verb, port = sys.argv[1], int( sys.argv[2] )
-    if verb == "wait":                                 # wait PORT PID → exit 0 | exit 1 + the sentence
-        pid = int( sys.argv[3] )
-        def isAlive():
-            try:
-                os.kill( pid, 0 )
-                return True
-            except OSError:
-                return False
-        why = waitServing( port, isAlive )
-        sys.stdout.write( why )
-        sys.exit( 1 if why else 0 )
-    if verb == "post":                                 # post PORT BODY [TIMEOUT_SEC] → exit 0 + body | exit 3 + the sentence
-        try:
-            sys.stdout.write( post( port, sys.argv[3].encode(),
-                                    timeoutSec = float( sys.argv[4] ) if len( sys.argv ) > 4 else REQUEST_TIMEOUT_SEC ) )
-        except NoAnswer as e:
-            sys.stdout.write( str( e ) )
-            sys.exit( 3 )
-        sys.exit( 0 )
-    sys.exit( 2 )
-PY
+# ONE HTTP CLIENT, shared with (K2) below and with mcpcontractcheck (E) and mcptoolprunecheck: test/lib/gatehttp.sh
+# carries it and its reasons. READY MEANS ANSWERED: a port that accepts may still be warming its index, and polling
+# for an accept handed that warm-up to the FIRST frame's 5 s recv timeout, which is why only the first frame failed.
+# A request that gets NO ANSWER is its own FAIL with the sentence that names it, never a body to compare: an uncaught
+# timeout used to leave an empty string that was compared with the stdio body and reported as "transports DIFFER …
+# http=", which is how one slow CI runner read on 2026-09-12 (release macos-14, shard 2/4, first frame only).
+. "$ROOT/test/lib/gatehttp.sh"
+GATEHTTP="$( gatehttp_install "$TMP" )" || no "(I) could not write the shared HTTP client into $TMP"
 
 # (I0) CONTROL, so the no-answer path is observed live rather than asserted in prose: a socket that listen()s and
 # never accept()s — what a warming or starved listener looks like from outside — goes through the SAME `post`
 # command the loop below runs (a 0.5 s timeout keeps it cheap) and must come back as exit 3 + a named timeout.
-silent_listener_post(){ python3 - "$MCPHTTP" <<'PY'
+silent_listener_post(){ python3 - "$GATEHTTP" <<'PY'
 import socket, subprocess, sys
 silent = socket.socket(); silent.bind( ( "127.0.0.1", 0 ) ); silent.listen( 1 )
 r = subprocess.run( [ sys.executable, sys.argv[1], "post", str( silent.getsockname()[1] ), "{}", "0.5" ], stdout = subprocess.PIPE )
@@ -667,7 +556,7 @@ esac
 PORT=$(( 21000 + ( $$ % 9000 ) ))
 "$BIN" "$FIX" --listen=127.0.0.1:"$PORT" >"$TMP/http.log" 2>&1 &
 HTTP_PID=$!
-WHY="$( python3 "$MCPHTTP" wait "$PORT" "$HTTP_PID" )"; SERVING=$?
+WHY="$( python3 "$GATEHTTP" wait "$PORT" "$HTTP_PID" )"; SERVING=$?
 if ! kill -0 "$HTTP_PID" 2>/dev/null; then
     no "(I) the HTTP listener did not start: $( head -c 200 "$TMP/http.log" )"
 elif [ "$SERVING" != 0 ]; then
@@ -681,9 +570,9 @@ else
                  '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":5}'; do
         label="$( printf '%s' "$frame" | cut -c1-46 )…"
         S="$( raw_one "$frame" )"
-        H="$( python3 "$MCPHTTP" post "$PORT" "$frame" 2>"$TMP/http_client.err" )"; HRC=$?
+        H="$( python3 "$GATEHTTP" post "$PORT" "$frame" 2>"$TMP/http_client.err" )"; HRC=$?
         if [ "$HRC" != 0 ]; then
-            no "(I) no HTTP answer for $label  $H$( [ -s "$TMP/http_client.err" ] && printf '  client stderr: %s' "$( tail -c 200 "$TMP/http_client.err" | tr '\n' ' ' )" )"
+            no "(I) no HTTP answer for $label  $H — not a transport difference$( [ -s "$TMP/http_client.err" ] && printf '  client stderr: %s' "$( tail -c 200 "$TMP/http_client.err" | tr '\n' ' ' )" )"
         elif [ "$S" = "$H" ]; then
             ok "(I) stdio == HTTP for $label"
         else
@@ -884,12 +773,12 @@ case $? in
     *) no "(K0) src/infra/blanktext.h kBlankRanges no longer matches test/derive_blankcodepoints.py: $( tail -4 "$TMP/derive.log" | tr '\n' ' ' )";;
 esac
 
-python3 - "$BIN" "$ROOT" "$MCPHTTP" <<'PY'
+python3 - "$BIN" "$ROOT" "$GATEHTTP" <<'PY'
 import hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
-BIN, ROOT, MCPHTTP = sys.argv[1], sys.argv[2], sys.argv[3]
-sys.path.insert( 0, os.path.dirname( MCPHTTP ) )
-import mcphttp                     # arm (I)'s one HTTP client: a request with no answer raises NoAnswer, never compares
+BIN, ROOT, GATEHTTP = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert( 0, os.path.dirname( GATEHTTP ) )
+import gatehttp                     # arm (I)'s one HTTP client: a request with no answer raises NoAnswer, never compares
 SRC = ( "// alpha adds one.\nint alpha( int x ) { return x + 1; }\n\n"
         "// beta doubles.\nint beta( int x ) { return x * 2; }\n" )
 SURROGATES  = range( 0xD800, 0xE000 )
@@ -1099,12 +988,12 @@ target = os.path.join( ws, "a.h" )
 http  = subprocess.Popen( [ BIN, ws, "--listen=127.0.0.1:%d" % port, "--allow-remote-edits",
                             "--mcp-token=" + token ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT )
 
-# WAIT ON THE CONDITION — the one arm (I)'s client comment names: mcphttp.waitServing polls until the listener
+# WAIT ON THE CONDITION — the one arm (I)'s client comment names: gatehttp.waitServing polls until the listener
 # ANSWERS a request (30 s ceiling), because a port that accepts may still be warming its index. A give-up FAILS the
 # arm rather than letting the remote sweep fall through against a listener that is not serving. `http.stdout` is
 # only read once the child has EXITED — reading a live child's pipe would block forever, which is the one thing a
 # timeout path must not do.
-whyNotServing = mcphttp.waitServing( port, lambda: http.poll() is None )
+whyNotServing = gatehttp.waitServing( port, lambda: http.poll() is None )
 if http.poll() is not None:
     check( False, "(K2) the --allow-remote-edits listener did not start: %s"
                   % http.stdout.read()[ :180 ].decode( "utf-8", "replace" ) )
@@ -1124,8 +1013,8 @@ else:
                                                  "arguments": { "symbol": "alpha", "file": "a.h", field: chr( cp ) } } } )
                 s = stdio.sendRaw( line )
                 try:
-                    h = mcphttp.post( port, line.encode(), auth ).strip()
-                except mcphttp.NoAnswer as e:       # no body is not a DIFFERENT body: name it, never compare it
+                    h = gatehttp.post( port, line.encode(), auth ).strip()
+                except gatehttp.NoAnswer as e:       # no body is not a DIFFERENT body: name it, never compare it
                     noAnswer.append( ( verb, cp, str( e ) ) )
                     continue
                 if s != h:                          differ.append( ( verb, cp, s[ :90 ], h[ :90 ] ) )
@@ -1134,7 +1023,7 @@ else:
         http.terminate(); http.wait( 15 )
     stdio.close()
     for verb, cp, why in noAnswer[ :5 ]:
-        print( "  FAIL  (K2) %-20s U+%04X no HTTP answer: %s" % ( verb, cp, why ) )
+        print( "  FAIL  (K2) %-20s U+%04X no HTTP answer: %s — not a transport difference" % ( verb, cp, why ) )
     for verb, cp, s, h in differ[ :5 ]:
         print( "  FAIL  (K2) %-20s U+%04X transports DIFFER  stdio=%s  http=%s" % ( verb, cp, s, h ) )
     for verb, cp in remoteApplied[ :5 ]:
