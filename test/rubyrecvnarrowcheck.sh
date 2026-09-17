@@ -28,8 +28,10 @@
 #     that does not define the callee, degrades to the unchanged honest ladder.
 #
 # Stated floors, pinned below so each stays a decision rather than an accident:
-#   (a) Ruby feeds NO class-hierarchy edges — ingest_relations.h::captureBases has no Ruby arm — so
-#       `Child.build` with `build` on the superclass does NOT narrow, and stays an honest split.
+#   (a) LIFTED at parser version 98 by test/rubyinheritcheck.sh (`class Child < Parent` now mints an
+#       inherit ref, so chaUp holds Ruby and the base walk runs). The arm below is kept, INVERTED: it
+#       now asserts `Child.build` pins to Parent::build, and it is the tripwire that fires if Ruby ever
+#       loses its inheritance edges again.
 #   (b) Matching is by FINAL SEGMENT, so two classes with the same last name in different namespaces
 #       both defining the callee keep BOTH candidates (an honest split), exactly as Rule 2c documents.
 #   (c) A variable receiver (`c.scale`) and a chained one (`Calc.new.scale`) are untouched by this round.
@@ -270,10 +272,14 @@ MM="$( rowOf 'n="missing_method_call" ' )"
 [ "$( edgesTo "$MM" report )" -eq 1 ] && ok "Calc.report → the one report def still resolves through the honest name ladder (the narrow missed, it did not veto)" \
     || no "Calc.report lost its edge — a narrow MISS must degrade to the ladder, never delete: $MM"
 
-echo "=== floor (a): Ruby feeds no class-hierarchy edges, so a superclass method does NOT narrow ==="
+echo "=== the base walk: a method on the SUPERCLASS narrows too (floor (a), lifted at parser version 98) ==="
 I="$( rowOf 'n="inherited_call" ' )"
-[ "$( edgesTo "$I" build )" -eq 2 ] && ok "Child.build → an honest 2-way split (captureBases has no Ruby arm; floor, stated)" \
-    || no "Child.build produced $( edgesTo "$I" build ) build edges — if Ruby gained inheritance edges, say so HERE, in ingest_relations.h::captureBases and in CHANGELOG.md: $I"
+[ "$( edgesTo "$I" build )" -eq 1 ] && ok "Child.build → exactly one edge (Parent::build, through the inheritance edge captureBases now mints for Ruby)" \
+    || no "Child.build produced $( edgesTo "$I" build ) build edges — if Ruby LOST its inheritance edges, that is the regression: see ingest_relations.h::isBaseTypeNode's Ruby arm and test/rubyinheritcheck.sh: $I"
+CB="$( "$BIN" "$FIX" --no-cache --callers=Parent::build 2>/dev/null )"
+echo "$CB" | grep -q 'n="inherited_call"' && ok "--callers=Parent::build lists inherited_call" || no "--callers=Parent::build does not list inherited_call"
+CBU="$( "$BIN" "$FIX" --no-cache --callers=Unrelated::build 2>/dev/null )"
+echo "$CBU" | grep -q 'n="inherited_call"' && no "--callers=Unrelated::build lists inherited_call — the walk took an unrelated same-named def" || ok "--callers=Unrelated::build does not list inherited_call"
 
 echo "=== floor (b): two same-final-segment classes both defining the callee keep BOTH (honest split) ==="
 SS="$( rowOf 'n="same_segment_call" ' )"

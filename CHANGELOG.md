@@ -15,6 +15,48 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Added — Ruby has inheritance edges: `class Child < Parent` reaches the lego view and the resolver's base walk
+
+No Ruby corpus has ever carried an inheritance edge. `captureBases` turns a class's base clause into
+inherit refs, which `buildGraph` reads into the CHA-lite name graph the resolver walks after a type's
+OWN method set misses — and Ruby reached none of it. The clause kind was never the problem
+(`superclass` is already in the table; Java's `extends` clause carries the same node name): the
+base-TYPE table held no node kind Ruby uses. Ruby names a base with `(constant)` — `class Child <
+Parent` — or `(scope_resolution)` — `class Derived < Space::Base`. Both are now read, under a
+language test rather than appended to the shared table, because both kind names are generic enough
+to mean something else in another grammar.
+
+This is floor (a) of the constant-receiver round above, lifted — and it is what held that round's
+gem numbers down, since a gem reaches its class methods up an `ActiveRecord::Base` hierarchy. Two
+things follow at once: `--lego` answers for Ruby, and `Child.build` resolves to `Parent::build`.
+
+| corpus | `--lego` implementors | edges | ambiguous |
+| --- | --- | --- | --- |
+| activerecord 8.1.3 `lib`, `--lego=Base` | 0 → 11 | 9,152 → 9,001 | 1,479 → 1,288 |
+| activesupport 8.1.3 `lib` | — | 3,912 → 3,915 | 434 → 422 |
+| actionpack 8.1.3 `lib` | — | 3,140 → 3,127 | 364 → 355 |
+| Rails app A, `--lego=ApplicationRecord` | 0 → 130 | 24,376 → 24,390 | 1,263 → 1,260 |
+| Rails app A, `--lego=ApplicationController` | 0 → 132 | — | — |
+| Rails app B | — | 15,257 → 15,301 | 451 → 451 |
+
+`ambiguous` falls because a two-way split collapses into one pinned edge, which is also why `edges`
+falls where it does — 151 fewer on activerecord is 151 calls that stopped naming two candidates.
+
+Stated floors, each pinned by an arm of `test/rubyinheritcheck.sh`: a COMPUTED superclass (`class
+Dynamic < Struct.new( :a )`) is a call, not a name, and mints nothing; a MIXIN (`include Helper`) is
+NOT an inheritance edge in this round — it is a receiver-less call in the class BODY, the same shape
+and the same decision as PHP's in-body `use SomeTrait;`, and Ruby's ancestor chain really does hold
+included modules, so it is a stated residue rather than a claim that it is not inheritance; an
+out-of-tree base (`class Rec < ActiveRecord::Base`) mints no implementor row. A fourth floor, of
+`queries/ruby/tags.scm` rather than of this round, is pinned beside them: a receiver-less call
+written with no parentheses and no arguments parses as `(identifier)`, not `(call)`, and is not a
+call site at all.
+
+`--deps` is byte-identical on activerecord, and the default map is byte-identical on four Ruby-free
+corpora, with this repository's `--report` totals unchanged. `kParserVer` 97 → 98 (new records, same
+layout; `kCacheVersion` stays 22 — a Ruby cache written at 97 holds no inheritance refs and must be
+re-parsed), with the `quality.h` mirror and `test/qschemetrip.hash` moved in the same commit.
+
 ### Added — a Ruby constant receiver now pins the call, instead of splitting it across every same-named method
 
 `Calc.add( 1, 2 )`, `Outer::Engine.run( 3 )`, `::Top.ping` and `Util.format( 5 )` resolved to EVERY

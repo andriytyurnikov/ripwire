@@ -49,14 +49,22 @@ class Parent
     1
   end
 
-  def shared_helper
+  def shared_helper( n )
+    n
+  end
+
+  def bare_helper
     2
   end
 end
 
 class Child < Parent
   def use_inherited
-    shared_helper
+    shared_helper( 1 )
+  end
+
+  def use_bare
+    bare_helper
   end
 end
 
@@ -99,7 +107,11 @@ class Unrelated
     9
   end
 
-  def shared_helper
+  def shared_helper( n )
+    n
+  end
+
+  def bare_helper
     9
   end
 end
@@ -174,6 +186,11 @@ UI="$( rowOf 'n="use_inherited" ' )"
 CLS="$( "$BIN" "$FIX" --no-cache --callers=Parent::shared_helper 2>/dev/null )"
 echo "$CLS" | grep -q 'n="use_inherited"' && ok "--callers=Parent::shared_helper lists use_inherited" || no "--callers=Parent::shared_helper does not list use_inherited"
 
+UB="$( rowOf 'n="use_bare" ' )"
+echo "$UB" | grep -q '<c ' \
+    && no "a bare, parenthesis-less bare_helper minted an edge — queries/ruby/tags.scm captures the (call) form only, and a no-arg receiver-less call parses as (identifier): if that changed, say so HERE and in the tags.scm header" \
+    || ok "a bare, parenthesis-less call still mints nothing (an extraction floor of tags.scm, not of this round)"
+
 echo "=== floors (a) computed base, (b) mixins, (c) out-of-tree base ==="
 lego Struct  | grep -q '<impl n="Dynamic"' && no "class Dynamic < Struct.new( :a ) minted an inheritance edge — a computed superclass is a call, not a constant (floor (a))" \
     || ok "a computed superclass mints no edge (floor (a), stated)"
@@ -200,8 +217,12 @@ sed 's/^class Child < Parent$/class Child/' "$FIX/h.rb" >"$MUT/h.rb"
 grep -q '^class Child$' "$MUT/h.rb" || no "mutation did not apply"
 MLP="$( "$BIN" "$MUT" --no-cache --lego=Parent 2>/dev/null )"
 echo "$MLP" | grep -q '<impl n="Child"' && no "mutation: --lego=Parent still lists Child after the base clause was removed" || ok "mutation: Child is no longer an implementor of Parent"
-MCL="$( "$BIN" "$MUT" --no-cache --callers=Parent::build 2>/dev/null )"
-echo "$MCL" | grep -q 'n="call_inherited"' && no "mutation: Child.build still reaches Parent::build with no base clause — the pin is not reading the inheritance edge" || ok "mutation: Child.build no longer reaches Parent::build"
+MQ="$( "$BIN" "$MUT" --no-cache 2>/dev/null | sed 's/></>\n</g' | awk '/n="call_inherited" /{f=1;print;next} /^<s /{f=0} f' )"
+[ "$( echo "$MQ" | grep -c '<c n="build"' )" -eq 2 ] \
+    && ok "mutation: Child.build is an honest 2-way split again — the pin was the inheritance edge and nothing else" \
+    || no "mutation: Child.build produced $( echo "$MQ" | grep -c '<c n="build"' ) build edges with no base clause: $MQ"
+MCU="$( "$BIN" "$MUT" --no-cache --callers=Unrelated::build 2>/dev/null )"
+echo "$MCU" | grep -q 'n="call_inherited"' && ok "mutation: …and Unrelated::build is back among its callers" || no "mutation: Unrelated::build does not list call_inherited: $( echo "$MCU" | grep -o '<callers[^>]*' )"
 
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

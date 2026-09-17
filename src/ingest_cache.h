@@ -232,7 +232,15 @@ constexpr std::uint32_t kCacheVersion = 22;           // 22: RawDef gains `inter
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 97;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 98;           // bump on any grammar/.scm/extraction change
+                                                      // 98 = 2026-09-17 (Ruby inheritance edges,
+                                                      //    test/rubyinheritcheck.sh): isBaseTypeNode gains a Ruby arm
+                                                      //    ((constant)/(scope_resolution)), so `class Child < Parent`
+                                                      //    emits an inherit RawRef (role Extends) where it emitted
+                                                      //    none. NEW RECORDS from extraction, same record layout
+                                                      //    (kCacheVersion stays 22): a Ruby cache written at 97 holds
+                                                      //    no inheritance refs at all and must be re-parsed.
+                                                      //    quality.h's kIngestParserVerMirror bumped in the SAME commit.
                                                       // 97 = 2026-09-17 (Ruby constant receivers narrow calls,
                                                       //    test/rubyrecvnarrowcheck.sh): classifyReceiver classifies a
                                                       //    Ruby (constant)/(scope_resolution) receiver as NamedVar with
