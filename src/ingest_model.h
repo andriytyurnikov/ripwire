@@ -763,6 +763,7 @@ inline void emitBindings( IngestResult& result, std::vector<RawBind>& rawBinds, 
         Binding& b = result.bindings[ outBindIndex++ ];
         b.fileId     = rb.fileId;
         b.kind       = rb.kind;
+        b.startByte  = rb.startByte;   // the declaration a VarDecl and its typed record share (Rule 2 lexical lookup)
         b.spanStart  = rb.spanStart;   // shadow fix round: the declaring block's span rides through
         b.spanEnd    = rb.spanEnd;
         b.var        = std::move( rb.var );

@@ -280,7 +280,7 @@ inline void pickWinnerOfKind( const IngestResult& ing, const std::vector<std::ui
 {
     const auto fin = [ & ]( NodeId i ) -> std::uint32_t { return ( i < fanIn.size() )  ? fanIn[i]  : 0u; };
     const auto ts  = [ & ]( NodeId i ) -> std::uint8_t  { return ( i < tested.size() ) ? tested[i] : std::uint8_t( 0 ); };
-    const auto fx  = [ & ]( NodeId i ) -> bool          { return isFixturePath( ing.files[ ing.symbols[i].fileId ] ); };
+    const auto fx  = [ & ]( NodeId i ) -> bool          { return isFixturePath( rootRelPath( ing, ing.symbols[i].fileId ) ); };
     const auto better = [ & ]( NodeId cand, NodeId cur ) -> bool   // is `cand` a BETTER exemplar than `cur`?
     {
         const Symbol& a = ing.symbols[cand];  const Symbol& b = ing.symbols[cur];

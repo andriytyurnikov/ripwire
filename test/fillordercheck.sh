@@ -122,7 +122,12 @@ OFIX="$( order_of test/fixture )"
 # mapEst.bytesPerToken()), so a model that prices a different mix publishes a different rate: here 2.496 -> 2.497 B/tok
 # against an emitted size that did not move one byte. Hence +1, on a document byte-identical to its previous self --
 # this fixture's golden is 2,234 B before and after, and est_tokens= is the ONLY character that differs in it.
-{ [ "$EFIX" = "895" ] && [ "$OFIX" = "important-first" ]; } \
+# RE-PIN 2026-09-16 (#228, test/rootspellingcheck.sh): 895 -> 863, and the document SHRANK, it did not re-price. This
+# gate reads test/fixture with the root TYPED `test/fixture`, and until #228 the builtin layer tagger read the `test/`
+# of that spelling as a directory inside the tree: all six <f> rows carried layer="test" (cd test/fixture && ripwire .
+# printed none). The tag now comes from the root-relative path, so the six attributes are gone; the byte model also
+# charges each file path as p= prints it (root-relative) instead of with the typed root prepended.
+{ [ "$EFIX" = "863" ] && [ "$OFIX" = "important-first" ]; } \
     && ok "test/fixture (est_tokens=$EFIX) does NOT auto-flip — order=$OFIX (golden neutral)" \
     || no "test/fixture unexpectedly changed order or est_tokens (est=$EFIX order=$OFIX)"
 

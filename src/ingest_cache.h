@@ -232,8 +232,8 @@ constexpr std::uint32_t kCacheVersion = 22;           // 22: RawDef gains `inter
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 97;           // bump on any grammar/.scm/extraction change
-                                                      // 97 = 2026-09-17 (Ruby constant receivers narrow calls,
+constexpr std::uint32_t kParserVer    = 100;          // bump on any grammar/.scm/extraction change
+                                                      // 100 = 2026-09-17 (Ruby constant receivers narrow calls,
                                                       //    test/rubyrecvnarrowcheck.sh): classifyReceiver classifies a
                                                       //    Ruby (constant)/(scope_resolution) receiver as NamedVar with
                                                       //    the FINAL constant segment, so `Calc.add(…)` /
@@ -243,6 +243,28 @@ constexpr std::uint32_t kParserVer    = 97;           // bump on any grammar/.sc
                                                       //    their VALUES change, so old Ruby extraction facts must be
                                                       //    re-parsed. quality.h's kIngestParserVerMirror bumped in the
                                                       //    SAME commit.
+                                                      // 99 = 2026-09-16 (std-typed member fields, test/fieldnarrowcheck.sh
+                                                      //    arm q): a C++ field's compose RawRef records the namespace its
+                                                      //    type was written in as `qualifier` (`std` for `std::string
+                                                      //    name_;`). Format unchanged; a 98 blob holds "" there and would
+                                                      //    let Rule 2b and the HAS-A edges read `string` as an in-repo
+                                                      //    class on a warm run: content change, bump required.
+                                                      // 98 = 2026-09-16 (std-qualified receivers, test/narrowcheck.sh
+                                                      //    arm 21): a C++ ASSIGNMENT from a constructor (`x = std::
+                                                      //    map<K, V>()`) records the constructor's qualified text in
+                                                      //    importedName, like a declaration's record. Format unchanged;
+                                                      //    a 97 blob holds "" there and would let Rule 2 narrow `x` to
+                                                      //    an in-repo `map` on a warm run: content change, bump required.
+                                                      // 97 = 2026-09-16 (parameter receivers, test/narrowcheck.sh arm
+                                                      //    17): a declaration's Type/ParamType RawBind records its
+                                                      //    written type WHOLE in importedName when the type is
+                                                      //    QUALIFIED (`std::map<K, V>`). Record FORMAT unchanged (the
+                                                      //    field was already serialised, empty on these kinds), but a
+                                                      //    96 blob holds "" there and would let Rule 2's lexical lookup
+                                                      //    narrow a qualified parameter type to an unrelated same-named
+                                                      //    in-repo class on a warm run: content change, bump required.
+                                                      //    (Binding::startByte, same lane, is re-derived from the cached
+                                                      //    RawBind::startByte and needed none.)
                                                       // 96 = 2026-09-13 (internal linkage, test/decltodefcheck.sh arm
                                                       //    B2): every C/C++ def carries a new syntactic
                                                       //    `internalLinkage` bit — inside an anonymous namespace at any

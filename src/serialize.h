@@ -1444,7 +1444,8 @@ inline TokenEstimate estimateTokens( const IngestResult& ing, const std::vector<
         {
             seen[f] = 1;
             markupBytes += kFileMarkupBytes;
-            contentBytesByLang[ li ] += double( ing.files[f].size() );   // the file PATH is content, at this file's language
+            contentBytesByLang[ li ] += double( rootRelPath( ing, f ).size() );   // the file PATH is content, at this file's language — as p= PRINTS it,
+                                                                              // root-relative (#228: charging the typed root flipped the fill order)
         }
         markupBytes += kSymMarkupBytes;
         contentBytesByLang[ li ] += double( s.name.size() );
@@ -2380,7 +2381,7 @@ inline void serialize( std::FILE* out, const IngestResult& ing, const std::vecto
     // written once the document it describes has been measured (PHASE 2 below) and the legend's own bytes
     // are part of what it describes.
     std::string legend = outProv
-        ? "<!-- ripwire v1 t=fn|method|cls|struct|iface|var|sec|macro(#define;degraded:body-is-replacement-text,edges-cross-expansion) p=path layer=arch-layer(opt) n=name sc=enclosing-scope(absent-if-unscoped;the-full-id-is-p::sc::n-with-p=-from-the-enclosing-f,and-expand/callers/impact/uses-accept-it) k=rank c=call amb=ambiguous-calls(read-source) lpin=calls-pinned-by-locality-prior-alone(a-disclosed-guess;read-source;absent-if-0) overloads=N-same-name-defs-merged-into-this-row(absent-if-1;shown=counts-them-individually,so-rows+sum(overloads-1)=shown) prov=per-EDGE-confidence(orthogonal-to-k):scip(index-pinned;precise)|binding(cross-lang-FFI)|import(ES-named-import;module+export-named)|split(one-arm-of-a-k-way-pick;read-source;these-are-the-edges-amb=-counts)(absent=uniquely-resolved-name-based) hdr:unresolved=call-name-defined-only-in-a-lang-incompatible-file (edges heuristic) hdr:locality_pinned=sum-of-lpin(absent-if-0) hdr:external=calls-refused-as-bound-outside-the-tree(builtin/stdlib-name-without-in-repo-evidence,external-import,super-past-the-tree;no-edge;absent-if-0) r:est_tokens=hdr-copy(none-if-stable) -->"
+        ? "<!-- ripwire v1 t=fn|method|cls|struct|iface|var|sec|macro(#define;degraded:body-is-replacement-text,edges-cross-expansion) p=path layer=arch-layer(opt) n=name sc=enclosing-scope(absent-if-unscoped;the-full-id-is-p::sc::n-with-p=-from-the-enclosing-f,and-expand/callers/impact/uses-accept-it) k=rank c=call amb=ambiguous-calls(read-source) lpin=calls-pinned-by-locality-prior-alone(a-disclosed-guess;read-source;absent-if-0) overloads=N-same-name-defs-merged-into-this-row(absent-if-1;shown=counts-them-individually,so-rows+sum(overloads-1)=shown) prov=per-EDGE-confidence(orthogonal-to-k):scip(index-pinned;precise)|binding(cross-lang-FFI)|import(ES-named-import;module+export-named)|split(one-arm-of-a-k-way-pick;read-source;these-are-the-edges-amb=-counts)|final-segment(last-name-match;namespace-unchecked)(absent=uniquely-resolved-name-based) hdr:unresolved=call-name-defined-only-in-a-lang-incompatible-file (edges heuristic) hdr:locality_pinned=sum-of-lpin(absent-if-0) hdr:external=calls-refused-as-bound-outside-the-tree(builtin/stdlib-name-without-in-repo-evidence,external-import,super-past-the-tree;no-edge;absent-if-0) r:est_tokens=hdr-copy(none-if-stable) -->"
         : "<!-- ripwire v1 t=fn|method|cls|struct|iface|var|sec|macro(#define;degraded:body-is-replacement-text,edges-cross-expansion) p=path layer=arch-layer(opt) n=name sc=enclosing-scope(absent-if-unscoped;the-full-id-is-p::sc::n-with-p=-from-the-enclosing-f,and-expand/callers/impact/uses-accept-it) k=rank c=call amb=ambiguous-calls(read-source) lpin=calls-pinned-by-locality-prior-alone(a-disclosed-guess;read-source;absent-if-0) overloads=N-same-name-defs-merged-into-this-row(absent-if-1;shown=counts-them-individually,so-rows+sum(overloads-1)=shown) hdr:unresolved=call-name-defined-only-in-a-lang-incompatible-file (edges heuristic) hdr:locality_pinned=sum-of-lpin(absent-if-0) hdr:external=calls-refused-as-bound-outside-the-tree(builtin/stdlib-name-without-in-repo-evidence,external-import,super-past-the-tree;no-edge;absent-if-0) r:est_tokens=hdr-copy(none-if-stable) -->";
     // EXTENT HONESTY (src/extentsuspect.h): how many definitions carry extent_suspect= corpus-wide — the header's
     // extent_suspect_syms= — and the row + header readings, appended ONLY when that is non-zero, so a corpus with
@@ -2733,7 +2734,7 @@ inline void serialize( std::FILE* out, const IngestResult& ing, const std::vecto
     for( std::uint32_t f : ann.stubSymbols ? kNoFiles : fileOrder )
     {
         w.write( "<f p=\"" );  w.write( escapeXml( pathRel( f ), esc ) );  w.write( "\"" );
-        if( const char* fl = builtinLayer( ing.files[f] ); *fl ) { w.write( " layer=\"" );  w.write( fl );  w.write( "\"" ); }   // P3
+        if( const char* fl = builtinLayer( rootRelPath( ing, f ) ); *fl ) { w.write( " layer=\"" );  w.write( fl );  w.write( "\"" ); }   // P3
         w.write( ">" );
 
         // §P6.3: see collapseOverloadRows() above — const/non-const overload pairs are already folded to
@@ -3655,7 +3656,7 @@ inline std::string sigRowHead( const IngestResult& ing, NodeId id, const SigRowF
     if( facts.rank > 0 )
     {
         head += " p=\"";  head += escapeXml( lensRowPath( ing, s.fileId, rootArg ), esc );  head += "\"";
-        if( const char* fl = builtinLayer( ing.files[ s.fileId ] ); *fl ) { head += " layer=\"";  head += fl;  head += "\""; }
+        if( const char* fl = builtinLayer( rootRelPath( ing, s.fileId ) ); *fl ) { head += " layer=\"";  head += fl;  head += "\""; }
     }
 
     // descriptive facts — cx/ccx/in only under metrics; the Q3 lens + pure ride along either way.
@@ -4380,7 +4381,7 @@ inline void packSignatures( std::FILE* out, const IngestResult& ing, const std::
         { return ing.symbols[a].sigStartByte < ing.symbols[b].sigStartByte; } );
 
         w.write( "<f p=\"" );  w.write( escapeXml( pathRel( f ), esc ) );  w.write( "\"" );
-        if( const char* fl = builtinLayer( ing.files[f] ); *fl ) { w.write( " layer=\"" );  w.write( fl );  w.write( "\"" ); }   // P3
+        if( const char* fl = builtinLayer( rootRelPath( ing, f ) ); *fl ) { w.write( " layer=\"" );  w.write( fl );  w.write( "\"" ); }   // P3
         w.write( ">" );
         {
             const std::string fileNotes = renderNoteChildren( noteIndex, fileNoteTarget( noteIndex, ing.files[f] ), esc );   // L3/D5
@@ -5901,7 +5902,7 @@ inline std::size_t estimateExpandBodyTokens( const IngestResult& ing, const std:
 
         // per-body markup (~40 B for the <b …> tag + CDATA wrapper + name/path) at markup rate; body TEXT at
         // the leaner code-body rate (whitespace/braces merge; measured ~3.8 B/tok, not the ~2.46 signature rate).
-        tokensF += double( 40 + s.name.size() + ing.files[ s.fileId ].size() ) / kBytesPerTokenDefault;
+        tokensF += double( 40 + s.name.size() + rootRelPath( ing, s.fileId ).size() ) / kBytesPerTokenDefault;   // p= prints root-relative (#228)
         tokensF += double( body.size() ) / kBytesPerTokenBody;
 
         // 1-hop callee signatures packBodies appends (capped 16), estimated from their sig span bytes at
@@ -7476,7 +7477,7 @@ inline void serializeJson( std::FILE* out, const IngestResult& ing, const std::v
         }
         firstFile = false;
         w.write( "{\"p\":" );  writeJsonStr( w, pathRel( f ), esc );
-        if( const char* fl = builtinLayer( ing.files[f] ); *fl ) { w.write( ",\"layer\":" );  writeJsonStr( w, fl, esc ); }
+        if( const char* fl = builtinLayer( rootRelPath( ing, f ) ); *fl ) { w.write( ",\"layer\":" );  writeJsonStr( w, fl, esc ); }
         w.write( ",\"s\":[" );
 
         // §P6.3 / §A4d: const/non-const overloads canonicalize to the SAME id, so a bucket straight from
@@ -7723,7 +7724,7 @@ inline std::string jsonSigRowHead( const IngestResult& ing, NodeId id, std::uint
     }
     // P7: the row names its file (and its builtin layer) — the XML sibling's p=/layer=, same root-relative spelling
     appendJsonStrField( head, ",\"p\":", lensRowPath( ing, fileId, rootArg ) );
-    if( const char* fl = builtinLayer( ing.files[ fileId ] ); *fl )
+    if( const char* fl = builtinLayer( rootRelPath( ing, fileId ) ); *fl )
     {
         appendJsonStrField( head, ",\"layer\":", fl );
     }

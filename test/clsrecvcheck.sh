@@ -15,6 +15,13 @@
 # THE FIXTURE (test/clsrecvfix/boxes.py): one class-name call, four controls (untyped local, a shadowing
 # parameter, an inherited method through the base walk, a class that defines no such method).
 #
+# The three controls where the route does NOT fire used to assert the S6-C locality pin STANDS (mech=locality,
+# lpin="1") — that is, that the caller's own Box::validate kept winning by the scope segment. Since 2026-09-16 an
+# explicit receiver whose type no receiver rule established earns no scope-segment credit (test/localitycheck.sh
+# arms 5-9: that pin was the wrong answer on 14 of 14 sampled rocksdb sites), so a non-firing route leaves the
+# honest two-way split instead. The contrast the controls exist for is unchanged: the route fires ⇒ receiver-rule,
+# Interval::validate ALONE; it does not ⇒ both candidates survive.
+#
 # Exits non-zero on any failure.
 
 set -u
@@ -49,17 +56,22 @@ printf '%s' "$R" | grep -q 'boxes.py::Interval::validate' && ! printf '%s' "$R" 
 printf '%s' "$( row 'boxes.py::Box::__setitem__' )" | grep -q 'lpin=' && no "(A) Box::__setitem__ still carries lpin= — the route did not fire" \
     || ok "(A) no lpin= on Box::__setitem__ — the pin is evidence-backed now"
 
-# ── (B) control: an UNTYPED local receiver is not a class name — the S6-C pin stands ─────────────
+# a control's census row is the honest two-way split: mech split, BOTH validate definitions, nothing else
+isBothSplit(){ printf '%s' "$1" | grep -q '^split	' && printf '%s' "$1" | grep -q 'boxes.py::Interval::validate#' && printf '%s' "$1" | grep -q 'boxes.py::Box::validate#' \
+    && [ "$( printf '%s' "$1" | cut -f2 | tr '|' '\n' | grep -c . )" = 2 ]; }
+
+# ── (B) control: an UNTYPED local receiver is not a class name — the route does not fire, the split stands ────
 R="$( crow 'boxes.py::Box::other' validate )"
-printf '%s' "$R" | grep -q '^locality	' && ok "(B) Box::other -> item.validate stays a locality pin: $R" \
-    || no "(B) Box::other -> validate changed mechanism: '${R:-no row}' (the route must key on the CLASS NAME only)"
-printf '%s' "$( row 'boxes.py::Box::other' )" | grep -q 'lpin="1"' && ok "(B) lpin=\"1\" still disclosed on Box::other" \
-    || no "(B) Box::other lost its lpin=\"1\""
+isBothSplit "$R" && ok "(B) Box::other -> item.validate is the honest split, not a route: $R" \
+    || no "(B) Box::other -> validate is not the two-way split: '${R:-no row}' (the route must key on the CLASS NAME only)"
+printf '%s' "$( row 'boxes.py::Box::other' )" | grep -q 'amb="1"' && ! printf '%s' "$( row 'boxes.py::Box::other' )" | grep -q 'lpin=' \
+    && ok "(B) Box::other discloses amb=\"1\" and carries no lpin=" \
+    || no "(B) Box::other row does not disclose the split: $( row 'boxes.py::Box::other' )"
 
 # ── (C) control: a PARAMETER named like the class SHADOWS it — vetoed ────────────────────────────
 R="$( crow 'boxes.py::Box::shadowed' validate )"
-printf '%s' "$R" | grep -q '^locality	' && ok "(C) Box::shadowed -> Interval.validate is VETOED by the parameter Interval: $R" \
-    || no "(C) Box::shadowed -> validate changed mechanism: '${R:-no row}' (a local named Interval must veto the route)"
+isBothSplit "$R" && ok "(C) Box::shadowed -> Interval.validate is VETOED by the parameter Interval (split): $R" \
+    || no "(C) Box::shadowed -> validate is not the two-way split: '${R:-no row}' (a local named Interval must veto the route)"
 
 # ── (D) the DIRECT-base walk: Leaf(Interval) defines no validate — Interval::validate through the base ─
 R="$( crow 'boxes.py::Box::inherited' validate )"
@@ -69,13 +81,14 @@ printf '%s' "$R" | grep -q '^receiver-rule	' && printf '%s' "$R" | grep -q 'boxe
 
 # ── (E) control: a class that defines no such method and has no bases — nothing fires ───────────
 R="$( crow 'boxes.py::Box::miss' validate )"
-printf '%s' "$R" | grep -q '^locality	' && ok "(E) Box::miss -> Point.validate: the ladder is unchanged (locality pin): $R" \
-    || no "(E) Box::miss -> validate changed mechanism: '${R:-no row}' (Point defines no validate — nothing may fire)"
+isBothSplit "$R" && ok "(E) Box::miss -> Point.validate: nothing fires, the ladder's split stands: $R" \
+    || no "(E) Box::miss -> validate is not the two-way split: '${R:-no row}' (Point defines no validate — nothing may fire)"
 
-# ── (F) the header agrees: exactly the three surviving pins are disclosed ────────────────────────
+# ── (F) the header agrees: the three controls are the three ambiguous calls, and no locality pin is left ────────
 HDR="$( printf '%s' "$MAP" | grep -o '<!-- files=[^>]*-->' | head -1 )"
-printf '%s' "$HDR" | grep -q ' locality_pinned=3 ' && ok "(F) header locality_pinned=3 (other, shadowed, miss)" \
-    || no "(F) header locality_pinned is not 3: $HDR"
+printf '%s' "$HDR" | grep -q ' ambiguous=3 ' && ! printf '%s' "$HDR" | grep -q 'locality_pinned=[1-9]' \
+    && ok "(F) header ambiguous=3 (other, shadowed, miss) and no locality_pinned" \
+    || no "(F) header is not ambiguous=3 without a locality pin: $HDR"
 
 # ── (G) determinism + well-formedness ─────────────────────────────────────────────────────────────
 "$BIN" "$CORPUS" --no-cache >"$TMP/map2.xml" 2>/dev/null

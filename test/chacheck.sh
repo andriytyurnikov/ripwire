@@ -7,8 +7,8 @@
 # The chafix corpus:
 #   cha.cpp   — Animal (bodied speak), Dog+Cat implementors (neither overrides speak), Robot (UNRELATED,
 #               its own speak). g() calls `Dog d; d.speak()` → CHA-lite narrows to the Dog cone {Dog,Animal},
-#               dropping Robot::speak → resolves to Animal::speak ALONE. h() calls the same through a
-#               PARAMETER (no var→type binding) → receiver type unknown → CHA can't fire → stays ambiguous.
+#               dropping Robot::speak → resolves to Animal::speak ALONE. h() calls the same through an
+#               untyped `auto` local (no var→type binding) → receiver type unknown → CHA can't fire → stays ambiguous.
 #   arity.cpp — emit(int) / emit(int,int,int) / emit(const char*,...). caller() does emit(1,2,3): B2.2 drops
 #               the arity-1 overload (fixed arity 1 != 3), keeps the arity-3 overload, and KEEPS the variadic
 #               overload (variadic is never a fixed arity → never provably wrong).
@@ -53,13 +53,13 @@ else
     no "CHA-lite positive: g() targets = [$(echo $gT)] (want ONLY line $ANIMAL_LINE=Animal; NOT $ROBOT_LINE=Robot)"
 fi
 
-# ── 2) CHA control: h() (receiver is a parameter → unknown type) stays AMBIGUOUS — BOTH speak defs survive. ──
+# ── 2) CHA control: h() (receiver is an untyped local → unknown type) stays AMBIGUOUS — BOTH speak defs survive. ──
 hT="$( targets h )"
 hN="$( printf '%s\n' "$hT" | grep -c . )"
 if [ "$hN" = "2" ] && printf '%s\n' "$hT" | grep -qx "$ANIMAL_LINE" && printf '%s\n' "$hT" | grep -qx "$ROBOT_LINE"; then
     ok "CHA-lite control: h() stays AMBIGUOUS (both Animal::speak + Robot::speak — unknown receiver keeps current behavior)"
 else
-    no "CHA-lite control: h() targets = [$(echo $hT)] (want BOTH $ANIMAL_LINE + $ROBOT_LINE — CHA must NOT fire on a param receiver)"
+    no "CHA-lite control: h() targets = [$(echo $hT)] (want BOTH $ANIMAL_LINE + $ROBOT_LINE — CHA must NOT fire on an untyped receiver)"
 fi
 
 # ── 3) amb honesty: g is resolved (no amb marker), h stays flagged (amb=). ──

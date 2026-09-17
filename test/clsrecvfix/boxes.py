@@ -7,12 +7,14 @@
 # (census mech `receiver-rule`), one edge, no `lpin=`.
 #
 # Controls, one per clause of the rule:
-#   other()     — `item.validate(v)` on an UNTYPED local: not a class name, the S6-C pin stands (`lpin="1"`)
-#   shadowed()  — a PARAMETER named `Interval` shadows the class: vetoed, the S6-C pin stands (`lpin="1"`)
+#   other()     — `item.validate(v)` on an UNTYPED local: not a class name, the honest split stands (`amb="1"`)
+#   shadowed()  — a PARAMETER named `Interval` shadows the class: vetoed, the honest split stands (`amb="1"`)
 #   inherited() — `Leaf.validate(v)` where `Leaf(Interval)` defines no `validate`: the DIRECT-base walk lands
 #                 `Interval::validate` (receiver-rule), no `lpin=`
 #   miss()      — `Point.validate(v)` where `Point` defines no `validate` and has no bases: nothing fires,
-#                 the unchanged ladder pins by locality as before (`lpin="1"`)
+#                 the ladder's split stands (`amb="1"`)
+# (Until 2026-09-16 the three non-firing controls were S6-C locality pins to Box::validate, `lpin="1"`: an explicit
+# receiver of unknown type no longer earns the caller's scope segment — test/localitycheck.sh arms 5-9.)
 class Interval:
     @classmethod
     def validate( cls, v ):

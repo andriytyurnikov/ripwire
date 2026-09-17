@@ -63,11 +63,15 @@ cp "$ROOT"/test/candheadfix/*.hpp "$TMP/candheadfix/"
 cd "$TMP"
 
 # ── (a) RED-FIRST: the anchor is correct but the gold's body is served ──────────────────────────────
+# RE-PIN 2026-09-16 (#228, test/rootspellingcheck.sh): the anchor path is ROOT-RELATIVE now. It printed
+# `candheadfix/a_gold.hpp` only because this gate types the root as `candheadfix`; the same tree crawled as `.`
+# printed `a_gold.hpp`, and crawled absolute printed `/.../a_gold.hpp`. The anchor CHOICE (a_gold.hpp, +8) is
+# unchanged — only the typed root stopped riding in the displayed path.
 "$BIN" candheadfix --for=Frobnicator >"$TMP/lens" 2>/dev/null
 anchor="$( sed -n 's/.*anchors: Frobnicator(\([^)]*\)).*/\1/p' "$TMP/lens" | head -1 )"
-[ "$anchor" = "candheadfix/a_gold.hpp+8" ] \
+[ "$anchor" = "a_gold.hpp+8" ] \
     && ok "the anchor resolves to a_gold.hpp (anchors: Frobnicator($anchor))" \
-    || no "anchors: Frobnicator($anchor) — expected candheadfix/a_gold.hpp+8"
+    || no "anchors: Frobnicator($anchor) — expected a_gold.hpp+8"
 
 bodykinds="$( tr '>' '\n' <"$TMP/lens" | sed -n 's/.*<b t="\([^"]*\)" l="\([0-9]*\)" p="\([^"]*\)".*/\1:\2:\3/p' | sed 's#candheadfix/##' | LC_ALL=C sort )"
 want='cls:28:a_gold.hpp
@@ -89,7 +93,7 @@ rowcount="$( tr '>' '\n' <"$TMP/lens" | grep -c '<d l="[0-9]*" n="Frobnicator"' 
     || no "expected 9 Frobnicator rows in <sigs>, got $rowcount"
 
 # ── (c) THE ANCHOR ITSELF DOES NOT MOVE — checked again as its own arm, byte-value pinned ───────────
-[ "$anchor" = "candheadfix/a_gold.hpp+8" ] \
+[ "$anchor" = "a_gold.hpp+8" ] \
     && ok "anchor selection is unchanged by this fix (restated, see (a))" \
     || no "anchor selection moved — this fix must not touch it"
 
@@ -111,10 +115,10 @@ gadan="$( sed -n 's/.*anchors: Gadget(\([^)]*\)).*/\1/p' "$TMP/gad" | head -1 )"
 gadbody="$( tr '>' '\n' <"$TMP/gad" | sed -n 's/.*<b t="\([^"]*\)" l="\([0-9]*\)" p="\([^"]*\)".*/\1:\2/p' | sed 's#candheadfix/##' | LC_ALL=C sort )"
 gadwant='cls:37
 fn:40'
-if [ "$gadan" = "candheadfix/a_gold.hpp+1" ] && [ "$gadbody" = "$gadwant" ]; then
+if [ "$gadan" = "a_gold.hpp+1" ] && [ "$gadbody" = "$gadwant" ]; then
     ok "a unique definition's anchor and both bodies are byte-stable (Gadget: $gadan)"
 else
-    no "--for=Gadget moved: anchor=$gadan — expected candheadfix/a_gold.hpp+1; bodies:"
+    no "--for=Gadget moved: anchor=$gadan — expected a_gold.hpp+1; bodies:"
     printf '%s\n' "$gadbody"
 fi
 

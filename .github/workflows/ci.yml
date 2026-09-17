@@ -29,12 +29,37 @@ name: CI
 # doctest are VENDORED under third_party/deps (see CMakeLists.txt), so `actions/checkout` is the whole
 # provisioning story. That also means CI exercises the same hermetic build a stranger's clone gets —
 # a cache step would have hidden a re-introduced network fetch behind a warm runner.
+#
+# LIGHT SET vs. FULL MATRIX (owner decision, 2026-09-17: CI was the bottleneck — a merge to main re-ran all
+# 31 jobs on a tree its PR had already tested, and per-lane full CI on the landing queue found almost
+# nothing). The `plan` job below computes ONE `full` output from the event name, the pull request's labels
+# and the ref; every heavy job reads that output through its own `if:` instead of repeating the same
+# event/label logic.
+#   LIGHT (style + the one ubuntu-24.04/Release/clang release leg, all 4 shards — that leg already runs the
+#   det-gate and G4 xmllint checks): a push to main, or a pull_request carrying the `train-member` label.
+#   Labelling is maintainer-only by construction — a fork PR cannot add a label to itself.
+#   FULL (all 31 jobs): every other pull_request (integration/* train PRs, direct-land PRs, contributor
+#   PRs), workflow_dispatch — the owner requires a full build and test on the EXACT commit before any
+#   release tag, so dispatch this manually against the commit you are about to tag rather than trusting an
+#   earlier green nightly — and a nightly `schedule` against main. See the report-failure/report-green jobs
+#   at the bottom for where a red scheduled run is reported: its OWN tracking issue (label
+#   nightly-full-matrix, alongside the shared nightly-failure), separate from nightly.yml's TSan issue.
 
 on:
   push:
     branches: [main]
   pull_request:
+    # The GitHub default (opened/synchronize/reopened) plus labeled/unlabeled, so adding or removing
+    # `train-member` re-evaluates the plan job's decision on the SAME pull request without a new push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+  schedule:
+    # Full-matrix proof against main, independent of nightly.yml's own 07:17 UTC ThreadSanitizer run — off
+    # :00 and a different minute from that cron so the two scheduled workflows don't start together.
+    - cron: "41 5 * * *"   # 05:41 UTC daily
+
+permissions:
+  contents: read   # least privilege at the top; only report-failure/report-green below widen, and only for themselves
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -48,6 +73,68 @@ concurrency:
 # expose that week, defeating the entire point of testing the portable default.
 
 jobs:
+  # ─── plan: light set or full matrix — computed ONCE, so every heavy job reads one output via `if:` ───────
+  #
+  # No extra permission needed: a pull_request event's own webhook payload already lists its labels
+  # (github.event.pull_request.labels), so this reads the trigger event instead of calling the API.
+  plan:
+    name: plan (light set or full matrix?)
+    runs-on: ubuntu-24.04
+    outputs:
+      full: ${{ steps.decide.outputs.full }}
+      release_matrix: ${{ steps.decide.outputs.release_matrix }}
+    steps:
+      # release_matrix is computed here, not job-level `if:` on `release`, because the matrix context is
+      # not available to a job-level `if:` (only to steps already inside an expanded matrix job — actionlint
+      # catches this if it regresses: "context matrix is not allowed here"). Generating it also means there
+      # is exactly ONE source of truth for the full 24-row matrix instead of a second hand-typed copy that
+      # can drift from it: six legs {macos-26 AppleClang, ubuntu gcc, ubuntu clang} x {Release, plain}, each
+      # sharded 4 ways — the same axes `release`'s own job comment documents. LIGHT keeps only the one leg
+      # the light set always runs, ubuntu-24.04/Release/clang, all 4 shards (it already carries the
+      # det-gate and G4 xmllint checks).
+      - name: Decide, from event name, PR labels and ref — see the header comment for the rule
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          full=true
+          case "$EVENT" in
+            push)
+              # on.push.branches is already scoped to [main]; the ref check is belt-and-suspenders so this
+              # job's own decision does not silently depend on that trigger filter never changing.
+              if [ "$REF" = refs/heads/main ]; then
+                full=false
+              fi
+              ;;
+            pull_request)
+              if jq -e 'index("train-member") != null' <<<"$PR_LABELS" >/dev/null; then
+                full=false
+              fi
+              ;;
+            workflow_dispatch|schedule)
+              full=true
+              ;;
+          esac
+          echo "event=$EVENT ref=$REF labels=$PR_LABELS -> full=$full"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+          if [ "$full" = true ]; then
+            legs='[
+              {"os":"macos-26","flavor":"Release","cc":"appleclang"},
+              {"os":"macos-26","flavor":"plain","cc":"appleclang","skiplist":".github/pargates-macos-plain-skip.txt"},
+              {"os":"ubuntu-24.04","flavor":"Release","cc":"gcc"},
+              {"os":"ubuntu-24.04","flavor":"plain","cc":"gcc"},
+              {"os":"ubuntu-24.04","flavor":"Release","cc":"clang"},
+              {"os":"ubuntu-24.04","flavor":"plain","cc":"clang"}
+            ]'
+          else
+            legs='[{"os":"ubuntu-24.04","flavor":"Release","cc":"clang"}]'
+          fi
+          release_matrix="$( jq -c '{ include: [ .[] as $leg | range(1;5) as $shard | ($leg + {shard:$shard, shards:4}) ] }' <<<"$legs" )"
+          echo "release_matrix=$release_matrix" >> "$GITHUB_OUTPUT"
+
   # ─── style: one gating clang-format check, one advisory clang-format report, one advisory clang-tidy ───
   #
   # CLANG_VERSION is a PIN, not a floor. clang-format's output changes across major releases, so an
@@ -88,6 +175,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # churn/co-change gates read real git history — a shallow clone reddens them
+          persist-credentials: false   # no step in this job pushes or fetches with the token
 
       - name: Install clang-format / clang-tidy (PINNED major — see the job comment)
         run: |
@@ -137,6 +225,12 @@ jobs:
             src/main.cpp src/ingest.cpp src/pagerank.cpp src/tsprobe.cpp src/infra/diagnostics.cpp
 
   release:
+    needs: plan
+    # LIGHT set still runs this job — just ONE leg of it, ubuntu-24.04/Release/clang (all 4 shards): see
+    # `plan`'s own step, which computes the matrix below to exactly that one leg when light and to all six
+    # legs when full, instead of this job carrying an `if:` (job-level `if:` cannot read the matrix context
+    # — only a step already inside an expanded matrix job can, so pruning legs needs the matrix ITSELF to
+    # be conditional, not a condition alongside it).
     # Two independent flavours per OS, each on its OWN runner — they used to run stacked in one job,
     # doubling wall time for no coverage gain:
     #   Release — defines NDEBUG, which compiles DEGRADED_PATH_ALERT out; the optimizer-visible build.
@@ -158,9 +252,10 @@ jobs:
     name: release (${{ matrix.os }}, ${{ matrix.flavor }}, ${{ matrix.cc }}, shard ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
       fail-fast: false
-      # Explicit include list rather than three crossed axes: there is no gcc on the macOS runners (`g++`
-      # there is an AppleClang shim, so a `cc: gcc` macOS leg would silently be a second AppleClang leg
-      # claiming to be gcc), and a leg that lies about its toolchain is worse than a leg that is missing.
+      # There is no gcc on the macOS runners (`g++` there is an AppleClang shim, so a `cc: gcc` macOS leg
+      # would silently be a second AppleClang leg claiming to be gcc), and a leg that lies about its
+      # toolchain is worse than a leg that is missing — `plan`'s generator uses an explicit include list
+      # for exactly that reason, rather than crossing three axes and excluding the impossible cell.
       # Each leg's gate suite is SHARDED across runner jobs (2026-09-07): at 560+ gates the suite is ~150
       # CPU-minutes, ~60 min wall at -j 3 on a 4-vCPU runner, and that one number was the wall clock of the
       # whole workflow. test/pargates.py --shard K/N cuts the list into N cost-balanced, deterministic slices
@@ -170,32 +265,11 @@ jobs:
       # concurrent macOS jobs far lower than Linux; 2 put ~300 gates in each macOS job, doubling the -j 3 contention
       # every gate there ran under. The cost of 4 is stated rather than hidden: when the eight macOS shard jobs
       # (plus asan's) exceed the account's concurrent macOS cap, the excess waits for a free runner.
-      matrix:
-        include:
-          - { os: macos-26,     flavor: Release, cc: appleclang, shard: 1, shards: 4 }
-          - { os: macos-26,     flavor: Release, cc: appleclang, shard: 2, shards: 4 }
-          - { os: macos-26,     flavor: Release, cc: appleclang, shard: 3, shards: 4 }
-          - { os: macos-26,     flavor: Release, cc: appleclang, shard: 4, shards: 4 }
-          - { os: macos-26,     flavor: plain,   cc: appleclang, shard: 1, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
-          - { os: macos-26,     flavor: plain,   cc: appleclang, shard: 2, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
-          - { os: macos-26,     flavor: plain,   cc: appleclang, shard: 3, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
-          - { os: macos-26,     flavor: plain,   cc: appleclang, shard: 4, shards: 4, skiplist: .github/pargates-macos-plain-skip.txt }
-          - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 1, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 2, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 3, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: gcc,   shard: 4, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: gcc,   shard: 1, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: gcc,   shard: 2, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: gcc,   shard: 3, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: gcc,   shard: 4, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: clang, shard: 1, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: clang, shard: 2, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: clang, shard: 3, shards: 4 }
-          - { os: ubuntu-24.04, flavor: Release, cc: clang, shard: 4, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: clang, shard: 1, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: clang, shard: 2, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: clang, shard: 3, shards: 4 }
-          - { os: ubuntu-24.04, flavor: plain,   cc: clang, shard: 4, shards: 4 }
+      #
+      # The matrix itself is `plan`'s computed output, not a literal list here (see that job's step): its
+      # SIZE is conditional on the light/full decision, which a static `include:` cannot express, and a
+      # second hand-typed copy of the full 24-row list would drift from the one `plan` generates.
+      matrix: ${{ fromJSON(needs.plan.outputs.release_matrix) }}
     runs-on: ${{ matrix.os }}
     # The macOS legs test the toolchain release.yml's macos-arm64 leg ships: the same runner, Xcode 26.6 and the pinned
     # minimum macOS 14.0 (test/portablebuildcheck.sh #2i holds all three against release.yml). Xcode 26.6's Apple clang
@@ -214,6 +288,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # churn/co-change gates read real git history — a shallow clone reddens them
+          persist-credentials: false   # no step in this job pushes or fetches with the token
 
       # clang is installed on BOTH Linux legs, not only the clang one. optremarkscheck's Clang-only
       # configure arms pin `clang++` when the default front end is not Clang, so the gcc leg keeps that
@@ -339,12 +414,15 @@ jobs:
   # arms are proven byte-identical on every CI run, not assumed. Without this job the fallback would rot
   # unobserved until the next stranger hit it.
   fallback-emitter:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'   # not part of the light set — see the header comment
     name: fallback-emitter (ubuntu gcc-13, std::format+fputs)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false   # no step in this job pushes or fetches with the token
       - name: Install tooling
         run: |
           # Third-party apt sources ship in the runner image and are outside our control. TWICE now
@@ -402,6 +480,8 @@ jobs:
   # "does this toolchain compile it and does this userland run it", which the ubuntu legs cannot give and
   # which these steps do give. The full suite stays on the four ubuntu legs and the two macOS ones.
   rhel:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'   # not part of the light set — see the header comment
     name: rhel (ubi9, ${{ matrix.flavor }})
     runs-on: ubuntu-24.04
     container: registry.access.redhat.com/ubi9/ubi
@@ -413,6 +493,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false   # no step in this job pushes or fetches with the token
 
       # RHEL 9's default gcc is 11, which does not implement C++23 — CMakeLists sets CXX_STANDARD 23 with
       # STANDARD_REQUIRED ON, so the configure would fail outright. gcc-toolset-N is Red Hat's own supported
@@ -477,6 +558,8 @@ jobs:
         run: ./build/ripwire test/fixture --no-cache | xmllint --noout -
 
   asan:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'   # not part of the light set — see the header comment
     name: asan (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -507,6 +590,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # churn/co-change gates read real git history — a shallow clone reddens them
+          persist-credentials: false   # no step in this job pushes or fetches with the token
 
       - name: Install tooling (Linux)
         if: runner.os == 'Linux'
@@ -652,3 +736,90 @@ jobs:
           name: sanitizer-reports-${{ matrix.os }}
           path: /tmp/asanlog*
           if-no-files-found: ignore
+
+  # ─── report-failure / report-green: this schedule's OWN tracking issue, separate from nightly.yml's ─────
+  #
+  # ci.yml's 05:41 UTC schedule and nightly.yml's 07:17 UTC schedule are two independent full runs against
+  # main. They used to report to the SAME issue, and that was a bug: nightly.yml's report-green closes on a
+  # green TSan run alone, which is not evidence THIS workflow's full matrix is also clean, so a green TSan
+  # night could close an issue this workflow opened while its own matrix was still red — and the reverse,
+  # a green full-matrix night closing an issue TSan opened while TSan was still red. Neither green run has
+  # any way to know the other workflow's current state.
+  #
+  # THE FIX: two labels, not one. `nightly-failure` stays as the SHARED label (so "every nightly-scale
+  # failure on main" is still one query), but every open/comment/close here also requires
+  # `nightly-full-matrix` — the label ONLY this workflow's report-failure applies, and ONLY this workflow's
+  # report-green matches on. nightly.yml's own pair does the same with `nightly-tsan` instead, on ITS own
+  # issue titled "Nightly checks failing on main (TSan)". The two issues, two titles, two label pairs: a
+  # green run in one workflow can now only ever touch the issue carrying ITS OWN second label. Neither job
+  # here runs for push, pull_request or workflow_dispatch — only the scheduled full-matrix run reports,
+  # matching the "scheduled full-matrix failures" scope this pair exists for; a workflow_dispatch run is
+  # watched live by whoever triggered it. See CONTRIBUTING.md §5 for the paragraph-length version.
+  report-failure:
+    name: report-failure (open or update the tracking issue)
+    needs: [plan, style, release, fallback-emitter, rhel, asan]
+    if: failure() && github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Open "Nightly checks failing on main (full matrix)", or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          label=nightly-failure
+          ownLabel=nightly-full-matrix
+          body="$RUNNER_TEMP/body.md"
+          failed_jobs="$( jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS_JSON" | paste -sd, - )"
+          {
+            echo "The ci.yml full-matrix schedule failed on \`main\` at $HEAD_SHA."
+            echo
+            echo "- run: $RUN_URL (schedule)"
+            echo "- failing jobs: ${failed_jobs:-none recorded}"
+            echo
+            echo "This is ci.yml's full 31-job matrix (release/fallback-emitter/rhel/asan/style), not the"
+            echo "nightly.yml ThreadSanitizer run — read this run's own job logs for the failing gate."
+          } > "$body"
+          if ! gh api "repos/$REPO/labels/$label" --silent 2>/dev/null; then
+            gh label create "$label" --repo "$REPO" --color B60205 \
+              --description "A nightly-scale workflow run failed on main; see the workflow-specific label for which one"
+          fi
+          if ! gh api "repos/$REPO/labels/$ownLabel" --silent 2>/dev/null; then
+            gh label create "$ownLabel" --repo "$REPO" --color 1D76DB \
+              --description "The full-matrix nightly failed on main; opened and closed by .github/workflows/ci.yml only"
+          fi
+          open="$( gh issue list --repo "$REPO" --label "$label,$ownLabel" --state open --json number --jq '.[0].number // empty' )"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body-file "$body"
+          else
+            gh issue create --repo "$REPO" --title "Nightly checks failing on main (full matrix)" --label "$label,$ownLabel" --body-file "$body"
+          fi
+
+  report-green:
+    name: report-green (close the tracking issue on this workflow's own green schedule run)
+    needs: [plan, style, release, fallback-emitter, rhel, asan]
+    if: success() && github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Comment "green again" on the open tracking issue and close it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          numbers="$( gh issue list --repo "$REPO" --label nightly-failure,nightly-full-matrix --state open --json number --jq '.[].number' )"
+          if [ -z "$numbers" ]; then
+            echo "no open nightly-full-matrix issue; nothing to close"
+            exit 0
+          fi
+          for n in $numbers; do
+            gh issue comment "$n" --repo "$REPO" --body "green again at $HEAD_SHA ($RUN_URL, ci.yml full matrix)"
+            gh issue close "$n" --repo "$REPO"
+          done

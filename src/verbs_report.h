@@ -783,7 +783,7 @@ int emitClonesReport( const rw::Config& cfg, const rw::IngestResult& ing )
         bool allExempt = true, allScript = true;
         for( NodeId id : gp.members )
         {
-            const std::string& p        = ing.files[ ing.symbols[id].fileId ];
+            const std::string_view p   = rootRelPath( ing, ing.symbols[id].fileId );
             const bool         isScript = quality::isTestScriptPath( p );
             if( !isScript && !quality::isFixturePath( p ) )
             {
@@ -2939,7 +2939,7 @@ std::optional<int> runStructureText( const MainDispatch& d )
         std::vector<NodeId> testSeeds;
         for( NodeId i = 0; i < N; ++i )
         {
-            if( rw::isTestPath( ing.files[ing.symbols[i].fileId] ) )
+            if( rw::isTestPath( rw::rootRelPath( ing, ing.symbols[i].fileId ) ) )
             {
                 testSeeds.push_back( i );
             }

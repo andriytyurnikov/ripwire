@@ -183,7 +183,12 @@ done
 # RE-PINNED 2026-09-12 (lane for-widen, L-W), the nine fixture bundles, same output change as the ten repo queries above:
 # measured base build (1cf3086e) → this build: fixture/geometry 2950 → 3299, fixture/call 3126 → 3490, fixture/parse 3349 → 3691, ffifix/geometry 2082 → 2082, ffifix/call 3116 → 3468, ffifix/parse 3525 → 3877, hostilefix/geometry 2834 → 3146, hostilefix/call 2106 → 2106, hostilefix/parse 3002 → 3360 — the coverage= root fact, its clause and the widening next= on a thin answer; on a 2–3.5 KB bundle that is 12–20%,
 # which is why the 4% band cannot absorb a root-fact addition on these and the bases follow it (the q5 precedent).
-FX_BASE="fixture|geometry area of a shape|3319
+# fixture/geometry RE-PINNED 2026-09-16 (#228, test/rootspellingcheck.sh), the q5 precedent, attributed three ways on a
+# git-less copy crawled as this arm crawls it (root typed `fixture`): base build 3,366 B; base build crawled as `.`
+# 3,488 B (+6 B is `root="."` against `root="fixture"`, so 3,494 B); this build 3,494 B. The typed root `fixture` matched
+# pathTierOf's `fixture/` segment, so every file of the tree was tiered test/bench and its notes.md headings could not
+# carry a doc mention; read root-relative they do (doc_mentions="1", r=3/r=4 swap). The other eight bases do not move.
+FX_BASE="fixture|geometry area of a shape|3494
 fixture|call a native function from python|3510
 fixture|parse the config and load it|3711
 ffifix|geometry area of a shape|2082

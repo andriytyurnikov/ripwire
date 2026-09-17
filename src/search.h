@@ -1587,7 +1587,7 @@ inline GrepCollection grepCollect( const IngestResult& ing, const std::string& p
     }
     std::sort( hitFileIds.begin(), hitFileIds.end(), [ & ]( std::uint32_t a, std::uint32_t b )
                {
-                   const PathTier ta = pathTierOf( ing.files[a] ), tb = pathTierOf( ing.files[b] );
+                   const PathTier ta = pathTierOf( rootRelPath( ing, a ) ), tb = pathTierOf( rootRelPath( ing, b ) );
                    if( ta != tb )
                    {
                        return ta < tb;

@@ -248,6 +248,15 @@ IngestResult ingest( const char* rootDir, const std::vector<std::string>& exclud
         PROFILE_SCOPE_DESCRIBE( "ingest: crawl (collectSources)" );
         auto [ crawledPaths, oversizeSkipped, taxonomySkips ] = collectSources( rootDir, excludeSubstr, maxFileBytes, excludeLabel, respectGitignore );
         result.files           = std::move( crawledPaths );
+        // #228: record the root once, for rootRelPath (model.h). A directory crawl joins it onto every path; a
+        // single-file root IS its one path, so the root-relative view anchors at that file's directory instead.
+        const std::string_view rootArg( rootDir );
+        result.crawlRoot = rootArg;
+        if( result.files.size() == 1 && result.files.front() == rootArg )
+        {
+            const std::size_t lastSlash = rootArg.rfind( '/' );
+            result.crawlRoot = ( lastSlash == std::string_view::npos ) ? std::string_view{} : rootArg.substr( 0, std::max<std::size_t>( lastSlash, 1 ) );
+        }
         result.skippedOversize = std::move( oversizeSkipped );
         result.crawlSkips      = std::move( taxonomySkips );   // §L1: excluded / unsupported-ext / unindexed exts
     }

@@ -1752,8 +1752,55 @@ inline void appendField( BodyWalk& w, const Declarator& d, std::string_view type
     w.def.fields.push_back( std::move( f ) );
 }
 
+// True when the word immediately before `s[at]` — the `(` at `at` — spells `alignas` / `__attribute__` /
+// `decltype`: that `(` opens the specifier's own argument list, not a member's parameter list.
+inline bool opensAttrSpecifier( std::string_view s, std::size_t at )
+{
+    static constexpr std::string_view kAttrKeywords[] = { "alignas", "__attribute__", "decltype" };
+    std::size_t wordEnd = at;
+    while( wordEnd > 0 && std::isspace( (unsigned char)s[wordEnd - 1] ) != 0 ) { --wordEnd; }
+    std::size_t wordStart = wordEnd;
+    while( wordStart > 0 && identByte( (unsigned char)s[wordStart - 1] ) ) { --wordStart; }
+    const std::string_view word = s.substr( wordStart, wordEnd - wordStart );
+    for( std::string_view kw : kAttrKeywords )
+    {
+        if( word == kw ) { return true; }
+    }
+    return false;
+}
+
 // The statement forms that contribute NO storage and are simply skipped, plus the ones that withdraw the
 // numbers. Returns true when the statement was consumed here and holds no field declarators.
+// The first `(` that is a CANDIDATE for a member declaration's parameter list: skip one that instead
+// belongs to an `alignas( … )` / `__attribute__( ( … ) )` / `decltype( … )` specifier, or that sits inside a
+// template argument list's `<…>` (`std::function< void(int) >`). None of those opens a parameter list, and
+// counting one anyway silently dropped the field it decorates while the aggregate still reported
+// modeled="1": `alignas(8) int x`, `int x __attribute__((aligned(8)))`, `decltype(1) x` and
+// `std::function<void(int)> cb` each lost their field this way. Returns npos when no candidate remains.
+inline std::size_t candidateParen( std::string_view s )
+{
+    int angle = 0;
+    for( std::size_t i = 0; i < s.size(); )
+    {
+        const char c = s[i];
+        if( c == '<' ) { ++angle; ++i; continue; }
+        if( c == '>' && angle > 0 ) { --angle; ++i; continue; }
+        if( c != '(' ) { ++i; continue; }
+        if( angle > 0 ) { ++i; continue; }   // a template argument's own parens — not a parameter list
+        if( !opensAttrSpecifier( s, i ) )
+        {
+            return i;
+        }
+        const std::size_t close = matchBracket( s, i, '(', ')' );
+        if( close == std::string_view::npos )
+        {
+            return std::string_view::npos;   // unbalanced — degrade rather than misclassify
+        }
+        i = close;
+    }
+    return std::string_view::npos;
+}
+
 // Where a member declaration's parameter list opens, or npos when it has none. Only a `(` that comes BEFORE the first
 // `[`, `=`, `{` or bitfield `:` can open one: `char a[(4)];`, `int x = (3);` and `int x{ (3) };` are data members whose
 // parenthesis sits in an extent or an initializer. Reading those as member functions dropped the field from the layout
@@ -1761,8 +1808,12 @@ inline void appendField( BodyWalk& w, const Declarator& d, std::string_view type
 // are functions whose own name holds one of those characters, so an `operator` word decides first.
 inline std::size_t parameterListParen( std::string_view s )
 {
-    const std::size_t paren = s.find( '(' );
-    if( paren == std::string_view::npos || containsWord( s, "operator" ) )
+    if( containsWord( s, "operator" ) )
+    {
+        return s.find( '(' );
+    }
+    const std::size_t paren = candidateParen( s );
+    if( paren == std::string_view::npos )
     {
         return paren;
     }

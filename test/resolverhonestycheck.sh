@@ -113,11 +113,13 @@ printf 'int foo8(double);\n'                > "$F/f8/b.cpp"
 printf 'int bar8() { return foo8(1); }\n'   > "$F/f8/caller.cpp"
 
 # F9 [B] PURE-VIRTUAL multi-candidate (realistic decl-only): two abstract area() decls in two ifaces,
-# caller calls s->area() → 2 edges → MUST carry amb=1.
+# caller calls s->area() → 2 edges → MUST carry amb=1. The receiver is an UNTYPED `auto` local: it was a
+# `Shape* s` PARAMETER until 2026-09-16, when Rule 2 began reading parameter types (narrowcheck arms 7-18) and
+# resolved it to Shape::area alone — which left check_signal's F9 row passing on ONE edge, vacuously.
 mkdir -p "$F/f9"
 printf 'struct Shape { virtual int area() const = 0; };\n'   > "$F/f9/s.h"
 printf 'struct Region { virtual int area() const = 0; };\n'  > "$F/f9/r.h"
-printf 'int compute9(Shape* s) { return s->area(); }\n'      > "$F/f9/u.cpp"
+printf 'extern Shape* shapes9[ 2 ];\nint compute9(int i) { auto s = shapes9[ i ]; return s->area(); }\n' > "$F/f9/u.cpp"
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # INVARIANT 1 — SOUNDNESS: every resolved edge points at a def whose NAME matches the call and whose

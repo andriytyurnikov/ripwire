@@ -148,7 +148,14 @@ inline std::string_view rootRelativeUri( std::string_view file, std::string_view
     const auto dropLeadingDot = []( std::string_view p ) noexcept
     { return p.rfind( "./", 0 ) == 0 ? p.substr( 2 ) : p; };
     const std::string_view f = dropLeadingDot( file );
-    const std::string_view r = dropLeadingDot( rootPrefix );
+    std::string_view       r = dropLeadingDot( rootPrefix );
+    // #228: a root typed with a trailing '/' ("$PWD/") is the same root. Callers are meant to pass rootPrefixOf's
+    // trimmed spelling, and several --pack-task row renderers passed the raw argument instead, so their p= kept the
+    // whole absolute path under "$PWD/" alone. Trimming here makes every caller agree, whichever spelling it holds.
+    while( r.size() > 1 && r.back() == '/' )
+    {
+        r.remove_suffix( 1 );
+    }
     if( !r.empty() && f.size() > r.size() + 1 && f.compare( 0, r.size(), r ) == 0 && f[ r.size() ] == '/' )
     {
         return f.substr( r.size() + 1 );

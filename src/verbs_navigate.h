@@ -1697,7 +1697,7 @@ std::optional<int> runVerify( const MainDispatch& d )
     for( NodeId n : reach )
     {
         const std::uint32_t fileId = ing.symbols[n].fileId;
-        if( claim.arg2Quoted ? bool( fileFlags[ fileId ] ) : ( builtinLayer( ing.files[ fileId ] ) != nullptr && claim.arg2 == builtinLayer( ing.files[ fileId ] ) ) )
+        if( claim.arg2Quoted ? bool( fileFlags[ fileId ] ) : ( builtinLayer( rootRelPath( ing, fileId ) ) != nullptr && claim.arg2 == builtinLayer( rootRelPath( ing, fileId ) ) ) )
         {
             witnesses.push_back( n );
         }

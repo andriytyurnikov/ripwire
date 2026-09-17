@@ -313,7 +313,7 @@ struct Eval
         }
         // Paths are short (<~300 B) so std::regex_search here cannot meaningfully back-track-blow-up.
         set.erase( std::remove_if( set.begin(), set.end(),
-                   [ & ]( NodeId id ) { return !std::regex_search( ing.files[ ing.symbols[id].fileId ], rx ); } ), set.end() );
+                   [ & ]( NodeId id ) { const std::string_view p = rootRelPath( ing, ing.symbols[id].fileId ); return !std::regex_search( p.data(), p.data() + p.size(), rx ); } ), set.end() );
         return set;
     }
 
@@ -339,8 +339,11 @@ struct Eval
         }
         // Does ANY indexed file carry a layer at all? Asked over ing.files rather than over `set`, so a
         // narrowed sub-expression cannot make an unlayered tree look layered or the reverse.
-        const bool treeHasLayers = std::any_of( ing.files.begin(), ing.files.end(),
-                                                []( const std::string& path ) { return *builtinLayer( path ) != '\0'; } );
+        bool treeHasLayers = false;
+        for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ) && !treeHasLayers; ++f )
+        {
+            treeHasLayers = *builtinLayer( rootRelPath( ing, f ) ) != '\0';
+        }
         if( !treeHasLayers )
         {
             DEGRADED_PATH_ALERT( "query: layer() on a tree with no layer taxonomy — refused, not answered 0" );
@@ -350,7 +353,7 @@ struct Eval
             return {};
         }
         set.erase( std::remove_if( set.begin(), set.end(),
-                   [ & ]( NodeId id ) { return std::string_view( builtinLayer( ing.files[ ing.symbols[id].fileId ] ) ) != name; } ), set.end() );
+                   [ & ]( NodeId id ) { return std::string_view( builtinLayer( rootRelPath( ing, ing.symbols[id].fileId ) ) ) != name; } ), set.end() );
         return set;
     }
 

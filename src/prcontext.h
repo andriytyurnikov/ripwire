@@ -1104,7 +1104,7 @@ inline int writePrContext( std::FILE* out, const std::string& root, const Ingest
             // (2) affected test files among the blast radius (the --affected logic), path-sorted.
             std::vector<char>          fseen( F, 0 );
             std::vector<std::uint32_t> testFiles;
-            for( NodeId n : reach ) { const std::uint32_t tf = ing.symbols[n].fileId; if( !fseen[tf] && isTestPath( ing.files[tf] ) ) { fseen[tf] = 1; testFiles.push_back( tf ); } }
+            for( NodeId n : reach ) { const std::uint32_t tf = ing.symbols[n].fileId; if( !fseen[tf] && isTestPath( rootRelPath( ing, tf ) ) ) { fseen[tf] = 1; testFiles.push_back( tf ); } }
             std::sort( testFiles.begin(), testFiles.end(), [ & ]( std::uint32_t a, std::uint32_t b ) { return ing.files[a] < ing.files[b]; } );
 
             // (3) blast-radius files (non-changed), ranked by # dependent symbols then path — the "what this

@@ -1080,7 +1080,7 @@ struct TestGateResult
 // (see that function's banner for why isTestPath, not isTestSymbol, is the right one here).
 inline std::vector<char> testSeedForwardReach( const IngestResult& ing, const Graph& g )
 {
-    return seedForwardReachIf( ing, g, [ & ]( NodeId i ) { return isTestPath( ing.files[ing.symbols[i].fileId] ); } );
+    return seedForwardReachIf( ing, g, [ & ]( NodeId i ) { return isTestPath( rootRelPath( ing, ing.symbols[i].fileId ) ); } );
 }
 
 // The gate's ONE computation, expressed over an explicit CHANGED-SYMBOL set rather than a changed-FILE mask.
@@ -1119,7 +1119,7 @@ inline TestGateResult computeTestGateFor( const IngestResult& ing, const Graph& 
             continue; // the changed symbols are the change, not its radius
         }
         ++r.impactedSymbols;
-        if( !isTestPath( ing.files[f] ) && !testReach[n] )
+        if( !isTestPath( rootRelPath( ing, f ) ) && !testReach[n] )
         {
             r.untested.push_back( n );
         }

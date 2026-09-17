@@ -107,8 +107,26 @@ BUILD_TYPE_STR="$( printf '%s' "$OUT_LONG" | grep -oE '\([^,]+,' | sed -E 's/^\(
 # evidence of a dev configure, it is evidence the check couldn't run. Fail honestly instead.
 BIN_DIR="$( cd "$( dirname "$BIN" )" && pwd )"
 CACHE_FILE="$BIN_DIR/CMakeCache.txt"
+# A multi-config generator (Ninja Multi-Config, Xcode) writes the binary to <build>/<Config>/ with the cache one level
+# up, and its label is the configuration that was built (CMakeLists.txt; test/buildtypestampcheck.sh). Only a parent
+# cache whose CMAKE_CONFIGURATION_TYPES lists this directory's name counts. Any other layout still falls through to
+# the missing-cache FAIL below, and never gets a guessed label.
+MULTI_CONFIG=""
+PARENT_CACHE="$( dirname "$BIN_DIR" )/CMakeCache.txt"
+if [ ! -f "$CACHE_FILE" ] && [ -f "$PARENT_CACHE" ]; then
+    CONFIG_TYPES="$( grep -E '^CMAKE_CONFIGURATION_TYPES:[A-Za-z]*=' "$PARENT_CACHE" | cut -d= -f2- )"
+    case ";$CONFIG_TYPES;" in
+        *";$( basename "$BIN_DIR" );"*) CACHE_FILE="$PARENT_CACHE"; MULTI_CONFIG="$( basename "$BIN_DIR" )";;
+    esac
+fi
 if [ ! -f "$CACHE_FILE" ]; then
     no "no CMakeCache.txt found next to \$BIN's build dir ($CACHE_FILE) — cannot verify the build-type label; configure the tree that produced $BIN before running this gate"
+elif [ -n "$MULTI_CONFIG" ]; then
+    if [ "$BUILD_TYPE_STR" = "$MULTI_CONFIG" ]; then
+        ok "multi-config build (<build>/$MULTI_CONFIG/, a configuration listed in $CACHE_FILE) prints the configuration it built"
+    else
+        no "multi-config build (<build>/$MULTI_CONFIG/, a configuration listed in $CACHE_FILE) prints '$BUILD_TYPE_STR', expected '$MULTI_CONFIG'"
+    fi
 else
     CACHE_BUILD_TYPE="$( grep -oE '^CMAKE_BUILD_TYPE:[A-Za-z]*=.*' "$CACHE_FILE" | cut -d= -f2 )"
     if [ -z "$CACHE_BUILD_TYPE" ]; then

@@ -374,7 +374,7 @@ inline void liftPackageDirMention( const IngestResult& ing, const RawMention& m,
     const std::size_t fileCount = ing.files.size();
     for( std::uint32_t f = 0; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
     {
-        if( !isIndexBaseName( baseNameOf( ing.files[f] ) ) || !dirSuffixMatches( ing.files[f], m.segments ) )
+        if( !isIndexBaseName( baseNameOf( ing.files[f] ) ) || !dirSuffixMatches( rootRelPath( ing, f ), m.segments ) )
         {
             continue;
         }
@@ -418,7 +418,7 @@ inline void mentionUnkeptFiles( const IngestResult& ing, const RawMention& m, co
         bool                           named  = false;
         for( std::uint32_t f = 0; f < fileCount; ++f )
         {
-            if( !pathSuffixMatches( ing.files[f], suffix ) )
+            if( !pathSuffixMatches( rootRelPath( ing, f ), suffix ) )
             {
                 continue;
             }
@@ -440,7 +440,7 @@ inline void mentionUnkeptFiles( const IngestResult& ing, const RawMention& m, co
     }
     for( std::uint32_t f = 0; f < fileCount; ++f )
     {
-        if( isIndexBaseName( baseNameOf( ing.files[f] ) ) && dirSuffixMatches( ing.files[f], m.segments )
+        if( isIndexBaseName( baseNameOf( ing.files[f] ) ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments )
             && std::find( kept.begin(), kept.end(), f ) == kept.end() )
         {
             out.push_back( f );
@@ -633,7 +633,7 @@ inline bool applyMentionBoost( const IngestResult& ing, std::string_view task, s
             const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
             for( std::uint32_t f = 0; f < fileCount && mentionedFiles.size() < kMentionMaxFiles; ++f )
             {
-                if( !pathSuffixMatches( ing.files[f], suffix ) )
+                if( !pathSuffixMatches( rootRelPath( ing, f ), suffix ) )
                 {
                     continue;
                 }

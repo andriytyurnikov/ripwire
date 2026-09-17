@@ -177,11 +177,14 @@ reasonOf(){ "$BIN" "$@" --no-cache 2>/dev/null | grep -oE ' route="[^"]*' | head
 routeOf(){  reasonOf "$@" | grep -oE 'name-exact|subtoken\+body' | head -1; }
 
 # (f1) the fixture's identifier query: buildGraph is defined once, in routefix/graph.cpp.
+# RE-PIN 2026-09-16 (#228, test/rootspellingcheck.sh): the anchor names that file ROOT-RELATIVE, `graph.cpp`. It read
+# `routefix/graph.cpp` only because the root is typed `routefix` here; crawled as `.` it always said `graph.cpp` and
+# crawled absolute `/.../graph.cpp`. (f4) below moves the same way: `dupfix/alpha.cpp+1` -> `alpha.cpp+1`.
 identReason="$( reasonOf routefix --for="buildGraph" )"
 case "$identReason" in
-    *'anchors: buildGraph(routefix/graph.cpp)'*)
+    *'anchors: buildGraph(graph.cpp)'*)
         ok "(f1) the name-exact reason names the anchoring symbol's defining file: [$identReason]" ;;
-    *)  no "(f1) the name-exact reason must carry 'anchors: buildGraph(routefix/graph.cpp)' — without the defining file a reader cannot tell a core symbol from a one-use test helper, which is the whole failure this arm records. Got: [$identReason]" ;;
+    *)  no "(f1) the name-exact reason must carry 'anchors: buildGraph(graph.cpp)' — without the defining file a reader cannot tell a core symbol from a one-use test helper, which is the whole failure this arm records. Got: [$identReason]" ;;
 esac
 
 # (f2) a subtoken+body route has no anchoring symbol, so it must claim none. An 'anchors:' list on a route
@@ -238,9 +241,9 @@ case "$synReason" in
 esac
 dupReason="$( reasonOf dupfix --for="sharedName" )"
 case "$dupReason" in
-    *'anchors: sharedName(dupfix/alpha.cpp+1)'*)
+    *'anchors: sharedName(alpha.cpp+1)'*)
         ok "(f4) a name with two definitions discloses one file and the count of the rest (+1)" ;;
-    *)  no "(f4) a name defined in two files must disclose 'sharedName(dupfix/alpha.cpp+1)' — an anchor that names one file and hides that others exist over-states the evidence. Got: [$dupReason]" ;;
+    *)  no "(f4) a name defined in two files must disclose 'sharedName(alpha.cpp+1)' — an anchor that names one file and hides that others exist over-states the evidence. Got: [$dupReason]" ;;
 esac
 
 # (f5) the disclosure rides inside the EXISTING reason: the phrase downstream gates read must survive.

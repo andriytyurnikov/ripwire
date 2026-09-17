@@ -85,6 +85,7 @@ EXEMPT = {
     "agentloopcodexcheck.sh":    "pure-python test of bench/agentloop prompt-building; the path to build/ripwire is asserted as a STRING, never executed",
     "agentloopgradercheck.sh":   "pure-python test of the agentloop grader's circular-invocation detector; 'ripwire' appears only in fixture command strings, never executed",
     "agentlooplockcheck.sh":     "pure-python/schema test of tasks.lock partitioning; no CLI invocation",
+    "buildtypestampcheck.sh":    "CMake-configure-level gate: configures the real CMakeLists.txt into scratch trees under single- and multi-config generators, builds only the ripwire_version_stamp target (a cmake -P script) and reads the generated version.h each configuration's compile resolves via the CMake File API; no ripwire binary is built, bound or executed — the file contains neither RIPWIRE_BIN nor $BIN",
     "clonebandcheck.sh":         "compiles an isolated $CXX probe .cpp; never invokes build/ripwire",
     "clonelexcheck.sh":          "builds its OWN standalone harness binary from src/*.cpp, independent of build/ripwire",
     "codexplugincheck.sh":       "pure-python/json check of a static MCP manifest file; 'ripwire' only appears as a string field",

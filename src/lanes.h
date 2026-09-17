@@ -200,6 +200,7 @@ struct Claim
     std::string   id;                        // canonicalId, or "" ⇒ emitted as null (it would be a bare name)
     std::uint32_t amb = 0, cx = 0, ccx = 0, churn = 0;
     std::uint8_t  tested = 0;
+    bool          nonSource = false;         // isTestPath on the ROOT-RELATIVE path (#228: never a directory above the root)
 };
 
 struct LaneFileRow
@@ -436,6 +437,7 @@ inline Claim makeClaim( const IngestResult& ing, const Graph& g, const ClaimLens
     c.overloads      = lens.ident->defsForKey[ node ];
     c.idCollidesWith = lens.ident->idCollidesWith[ node ];
     c.path           = ing.files[ s.fileId ];
+    c.nonSource      = isTestPath( rootRelPath( ing, s.fileId ) );
     c.name           = s.name;
     c.scope          = s.scope;
     c.cx             = s.cx;
@@ -768,7 +770,7 @@ inline WarnTally tallyClaims( const std::vector<Lane>& lanes )
             {
                 ++t.idCollisions;
             }
-            if( isTestPath( c.path ) )
+            if( c.nonSource )
             {
                 ++t.nonSourceClaims;
             }

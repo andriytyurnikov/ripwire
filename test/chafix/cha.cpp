@@ -44,11 +44,16 @@ void g()
     d.speak();                   // CHA-lite: cone(Dog) = {Dog, Animal} → Animal::speak ONLY (Robot excluded)
 }
 
-// NEGATIVE control: the SAME call shape, but the receiver is a function PARAMETER — no local var→type
-// binding is captured, so the receiver's static type is UNKNOWN to the narrower → CHA-lite cannot fire →
-// the call stays HONESTLY AMBIGUOUS (edges to BOTH Animal::speak and Robot::speak). This contrast is the
-// proof that the positive case is a REAL hierarchy narrow, not a vacuously-unambiguous fixture.
-void h( Dog* p )
+// NEGATIVE control: the SAME call shape, but the receiver is a local the capture cannot type (`auto` from a
+// subscript) — no var→type binding, so the receiver's static type is UNKNOWN to the narrower → CHA-lite cannot
+// fire → the call stays HONESTLY AMBIGUOUS (edges to BOTH Animal::speak and Robot::speak). This contrast is the
+// proof that the positive case is a REAL hierarchy narrow, not a vacuously-unambiguous fixture. (Until
+// 2026-09-16 the receiver was a `Dog* p` PARAMETER; a parameter's written type is read by Rule 2 and CHA-lite
+// now — test/narrowcheck.sh arms 7-18 — so it no longer demonstrates an unknown type.)
+Dog* kennel[ 2 ];
+
+void h( int slot )
 {
+    auto p = kennel[ slot ];
     p->speak();                  // unknown receiver type → Animal::speak + Robot::speak both survive (amb)
 }

@@ -423,6 +423,21 @@ void rustImplVisitNode( RustImplCtx& cx, TSNode node, const char* t )
     }
 }
 
+// the namespace a member's type was written in — `std` for `std::string name_;` — or "" for an unqualified type, a
+// global `::Foo` and a class-template scope (`Outer<int>::Inner`, no namespace). captureFields reads only the two-
+// segment spelling (a type_identifier directly under the qualified_identifier), so this is ONE segment; a class scope
+// `Outer::Inner` parses the same way and records `Outer`. Its readers act on `std` alone (resolve.h fieldTypeWrittenInStd):
+// no in-repo class IS a std:: type, so Rule 2b records no type for the field and the HAS-A edges draw none (kParserVer 99).
+inline std::string_view writtenTypeNamespace( TSNode typeNode, std::string_view src ) noexcept
+{
+    if( !kindIs( ts_node_type( typeNode ), "qualified_identifier" ) )
+    {
+        return {};
+    }
+    const TSNode scope = fieldChild( typeNode, NodeField::Scope );
+    return ( !ts_node_is_null( scope ) && kindIs( ts_node_type( scope ), "namespace_identifier" ) ) ? nodeTextOf( scope, src ) : std::string_view{};
+}
+
 // S5-E HAS-A composition edges: walk a class/struct node's field_declaration_list and emit a
 // compose RawRef for each typed member variable whose type name matches a known class/struct name.
 // Two sub-relations:
@@ -430,6 +445,8 @@ void rustImplVisitNode( RustImplCtx& cx, TSNode node, const char* t )
 //   "uses"    — the member is a REFERENCE or POINTER (SoundEngine& m_sound; Foo* p;) — injected dep.
 // These edges carry isCompose=true and are NEVER inserted into the call graph CSR; they live only in
 // Graph::composeEdges for the <compose> block in --for and --around. C++ only (priority per PLAN).
+// The name is the type's final segment and the qualifier the NAMESPACE it was written in (writtenTypeNamespace):
+// the same (name, immediate qualifier) pair a call ref carries, so `std::string name_;` is `string` in `std`.
 void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
 {
     if( lang != Lang::Cpp )
@@ -586,6 +603,7 @@ void captureFields( TSNode classNode, std::uint32_t fileId, Lang lang, std::stri
             r.lang       = lang;
             r.isCompose  = true;
             r.name       = typeName;        // the member-type name (SpherePool, SoundEngine, ...)
+            r.qualifier  = writtenTypeNamespace( typeNode, src );   // `std` for `std::string name_;`, "" unqualified
             r.fieldName  = std::move( fieldName );
             r.composeRel = ( isRefOrPtr || declIsRefOrPtr ) ? "uses" : "creates";
             refs.push_back( std::move( r ) );

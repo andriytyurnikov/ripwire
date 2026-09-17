@@ -89,7 +89,7 @@ inline bool isTestSymbol( const IngestResult& ing, std::size_t symbolIndex ) noe
     {
         return true;
     }
-    return s.fileId < ing.files.size() && isTestPath( ing.files[s.fileId] );
+    return s.fileId < ing.files.size() && isTestPath( rootRelPath( ing, s.fileId ) );
 }
 
 // ── §P11 first-screen ORDERING tiers ─────────────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ inline std::vector<std::uint8_t> pathTierIndexOver( const IngestResult& ing, con
         const std::uint32_t f = fileIdOf( row );
         if( f < tierOfFile.size() && tierOfFile[f] == 0xFFu )
         {
-            tierOfFile[f] = std::uint8_t( pathTierOf( ing.files[f] ) );
+            tierOfFile[f] = std::uint8_t( pathTierOf( rootRelPath( ing, f ) ) );
         }
     }
     return tierOfFile;
@@ -455,13 +455,13 @@ inline std::vector<float> rankTierSymbolMultipliersShaped( const IngestResult& i
     std::vector<float> fileMul( ing.files.size(), 1.f );
     for( std::size_t f = 0; f < ing.files.size(); ++f )
     {
-        fileMul[f] = rankTierMultiplierOf( ing.files[f] );
+        fileMul[f] = rankTierMultiplierOf( rootRelPath( ing, std::uint32_t( f ) ) );
         // min(), not assignment or a product: a file already down-weighted for being a deck or a fixture
         // must never be LIFTED by this line, and two independent de-prioritizations are one claim about
         // one file, not a compounding penalty.
         if( demoteDocTier )
         {
-            fileMul[f] = std::min( fileMul[f], shapeDocMultiplierOf( ing.files[f] ) );
+            fileMul[f] = std::min( fileMul[f], shapeDocMultiplierOf( rootRelPath( ing, std::uint32_t( f ) ) ) );
         }
     }
 
@@ -547,7 +547,7 @@ inline void applyIgnoreTests( IngestResult& ing )
     std::vector<char> drop( ing.files.size(), 0 );
     for( std::size_t f = 0; f < ing.files.size(); ++f )
     {
-        drop[f] = isTestPath( ing.files[f] ) ? 1 : 0;
+        drop[f] = isTestPath( rootRelPath( ing, std::uint32_t( f ) ) ) ? 1 : 0;   // #228: a tests/ ABOVE the root is not this tree's
     }
 
     std::vector<NodeId> remap( ing.symbols.size(), kNoNode );

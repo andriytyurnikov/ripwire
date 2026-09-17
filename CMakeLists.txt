@@ -290,14 +290,31 @@ file(APPEND "${_ripwire_embedded_queries}" "}};\n\ninline constexpr std::string_
 # -DCMAKE_BUILD_TYPE=Release" locally — Release defines NDEBUG, which compiles DEGRADED_PATH_ALERT out).
 # "unspecified" told a bug reporter nothing about what they actually ran; "dev" is the honest, specific
 # label for that configure (§P6.10, 2026-07-28 output audit) — it is the first thing a bug report pastes.
-if(NOT CMAKE_BUILD_TYPE)
-  set(_ripwire_build_type_str "dev")
+# A MULTI-CONFIG generator (Ninja Multi-Config, Xcode) has no CMAKE_BUILD_TYPE: the configuration is picked at
+# build time (`cmake --build b --config Release`), so "dev" would mislabel an NDEBUG binary, and gates that read
+# the token to decide whether alerts are compiled in would believe it. The token is `$<CONFIG>` there, and the
+# header is per-configuration too: one shared version.h is rewritten by whichever configuration stamped last, and
+# a cross-config Ninja Multi-Config build collapses the stamp into ONE command, so every configuration's binary
+# carried the first one's token. Each configuration owns generated/<Config>/version.h, searched ahead of
+# generated/. A single-config tree keeps generated/version.h and its exact command line
+# (test/buildtypestampcheck.sh).
+get_property(_ripwire_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_ripwire_multi_config)
+  set(_ripwire_build_type_str "$<CONFIG>")
+  set(_ripwire_version_header "${_ripwire_generated_dir}/$<CONFIG>/version.h")
+  set(_ripwire_generated_include_dirs "${_ripwire_generated_dir}/$<CONFIG>" "${_ripwire_generated_dir}")
 else()
-  set(_ripwire_build_type_str "${CMAKE_BUILD_TYPE}")
+  if(NOT CMAKE_BUILD_TYPE)
+    set(_ripwire_build_type_str "dev")
+  else()
+    set(_ripwire_build_type_str "${CMAKE_BUILD_TYPE}")
+  endif()
+  set(_ripwire_version_header "${_ripwire_generated_dir}/version.h")
+  set(_ripwire_generated_include_dirs "${_ripwire_generated_dir}")
 endif()
-set(_ripwire_version_header "${_ripwire_generated_dir}/version.h")
 # Always run before the two executable targets. copy_if_different inside the script keeps the header's
-# mtime stable when neither HEAD nor tracked bytes changed, so this gives exact provenance without
+# mtime stable when neither HEAD nor tracked bytes changed (per configuration on a multi-config generator,
+# so switching --config does not rewrite the other's header), so this gives exact provenance without
 # recompiling main.cpp on every incremental build.
 add_custom_target(ripwire_version_stamp ALL
   COMMAND ${CMAKE_COMMAND}
@@ -309,6 +326,24 @@ add_custom_target(ripwire_version_stamp ALL
     -DRIPWIRE_COMPILER_VER=${CMAKE_CXX_COMPILER_VERSION}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_stamp.cmake
   BYPRODUCTS ${_ripwire_version_header}
+  VERBATIM)
+
+# The producer identity (cmake/source_identity.cmake): one generated DEFINITION, compiled into both
+# executables, that src/quality.h keys its Snapshot caches on — so a blob one build computed is never
+# served to a build whose sources differ. A .cpp rather than a header: see src/sourceidentity.h.
+# It is a hash of src/ and queries/ only, the same for every configuration, so it is ONE shared file with its
+# OWN always-run target, never a second COMMAND of ripwire_version_stamp. In a cross-config Ninja Multi-Config
+# build, a target with a shared byproduct runs one configuration's commands only, so it cannot also write the
+# per-configuration version.h. Every other configuration's header is then "missing and no known rule"
+# (test/buildtypestampcheck.sh #6). Collapsing is harmless for the identity alone, whose command does not
+# depend on the configuration. copy_if_different keeps an unchanged tree from recompiling it.
+set(_ripwire_source_identity_cpp "${_ripwire_generated_dir}/source_identity.cpp")
+add_custom_target(ripwire_source_identity ALL
+  COMMAND ${CMAKE_COMMAND}
+    -DRIPWIRE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+    -DRIPWIRE_OUTPUT=${_ripwire_source_identity_cpp}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/source_identity.cmake
+  BYPRODUCTS ${_ripwire_source_identity_cpp}
   VERBATIM)
 
 # ---- tree-sitter CORE (static) ----
@@ -558,30 +593,32 @@ find_package(Threads REQUIRED)
 add_executable(ripwire_probe
   src/tsprobe.cpp
   ${RIPWIRE_SRCS}
+  ${_ripwire_source_identity_cpp}
   ${RIPWIRE_TS_OBJECTS})
 target_link_libraries(ripwire_probe PRIVATE tree-sitter Threads::Threads)
 target_include_directories(ripwire_probe PRIVATE
   ${tree_sitter_SOURCE_DIR}/lib/include
-  ${_ripwire_generated_dir}
+  ${_ripwire_generated_include_dirs}
   src/infra
   third_party
   src)
-add_dependencies(ripwire_probe ripwire_version_stamp)
+add_dependencies(ripwire_probe ripwire_version_stamp ripwire_source_identity)
 
 # ---- the real ripwire binary: full pipeline (ingest → graph → PageRank → minified XML) ----
 # main.cpp forward-declares rw::ingest(); linking ingest.cpp supplies the real tree-sitter one.
 add_executable(ripwire
   src/main.cpp
   ${RIPWIRE_SRCS}
+  ${_ripwire_source_identity_cpp}
   ${RIPWIRE_TS_OBJECTS})
 target_link_libraries(ripwire PRIVATE tree-sitter Threads::Threads)
 target_include_directories(ripwire PRIVATE
   ${tree_sitter_SOURCE_DIR}/lib/include
-  ${_ripwire_generated_dir}
+  ${_ripwire_generated_include_dirs}
   src/infra
   third_party
   src)
-add_dependencies(ripwire ripwire_version_stamp)
+add_dependencies(ripwire ripwire_version_stamp ripwire_source_identity)
 
 # ---- small-vector A/B knobs (bench/svectorab.py drives both; see bench/SVECTORAB.md) ----
 # RIPWIRE_SMALLVEC selects which container src/smallvec.h's `rw::SmallVec` alias resolves to:

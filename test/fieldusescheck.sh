@@ -44,8 +44,26 @@
 #   (F) python      — the self.x / annotated-attribute contract above
 #   (G) nonlocal    — --nonlocal-state charges the GLOBAL `count` only to the free function that touches it,
 #                     never to a method touching the same-named FIELD (precision)
-#   (H) additive    — the flagless map carries the field rows with NO <c> edges; determinism, warm==cold, xmllint
+#   (H) additive    — the flagless map carries the field rows with NO <c> edges; determinism, xmllint, and warm==cold on a
+#                     cache the second run provably READ (its RIPWIRE_CACHE_STATS line: the cold run wrote the file, and the
+#                     warm one reparsed nothing and reused every file — without it a failed write reparses and "matches")
 #   (I) legend      — the member-form legend defines every attribute it emits and states the alias limit
+#   (J) std receiver — a receiver whose declared type is written in namespace `std` names NO in-repo class, even when
+#                     one shares the type's final segment (resolve.h namesStdType, the guard Rule 2 already applies).
+#                     Its own fixture, built below with load-bearing line numbers (in-repo `pair` and `Twin` both
+#                     declare `first`; `store::Text` and `Blob` both declare `len`; an in-repo `string` has a Twin `rep`):
+#                       use.cpp:1 local std::pair · :2 std::pair parameter · :7 `::std::pair` (a global `::` is no qualifier)
+#                       :8 `std::string s; s.rep.first` (the base type of a two-hop receiver)  ⇒ split, owner_candidates=2
+#                       :6 the SAME function declares `std::pair v` and `pair v` — the std record TOMBSTONES the name
+#                          (a skip would hand both sites to the in-repo pair)                   ⇒ both sites split
+#                       :9 / :10 / :12 a std local, a std parameter and a `std::make_pair` local SHADOW Node's member `p` —
+#                          a tombstoned local never falls back to the member's type             ⇒ split
+#                       :13 the same rule for a NON-std tombstone: `Twin p` and `pair p` in one method of Pod, whose member
+#                          `p` is a pair — the flat table cannot tell which declaration a site sees, and the member
+#                          answered neither                                                     ⇒ both sites split
+#                       CONTROLS that must keep pinning: :3 `pair r` · :11 Node's own member `p` · :4 `store::Text t` and
+#                          :5 a `const store::Text&` parameter (a non-std qualifier still narrows, against a second `len` owner)
+#                     ⇒ pair.first count=13 pinned=2 amb_sites=11 · Twin.first count=11 pinned=0 · Text.len pinned=2 · Blob.len count=0
 #
 # Exits non-zero on any failure. Does NOT edit test/regression.sh (listed there by hand, same commit).
 
@@ -68,6 +86,13 @@ echo "fieldusescheck: BIN=$BIN  FIX=$FIX"
 rows(){ "$BIN" "$FIX" --uses="$1" --no-cache 2>/dev/null | grep -o '<u [^>]*/>' \
         | sed -E 's/.*role="([a-z]*)" p="([^"]*\/)?([^"/]*)"( in_id="[^"]*")?( owner_candidates="([0-9]+)")?.*/\1 \3 \6/; s/ +$//; s/ ([0-9]+)$/ owner_candidates=\1/' | sort; }
 attr(){ printf '%s' "$2" | grep -o "<uses [^>]*>" | grep -o " $1=\"[^\"]*\"" | head -1 | sed -E 's/.*="([^"]*)"/\1/'; }
+# $1 a RIPWIRE_CACHE_STATS line (artifactcheck's observable): true only when that run parsed nothing and reused every file it
+# indexed — a cache it READ, not a cold parse whose output merely equals the cold run's
+cache_was_read(){
+    reparsed="$( printf '%s' "$1" | sed -nE 's/.* reparsed=([0-9]+) .*/\1/p' )"; reused="$( printf '%s' "$1" | sed -nE 's/.* reused=([0-9]+) .*/\1/p' )"
+    files="$( printf '%s' "$1" | sed -nE 's/.* files=([0-9]+) .*/\1/p' )"
+    [ "$reparsed" = "0" ] && [ -n "$files" ] && [ "$files" -gt 0 ] && [ "$reused" = "$files" ]
+}
 expect_rows(){  # $1 selector, $2 label, $3.. expected lines
     sel="$1"; label="$2"; shift 2
     want="$( printf '%s\n' "$@" | sort )"; got="$( rows "$sel" )"
@@ -167,7 +192,9 @@ if printf '%s' "$MAP" | grep -q 'symbols=27 '; then ok "(H) flagless map symbols
 "$BIN" "$FIX" --uses=Counter.count --no-cache >"$TMP/b" 2>/dev/null
 if cmp -s "$TMP/a" "$TMP/b"; then ok "(H) determinism: two --no-cache runs byte-identical"; else no "(H) --uses=Counter.count is not deterministic"; fi
 "$BIN" "$FIX" --uses=Counter.count --cache="$TMP/c.bin" >/dev/null 2>&1
-"$BIN" "$FIX" --uses=Counter.count --cache="$TMP/c.bin" >"$TMP/w" 2>/dev/null
+RIPWIRE_CACHE_STATS=1 "$BIN" "$FIX" --uses=Counter.count --cache="$TMP/c.bin" >"$TMP/w" 2>"$TMP/w.err"
+HSTATS="$( grep 'cache-stats' "$TMP/w.err" )"
+if [ -s "$TMP/c.bin" ] && cache_was_read "$HSTATS"; then ok "(H) the warm run READ the cache the cold run wrote (${HSTATS#ripwire: })"; else no "(H) the warm run did not read a written cache: ${HSTATS:-<no cache-stats line>}"; fi
 if cmp -s "$TMP/a" "$TMP/w"; then ok "(H) warm cache == cold (field refs round-trip the cache)"; else no "(H) warm --uses=Counter.count differs from cold"; fi
 if command -v xmllint >/dev/null 2>&1; then
     if xmllint --noout "$TMP/a" 2>/dev/null; then ok "(H) --uses=Counter.count is well-formed XML"; else no "(H) --uses=Counter.count is not well-formed XML"; fi
@@ -181,6 +208,71 @@ for a in owner_candidates pinned amb_sites owners_of_name; do
 done
 if printf '%s' "$LEG" | grep -qi 'alias'; then ok "(I) legend states the no-alias-analysis limit"; else no "(I) legend does not state the alias limit"; fi
 if printf '%s' "$LEG" | grep -qi 'macro'; then ok "(I) legend states the macro limit"; else no "(I) legend does not state the macro limit"; fi
+
+# ── (J) a receiver typed in namespace std ────────────────────────────────────────────────────────────────
+STD="$TMP/stdrecv"
+mkdir -p "$STD/lib" "$STD/app"
+cat > "$STD/lib/pair.h" <<'EOF'
+struct pair { int first; int second; };
+struct Twin { int first; };
+namespace store { struct Text { int len; }; }
+struct Blob { int len; };
+struct string { Twin rep; };
+EOF
+cat > "$STD/app/use.cpp" <<'EOF'
+int local() { std::pair<int, int> p; return p.first; }
+int param( const std::pair<int, int>& q ) { return q.first; }
+int mine() { pair r; return r.first; }
+int text() { store::Text t; return t.len; }
+int qparam( const store::Text& u ) { return u.len; }
+int both() { { std::pair<int, int> v; if( v.first ) { return 1; } } pair v; return v.first; }
+int global() { ::std::pair<int, int> g; return g.first; }
+int chain() { std::string s; return s.rep.first; }
+struct Node { pair p; int get() { std::pair<int, int> p; return p.first; }
+    int peek( const std::pair<int, int>& p ) { return p.first; }
+    int own() { return p.first; }
+    int made() { auto p = std::make_pair( 1, 2 ); return p.first; } };
+struct Pod { pair p; int two() { { Twin p; if( p.first ) { return 1; } } pair p; return p.first; } };
+EOF
+# presence guard: the fixture spells every shape the rows below derive from (a vanished line would make a split vacuous)
+if [ "$( grep -c 'std::pair<int, int>' "$STD/app/use.cpp" )" = "6" ] && grep -q 'store::Text t;' "$STD/app/use.cpp" && grep -q 'std::string s;' "$STD/app/use.cpp" \
+   && grep -q '{ Twin p;' "$STD/app/use.cpp"; then
+    ok "(J) fixture spells the six std::pair declarations, the store::Text control, the std::string two-hop receiver and Pod's two p declarations"
+else
+    no "(J) fixture lost a shape — the rows below would not measure the std guard"
+fi
+srows(){ "$BIN" "$STD" --uses="$1" --no-cache 2>/dev/null | grep -o '<u [^>]*/>' \
+         | sed -E 's/.*role="([a-z]*)" p="([^"]*\/)?([^"/]*)"( in_id="[^"]*")?( owner_candidates="([0-9]+)")?.*/\1 \3 \6/; s/ +$//; s/ ([0-9]+)$/ owner_candidates=\1/' | sort; }
+expect_srows(){
+    sel="$1"; label="$2"; shift 2
+    want="$( printf '%s\n' "$@" | sort )"; got="$( srows "$sel" )"
+    if [ "$got" = "$want" ]; then ok "$label: --uses=$sel rows exact"; else no "$label: --uses=$sel row set mismatch"; printf '    want:\n%s\n    got:\n%s\n' "$want" "$got"; fi
+}
+expect_srows pair.first "(J) pair.first" \
+    "read use.cpp:1 owner_candidates=2" "read use.cpp:2 owner_candidates=2" "read use.cpp:3" \
+    "read use.cpp:6 owner_candidates=2" "read use.cpp:6 owner_candidates=2" "read use.cpp:7 owner_candidates=2" "read use.cpp:8 owner_candidates=2" \
+    "read use.cpp:9 owner_candidates=2" "read use.cpp:10 owner_candidates=2" "read use.cpp:11" "read use.cpp:12 owner_candidates=2" \
+    "read use.cpp:13 owner_candidates=2" "read use.cpp:13 owner_candidates=2"
+expect_srows Twin.first "(J) Twin.first" \
+    "read use.cpp:1 owner_candidates=2" "read use.cpp:2 owner_candidates=2" \
+    "read use.cpp:6 owner_candidates=2" "read use.cpp:6 owner_candidates=2" "read use.cpp:7 owner_candidates=2" "read use.cpp:8 owner_candidates=2" \
+    "read use.cpp:9 owner_candidates=2" "read use.cpp:10 owner_candidates=2" "read use.cpp:12 owner_candidates=2" \
+    "read use.cpp:13 owner_candidates=2" "read use.cpp:13 owner_candidates=2"
+expect_srows Text.len "(J) Text.len (a non-std qualifier keeps pinning)" "read use.cpp:4" "read use.cpp:5"
+expect_srows Blob.len "(J) Blob.len (the second len owner the control pins against)"
+PF="$( "$BIN" "$STD" --uses=pair.first --no-cache 2>/dev/null )"
+TL="$( "$BIN" "$STD" --uses=Text.len --no-cache 2>/dev/null )"
+[ "$( attr count "$PF" )" = "13" ] && [ "$( attr pinned "$PF" )" = "2" ] && [ "$( attr amb_sites "$PF" )" = "11" ] && [ "$( attr owners_of_name "$PF" )" = "2" ] \
+    && ok '(J) pair.first count="13" pinned="2" amb_sites="11" owners_of_name="2"' \
+    || no "(J) pair.first count=$( attr count "$PF" ) pinned=$( attr pinned "$PF" ) amb_sites=$( attr amb_sites "$PF" ) owners_of_name=$( attr owners_of_name "$PF" ) (want 13/2/11/2)"
+[ "$( attr pinned "$TL" )" = "2" ] && [ "$( attr owners_of_name "$TL" )" = "2" ] \
+    && ok '(J) Text.len pinned="2" against owners_of_name="2" (the control has a contrast)' \
+    || no "(J) Text.len pinned=$( attr pinned "$TL" ) owners_of_name=$( attr owners_of_name "$TL" ) (want 2/2)"
+"$BIN" "$STD" --uses=pair.first --cache="$TMP/std.bin" >/dev/null 2>&1
+RIPWIRE_CACHE_STATS=1 "$BIN" "$STD" --uses=pair.first --cache="$TMP/std.bin" >"$TMP/stdwarm" 2>"$TMP/stdwarm.err"
+JSTATS="$( grep 'cache-stats' "$TMP/stdwarm.err" )"
+if [ -s "$TMP/std.bin" ] && cache_was_read "$JSTATS"; then ok "(J) the warm run READ the cache the cold run wrote (${JSTATS#ripwire: })"; else no "(J) the warm run did not read a written cache: ${JSTATS:-<no cache-stats line>}"; fi
+if [ -n "$PF" ] && [ "$( cat "$TMP/stdwarm" )" = "$PF" ]; then ok "(J) warm cache == cold (the qualified type text round-trips the cache)"; else no "(J) warm --uses=pair.first differs from cold"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ALL PASS"; exit 0; fi

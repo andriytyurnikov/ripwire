@@ -62,6 +62,30 @@ trap 'rm -rf "$TMP" "$R1" "$R2" "$R3" $TMPDIRS' EXIT
 # a C++ file with one function of non-zero cognitive complexity (so --hotspots ranks it at all)
 mkfn(){ printf 'int %s( int x )\n{\n    if( x > 1 ) return x + 1;\n    return x - 1;\n}\n' "$1"; }
 D(){ export GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1"; }
+
+# ── THE WINDOW RULE: every churn comparison hands ripwire and git ONE absolute start ─────────────────
+# A relative date is evaluated when it is READ, and ripwire and the oracle read it at two different moments.
+# `--since="2 weeks ago"` passed to both put a commit on the window edge on opposite sides of it: #265's
+# live audit went red on src/slice.h churn 15 vs 14, commit 16efdbcf sitting at the two-week boundary. So:
+#   * an EXPLICIT window is computed ONCE, from ONE clock read (NOW_EPOCH), as an ISO-8601 UTC instant, and
+#     that identical string is passed to both sides (ripwire hands it to git verbatim);
+#   * the DEFAULT window is not wall-clock at all: ripwire anchors it on HEAD's committer epoch minus 12
+#     calendar months (gitmine.h defaultWindowSince, stamped window="12mo@HEAD"). Its oracle used to ask git
+#     for `"12 months ago"`, a different window that happens to hold the same commits today and stops holding
+#     them the day a fixture's 2026-06 commits fall out of the wall clock's year (June 2027). defaultWindowStart
+#     computes the anchored start instead, and arm 4b pins both rules at the exact second of their edge.
+isoUtc(){ date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+NOW_EPOCH="$( date +%s )"
+SINCE_2W="$( isoUtc $(( NOW_EPOCH - 14 * 86400 )) )"
+# defaultWindowStart REPO — the ISO start of ripwire's DEFAULT 12-month churn window for REPO: HEAD's committer
+# epoch (`log -1 --format=%ct HEAD`, gitHeadCommitEpoch) moved back 12 calendar months by monthsBeforeEpoch's
+# rule — the same UTC day-of-month and time of day in the target month, rolling forward when that month lacks it.
+defaultWindowStart(){
+    python3 -c 'import sys, datetime as dt
+t = dt.datetime.fromtimestamp( int( sys.argv[1] ), dt.timezone.utc )
+b = dt.datetime( t.year - 1, t.month, 1, tzinfo = dt.timezone.utc ) + dt.timedelta( days = t.day - 1, hours = t.hour, minutes = t.minute, seconds = t.second )
+print( b.strftime( "%Y-%m-%dT%H:%M:%SZ" ) )' "$( git -C "$1" log -1 --format=%ct HEAD )"
+}
 # RE-PINNED 2026-08-19 (R-E CORRECTION). Every path selector in this file was a LEADING-SLASH substring
 # ("/deep/util.cpp\"") — correct while p= carried the absolute crawl path, and silently WRONG since p= went
 # root-relative (2026-08-17): a file AT the crawl root now spells p="util.cpp" with no slash at all, so the
@@ -287,9 +311,11 @@ fi
 # content it used to drop. The merge behaviour itself is gated by test/mergechurncheck.sh, not here.
 if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     DUPES="$( git -C "$ROOT" ls-files | awk -F/ '{ print $NF }' | sort | uniq -d | grep -c . )"
-    # auditWindow LABEL GIT_WINDOW [EXTRA_FLAGS...] — every ranked row's churn= must equal the number of
+    # auditWindow LABEL WINDOW_START [EXTRA_FLAGS...] — every ranked row's churn= must equal the number of
     # in-window commits naming THAT path. A row whose own path has ZERO in-window commits must not be ranked at
     # all (the §H6 phantom row: ranked= counted a file that only borrowed a bare-basename sibling's commit).
+    # WINDOW_START is ABSOLUTE (THE WINDOW RULE above): the explicit window passes the same string to ripwire,
+    # and the default window's start is the one ripwire anchors on HEAD.
     auditWindow(){
         local label="$1" gitWindow="$2"; shift 2
         "$BIN" "$ROOT" --hotspots --limit=1000 "$@" > "$TMP/live.hot" 2>/dev/null
@@ -308,9 +334,70 @@ if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         [ "$bad" = 0 ] && ok "live repo ($label): all $rows ranked rows re-derive their own git count ($DUPES duplicated basenames in the tree)" \
             || no "live repo ($label): $bad of $rows rows disagree with git"
     }
-    auditWindow "default 12mo" "12 months ago"
-    auditWindow "--since=2 weeks ago" "2 weeks ago" --since="2 weeks ago"
+    auditWindow "default 12mo@HEAD, from $( defaultWindowStart "$ROOT" )" "$( defaultWindowStart "$ROOT" )"
+    auditWindow "--since=$SINCE_2W, two weeks from one clock read" "$SINCE_2W" --since="$SINCE_2W"
 fi
+
+# ── 4b. THE WINDOW EDGE, to the second: one absolute start agrees; two readings of a relative one do not ──
+# R_EDGE puts one commit EXACTLY on the two-week edge; R_ANCHOR puts one commit exactly on the default window's HEAD-anchored
+# edge and another one second before it. Each side is re-derived by the same pair of extractions, so every
+# comparison below is ripwire's churn= against git's own count for the same path.
+R_EDGE="$( mktemp -d )"; R_ANCHOR="$( mktemp -d )"; TMPDIRS="$TMPDIRS $R_EDGE $R_ANCHOR"
+EDGE_2W=$(( NOW_EPOCH - 14 * 86400 ))
+mkdir -p "$R_EDGE/src"; mkfn edgeFn > "$R_EDGE/src/edge.cpp"; mkfn baseFn > "$R_EDGE/src/base.cpp"
+git -C "$R_EDGE" init -q; git -C "$R_EDGE" config user.email edge@x.com; git -C "$R_EDGE" config user.name Edge
+D "@$(( NOW_EPOCH - 30 * 86400 )) +0000"; git -C "$R_EDGE" add -A >/dev/null; git -C "$R_EDGE" commit -qm base
+printf '// on the edge\n' >> "$R_EDGE/src/edge.cpp"
+D "@$EDGE_2W +0000"; git -C "$R_EDGE" add -A >/dev/null; git -C "$R_EDGE" commit -qm edge
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+gitEdgeCount(){ git -C "$1" log -c --since="$2" --name-only --format= | grep -cx "$3"; }   # REPO START RELPATH
+"$BIN" "$R_EDGE" --hotspots --limit=50 --since="$SINCE_2W" > "$TMP/e_at.out" 2>/dev/null
+"$BIN" "$R_EDGE" --hotspots --limit=50 --since="$( isoUtc $(( EDGE_2W + 1 )) )" > "$TMP/e_after.out" 2>/dev/null
+E_AT="$( churn_of "$TMP/e_at.out" /src/edge.cpp )";       G_AT="$( gitEdgeCount "$R_EDGE" "$SINCE_2W" src/edge.cpp )"
+E_AFTER="$( churn_of "$TMP/e_after.out" /src/edge.cpp )"; G_AFTER="$( gitEdgeCount "$R_EDGE" "$( isoUtc $(( EDGE_2W + 1 )) )" src/edge.cpp )"
+[ "${E_AT:-0}" = 1 ] && [ "$G_AT" = 1 ] \
+    && ok "edge: --since=$SINCE_2W puts the commit dated exactly on it INSIDE the window on both sides (ripwire 1, git 1)" \
+    || no "edge: at --since=$SINCE_2W ripwire churn=\"${E_AT:-0}\" and git names src/edge.cpp in $G_AT commit(s), want 1 and 1"
+[ "${E_AFTER:-0}" = 0 ] && [ "$G_AFTER" = 0 ] \
+    && ok "edge: one second later both sides drop it (ripwire 0, git 0) — the commit sits ON the edge, and both read the same instant" \
+    || no "edge: one second past the edge ripwire churn=\"${E_AFTER:-0}\" and git $G_AFTER, want 0 and 0 — the fixture is not on the edge, or the two sides read the instant differently"
+# CONTROL — the pre-fix shape, reproduced without a race: the relative "2 weeks ago" read by ripwire at NOW and by
+# the oracle one second later (GIT_TEST_DATE_NOW is git's own clock override, and ripwire's git child inherits it).
+# It must DISAGREE, or the two arms above would pass whether or not the rule mattered.
+R_NOW="$( GIT_TEST_DATE_NOW="$NOW_EPOCH" "$BIN" "$R_EDGE" --hotspots --limit=50 --since="2 weeks ago" 2>/dev/null > "$TMP/e_rel.out"; churn_of "$TMP/e_rel.out" /src/edge.cpp )"
+G_NOW="$( GIT_TEST_DATE_NOW="$NOW_EPOCH" gitEdgeCount "$R_EDGE" "2 weeks ago" src/edge.cpp )"
+G_LATER="$( GIT_TEST_DATE_NOW="$(( NOW_EPOCH + 1 ))" gitEdgeCount "$R_EDGE" "2 weeks ago" src/edge.cpp )"
+if [ "$G_NOW" = "$G_LATER" ]; then
+    printf '  SKIP  %s\n' "edge control: this git ignores GIT_TEST_DATE_NOW (\"2 weeks ago\" names src/edge.cpp in $G_NOW commit(s) at both instants), so the double reading cannot be staged"
+elif [ "${R_NOW:-0}" = 1 ] && [ "$G_LATER" = 0 ]; then
+    ok "edge control: \"2 weeks ago\" read by ripwire at NOW (churn 1) and by git one second later (0) DISAGREES — the #265 flake, staged"
+else
+    no "edge control: the double reading did not disagree (ripwire at NOW ${R_NOW:-0}, git at NOW $G_NOW, git at NOW+1 $G_LATER) — this arm cannot show the rule matters"
+fi
+
+# The DEFAULT window's edge. HEAD is dated 2026-06-09T12:00:00Z, so ripwire's window starts 2025-06-09T12:00:00Z.
+mkdir -p "$R_ANCHOR/src"; mkfn inFn > "$R_ANCHOR/src/in.cpp"; mkfn outFn > "$R_ANCHOR/src/out.cpp"; mkfn headFn > "$R_ANCHOR/src/head.cpp"
+git -C "$R_ANCHOR" init -q; git -C "$R_ANCHOR" config user.email anchor@x.com; git -C "$R_ANCHOR" config user.name Anchor
+D "2025-01-01T00:00:00Z"; git -C "$R_ANCHOR" add -A >/dev/null; git -C "$R_ANCHOR" commit -qm base
+printf '// one second early\n' >> "$R_ANCHOR/src/out.cpp"; D "2025-06-09T11:59:59Z"; git -C "$R_ANCHOR" add -A >/dev/null; git -C "$R_ANCHOR" commit -qm early
+printf '// on the anchored edge\n' >> "$R_ANCHOR/src/in.cpp"; D "2025-06-09T12:00:00Z"; git -C "$R_ANCHOR" add -A >/dev/null; git -C "$R_ANCHOR" commit -qm edge
+printf '// head\n' >> "$R_ANCHOR/src/head.cpp"; D "2026-06-09T12:00:00Z"; git -C "$R_ANCHOR" add -A >/dev/null; git -C "$R_ANCHOR" commit -qm head
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+START_D="$( defaultWindowStart "$R_ANCHOR" )"
+"$BIN" "$R_ANCHOR" --hotspots --limit=50 > "$TMP/d_edge.out" 2>/dev/null
+D_IN="$( churn_of "$TMP/d_edge.out" /src/in.cpp )"; D_OUT="$( churn_of "$TMP/d_edge.out" /src/out.cpp )"
+[ "$START_D" = "2025-06-09T12:00:00Z" ] && ok "anchor: defaultWindowStart reads HEAD 2026-06-09T12:00:00Z as a window starting $START_D" \
+    || no "anchor: defaultWindowStart computed '$START_D', want 2025-06-09T12:00:00Z"
+[ "${D_IN:-0}" = "$( gitEdgeCount "$R_ANCHOR" "$START_D" src/in.cpp )" ] && [ "${D_IN:-0}" = 1 ] \
+  && [ "${D_OUT:-0}" = "$( gitEdgeCount "$R_ANCHOR" "$START_D" src/out.cpp )" ] && [ "${D_OUT:-0}" = 0 ] \
+    && ok "anchor: the default window and --since=$START_D agree on both sides of the edge (in.cpp 1, out.cpp 0, one second apart)" \
+    || no "anchor: default churn in.cpp=\"${D_IN:-0}\" out.cpp=\"${D_OUT:-0}\" vs git from $START_D $( gitEdgeCount "$R_ANCHOR" "$START_D" src/in.cpp )/$( gitEdgeCount "$R_ANCHOR" "$START_D" src/out.cpp ), want 1/1 and 0/0"
+# CONTROL — the old oracle for the default window, `"12 months ago"` by the wall clock, is a different window: it
+# already drops in.cpp's edge commit that ripwire (correctly, by its own anchor) still counts.
+W_WALL="$( gitEdgeCount "$R_ANCHOR" "12 months ago" src/in.cpp )"
+[ "${D_IN:-0}" = 1 ] && [ "$W_WALL" = 0 ] \
+    && ok "anchor control: the wall-clock oracle \"12 months ago\" names in.cpp in 0 commits where the anchored default counts 1 — the old oracle was measuring another window" \
+    || no "anchor control: wall-clock \"12 months ago\" gives $W_WALL for in.cpp and the default gives ${D_IN:-0} — this arm cannot show the anchor matters"
 
 
 # ── 5. F4 — THE RIGHT ANSWER DOES NOT EXIST, SO THERE IS NO TIE TO REFUSE ───────────────────────────
@@ -351,7 +438,7 @@ RANKED4="$( grep -oE 'ranked="[0-9]+"' "$TMP/h4.out" | head -1 | tr -cd '0-9' )"
 C4="$( churn_of "$TMP/h4.out" /a/zeta.cpp )"
 # git's own answer, from the SAME command ripwire runs (never `git log -- <path>`: history simplification
 # manufactures mismatches — 19 of them on a first verifier pass; that is trap #12 in this round's ledger)
-WANT4="$( git -C "$R4" log -c --since="12 months ago" --name-only --format= | grep -cx 'a/zeta.cpp' )"
+WANT4="$( git -C "$R4" log -c --since="$( defaultWindowStart "$R4" )" --name-only --format= | grep -cx 'a/zeta.cpp' )"
 [ "${RANKED4:-x}" = 0 ] && ok "F4/deleted: ranked=\"0\" — a deleted file's 6 commits are NOBODY's, not the one survivor's" \
     || no "F4/deleted: ranked=\"$RANKED4\", want 0 (a phantom row is counted — the survivor took the deleted file's churn)"
 [ -z "$C4" ] && ok "F4/deleted: a/zeta.cpp carries NO churn= (its own in-window count is $WANT4)" \
@@ -393,7 +480,7 @@ tr '>' '\n' < "$TMP/m5.out" | psel /keep/src/zeta.cpp | grep -q . \
     && ok "F4/excluded: the survivor keep/src/zeta.cpp IS indexed (so the next arm is not vacuous)" \
     || no "F4/excluded: --exclude took the survivor too — this arm proves nothing"
 C5="$( churn_of "$TMP/h5.out" /keep/src/zeta.cpp )"
-W5="$( git -C "$R5" -c core.quotepath=false log -c --since="12 months ago" --name-only --format= | grep -cx 'keep/src/zeta.cpp' )"
+W5="$( git -C "$R5" -c core.quotepath=false log -c --since="$( defaultWindowStart "$R5" )" --name-only --format= | grep -cx 'keep/src/zeta.cpp' )"
 [ "${C5:-0}" = "$W5" ] && ok "F4/excluded: keep/src/zeta.cpp keeps its own $W5 in-window commit(s) — the EXCLUDED src/zeta.cpp's 5 are nobody's" \
     || no "F4/excluded: keep/src/zeta.cpp churn=\"$C5\" but its own path appears in $W5 in-window commit(s) — an --exclude'd file's history was donated to it"
 
@@ -416,7 +503,7 @@ done
 unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 "$BIN" "$R6b/keep" --hotspots --limit=50 > "$TMP/h6b.out" 2>/dev/null
 C6B="$( churn_of "$TMP/h6b.out" /src/zeta.cpp )"
-W6B="$( git -C "$R6b" -c core.quotepath=false log -c --since="12 months ago" --name-only --format= | grep -cx 'keep/src/zeta.cpp' )"
+W6B="$( git -C "$R6b" -c core.quotepath=false log -c --since="$( defaultWindowStart "$R6b" )" --name-only --format= | grep -cx 'keep/src/zeta.cpp' )"
 [ "${C6B:-0}" = "$W6B" ] && ok "F4/out-of-root: keep/src/zeta.cpp keeps its own $W6B in-window commit(s) — the out-of-root src/zeta.cpp's 5 are nobody's" \
     || no "F4/out-of-root: the crawled keep/src/zeta.cpp churn=\"$C6B\" but its own path appears in $W6B in-window commit(s) — a path outside the crawl root donated its history"
 
@@ -476,9 +563,9 @@ git -C "$R7" log -1 --name-status --find-renames=40% --format= | grep -q '^R' \
     || ok "rename: git reported the change as delete+add — the dead-path question is identical either way"
 "$BIN" "$R7" --hotspots --limit=50 > "$TMP/h7.out" 2>/dev/null
 C7SUB="$( churn_of "$TMP/h7.out" /sub/old.cpp )"
-W7SUB="$( git -C "$R7" log -c --since="12 months ago" --name-only --format= | grep -cx 'sub/old.cpp' )"
+W7SUB="$( git -C "$R7" log -c --since="$( defaultWindowStart "$R7" )" --name-only --format= | grep -cx 'sub/old.cpp' )"
 C7NEW="$( churn_of "$TMP/h7.out" /new.cpp )"
-W7NEW="$( git -C "$R7" log -c --since="12 months ago" --name-only --format= | grep -cx 'new.cpp' )"
+W7NEW="$( git -C "$R7" log -c --since="$( defaultWindowStart "$R7" )" --name-only --format= | grep -cx 'new.cpp' )"
 [ "${C7SUB:-0}" = "$W7SUB" ] && ok "rename: sub/old.cpp keeps its own $W7SUB commit(s) — the 4 pre-rename commits of the DEAD old.cpp are nobody's" \
     || no "rename: sub/old.cpp churn=\"$C7SUB\" but its own path appears in $W7SUB in-window commit(s)"
 [ "${C7NEW:-0}" = "$W7NEW" ] && ok "rename: new.cpp reports exactly the $W7NEW commit(s) that name it (history starts at the rename, as documented)" \
@@ -513,7 +600,7 @@ unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 # counts 0 for two of these three files and would have "proved" the join broken when it is the expectation that
 # is wrong. Unquote git's side in python, exactly as gitUnquotePath does, then compare.
 gitPathCount(){   # gitPathCount REPO RELPATH — in-window commits naming exactly RELPATH, per ripwire's own command
-    git -C "$1" -c core.quotepath=false log -c --since="12 months ago" --name-only --format= \
+    git -C "$1" -c core.quotepath=false log -c --since="$( defaultWindowStart "$1" )" --name-only --format= \
         | python3 -c '
 import sys, re
 def unquote( raw ):
@@ -737,7 +824,7 @@ PYEOF
         || no "F6: fast-import did not produce the long paths (got $LONGROWS) — the rest of this section proves nothing"
 
     F9="$( "$BIN" "$R9" --for="xFn" 2>/dev/null | tr '<' '\n' | grep -F 'n="xFn"' | grep -oE 'churn="[0-9]+"' | tr -cd '0-9' )"
-    W9="$( git -C "$R9" log -c --since="12 months ago" --name-only --format= | grep -cx 'src/x.cpp' )"
+    W9="$( git -C "$R9" log -c --since="$( defaultWindowStart "$R9" )" --name-only --format= | grep -cx 'src/x.cpp' )"
     [ "${F9:-0}" = "$W9" ] && ok "F6/gitLogNameOnlyRaw: --for churn=\"$F9\" equals src/x.cpp's own $W9 commit(s) — the split tail bound to nothing" \
         || no "F6/gitLogNameOnlyRaw: --for churn=\"$F9\" but src/x.cpp's own path appears in $W9 in-window commit(s) (a 4096-byte split tail bound to it)"
 
@@ -814,16 +901,20 @@ if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 && [ -d "$ROOT/src" ]; the
     [ "${RA:-0}" = "${RD:-1}" ] && ok "offset: the absolute-subdir and dot-from-inside spellings agree (ranked=$RA)" \
         || no "offset: ranked=\"$RA\" for '$ROOT/src' vs \"$RD\" for '.' inside it — one spelling of the same tree is wrong"
     # and every row of the dot spelling re-derives against git's own walk, prefixed by the offset
-    git -C "$ROOT" log -c --since="12 months ago" --name-only --format= | sort | uniq -c | awk '{ print $1" "$2 }' > "$TMP/o.counts"
-    tr '>' '\n' < "$TMP/o_dot.out" | grep -oE 'p="\./[^"]+" churn="[0-9]+"' | sed 's|p="\./||; s|" churn="| |; s|"$||' > "$TMP/o.rows"
+    git -C "$ROOT" log -c --since="$( defaultWindowStart "$ROOT" )" --name-only --format= | sort | uniq -c | awk '{ print $1" "$2 }' > "$TMP/o.counts"
+    # RE-POINTED with THE WINDOW RULE: this selector still demanded the retired `p="./…"` spelling, so on a root-relative
+    # p= it read ZERO rows and the arm below printed "all 0 rows … re-derive" as a PASS — the R-E shape this file's
+    # header already records, surviving here. A leading "./" is now optional, and the row count must equal ranked=.
+    tr '>' '\n' < "$TMP/o_dot.out" | grep -oE 'p="[^"]+" churn="[0-9]+"' | sed 's|p="\./|p="|; s|p="||; s|" churn="| |; s|"$||' > "$TMP/o.rows"
     obad=0; orows=0
     while read -r rel got; do
         orows=$(( orows + 1 ))
         want="$( awk -v p="src/$rel" '$2 == p { print $1 }' "$TMP/o.counts" )"; [ -n "$want" ] || want=0
         [ "$got" != "$want" ] && { obad=$(( obad + 1 )); no "offset: ./$rel churn=\"$got\" but git names src/$rel in $want in-window commit(s)"; }
     done < "$TMP/o.rows"
-    [ "$obad" = 0 ] && ok "offset: all $orows rows of the subdirectory-root spelling re-derive against git's own walk (prefix 'src/')" \
-        || no "offset: $obad of $orows subdirectory-root rows disagree with git"
+    [ "$obad" = 0 ] && [ "$orows" -gt 0 ] && [ "$orows" = "${RD:-x}" ] \
+        && ok "offset: all $orows rows of the subdirectory-root spelling (ranked=$RD) re-derive against git's own walk (prefix 'src/')" \
+        || no "offset: $obad of $orows subdirectory-root rows disagree with git, and $orows rows were read where ranked=\"$RD\""
 fi
 
 # 10b. A root directory spelled with a SPACE and non-ASCII bytes — the offset probe runs `rev-parse
@@ -840,7 +931,7 @@ D 2026-06-02T12:00:00; git -C "$R11" add -A >/dev/null; git -C "$R11" commit -qm
 unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 "$BIN" "$R11" --hotspots --limit=50 > "$TMP/h11.out" 2>"$TMP/h11.err"
 C11="$( churn_of "$TMP/h11.out" /src/u.cpp )"
-W11="$( git -C "$R11" -c core.quotepath=false log -c --since="12 months ago" --name-only --format= | grep -cx 'src/u.cpp' )"
+W11="$( git -C "$R11" -c core.quotepath=false log -c --since="$( defaultWindowStart "$R11" )" --name-only --format= | grep -cx 'src/u.cpp' )"
 [ "${C11:-0}" = "$W11" ] && ok "offset: a root spelled with a space and non-ASCII bytes still derives (src/u.cpp = $W11)" \
     || no "offset: churn=\"$C11\" under a non-ASCII root dir, want $W11 — the toplevel probe's answer did not compare equal"
 
@@ -861,7 +952,7 @@ D 2026-06-02T12:00:00; git -C "$R10" add a.cpp >/dev/null; git -C "$R10" commit 
 unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 "$BIN" "$R10" --hotspots --limit=50 > "$TMP/h10.out" 2>"$TMP/h10.err"
 C10="$( churn_of "$TMP/h10.out" /a.cpp )"
-W10="$( git -C "$R10" log -c --since="12 months ago" --name-only --format= | grep -cx 'a.cpp' )"
+W10="$( git -C "$R10" log -c --since="$( defaultWindowStart "$R10" )" --name-only --format= | grep -cx 'a.cpp' )"
 [ "${C10:-0}" = "$W10" ] && ok "nested repo: the OUTER root keeps its own churn ($W10) — the nested checkout did not capture the offset" \
     || no "nested repo: a.cpp churn=\"$C10\" but git names it in $W10 outer commit(s) — a nested toplevel won the probe"
 [ -z "$( churn_of "$TMP/h10.out" /inner/b.cpp )" ] \

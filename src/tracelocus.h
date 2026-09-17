@@ -80,7 +80,7 @@ inline std::uint32_t traceMatchFile( const IngestResult& ing, std::string_view r
         const std::vector<std::string> suffix( segments.end() - std::ptrdiff_t( suffixLen ), segments.end() );
         for( std::uint32_t f = 0; f < fileCount; ++f )
         {
-            if( mention_detail::pathSuffixMatches( ing.files[f], suffix ) )
+            if( mention_detail::pathSuffixMatches( rootRelPath( ing, f ), suffix ) )
             {
                 return f;
             }
@@ -532,7 +532,7 @@ inline std::uint32_t testPairFile( const IngestResult& ing, std::uint32_t testFi
         std::size_t   bestDepth = 0;
         for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ); ++f )
         {
-            if( f == testFileId || rw::isTestPath( ing.files[f] ) || baseNameOf( ing.files[f] ) != candidate )
+            if( f == testFileId || rw::isTestPath( rw::rootRelPath( ing, f ) ) || baseNameOf( ing.files[f] ) != candidate )
             {
                 continue;
             }

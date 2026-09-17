@@ -153,13 +153,16 @@ case "$body" in
 esac
 
 # ── (f3) THE ANCHOR ITSELF, and the count that must NOT move with it ──────────────────────────────
+# RE-PIN 2026-09-16 (#228, test/rootspellingcheck.sh): anchor paths below are ROOT-RELATIVE. They printed
+# `defoverdeclfix/…` only because this gate types the root as `defoverdeclfix` (crawled as `.` the same tree printed
+# the bare file name, crawled absolute `/.../file`). The anchor choices and their +N counts are unchanged.
 # The rule writes NameAnchor::fileId and nothing else, so the disclosed path moves to the definition
 # while the "+N" ambiguity count — extraDefs, four Widget definitions minus the claimant — stays 3.
 # A "+N" that moved would mean the rule had rewritten the anchor's own disclosure, not just its choice.
 anchor="$( sed -n 's/.*anchors: Widget(\([^)]*\)).*/\1/p' "$TMP/lens" | head -1 )"
-[ "$anchor" = "defoverdeclfix/z_widget.hpp+3" ] \
+[ "$anchor" = "z_widget.hpp+3" ] \
     && ok "the disclosed anchor is the definition, ambiguity count intact (anchors: Widget($anchor))" \
-    || no "anchors: Widget($anchor) — expected defoverdeclfix/z_widget.hpp+3"
+    || no "anchors: Widget($anchor) — expected z_widget.hpp+3"
 
 # ── (f4) INERT-BRANCH CONTROL: a claimant that ALREADY carries a body keeps the anchor ─────────────
 # zy_cog.hpp DEFINES Cog and sorts before zz_cog_fwd.hpp, which re-declares it. The first definition
@@ -171,9 +174,9 @@ anchor="$( sed -n 's/.*anchors: Widget(\([^)]*\)).*/\1/p' "$TMP/lens" | head -1 
 "$BIN" defoverdeclfix --for=Cog >"$TMP/cog" 2>/dev/null
 cogan="$( sed -n 's/.*anchors: Cog(\([^)]*\)).*/\1/p' "$TMP/cog" | head -1 )"
 cogbody="$( tr '>' '\n' <"$TMP/cog" | sed -n 's/.*<b t="[^"]*" l="\([0-9]*\)" p="\([^"]*\)".*/\2:\1/p' | head -1 | sed 's#defoverdeclfix/##' )"
-[ "$cogan" = "defoverdeclfix/zy_cog.hpp+2" ] && [ "$cogbody" = "zy_cog.hpp:14" ] \
+[ "$cogan" = "zy_cog.hpp+2" ] && [ "$cogbody" = "zy_cog.hpp:14" ] \
     && ok "a first-in-NodeId claimant that already carries a body keeps the anchor (Cog: $cogan, body $cogbody)" \
-    || no "--for=Cog moved: anchor=$cogan body=$cogbody — expected defoverdeclfix/zy_cog.hpp+2 and zy_cog.hpp:14"
+    || no "--for=Cog moved: anchor=$cogan body=$cogbody — expected zy_cog.hpp+2 and zy_cog.hpp:14"
 
 # ── (f5) NO-BODY-ANYWHERE CONTROL: the fallback is the OLD behaviour, unchanged ────────────────────
 # Sprocket is declared twice and defined nowhere, so no claimant carries a body and the rule must
@@ -182,9 +185,9 @@ cogbody="$( tr '>' '\n' <"$TMP/cog" | sed -n 's/.*<b t="[^"]*" l="\([0-9]*\)" p=
 "$BIN" defoverdeclfix --for=Sprocket >"$TMP/spr" 2>/dev/null
 spran="$( sed -n 's/.*anchors: Sprocket(\([^)]*\)).*/\1/p' "$TMP/spr" | head -1 )"
 sprbody="$( tr '>' '\n' <"$TMP/spr" | sed -n 's/.*<b t="[^"]*" l="\([0-9]*\)" p="\([^"]*\)".*/\2:\1/p' | head -1 | sed 's#defoverdeclfix/##' )"
-[ "$spran" = "defoverdeclfix/a_headers.hpp+1" ] && [ "$sprbody" = "a_headers.hpp:21" ] \
+[ "$spran" = "a_headers.hpp+1" ] && [ "$sprbody" = "a_headers.hpp:21" ] \
     && ok "a name no definition gives a body to keeps its first-in-NodeId anchor (Sprocket: $spran)" \
-    || no "--for=Sprocket moved: anchor=$spran body=$sprbody — expected defoverdeclfix/a_headers.hpp+1 and a_headers.hpp:21"
+    || no "--for=Sprocket moved: anchor=$spran body=$sprbody — expected a_headers.hpp+1 and a_headers.hpp:21"
 
 # ── (f6) UNIQUE-DEFINITION INVARIANCE — the registered criterion that outranks the band ────────────
 # Gadget is declared once and nowhere else. There is no second claimant, so nothing about this query
@@ -193,9 +196,9 @@ sprbody="$( tr '>' '\n' <"$TMP/spr" | sed -n 's/.*<b t="[^"]*" l="\([0-9]*\)" p=
 "$BIN" defoverdeclfix --for=Gadget >"$TMP/gad" 2>/dev/null
 gadan="$( sed -n 's/.*anchors: Gadget(\([^)]*\)).*/\1/p' "$TMP/gad" | head -1 )"
 gadbody="$( tr '>' '\n' <"$TMP/gad" | sed -n 's/.*<b t="[^"]*" l="\([0-9]*\)" p="\([^"]*\)".*/\2:\1/p' | head -1 | sed 's#defoverdeclfix/##' )"
-[ "$gadan" = "defoverdeclfix/a_headers.hpp" ] && [ "$gadbody" = "a_headers.hpp:17" ] \
+[ "$gadan" = "a_headers.hpp" ] && [ "$gadbody" = "a_headers.hpp:17" ] \
     && ok "a UNIQUE definition anchors exactly where it did (Gadget: $gadan, body $gadbody)" \
-    || no "--for=Gadget moved: anchor=$gadan body=$gadbody — expected defoverdeclfix/a_headers.hpp and a_headers.hpp:17"
+    || no "--for=Gadget moved: anchor=$gadan body=$gadbody — expected a_headers.hpp and a_headers.hpp:17"
 
 # ── (g) C13 ANALOGUE / OFF-ROUTE INVARIANCE ───────────────────────────────────────────────────────
 # Growth's C13 in local form. The conceptual route is a different entry point (lexicalScoresTiered)

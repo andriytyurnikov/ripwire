@@ -1764,7 +1764,7 @@ std::optional<int> runLint( const MainDispatch& d )
                 const LintOut& m = outs[i];
                 const Symbol*  e = enclosing( m.fileId, m.startByte );
                 const std::size_t rowBytes = m.text.size() + m.rule.size() + m.sev.size()
-                                            + ing.files[ m.fileId ].size()
+                                            + rootRelPath( ing, m.fileId ).size()   // #228: the row prints p= root-relative, so the cap charges that
                                             + ( e ? e->name.size() : 0 ) + 80;
                 if( lintDefaultShown > 0 && bytesUsed + rowBytes > kLintDefaultPayloadBytes )
                 {

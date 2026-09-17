@@ -181,10 +181,14 @@ R="$( root_of <"$TMP/r1.xml" )"
 grep -q 'n="leaf_target"' "$TMP/r1.xml" \
     && ok 'reaches file: the witness path lands on the target inline' \
     || no 'reaches file: no inline path evidence'
-"$BIN" "$FIX" --no-cache --verify='reaches(leaf_target, test)' >"$TMP/r2.xml" 2>/dev/null; rc=$?
+# #228 MOVED this arm to test/archfix. On test/verifyfix it confirmed only because the fixture was crawled as
+# `test/verifyfix`: both files sit at the fixture root, and the `test` layer it matched was the directory the ROOT
+# lives in (crawled as `.`, the same claim came back not-established). Layers are read root-relative now, so the arm
+# reads a tree whose test/ layer is inside it: archfix's test/main.cpp calls render/shader.h's compileShader.
+"$BIN" test/archfix --no-cache --verify='reaches(compileShader, test)' >"$TMP/r2.xml" 2>/dev/null; rc=$?
 R="$( root_of <"$TMP/r2.xml" )"
 { [ $rc -eq 0 ] && printf '%s' "$R" | grep -q 'verdict="confirmed"'; } \
-    && ok 'reaches layer: the built-in layer vocabulary resolves (test)' \
+    && ok 'reaches layer: the built-in layer vocabulary resolves (test, a layer directory inside the tree)' \
     || { no "reaches layer: expected confirmed (rc=$rc)"; printf '%s\n' "$R"; }
 "$BIN" "$FIX" --no-cache --verify='reaches(entry_caller, "registry.cpp")' >"$TMP/r3.xml" 2>/dev/null; rc=$?
 R="$( root_of <"$TMP/r3.xml" )"

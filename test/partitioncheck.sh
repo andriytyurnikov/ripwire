@@ -198,10 +198,14 @@ print(s.split('</bundle>',1)[0])
     || no "the plain bundle's top anchor '$TOPBODY' is missing from the core bundle"
 
 # ── 8) K < N — the rank-median split path, on the committed tiny fixture ──────────────────────────────────
-"$BIN" "$FIX" --pack-task="geometry area rect point python" --partition=4 >"$TMP/fx4" 2>/dev/null
+# #228 MOVED N 4 -> 5. At N=4 this arm read modules=2 only because the fixture was crawled as $ROOT/test/fixture:
+# the `test/` ABOVE the tree tiered every file as a test, which collapsed the surface to two modules. Crawled as
+# `.` the same tree always had four, so K<N never held there. With the tier read root-relative (test/
+# rootspellingcheck.sh) the fixture has four modules under every spelling, and N=5 is the smallest K<N it offers.
+"$BIN" "$FIX" --pack-task="geometry area rect point python" --partition=5 >"$TMP/fx4" 2>/dev/null
 FXP="$( attr partitions "$TMP/fx4" )"; FXS="$( attr split "$TMP/fx4" )"; FXM="$( attr modules "$TMP/fx4" )"
-{ [ "$FXP" = "4" ] && [ "${FXS:-0}" -ge 1 ] && [ "${FXM:-9}" -lt 4 ]; } \
-    && ok "K<N: $FXM modules for 4 partitions → $FXS rank-median split(s), still 4 partitions" \
+{ [ "$FXP" = "5" ] && [ "${FXS:-0}" -ge 1 ] && [ "${FXM:-9}" -lt 5 ]; } \
+    && ok "K<N: $FXM modules for 5 partitions → $FXS rank-median split(s), still 5 partitions" \
     || no "K<N split path did not engage (modules=$FXM split=$FXS partitions=$FXP)"
 
 # ── 9) N unreachable — reported honestly, never faked with empty bundles ──────────────────────────────────

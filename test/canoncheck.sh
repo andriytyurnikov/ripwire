@@ -66,9 +66,9 @@ if printf '%s' "$MAP" | grep -q 'n="compute"'; then ok "compute symbols still pr
 command -v xmllint >/dev/null 2>&1 && { if printf '%s' "$MAP" | xmllint --noout - 2>/dev/null; then ok "xml well-formed"; else no "xml malformed"; fi; } || ok "xml well-formed (xmllint absent — skipped)"
 
 # 7) locality tie-break regression (adversarial HIGH-1): the locality comparison must be SEGMENT-aware, not a
-#    raw-byte prefix. On test/localityfix, class Xenon::call() does `Bravo b; b.go();`; the caller scope "Xenon"
-#    shares only a leading LETTER with the unrelated class "Xtra". A byte-prefix tie-break confidently (and
-#    WRONGLY) resolved the call to Xtra::go (loc.cpp:28) and reported ambiguous=0. With segment-aware locality
+#    raw-byte prefix. On test/localityfix, the class template Xenon<Base>::call() does `this->go();`; the caller scope
+#    "Xenon" shares only a leading LETTER with the unrelated class "Xtra". A byte-prefix tie-break confidently (and
+#    WRONGLY) resolved the call to Xtra::go and reported ambiguous=0. With segment-aware locality
 #    Xtra/Bravo tie on path-only locality, so the call stays honestly ambiguous — never a wrong confident pick.
 #    Delegated to test/localitycheck.sh so the full assertion set runs here too (canoncheck is run by regression).
 if [ -f "$ROOT/test/localitycheck.sh" ]; then

@@ -85,11 +85,12 @@ if [ "$( count g4 )" = 3 ] && printf '%s\n' "$T" | grep -qx "$ANIMAL_LINE" && pr
     ok "g4 (Lamp): cone {Lamp} keeps nothing → DEGRADE, all three targets kept, amb= honest"
 else no "g4 (Lamp): expected the untouched 3-way split — got count=$( count g4 ) lines={$( printf '%s' "$T" | tr '\n' ' ')}"; fi
 
-# ── 4) control: a parameter receiver has no var→type binding, so no cone can fire ───────────────────────
+# ── 4) control: an untyped `auto` receiver has no var→type binding, so no cone can fire. (A `Hound&` PARAMETER
+#       was this control until 2026-09-16; Rule 2 reads a parameter's written type now — narrowcheck arms 7-18.) ──
 T="$( targets g5 )"
 if [ "$( count g5 )" = 3 ] && hasamb g5; then
-    ok "g5 (Hound& parameter): receiver type unknown → 3-way split kept, amb= honest (control)"
-else no "g5 (Hound& parameter): control should stay ambiguous — got count=$( count g5 )"; fi
+    ok "g5 (untyped auto receiver): receiver type unknown → 3-way split kept, amb= honest (control)"
+else no "g5 (untyped auto receiver): control should stay ambiguous — got count=$( count g5 )"; fi
 
 # ── 6) a hit AFTER the memo grew: g6 fills Droid's cone, then g7 asks for Hound again ──────────────────────
 T="$( targets g6 )"

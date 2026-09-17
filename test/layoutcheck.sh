@@ -306,5 +306,36 @@ for pair in ParenExtent:8 ParenInit:8 ParenBrace:8 OperatorAssign:8; do
         || no "$s: fields=${fields:-?} size=${got:-?} (want 2 fields, size $want): $( grep -o '<def .*</def>' "$TMP/pf_$s" | head -c 200 )"
 done
 
+# ── 14) a `(` from alignas/__attribute__/decltype, or one inside a template's `<…>`, is not a parameter
+#        list either — counting it as one silently dropped the field it decorates while the struct still
+#        said modeled="1" with a size short by exactly that field's bytes.
+expect_refused AlignasFieldCase     unknown-type
+expect_refused AttributeFieldCase   unparsed-member
+expect_refused DecltypeFieldCase    unknown-type
+expect_refused StdFunctionFieldCase unknown-type
+
+run AlignasFieldCase
+has 'f n="x"' \
+    && ok "AlignasFieldCase: the alignas-decorated field is still COUNTED (not silently dropped)" \
+    || no "AlignasFieldCase: field 'x' vanished with no trace: $( printf '%s' "$L" | tr '<' '\n' | grep '^f ' )"
+{ [ "$( field n sz )" = "4" ] && [ "$( field c sz )" = "1" ]; } \
+    && ok "AlignasFieldCase: the plain neighbours (n, c) still size normally" \
+    || no "AlignasFieldCase: a neighbour field lost its size: n=$( field n sz ) c=$( field c sz )"
+
+run AttributeFieldCase
+has 'caveat k="unparsed-member" d="int x __attribute__' \
+    && ok "AttributeFieldCase: the refusal NAMES the dropped declaration text, not a silent size" \
+    || no "AttributeFieldCase: caveat detail did not name the field: $( printf '%s' "$L" | tr '<' '\n' | grep '^caveat' )"
+
+run DecltypeFieldCase
+has 'f n="x"' \
+    && ok "DecltypeFieldCase: the decltype field is still COUNTED (not silently dropped)" \
+    || no "DecltypeFieldCase: field 'x' vanished with no trace: $( printf '%s' "$L" | tr '<' '\n' | grep '^f ' )"
+
+run StdFunctionFieldCase
+has 'f n="cb"' \
+    && ok "StdFunctionFieldCase: the std::function field is still COUNTED (not silently dropped)" \
+    || no "StdFunctionFieldCase: field 'cb' vanished with no trace: $( printf '%s' "$L" | tr '<' '\n' | grep '^f ' )"
+
 [ $fail -eq 0 ] && echo "layoutcheck: ALL PASS" || echo "layoutcheck: FAILURES"
 exit $fail

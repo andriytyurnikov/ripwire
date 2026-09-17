@@ -59,8 +59,8 @@
 # reservation into the failure a small host would see: `ulimit -v` for a plain Linux binary, and ASan's
 # max_allocation_size_mb for an instrumented binary on any platform (the ASan sweep below carries it for
 # every mutation). A plain macOS binary has no such bound, and the arm says so rather than passing blind.
-# The layout offsets (magic 4, scheme 4, cacheVer 4, parserVer 4, sha 8, then the ten field counts from
-# byte 24) are the ones deserializeSnapshot reads; the map-count and sha arms used to write at 16 and 8,
+# The layout offsets (magic 4, scheme 4, cacheVer 4, parserVer 4, producer 8, sha 8, then the ten field counts from
+# byte 32) are the ones deserializeSnapshot reads; the map-count and sha arms used to write at 16 and 8,
 # which a guard ahead of the one they were written for rejected first.
 #
 # ── Part 3: one out-of-range ENUM byte per field class in a checksum-valid ingest record (see its header below).
@@ -602,7 +602,7 @@ muts["qsnap_wrong_scheme_recomputed_checksum"] = mut_wrong_scheme
 # defect these rows were rewritten for). So the layout is VERIFIED on the good blob before any row is built: the
 # u64 at QSNAP_SHA_OFF must be fnv1a64(HEAD sha), the field the reader checks last before the counts. A header
 # that grows a field moves the sha and fails here loudly, instead of silently re-aiming every row.
-QSNAP_SHA_OFF    = 16   # magic(4) + scheme(4) + cacheVer(4) + parserVer(4)
+QSNAP_SHA_OFF    = 24   # magic(4) + scheme(4) + cacheVer(4) + parserVer(4) + producer(8): the producer identity (qsnapproducercheck)
 QSNAP_COUNTS_OFF = QSNAP_SHA_OFF + 8   # the first of the ten field counts (7 maps, then 3 u64 vectors)
 if len(good) < QSNAP_COUNTS_OFF + 8 or struct.unpack_from("<Q", good, QSNAP_SHA_OFF)[0] != fnv1a64(head_sha.encode()):
     print("qsnap layout: the u64 at offset %d is not fnv1a64(HEAD sha %s)" % (QSNAP_SHA_OFF, head_sha or "<none>"))
@@ -728,6 +728,22 @@ PYEOF
         echo
         echo "=== Part 2: qsnap mutation table — ASan build ==="
         asanq_fail=0
+        # PRESENCE GUARD — the ASan binary must READ the blob these rows mutate. The qsnap filename folds the
+        # PRODUCER IDENTITY (the build's source hash, quality.h producerIdentity), so an ASan binary built from
+        # different sources than $BIN looks up a different key, misses, recomputes cold, and every row below
+        # passes without ever opening its mutant. Measured on integration/train-1: a qsnapCountFits->true stub
+        # in the ASan build left all three huge vector-count rows green here while the qchurn rows (not
+        # producer-keyed) went red. A corrupt blob at $QBLOB must make that binary say so on stderr.
+        cp "$MUTDIR/qsnap_wrong_magic_recomputed_checksum.bin" "$QBLOB"
+        env -u TMPDIR XDG_CACHE_HOME="$QXDG" "$ASAN_BIN" "$QREPO" --quality-delta >/dev/null 2>"$TMP/qasan_guard.err"
+        cp "$TMP/q_good.bin" "$QBLOB"
+        if grep -q 'HEAD Snapshot cache corrupt' "$TMP/qasan_guard.err"; then
+            ok "qsnap ASan sweep reads the blob its rows mutate (a corrupt blob at that path is disclosed by $( basename "$ASAN_BIN" ))"
+        else
+            no "qsnap ASan sweep: $ASAN_BIN never read the blob at the mutated path — it keys a different qsnap blob (built from different sources than $BIN?), so every row below would pass unread. Rebuild both from one tree."
+            asanq_fail=1
+            QMUT_NAMES=()
+        fi
         for name in ${QMUT_NAMES[@]+"${QMUT_NAMES[@]}"}; do
             cp "$MUTDIR/$name.bin" "$QBLOB" 2>/dev/null || { mkdir -p "$( dirname "$QBLOB" )"; cp "$MUTDIR/$name.bin" "$QBLOB"; }
             err="$TMP/qasan_${name}.err"

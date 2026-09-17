@@ -6,7 +6,8 @@
 # against every same-named definition in the corpus — inflating per-symbol `amb=` and the header
 # `ambiguous=` gauge. Rule 2b: when the receiver names a field whose DECLARED TYPE is a type the index
 # knows (the S5-E HAS-A field capture), narrow the candidate set to that type's members, walking direct
-# bases (chaUp) when the type itself does not define the method. RESOLVE-stage only — no kParserVer bump.
+# bases (chaUp) when the type itself does not define the method. RESOLVE-stage only — no kParserVer bump
+# (arm q, 2026-09-16, is the exception: the field capture records the namespace a type was written in, kParserVer 99).
 #
 # Zero false edges is the bar — narrowing that guesses wrong is worse than ambiguity disclosed:
 #   * a LOCAL (param / declared var) that shadows the field name vetoes the narrow (real C++ lookup);
@@ -175,6 +176,11 @@ SHP="$( callees shadowParam )"
 printf '%s\n' "$SHP" | grep -q 'a.cpp:2"' \
     && ok "(s1) shadowParam( Decoy& m_x ) keeps its Decoy::acquire edge — the param shadows field m_x" \
     || no "(s1) shadowParam lost Decoy::acquire — the field type was wrongly narrowed over the shadowing param"
+# since 2026-09-16 Rule 2 reads the parameter's written type (narrowcheck arms 7-18), so the parameter's Decoy is
+# the WHOLE answer — main's binary still linked the field's Pool::acquire here as half of a split
+printf '%s\n' "$SHP" | grep -q 'a.cpp:1"' \
+    && no "(s1) shadowParam linked to Pool::acquire — the FIELD type beat the shadowing Decoy& parameter" \
+    || ok "(s1) shadowParam field type Pool NOT linked (the typed parameter shadows the field)"
 SHL="$( callees shadowLocal )"
 printf '%s\n' "$SHL" | grep -q 'a.cpp:2"' \
     && ok "(s2) shadowLocal's local Decoy m_y still wins (Rule 2 narrow preserved)" \
@@ -193,13 +199,14 @@ TS="$( callees to_go )"
     && ok "(e-ts) to_go() this.member.compute() stays honestly split (TS receivers uncaptured — disclosed limit)" \
     || no "(e-ts) to_go() lost its honest split — TS receiver behavior must be unchanged this round"
 
-# ── (h) the header gauge agrees with the arms above: exactly the 7 honest splits remain ambiguous
-#        (expl, unk, freeuse, multi, shadowParam, po_go, to_go — run/ptr/inh_go narrowed, shadowLocal was Rule 2).
+# ── (h) the header gauge agrees with the arms above: exactly the 6 honest splits remain ambiguous
+#        (expl, unk, freeuse, multi, po_go, to_go — run/ptr/inh_go narrowed, shadowLocal and shadowParam are
+#        Rule 2; shadowParam was a split until Rule 2 read parameter types, 2026-09-16, which moved this from 7).
 #        Counted from the fixture, not guessed: flip arms above before touching this number. ──
 AMB="$( printf '%s\n' "$MAP" | grep -o 'ambiguous=[0-9]*' | head -1 )"
-[ "$AMB" = "ambiguous=7" ] \
-    && ok "(h) header gauge ambiguous=7 — only the honest splits remain" \
-    || no "(h) header gauge is '$AMB', expected ambiguous=7 (3 field-typed calls narrowed, 7 honest splits kept)"
+[ "$AMB" = "ambiguous=6" ] \
+    && ok "(h) header gauge ambiguous=6 — only the honest splits remain" \
+    || no "(h) header gauge is '$AMB', expected ambiguous=6 (3 field-typed calls narrowed, 6 honest splits kept)"
 
 # ── (n) same-NAMED class collision (FIX2): conflicting same-named fields tombstone — NEITHER Dup::go narrows ──
 MAP2="$( "$BIN" "$FIX2" --no-cache 2>/dev/null | tr '>' '\n' )"
@@ -213,6 +220,132 @@ GO2="$( "$BIN" "$FIX2" --callees=go --no-cache 2>/dev/null | grep -o '<callees.*
     && ok "(n) both grab() defs stay linked across the collision" \
     || no "(n) a grab() edge vanished — the tombstone dropped a correct edge"
 
+# ── (q) a field type written in namespace `std` (2026-09-16) — an EXTRACTION change, unlike the rest of this gate. The
+#        field capture keeps a qualified type's final segment, so `std::string name_;` recorded `string`, and three
+#        readers of that record took it for an in-repo class of that name: Rule 2b pinned `name_.size()` to it
+#        (census mech=receiver-rule), the HAS-A block drew Record → string, and the member index pinned `name_.len`
+#        to string.len. `std` is reserved to the implementation, so no in-repo class IS a std:: type — the sibling
+#        rule for locals and parameters (resolve.h namesStdType, test/narrowcheck.sh arms 17-24). Every other
+#        qualifier keeps narrowing on its final segment: store::Text is the control (q2/q4/q6).
+#        (q7) is the trap the obvious fix walks into. Skipping the std field at capture UN-TOMBSTONES a same-named
+#        class's differently-typed field — measured on rocksdb: test_util/testutil.h's `std::string contents_` and
+#        db/log_test.cc's `Slice& contents_` share the key StringSource#contents_, and the skip pinned four
+#        testutil.h `contents_.size()` calls to Slice::size. So the std field must still tombstone the entry; the
+#        fixture holds the collision in BOTH record orders (StringSink's std side sorts first, StringSource's last).
+#        LINE NUMBERS in app/rec.cpp are asserted below. ──
+FIX3="$TMP/stdfix"; FIX4="$TMP/tombfix"
+mkdir -p "$FIX3/lib" "$FIX3/lib2" "$FIX3/store" "$FIX3/app" "$FIX4/0" "$FIX4/a" "$FIX4/b" "$FIX4/c"
+cat >"$FIX3/lib/str.h" <<'EOF'
+struct string { int size() { return 0; } int len; };
+EOF
+cat >"$FIX3/lib2/blob.h" <<'EOF'
+struct Blob { int size() { return 1; } };
+EOF
+cat >"$FIX3/store/text.h" <<'EOF'
+namespace store { struct Text { int size() { return 4; } int len; }; }
+EOF
+cat >"$FIX3/app/rec.cpp" <<'EOF'
+struct Record {
+    std::string name_;
+    store::Text body_;
+    int nameLength() { return name_.size(); }
+    int bodyLength() { return body_.size(); }
+    int nameLen() { return name_.len; }
+    int bodyLen() { return body_.len; }
+    int thisNameLen() { return this->name_.len; }
+};
+EOF
+cat >"$FIX4/0/pipe.h" <<'EOF'
+struct StringSink { std::string contents_; int drained() { return contents_.size(); } };
+EOF
+cat >"$FIX4/a/slice.h" <<'EOF'
+struct Slice { int size() const { return 2; } };
+struct Other { int size() const { return 3; } };
+EOF
+cat >"$FIX4/a/log_test.cc" <<'EOF'
+struct StringSource { Slice& contents_; int left() { return contents_.size(); } };
+EOF
+cat >"$FIX4/b/testutil.h" <<'EOF'
+struct StringSource { std::string contents_; int used() { return contents_.size(); } };
+EOF
+cat >"$FIX4/c/sink.cc" <<'EOF'
+struct StringSink { Slice& contents_; int filled() { return contents_.size(); } };
+EOF
+"$BIN" "$FIX3" --no-cache --pin-census="$TMP/q3.tsv" >/dev/null 2>&1
+"$BIN" "$FIX4" --no-cache --pin-census="$TMP/q4.tsv" >/dev/null 2>&1
+qMechs(){  # qMechs TSV CALLER — the distinct deciding mechanisms of CALLER's size() census rows ("" = no row: declined)
+    awk -F '\t' -v c="$2" '$1 == "C" && index( $6, c ) && $7 == "size" { print $2 }' "$1" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+qHas(){ grep -qF "$2" "$1" 2>/dev/null; }
+qMissing=""
+for want in '::Record::nameLength#' '::Record::bodyLength#' '::Record::nameLen#' '::Record::bodyLen#' 'dispositions calls=2 '; do
+    qHas "$TMP/q3.tsv" "$want" || qMissing="$qMissing [stdfix $want]"
+done
+for want in '0/pipe.h::StringSink::drained#' 'a/log_test.cc::StringSource::left#' 'b/testutil.h::StringSource::used#' 'c/sink.cc::StringSink::filled#' 'dispositions calls=4 '; do
+    qHas "$TMP/q4.tsv" "$want" || qMissing="$qMissing [tombfix $want]"
+done
+[ -z "$qMissing" ] && ok "(q0) presence: both census files name every fixture caller and count every size() call" \
+    || no "(q0) presence guard:$qMissing — every (q) arm below would be vacuous"
+
+# (q1) the defect; (q2) the in-repo qualified control
+Q1="$( qMechs "$TMP/q3.tsv" '::Record::nameLength#' )"
+Q1PIN="$( awk -F '\t' '$1 == "C" && index( $6, "::Record::nameLength#" ) && $7 == "size" && $8 ~ /^lib\/str\.h::string::size#[0-9]+$/' "$TMP/q3.tsv" 2>/dev/null )"
+if [ "$Q1" != "receiver-rule" ] && [ -z "$Q1PIN" ]; then
+    ok "(q1) std::string name_; name_.size() is NOT pinned to the in-repo string::size (mech=[${Q1:-declined}])"
+else
+    no "(q1) std::string name_; name_.size() pinned to the in-repo lib/str.h string::size (mech=[${Q1:-none}]) — a std:: field type named an in-repo class"
+fi
+Q2="$( awk -F '\t' '$1 == "C" && index( $6, "::Record::bodyLength#" ) && $7 == "size" { print $2 "|" $8 }' "$TMP/q3.tsv" 2>/dev/null )"
+case "$Q2" in
+    "receiver-rule|store/text.h::Text::size#"*) ok "(q2) control: store::Text body_; body_.size() still narrows to store/text.h Text::size (receiver-rule)" ;;
+    *) no "(q2) control: store::Text body_; body_.size() lost its narrow to Text::size — an in-repo qualifier was refused: [${Q2:-no row}]" ;;
+esac
+
+# (q3) no HAS-A edge to the in-repo namesake; (q4) the in-repo qualified member keeps its edge
+COMPOSE="$( "$BIN" "$FIX3" --around=Record --no-cache 2>/dev/null | grep -o '<compose>.*</compose>' )"
+printf '%s' "$COMPOSE" | grep -qF 'name="name_"' \
+    && no "(q3) HAS-A still draws Record → string for std::string name_: $COMPOSE" \
+    || ok "(q3) no HAS-A edge from Record's std::string name_ to the in-repo string"
+printf '%s' "$COMPOSE" | grep -qF '<field name="body_" type="Text" owner="Record" rel="creates"/>' \
+    && ok "(q4) control: HAS-A keeps Record → Text for store::Text body_" \
+    || no "(q4) control: HAS-A lost Record → Text for store::Text body_: [${COMPOSE:-no <compose> block}]"
+
+# (q5) the member index reads the same field-type record: `name_.len` must not pin to string.len; (q6) body_.len still pins
+STRLEN="$( "$BIN" "$FIX3" --uses=string.len --no-cache 2>/dev/null )"
+for line in 6 8; do   # 6: `name_.len` (a bare receiver), 8: `this->name_.len` (through this) — both read the class#field entry
+    USES5="$( printf '%s' "$STRLEN" | grep -oE "<u [^>]*p=\"app/rec.cpp:$line\"[^>]*/>" )"
+    if [ -z "$USES5" ] || printf '%s' "$USES5" | grep -q 'owner_candidates='; then
+        ok "(q5) --uses=string.len does not pin std::string name_'s .len read (app/rec.cpp:$line) to the in-repo string: [${USES5:-no row}]"
+    else
+        no "(q5) --uses=string.len PINS app/rec.cpp:$line (std::string name_.len) to the in-repo string: $USES5"
+    fi
+done
+USES6="$( "$BIN" "$FIX3" --uses=Text.len --no-cache 2>/dev/null | grep -oE '<u [^>]*p="app/rec.cpp:7"[^>]*/>' )"
+if [ -n "$USES6" ] && ! printf '%s' "$USES6" | grep -q 'owner_candidates='; then
+    ok "(q6) control: --uses=Text.len still pins store::Text body_'s .len read (app/rec.cpp:7)"
+else
+    no "(q6) control: --uses=Text.len lost its pin on app/rec.cpp:7: [${USES6:-no row}]"
+fi
+
+# (q7) the tombstone survives in both record orders: no StringSource/StringSink contents_.size() narrows to Slice::size
+for caller in '0/pipe.h::StringSink::drained#' 'a/log_test.cc::StringSource::left#' 'b/testutil.h::StringSource::used#' 'c/sink.cc::StringSink::filled#'; do
+    M7="$( qMechs "$TMP/q4.tsv" "$caller" )"
+    [ "$M7" != "receiver-rule" ] \
+        && ok "(q7) tombstone: $caller contents_.size() is not narrowed (mech=[${M7:-declined}]) — same-named classes, contents_ typed std::string vs Slice&" \
+        || no "(q7) tombstone lost: $caller contents_.size() narrowed by receiver-rule — the std field no longer tombstones StringSource/StringSink#contents_"
+done
+
+# (q8) determinism + cache transparency on the std fixture: the written scope rides the cached compose record
+"$BIN" "$FIX3" --no-cache --pin-census="$TMP/q3b.tsv" >/dev/null 2>&1
+rm -f "$TMP/qc"
+"$BIN" "$FIX3" --cache="$TMP/qc" >/dev/null 2>&1
+"$BIN" "$FIX3" --cache="$TMP/qc" --pin-census="$TMP/q3w.tsv" >/dev/null 2>&1
+if [ -s "$TMP/q3.tsv" ] && cmp -s "$TMP/q3.tsv" "$TMP/q3b.tsv" && cmp -s "$TMP/q3.tsv" "$TMP/q3w.tsv"; then
+    ok "(q8) stdfix census byte-identical: cold, cold again, and warm"
+else
+    no "(q8) stdfix census differs across runs or warm vs cold"; diff "$TMP/q3.tsv" "$TMP/q3w.tsv" | head -6
+fi
+
 # ── KNOWN GAP (help wanted: prompts/help-wanted/ts-literal-receivers.md) — issue #59, on receivers whose type is CERTAIN ──
 # A built-in method called on a LITERAL binds an unrelated, same-named, never-imported user function — with the
 # graph's ambiguity gauge at zero, so the answer reads as confident. `"a-b".replace(…)` can only be
@@ -222,7 +355,7 @@ GO2="$( "$BIN" "$FIX2" --callees=go --no-cache 2>/dev/null | grep -o '<callees.*
 # KNOWN GAP arm means the gap moved: rewrite that arm to assert the fixed behaviour, never delete it.
 # The two CONTROLS are not gaps. They are TRUE edges any fix must keep: a typed user-object receiver, and a
 # literal receiver whose method the repo itself defines on String.prototype (a literal CAN reach user code).
-# Separate corpora on purpose: (h)'s ambiguous=7 is counted over $FIX and must not move.
+# Separate corpora on purpose: (h)'s ambiguous=6 is counted over $FIX and must not move.
 LIT="$TMP/tslitfix"; OBJ="$TMP/tsobjfix"
 mkdir -p "$LIT/src" "$OBJ/src"
 cat >"$LIT/src/literals.ts" <<'EOF'

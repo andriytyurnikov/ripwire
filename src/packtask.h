@@ -1465,7 +1465,7 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
         std::vector<NodeId> testSeeds;
         for( NodeId b : bodyIds )
         {
-            if( b < ing.symbols.size() && !rw::isTestPath( ing.files[ing.symbols[b].fileId] ) )
+            if( b < ing.symbols.size() && !rw::isTestPath( rw::rootRelPath( ing, ing.symbols[b].fileId ) ) )
             {
                 testSeeds.push_back( b );
             }
@@ -1488,7 +1488,7 @@ inline std::string packTaskBundleText( const IngestResult& ing, const Graph& g, 
         for( NodeId n : reach )
         {
             const std::uint32_t f = ing.symbols[n].fileId;
-            if( f < fseen.size() && !fseen[f] && rw::isTestPath( ing.files[f] ) ) { fseen[f] = 1;  testFiles.push_back( f ); }
+            if( f < fseen.size() && !fseen[f] && rw::isTestPath( rw::rootRelPath( ing, f ) ) ) { fseen[f] = 1;  testFiles.push_back( f ); }
         }
         std::sort( testFiles.begin(), testFiles.end(), [ & ]( std::uint32_t a, std::uint32_t b ) { return ing.files[a] < ing.files[b]; } );
         // §A9.5 / §P11.4: the one-call bundle names the tests you owe; it now also names how to RUN them,

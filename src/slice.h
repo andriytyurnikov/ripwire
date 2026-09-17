@@ -64,8 +64,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>       // SliceRdWalker::arena — stable references across growth, for the explicit work stack's per-branch locals
+#include <functional>  // SliceRdWalker::SliceRdStep — the explicit work stack's pending continuations
 #include <iterator>    // std::size — the kOccTagNames extent
 #include <cstring>
+#include <memory>      // shared_ptr — a child list / flag shared across a chain of scheduled continuations
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1170,12 +1173,18 @@ inline std::uint32_t sliceBindIntroducer( SliceScan& scan, std::string_view text
     return bindingIdx;
 }
 
+// one pending (node, preprocessor-state) visit on sliceWalk's explicit stack — see sliceWalk below
+struct SliceWalkItem
+{
+    TSNode  node;
+    SlicePp pp;
+};
+
 // a preprocessor conditional STARTING inside the definition: decide (or refuse to decide) each branch,
-// skip the condition text, and carry the state down — see SlicePp for the rule. `walk` is sliceWalk,
-// passed in so no prototype of it exists (a prototype indexes as a second definition, and --slice on
-// the walk itself would refuse as ambiguous).
-template< class WalkFn >
-inline void sliceWalkPreproc( TSNode node, const SliceWalkCtx& ctx, SliceScan& scan, SlicePp pp, const WalkFn& walk )
+// skip the condition text, and carry the state down — see SlicePp for the rule. Pushes each surviving
+// child (in reverse, so the stack pops them left to right) onto `stack` instead of recursing — the
+// caller is sliceWalk's own loop, which owns the stack and the reusable child-collection scratch.
+inline void sliceWalkPreproc( TSNode node, const SliceWalkCtx& ctx, SlicePp pp, std::vector<TSNode>& kids, TSTreeCursor& cursor, std::vector<SliceWalkItem>& stack )
 {
     const auto [ bodyState, altState ] = slicePreprocBranchStates( node, ctx.src, pp );
     const TSNode condition   = sliceField( node, NodeField::Condition );
@@ -1183,18 +1192,19 @@ inline void sliceWalkPreproc( TSNode node, const SliceWalkCtx& ctx, SliceScan& s
     const TSNode alternative = sliceField( node, NodeField::Alternative );
     // O(children), not O(children²): a `#if` block's child list is the whole guarded region, INCLUDING
     // every comment in it as a direct child (extras are spliced into the array — src/infra/tschildren.h).
-    // The cursor is this frame's own because `walk` recurses back into here.
-    ChildCursor cursor( node );
-    forEachChild( node, cursor.cur, [ & ]( TSNode child )
+    // Collected once (the cursor is the caller's, reset by collectChildren), then pushed in REVERSE so
+    // the shared stack pops them back out left to right — the same order the recursive form visited them.
+    collectChildren( node, cursor, kids );
+    for( auto it = kids.rbegin(); it != kids.rend(); ++it )
     {
+        const TSNode child = *it;
         if( ( !ts_node_is_null( condition ) && ts_node_eq( child, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( child, macroName ) ) )
         {
-            return true;   // macro names and #if expressions are never variable occurrences
+            continue;   // macro names and #if expressions are never variable occurrences
         }
         const bool isAlt = !ts_node_is_null( alternative ) && ts_node_eq( child, alternative );
-        walk( child, ctx, scan, isAlt ? altState : bodyState );
-        return true;
-    } );
+        stack.push_back( SliceWalkItem{ child, isAlt ? altState : bodyState } );
+    }
 }
 
 // one occurrence node: classify, anchor, drop-or-flag by preprocessor state, bind if it introduces
@@ -1221,43 +1231,64 @@ inline void sliceWalkOccurrence( TSNode node, std::string_view text, const Slice
     scan.all.push_back( SliceNamedOcc{ std::string( text ), c } );
 }
 
-// Recursive descent over the definition's span, collecting classified `identifier` occurrences.
-// Depth-bounded only by the AST itself; a definition's subtree is small (one function).
-inline void sliceWalk( TSNode node, const SliceWalkCtx& ctx, SliceScan& scan, SlicePp pp )
+// Pre-order descent over the definition's span, collecting classified `identifier` occurrences. An
+// EXPLICIT heap stack (SliceWalkItem), not the calling thread's: a definition's subtree nests only as
+// deep as the source does, and a 2,000-level chain of nested blocks/loops/ifs used to cost one C++ stack
+// frame per level here (measured: this was the walk lane/slice-iterative converted, alongside
+// SliceRdWalker below, so --slice's occurrence scan no longer shares that thread-stack ceiling).
+// `kids`/`cursor` are reused scratch, sized once from the caller's own node-count estimate, so a warm
+// walk allocates only when the stack itself grows past its reserve.
+inline void sliceWalk( TSNode root, const SliceWalkCtx& ctx, SliceScan& scan, SlicePp rootPp, std::size_t nodeCountHint = 0 )
 {
-    const std::uint32_t a = ts_node_start_byte( node ), b = ts_node_end_byte( node );
-    if( b <= ctx.spanStart || a >= ctx.spanEnd )
+    std::vector<SliceWalkItem> stack;
+    stack.reserve( nodeCountHint > 0 ? nodeCountHint : 64 );   // one entry per node is the worst case (a flat run pushes O(children) at once)
+    stack.push_back( SliceWalkItem{ root, rootPp } );
+    std::vector<TSNode> kids;
+    ChildCursor          cursor( root );
+    while( !stack.empty() )
     {
-        return;   // disjoint from the definition — prune the subtree
-    }
-    if( ctx.fam == SliceFam::C && a >= ctx.spanStart && sliceIsPreprocConditional( node ) )
-    {
-        sliceWalkPreproc( node, ctx, scan, pp, []( TSNode child, const SliceWalkCtx& c, SliceScan& s, SlicePp state ) { sliceWalk( child, c, s, state ); } );
-        return;
-    }
-
-    // the C-family also yields variable occurrences dressed as type_identifier: the arguments of a
-    // direct-initialization declaration under the most-vexing parse (see sliceIsDirectInitCtorArg);
-    // JS/TS dress an object-pattern shorthand binder (`const { x } = o`) as its own node kind
-    const bool occurrenceKind = sliceKindIs( node, "identifier" )
-                                || ( ctx.fam == SliceFam::C && sliceKindIs( node, "type_identifier" ) && sliceIsDirectInitCtorArg( node ) )
-                                || ( ctx.fam == SliceFam::Js && sliceKindIs( node, "shorthand_property_identifier_pattern" ) );
-    if( occurrenceKind && a >= ctx.spanStart && b <= ctx.spanEnd && b <= ctx.src.size() && b > a )
-    {
-        const std::string_view text = ctx.src.substr( a, b - a );
-        if( !sliceIsReservedName( text, ctx.lang ) )   // a keyword lexed as an identifier is a degraded-parse artifact, never a variable
+        const SliceWalkItem item = stack.back();
+        stack.pop_back();
+        const TSNode  node = item.node;
+        const SlicePp pp   = item.pp;
+        const std::uint32_t a = ts_node_start_byte( node ), b = ts_node_end_byte( node );
+        if( b <= ctx.spanStart || a >= ctx.spanEnd )
         {
-            sliceWalkOccurrence( node, text, ctx, scan, pp );
+            continue;   // disjoint from the definition — prune the subtree
         }
-        return;   // an identifier is a leaf — nothing beneath it
-    }
+        if( ctx.fam == SliceFam::C && a >= ctx.spanStart && sliceIsPreprocConditional( node ) )
+        {
+            sliceWalkPreproc( node, ctx, pp, kids, cursor.cur, stack );
+            continue;
+        }
 
-    // O(children), not O(children²). This walk starts at the FILE root, so the very first node it
-    // expands has one child per top-level construct AND one per comment between them — the width a
-    // 16 000-comment file hands it measured 60× its own control before this became a cursor
-    // (test/childwalkscalecheck.sh, arm B1). The cursor is this frame's own: the loop body recurses.
-    ChildCursor cursor( node );
-    forEachChild( node, cursor.cur, [ & ]( TSNode child ) { sliceWalk( child, ctx, scan, pp ); return true; } );
+        // the C-family also yields variable occurrences dressed as type_identifier: the arguments of a
+        // direct-initialization declaration under the most-vexing parse (see sliceIsDirectInitCtorArg);
+        // JS/TS dress an object-pattern shorthand binder (`const { x } = o`) as its own node kind
+        const bool occurrenceKind = sliceKindIs( node, "identifier" )
+                                    || ( ctx.fam == SliceFam::C && sliceKindIs( node, "type_identifier" ) && sliceIsDirectInitCtorArg( node ) )
+                                    || ( ctx.fam == SliceFam::Js && sliceKindIs( node, "shorthand_property_identifier_pattern" ) );
+        if( occurrenceKind && a >= ctx.spanStart && b <= ctx.spanEnd && b <= ctx.src.size() && b > a )
+        {
+            const std::string_view text = ctx.src.substr( a, b - a );
+            if( !sliceIsReservedName( text, ctx.lang ) )   // a keyword lexed as an identifier is a degraded-parse artifact, never a variable
+            {
+                sliceWalkOccurrence( node, text, ctx, scan, pp );
+            }
+            continue;   // an identifier is a leaf — nothing beneath it
+        }
+
+        // O(children), not O(children²). This walk starts at the FILE root, so the very first node it
+        // expands has one child per top-level construct AND one per comment between them — the width a
+        // 16 000-comment file hands it measured 60× its own control before this became a cursor
+        // (test/childwalkscalecheck.sh, arm B1). Collected once, pushed in REVERSE so the stack pops
+        // them back out left to right, matching the original recursive visit order exactly.
+        collectChildren( node, cursor.cur, kids );
+        for( auto it = kids.rbegin(); it != kids.rend(); ++it )
+        {
+            stack.push_back( SliceWalkItem{ *it, pp } );
+        }
+    }
 }
 
 
@@ -1349,11 +1380,34 @@ inline bool sliceRdEqual( const SliceRdState& a, const SliceRdState& b ) noexcep
     return a.dead == b.dead && a.defs == b.defs;
 }
 
+// NAMED children of n, collected once — the forEachNamedChild cursor form of collectChildren (tschildren.h
+// has the all-children version only). Every SliceRdWalker handler below that needs a child LIST (as
+// opposed to visiting one specific field) collects with this rather than re-deriving the filter inline, so
+// there is exactly one spelling.
+inline void collectNamedChildren( TSNode n, TSTreeCursor& cur, std::vector<TSNode>& out )
+{
+    out.clear();
+    forEachNamedChild( n, cur, [ &out ]( TSNode c ) { out.push_back( c ); return true; } );
+}
+
 // The walker. One object per scan so the mutually recursive statement handlers need no prototypes (a
 // prototype indexes as a second definition, and --slice on the handler would refuse as ambiguous — the
 // sliceWalk lesson above); its fields are the read-only context plus the three jump accumulators.
+//
+// lane/slice-iterative: every statement handler below used to recurse natively — one C++ stack frame per
+// level of loop/if/switch/try/block nesting, so a 2,040-level chain needed 18.8 MB of (ASan-instrumented)
+// stack and aborted on the calling thread's ~8 MB. It is now an explicit heap work stack (`work`) plus an
+// arena (`arena`) for the per-branch SliceRdState locals the recursive form held on its own stack frames
+// (a copy per `if`'s thenS/elseS, a loop's brk/cont/hin…): every place the original recursed into a CHILD
+// node instead pushes a continuation (a `SliceRdStep`) and returns, so nesting depth grows `work`'s size,
+// never the calling thread's. Same-node re-dispatch (structure→stmt→stmtC, stmt→loop, stmtC→switchC…) —
+// bounded to a handful of frames regardless of input, since it never repeats on a deeper node — stays a
+// plain synchronous call; only a call that descends to a DIFFERENT (child) TSNode goes through `push`.
+// `run()` drains `work` until empty, which is what replaces the recursive call actually completing.
 struct SliceRdWalker
 {
+    using SliceRdStep = std::function<void()>;
+
     const SliceScan*                         scan = nullptr;
     std::string_view                         src;
     SliceFam                                 fam  = SliceFam::None;
@@ -1366,6 +1420,32 @@ struct SliceRdWalker
     std::vector<SliceRdState*>               continueAcc;                 // innermost loop
     std::vector<SliceRdState*>               tryAcc;                      // innermost try body's handler entry
 
+    // The explicit heap work stack — see the struct comment. `arena` holds every SliceRdState the
+    // recursive form declared as a local that had to outlive a nested visit (an `if`'s thenS/elseS, a
+    // switch case's own state, a catch handler's…) EXCEPT a loop's own locals, which own themselves via
+    // shared_ptr instead — see the comment above `loop()` for why that one case is different. A deque, so
+    // a reference handed out by `newState` is stable no matter how much more the arena grows afterward —
+    // the same stability a stack frame gave the recursive form. Never shrinks: these visit each child
+    // exactly once, so there is no "redo" to free early, only the same one-pass total a stack frame's own
+    // lifetime would have given anyway.
+    std::deque<SliceRdState>                 arena;
+    std::vector<SliceRdStep>                 work;
+
+    void push( SliceRdStep step ) { work.push_back( std::move( step ) ); }
+
+    // drains `work` until empty — this call IS what "the recursive walk completing" now looks like
+    void run()
+    {
+        while( !work.empty() )
+        {
+            SliceRdStep step = std::move( work.back() );
+            work.pop_back();
+            step();
+        }
+    }
+
+    SliceRdState& newState( SliceRdState v ) { arena.push_back( std::move( v ) ); return arena.back(); }
+
     SliceRdState dead() const
     {
         SliceRdState s;
@@ -1375,6 +1455,7 @@ struct SliceRdWalker
     }
 
     // ── the unit: uses read the entering state, then the defs apply ──────────────────────────────
+    // A LEAF: no recursion into another handler, so this stays a plain synchronous call everywhere.
     void unit( TSNode n, SliceRdState& state )
     {
         if( state.dead || ts_node_is_null( n ) )
@@ -1416,22 +1497,41 @@ struct SliceRdWalker
     }
 
     // ── a block: its named children in order, each in statement position ─────────────────────────
-    // O(children), not O(children²): a block's named child list is every statement AND every COMMENT
-    // between them — a comment is a named extra, spliced into the array itself (src/infra/tschildren.h).
-    // A 16 000-comment definition body measured 87× the plain map of the same file before this walk
-    // became a cursor (test/childwalkscalecheck.sh, arm B8). Every loop in this walker owns its own
-    // cursor: each of them recurses, and a nested call would reset a shared one out from under it.
-    void seq( TSNode n, SliceRdState& state ) { seqSkipping( n, state, TSNode{} ); }
+    // seq/seqSkipping are same-node dispatch (they take the CURRENT node's own child list), so calling
+    // them from `structure`/`stmt`/`branchBody` synchronously is fine; the per-child descent inside
+    // `seqFrom` is what pushes.
+    void seq( TSNode n, SliceRdState& state, SliceRdStep done ) { seqSkipping( n, state, TSNode{}, std::move( done ) ); }
 
     // the same walk with ONE named child passed over — a `case_statement`'s `value` is its label, not a
     // statement. switchC calls this instead of owning a second copy of the loop.
-    void seqSkipping( TSNode n, SliceRdState& state, TSNode skip )
+    void seqSkipping( TSNode n, SliceRdState& state, TSNode skip, SliceRdStep done )
     {
+        auto kids = std::make_shared<std::vector<TSNode>>();
         ChildCursor cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
-        {   if( state.dead ) { return false; }
-            if( ts_node_is_null( skip ) || !ts_node_eq( c, skip ) ) { stmt( c, state ); }
-            return true; } );
+        collectNamedChildren( n, cursor.cur, *kids );
+        seqFrom( kids, 0, state, skip, std::move( done ) );
+    }
+
+    void seqFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& state, TSNode skip, SliceRdStep done )
+    {
+        if( state.dead || i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        if( !ts_node_is_null( skip ) && ts_node_eq( c, skip ) )
+        {
+            seqFrom( kids, i + 1, state, skip, std::move( done ) );   // `skip` matches at most ONE node total — not a nesting-depth recursion
+            return;
+        }
+        push( [ this, kids, i, c, &state, skip, done = std::move( done ) ]() mutable
+        {
+            stmt( c, state, [ this, kids, i, &state, skip, done = std::move( done ) ]() mutable
+            {
+                seqFrom( kids, i + 1, state, skip, std::move( done ) );
+            } );
+        } );
     }
 
     bool isContainer( TSNode n ) const noexcept
@@ -1468,63 +1568,92 @@ struct SliceRdWalker
 
     // ── the structure walk (the definition root, and every node of a linear family): recurse while there
     //    is a block or control construct below, else the node is one unit ───────────────────────────
-    void structure( TSNode n, SliceRdState& state )
+    void structure( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         if( state.dead || ts_node_is_null( n ) )
         {
+            push( std::move( done ) );
             return;
         }
         if( cfg && isControlKind( n ) )
         {
-            stmt( n, state );
+            stmt( n, state, std::move( done ) );
             return;
         }
         if( isContainer( n ) )
         {
-            seq( n, state );
+            seq( n, state, std::move( done ) );
             return;
         }
         if( !hasStructureBelow( n ) )
         {
             unit( n, state );
+            push( std::move( done ) );
             return;
         }
+        auto kids = std::make_shared<std::vector<TSNode>>();
         ChildCursor cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c ) { if( state.dead ) { return false; } structure( c, state ); return true; } );
+        collectNamedChildren( n, cursor.cur, *kids );
+        structureFrom( kids, 0, state, std::move( done ) );
+    }
+
+    void structureFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& state, SliceRdStep done )
+    {
+        if( state.dead || i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        push( [ this, kids, i, c, &state, done = std::move( done ) ]() mutable
+        {
+            structure( c, state, [ this, kids, i, &state, done = std::move( done ) ]() mutable
+            {
+                structureFrom( kids, i + 1, state, std::move( done ) );
+            } );
+        } );
     }
 
     // ── statement position: the control table, a block, or ONE unit (the fold rule) ──────────────
-    void stmt( TSNode n, SliceRdState& state )
+    void stmt( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         if( state.dead || ts_node_is_null( n ) )
         {
+            push( std::move( done ) );
             return;
         }
         if( !cfg )
         {
-            structure( n, state );   // linear: source order at statement grain, nothing branches
+            structure( n, state, std::move( done ) );   // linear: source order at statement grain, nothing branches
             return;
         }
         if( isContainer( n ) )
         {
-            seq( n, state );
+            seq( n, state, std::move( done ) );
             return;
         }
-        if( fam == SliceFam::C ? stmtC( n, state ) : stmtPy( n, state ) )
+        // `done` by REFERENCE, not by value: at 2,000+ levels of nesting `done` is itself a chain of that
+        // many nested continuations, and std::function's copy constructor copies a callable's captured
+        // state — copying such a chain once per level is O(depth) itself, O(depth²) total (measured: a
+        // 2,040-loop synthetic went 100 -> 0.03s, 1000 -> 12s, quadratic). By reference, only the ONE
+        // branch that actually matches ever std::move()s out of it; every other branch leaves it untouched.
+        const bool handled = fam == SliceFam::C ? stmtC( n, state, done ) : stmtPy( n, state, done );
+        if( handled )
         {
             return;
         }
         unit( n, state );
+        push( std::move( done ) );
     }
 
-    // a `return`/`throw`/`raise`: its reads, then no path continues
+    // a `return`/`throw`/`raise`: its reads, then no path continues — a LEAF, no recursion
     void exitStmt( TSNode n, SliceRdState& state )
     {
         unit( n, state );
         state.dead = true;
     }
 
-    // a `break`/`continue`: the state flows to the accumulator of the innermost target, then no path continues
+    // a `break`/`continue`: the state flows to the accumulator of the innermost target, then no path continues — a LEAF
     void jump( TSNode n, SliceRdState& state, bool isBreak )
     {
         unit( n, state );
@@ -1537,7 +1666,7 @@ struct SliceRdWalker
     }
 
     // a C-family condition: a condition_clause walks its named children as units (a C++17 initializer,
-    // then the value), anything else is one unit
+    // then the value), anything else is one unit — a LEAF (only ever calls `unit`)
     void condition( TSNode c, SliceRdState& state )
     {
         if( ts_node_is_null( c ) )
@@ -1553,103 +1682,150 @@ struct SliceRdWalker
         unit( c, state );
     }
 
-    // an `else` branch: an else_clause's named children in statement position, anything else as the statement
-    void branchBody( TSNode alt, SliceRdState& state )
+    // an `else` branch: an else_clause's named children in statement position, anything else as the statement.
+    // Only ever reached AS a `done` callback (stmtC's if-handler's `visitAlt`), so it always starts at
+    // trampoline depth — safe to call seq/stmt synchronously; THEY push for whatever is below them.
+    void branchBody( TSNode alt, SliceRdState& state, SliceRdStep done )
     {
         if( ts_node_is_null( alt ) )
         {
+            push( std::move( done ) );
             return;
         }
         if( sliceKindIs( alt, "else_clause" ) )
         {
-            seq( alt, state );
+            seq( alt, state, std::move( done ) );
             return;
         }
-        stmt( alt, state );
+        stmt( alt, state, std::move( done ) );
     }
 
     // ── the generic loop. `header` is applied to the header-in state each round: it advances the state
     //    onto the path INTO the body and copies the path OUT of the header (condition false, iterator
     //    exhausted) into `exit`. `update` (C `for`) runs where `continue` lands; `elseBody` (Python) runs on
     //    the header's exit path only, never after a break. bodyFirst = do-while. Iterates the header-in
-    //    state to a fixpoint. ────────────────────────────────────────────────────────────────────────
+    //    state to a fixpoint. header's own captures MUST be by VALUE (TSNode is POD) — the recursive form
+    //    could capture its condition node by reference because the whole fixpoint ran before the caller's
+    //    frame unwound; here `header` is still being invoked many trampoline hops after that frame is gone.
+    // ──────────────────────────────────────────────────────────────────────────────────────────────────
+    // loop()/loopRound() own their per-round locals via shared_ptr, NOT the walker-wide `arena`: a loop
+    // nested inside another one gets a FRESH `loop()` invocation — fresh entry/brk/cont/headerExit/hin —
+    // every time an OUTER level's fixpoint redoes its body because it has not converged yet (a binding
+    // with 2 reaching defs needs exactly 2 rounds — the fixpoint bound's own comment above), and a chain
+    // of N nested loops can cascade that into O(N) redos of the inner ones. In the arena, none of those
+    // superseded rounds' states were ever freed (measured: 2,040 nested `for` loops retained 2.6 GB vs the
+    // recursive form's 13 MB — the stack unwound theirs, nothing here did). shared_ptr frees a round's
+    // states the moment the last closure holding them runs, which is exactly when that round's own
+    // subtree has fully drained — the same lifetime the recursive form's stack frames gave for free.
+    // (Nested ifs/switch/try/etc. visit each child exactly once, no redo, so they stay on `arena`.)
+    static std::shared_ptr<SliceRdState> stateBox( SliceRdState v ) { return std::make_shared<SliceRdState>( std::move( v ) ); }
+
     template< class HeaderFn >
-    void loop( const HeaderFn& header, TSNode body, TSNode update, TSNode elseBody, SliceRdState& state, bool bodyFirst )
+    void loop( HeaderFn header, TSNode body, TSNode update, TSNode elseBody, SliceRdState& state, bool bodyFirst, SliceRdStep done )
     {
-        const SliceRdState entry = state;
-        SliceRdState       brk = dead(), cont = dead(), headerExit = dead();
-        breakAcc.push_back( &brk );
-        continueAcc.push_back( &cont );
-        SliceRdState hin = entry;
-        for( std::uint32_t iter = 0;; ++iter )
+        auto entry      = stateBox( state );
+        auto brk        = stateBox( dead() );
+        auto cont       = stateBox( dead() );
+        auto headerExit = stateBox( dead() );
+        breakAcc.push_back( brk.get() );
+        continueAcc.push_back( cont.get() );
+        auto hin = stateBox( *entry );
+        loopRound( header, body, update, elseBody, bodyFirst, 0, entry, brk, cont, headerExit, hin, state, std::move( done ) );
+    }
+
+    template< class HeaderFn >
+    void loopRound( HeaderFn header, TSNode body, TSNode update, TSNode elseBody, bool bodyFirst, std::uint32_t iter,
+                     std::shared_ptr<SliceRdState> entry, std::shared_ptr<SliceRdState> brk, std::shared_ptr<SliceRdState> cont,
+                     std::shared_ptr<SliceRdState> headerExit, std::shared_ptr<SliceRdState> hin, SliceRdState& outState, SliceRdStep done )
+    {
+        auto bodyIn = stateBox( *hin );
+        if( !bodyFirst )
         {
-            SliceRdState bodyIn = hin;
-            if( !bodyFirst )
-            {
-                headerExit = dead();
-                header( bodyIn, headerExit );
-            }
-            cont = dead();
-            SliceRdState bodyOut = bodyIn;
-            stmt( body, bodyOut );
-            sliceRdJoin( bodyOut, cont );
+            *headerExit = dead();
+            header( *bodyIn, *headerExit );
+        }
+        *cont = dead();
+        auto bodyOut = stateBox( *bodyIn );
+        SliceRdStep afterBody = [ this, header, body, update, elseBody, bodyFirst, iter, entry, brk, cont, headerExit, hin, bodyOut, &outState,
+                                   done = std::move( done ) ]() mutable
+        {
+            sliceRdJoin( *bodyOut, *cont );
             if( bodyFirst )
             {
-                headerExit = dead();
-                header( bodyOut, headerExit );
+                *headerExit = dead();
+                header( *bodyOut, *headerExit );
             }
-            unit( update, bodyOut );
-            SliceRdState next = entry;
-            sliceRdJoin( next, bodyOut );
-            if( sliceRdEqual( next, hin ) )
+            unit( update, *bodyOut );
+            auto next = stateBox( *entry );
+            sliceRdJoin( *next, *bodyOut );
+            const bool converged = sliceRdEqual( *next, *hin );
+            if( !converged && iter + 1 < kSliceRdMaxIter )
             {
-                break;
+                *hin = *next;
+                loopRound( header, body, update, elseBody, bodyFirst, iter + 1, entry, brk, cont, headerExit, hin, outState, std::move( done ) );
+                return;
             }
-            if( iter + 1 >= kSliceRdMaxIter )
+            if( !converged )
             {
                 DEGRADED_PATH_ALERT( "slice: reaching-definition loop did not converge — using the last state" );
-                break;
             }
-            hin = next;
-        }
-        breakAcc.pop_back();
-        continueAcc.pop_back();
-        SliceRdState out = headerExit;
-        stmt( elseBody, out );
-        sliceRdJoin( out, brk );
-        state = out;
+            breakAcc.pop_back();
+            continueAcc.pop_back();
+            auto out = stateBox( *headerExit );
+            SliceRdStep finish = [ this, out, brk, &outState, done = std::move( done ) ]() mutable
+            {
+                sliceRdJoin( *out, *brk );
+                outState = *out;
+                push( std::move( done ) );
+            };
+            push( [ this, elseBody, out, finish = std::move( finish ) ]() mutable { stmt( elseBody, *out, std::move( finish ) ); } );
+        };
+        push( [ this, body, bodyOut, afterBody = std::move( afterBody ) ]() mutable { stmt( body, *bodyOut, std::move( afterBody ) ); } );
     }
 
     // ── C-family ─────────────────────────────────────────────────────────────────────────────────
-    bool stmtC( TSNode n, SliceRdState& state )
+    bool stmtC( TSNode n, SliceRdState& state, SliceRdStep& done )
     {
         if( sliceKindIs( n, "if_statement" ) )
         {
             condition( sliceField( n, NodeField::Condition ), state );
-            SliceRdState thenS = state, elseS = state;
-            stmt( sliceField( n, NodeField::Consequence ), thenS );
-            branchBody( sliceField( n, NodeField::Alternative ), elseS );
-            sliceRdJoin( thenS, elseS );
-            state = thenS;
+            SliceRdState& thenS = newState( state );
+            SliceRdState& elseS = newState( state );
+            const TSNode consequence = sliceField( n, NodeField::Consequence );
+            const TSNode alternative = sliceField( n, NodeField::Alternative );
+            SliceRdStep finish = [ this, &state, &thenS, &elseS, done = std::move( done ) ]() mutable
+            {
+                sliceRdJoin( thenS, elseS );
+                state = thenS;
+                push( std::move( done ) );
+            };
+            SliceRdStep visitAlt = [ this, alternative, &elseS, finish = std::move( finish ) ]() mutable
+            {
+                branchBody( alternative, elseS, std::move( finish ) );
+            };
+            push( [ this, consequence, &thenS, visitAlt = std::move( visitAlt ) ]() mutable { stmt( consequence, thenS, std::move( visitAlt ) ); } );
             return true;
         }
         if( sliceKindIs( n, "while_statement" ) )
         {
             const TSNode cond = sliceField( n, NodeField::Condition );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { condition( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false );
+            loop( [ this, cond ]( SliceRdState& s, SliceRdState& exit ) { condition( cond, s ); exit = s; },
+                  sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "do_statement" ) )
         {
             const TSNode cond = sliceField( n, NodeField::Condition );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, true );
+            loop( [ this, cond ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; },
+                  sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, true, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "for_statement" ) )
         {
             unit( sliceField( n, NodeField::Initializer ), state );
             const TSNode cond = sliceField( n, NodeField::Condition );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), sliceField( n, NodeField::Update ), TSNode{}, state, false );
+            loop( [ this, cond ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; },
+                  sliceField( n, NodeField::Body ), sliceField( n, NodeField::Update ), TSNode{}, state, false, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "for_range_loop" ) )
@@ -1657,47 +1833,51 @@ struct SliceRdWalker
             unit( sliceField( n, NodeField::Initializer ), state );   // C++20 `for( init; x : r )`
             unit( sliceField( n, NodeField::Right ), state );          // the range, evaluated once
             const TSNode decl = sliceField( n, NodeField::Declarator );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( decl, s ); }, sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false );
+            loop( [ this, decl ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( decl, s ); },
+                  sliceField( n, NodeField::Body ), TSNode{}, TSNode{}, state, false, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "switch_statement" ) )
         {
-            switchC( n, state );
+            switchC( n, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "try_statement" ) )
         {
-            tryC( n, state );
+            tryC( n, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "labeled_statement" ) || sliceKindIs( n, "attributed_statement" ) )
         {
-            seq( n, state );   // the label / attribute children hold no occurrences; the statement is walked in position (goto itself is untracked)
+            seq( n, state, std::move( done ) );   // the label / attribute children hold no occurrences; the statement is walked in position (goto itself is untracked)
             return true;
         }
         if( sliceKindIs( n, "return_statement" ) || sliceKindIs( n, "co_return_statement" ) || sliceKindIs( n, "throw_statement" ) )
         {
             exitStmt( n, state );
+            push( std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "break_statement" ) )
         {
             jump( n, state, true );
+            push( std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "continue_statement" ) )
         {
             jump( n, state, false );
+            push( std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "preproc_else" ) )
         {
-            seq( n, state );
+            seq( n, state, std::move( done ) );
             return true;
         }
         if( sliceIsPreprocConditional( n ) )
         {
-            preprocC( n, state );
+            preprocC( n, state, std::move( done ) );
             return true;
         }
         return false;   // goto_statement included: it falls through, disclosed
@@ -1705,132 +1885,215 @@ struct SliceRdWalker
 
     // switch: each case enters from the switch's own state joined with the fall-through of the case before
     // it; break leaves; no default keeps the "no case matched" path
-    void switchC( TSNode n, SliceRdState& state )
+    void switchC( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         unit( sliceField( n, NodeField::Condition ), state );
-        const SliceRdState in = state;
-        SliceRdState       brk = dead(), fall = dead();
-        bool               hasDefault = false;
+        SliceRdState& in   = newState( state );
+        SliceRdState& brk  = newState( dead() );
+        SliceRdState& fall = newState( dead() );
         breakAcc.push_back( &brk );
         const TSNode body = sliceField( n, NodeField::Body );
+        auto kids = std::make_shared<std::vector<TSNode>>();
         if( !ts_node_is_null( body ) )
         {
             ChildCursor bodyCursor( body );
-            forEachNamedChild( body, bodyCursor.cur, [ & ]( TSNode c )
-            {
-                if( !sliceKindIs( c, "case_statement" ) )
-                {
-                    stmt( c, fall );   // a statement between cases — reachable only by fall-through
-                    return true;
-                }
-                SliceRdState s = in;
-                sliceRdJoin( s, fall );
-                const TSNode value = sliceField( c, NodeField::Value );
-                if( ts_node_is_null( value ) )
-                {
-                    hasDefault = true;
-                }
-                else
-                {
-                    unit( value, s );
-                }
-                seqSkipping( c, s, value );   // the case's statements; its `value` label is not one
-                fall = s;
-                return true;
-            } );
+            collectNamedChildren( body, bodyCursor.cur, *kids );
         }
-        breakAcc.pop_back();
-        SliceRdState out = brk;
-        sliceRdJoin( out, fall );
-        if( !hasDefault )
+        auto hasDefault = std::make_shared<bool>( false );
+        SliceRdStep finish = [ this, &state, &brk, &fall, &in, hasDefault, done = std::move( done ) ]() mutable
         {
-            sliceRdJoin( out, in );
+            breakAcc.pop_back();
+            SliceRdState& out = newState( brk );
+            sliceRdJoin( out, fall );
+            if( !*hasDefault )
+            {
+                sliceRdJoin( out, in );
+            }
+            state = out;
+            push( std::move( done ) );
+        };
+        switchCaseFrom( kids, 0, in, fall, hasDefault, std::move( finish ) );
+    }
+
+    void switchCaseFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& in, SliceRdState& fall, std::shared_ptr<bool> hasDefault,
+                          SliceRdStep done )
+    {
+        if( i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
         }
-        state = out;
+        const TSNode c = ( *kids )[ i ];
+        if( !sliceKindIs( c, "case_statement" ) )
+        {
+            push( [ this, kids, i, c, &in, &fall, hasDefault, done = std::move( done ) ]() mutable
+            {
+                stmt( c, fall, [ this, kids, i, &in, &fall, hasDefault, done = std::move( done ) ]() mutable   // a statement between cases — reachable only by fall-through
+                {
+                    switchCaseFrom( kids, i + 1, in, fall, hasDefault, std::move( done ) );
+                } );
+            } );
+            return;
+        }
+        SliceRdState& s = newState( in );
+        sliceRdJoin( s, fall );
+        const TSNode value = sliceField( c, NodeField::Value );
+        if( ts_node_is_null( value ) )
+        {
+            *hasDefault = true;
+        }
+        else
+        {
+            unit( value, s );
+        }
+        push( [ this, kids, i, c, value, &fall, &s, &in, hasDefault, done = std::move( done ) ]() mutable
+        {
+            seqSkipping( c, s, value, [ this, kids, i, &fall, &s, &in, hasDefault, done = std::move( done ) ]() mutable   // the case's statements; its `value` label is not one
+            {
+                fall = s;
+                switchCaseFrom( kids, i + 1, in, fall, hasDefault, std::move( done ) );
+            } );
+        } );
     }
 
     // try: the handler entry is the join of the state before EVERY unit of the body (any statement may
     // throw, before its own defs apply); after the try, the body's normal exit joins every handler's exit
-    void tryC( TSNode n, SliceRdState& state )
+    void tryC( TSNode n, SliceRdState& state, SliceRdStep done )
     {
-        SliceRdState handlerIn = dead();
+        SliceRdState& handlerIn = newState( dead() );
         tryAcc.push_back( &handlerIn );
-        SliceRdState tryOut = state;
-        stmt( sliceField( n, NodeField::Body ), tryOut );
-        tryAcc.pop_back();
-        SliceRdState out = tryOut;
-        ChildCursor  cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
+        SliceRdState& tryOut = newState( state );
+        const TSNode tryBody = sliceField( n, NodeField::Body );
+        auto kids = std::make_shared<std::vector<TSNode>>();
+        ChildCursor cursor( n );
+        collectNamedChildren( n, cursor.cur, *kids );
+        push( [ this, tryBody, &tryOut, &state, &handlerIn, kids, done = std::move( done ) ]() mutable
         {
-            if( !sliceKindIs( c, "catch_clause" ) )
+            stmt( tryBody, tryOut, [ this, &tryOut, &state, &handlerIn, kids, done = std::move( done ) ]() mutable
             {
-                return true;
-            }
-            SliceRdState h = handlerIn;
-            unit( sliceField( c, NodeField::Parameters ), h );
-            stmt( sliceField( c, NodeField::Body ), h );
-            sliceRdJoin( out, h );
-            return true;
+                tryAcc.pop_back();
+                SliceRdState& out = newState( tryOut );
+                tryCatchFrom( kids, 0, handlerIn, out, [ this, &state, &out, done = std::move( done ) ]() mutable
+                {
+                    state = out;
+                    push( std::move( done ) );
+                } );
+            } );
         } );
-        state = out;
+    }
+
+    void tryCatchFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& handlerIn, SliceRdState& out, SliceRdStep done )
+    {
+        if( i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        if( !sliceKindIs( c, "catch_clause" ) )
+        {
+            tryCatchFrom( kids, i + 1, handlerIn, out, std::move( done ) );   // a try_statement's named children are body + catch_clause* + finally? — a small, grammar-bounded width, not nesting
+            return;
+        }
+        SliceRdState& h = newState( handlerIn );
+        const TSNode catchBody = sliceField( c, NodeField::Body );
+        unit( sliceField( c, NodeField::Parameters ), h );
+        push( [ this, kids, i, catchBody, &h, &handlerIn, &out, done = std::move( done ) ]() mutable
+        {
+            stmt( catchBody, h, [ this, kids, i, &h, &handlerIn, &out, done = std::move( done ) ]() mutable
+            {
+                sliceRdJoin( out, h );
+                tryCatchFrom( kids, i + 1, handlerIn, out, std::move( done ) );
+            } );
+        } );
     }
 
     // a preprocessor conditional in statement position: a literal-decided side is walked alone (its dead
     // side's occurrences were never rowed); an undecided one is a branch whose sides join — the "a pp def
     // never hides the unconditional def before it" rule, by structure
-    void preprocC( TSNode n, SliceRdState& state )
+    void preprocC( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         const auto [ bodyState, altState ] = slicePreprocBranchStates( n, src, SlicePp::Live );
         const TSNode condition   = sliceField( n, NodeField::Condition );
         const TSNode macroName   = sliceField( n, NodeField::Name );
         const TSNode alternative = sliceField( n, NodeField::Alternative );
-        SliceRdState bodyOut = bodyState == SlicePp::Dead ? dead() : state;
-        ChildCursor  cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
+        SliceRdState& bodyOut = newState( bodyState == SlicePp::Dead ? dead() : state );
+        auto kids = std::make_shared<std::vector<TSNode>>();
+        ChildCursor cursor( n );
+        collectNamedChildren( n, cursor.cur, *kids );
+        auto skip = std::make_shared<std::vector<bool>>();
+        skip->reserve( kids->size() );
+        for( const TSNode& c : *kids )
         {
-            if( bodyOut.dead )
-            {
-                return false;
-            }
-            const bool skip = ( !ts_node_is_null( condition ) && ts_node_eq( c, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( c, macroName ) )
-                            || ( !ts_node_is_null( alternative ) && ts_node_eq( c, alternative ) );
-            if( !skip )
-            {
-                stmt( c, bodyOut );
-            }
-            return true;
-        } );
-        SliceRdState altOut = dead();
-        if( !ts_node_is_null( alternative ) )
+            skip->push_back( ( !ts_node_is_null( condition ) && ts_node_eq( c, condition ) ) || ( !ts_node_is_null( macroName ) && ts_node_eq( c, macroName ) )
+                            || ( !ts_node_is_null( alternative ) && ts_node_eq( c, alternative ) ) );
+        }
+        SliceRdStep afterBody = [ this, &state, &bodyOut, alternative, altState, bodyState, done = std::move( done ) ]() mutable
         {
-            if( altState != SlicePp::Dead )
+            if( !ts_node_is_null( alternative ) && altState != SlicePp::Dead )
+            {
+                SliceRdState& altOut = newState( state );
+                push( [ this, alternative, &altOut, &bodyOut, &state, done = std::move( done ) ]() mutable
+                {
+                    stmt( alternative, altOut, [ this, &altOut, &bodyOut, &state, done = std::move( done ) ]() mutable
+                    {
+                        sliceRdJoin( bodyOut, altOut );
+                        state = bodyOut;
+                        push( std::move( done ) );
+                    } );
+                } );
+                return;
+            }
+            SliceRdState& altOut = newState( dead() );
+            if( ts_node_is_null( alternative ) && bodyState != SlicePp::Live )
             {
                 altOut = state;
-                stmt( alternative, altOut );   // preproc_else → its statements; preproc_elif → this handler again
             }
-        }
-        else if( bodyState != SlicePp::Live )
+            sliceRdJoin( bodyOut, altOut );
+            state = bodyOut;
+            push( std::move( done ) );
+        };
+        preprocChildFrom( kids, skip, 0, bodyOut, std::move( afterBody ) );
+    }
+
+    void preprocChildFrom( std::shared_ptr<std::vector<TSNode>> kids, std::shared_ptr<std::vector<bool>> skip, std::size_t i, SliceRdState& bodyOut,
+                            SliceRdStep done )
+    {
+        if( bodyOut.dead || i >= kids->size() )
         {
-            altOut = state;   // no #else and not literally live: the "not compiled" path is the entry state
+            push( std::move( done ) );
+            return;
         }
-        sliceRdJoin( bodyOut, altOut );
-        state = bodyOut;
+        if( ( *skip )[ i ] )
+        {
+            preprocChildFrom( kids, skip, i + 1, bodyOut, std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        push( [ this, kids, skip, i, c, &bodyOut, done = std::move( done ) ]() mutable
+        {
+            stmt( c, bodyOut, [ this, kids, skip, i, &bodyOut, done = std::move( done ) ]() mutable
+            {
+                preprocChildFrom( kids, skip, i + 1, bodyOut, std::move( done ) );
+            } );
+        } );
     }
 
     // ── Python ───────────────────────────────────────────────────────────────────────────────────
-    bool stmtPy( TSNode n, SliceRdState& state )
+    bool stmtPy( TSNode n, SliceRdState& state, SliceRdStep& done )
     {
         if( sliceKindIs( n, "if_statement" ) )
         {
-            ifPy( n, state );
+            ifPy( n, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "while_statement" ) )
         {
             const TSNode cond = sliceField( n, NodeField::Condition );
             const TSNode alt  = sliceField( n, NodeField::Alternative );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; }, sliceField( n, NodeField::Body ), TSNode{},
-                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body ), state, false );
+            const TSNode altBody = ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body );
+            loop( [ this, cond ]( SliceRdState& s, SliceRdState& exit ) { unit( cond, s ); exit = s; },
+                  sliceField( n, NodeField::Body ), TSNode{}, altBody, state, false, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "for_statement" ) )
@@ -1838,190 +2101,331 @@ struct SliceRdWalker
             unit( sliceField( n, NodeField::Right ), state );   // the iterable, evaluated once
             const TSNode left = sliceField( n, NodeField::Left );
             const TSNode alt  = sliceField( n, NodeField::Alternative );
-            loop( [ & ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( left, s ); }, sliceField( n, NodeField::Body ), TSNode{},
-                  ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body ), state, false );
+            const TSNode altBody = ts_node_is_null( alt ) ? TSNode{} : sliceField( alt, NodeField::Body );
+            loop( [ this, left ]( SliceRdState& s, SliceRdState& exit ) { exit = s; unit( left, s ); },
+                  sliceField( n, NodeField::Body ), TSNode{}, altBody, state, false, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "try_statement" ) )
         {
-            tryPy( n, state );
+            tryPy( n, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "with_statement" ) )
         {
             const TSNode body = sliceField( n, NodeField::Body );
-            ChildCursor  cursor( n );
-            forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
-            {
-                if( !ts_node_is_null( body ) && ts_node_eq( c, body ) )
-                {
-                    stmt( c, state );
-                }
-                else
-                {
-                    unit( c, state );   // the with_clause: the context expressions, then the `as` targets
-                }
-                return true;
-            } );
+            auto kids = std::make_shared<std::vector<TSNode>>();
+            ChildCursor cursor( n );
+            collectNamedChildren( n, cursor.cur, *kids );
+            withPartFrom( kids, 0, body, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "match_statement" ) )
         {
-            matchPy( n, state );
+            matchPy( n, state, std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "return_statement" ) || sliceKindIs( n, "raise_statement" ) )
         {
             exitStmt( n, state );
+            push( std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "break_statement" ) )
         {
             jump( n, state, true );
+            push( std::move( done ) );
             return true;
         }
         if( sliceKindIs( n, "continue_statement" ) )
         {
             jump( n, state, false );
+            push( std::move( done ) );
             return true;
         }
         return false;
     }
 
+    // a with_statement's named children in order: the body statement descends via `stmt`, every other
+    // part (context expressions, `as` targets) is one `unit` — the with_clause's own shape
+    void withPartFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, TSNode body, SliceRdState& state, SliceRdStep done )
+    {
+        if( i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        if( ts_node_is_null( body ) || !ts_node_eq( c, body ) )
+        {
+            unit( c, state );
+            withPartFrom( kids, i + 1, body, state, std::move( done ) );
+            return;
+        }
+        push( [ this, kids, i, c, body, &state, done = std::move( done ) ]() mutable
+        {
+            stmt( c, state, [ this, kids, i, body, &state, done = std::move( done ) ]() mutable
+            {
+                withPartFrom( kids, i + 1, body, state, std::move( done ) );
+            } );
+        } );
+    }
+
     // if / elif / else: each arm enters from the previous condition's false path; no else keeps that path
-    void ifPy( TSNode n, SliceRdState& state )
+    void ifPy( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         unit( sliceField( n, NodeField::Condition ), state );
-        SliceRdState falseS = state, out = dead();
-        {
-            SliceRdState t = state;
-            stmt( sliceField( n, NodeField::Consequence ), t );
-            sliceRdJoin( out, t );
-        }
-        bool        hasElse = false;
+        SliceRdState& falseS = newState( state );
+        SliceRdState& out    = newState( dead() );
+        SliceRdState& t0     = newState( state );
+        const TSNode consequence = sliceField( n, NodeField::Consequence );
+        auto kids = std::make_shared<std::vector<TSNode>>();
         ChildCursor cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
+        collectNamedChildren( n, cursor.cur, *kids );
+        auto hasElse = std::make_shared<bool>( false );
+        push( [ this, consequence, &t0, &out, &falseS, &state, kids, hasElse, done = std::move( done ) ]() mutable
         {
-            if( sliceKindIs( c, "elif_clause" ) )
+            stmt( consequence, t0, [ this, &t0, &out, &falseS, &state, kids, hasElse, done = std::move( done ) ]() mutable
             {
-                unit( sliceField( c, NodeField::Condition ), falseS );
-                SliceRdState t = falseS;
-                stmt( sliceField( c, NodeField::Consequence ), t );
-                sliceRdJoin( out, t );
-            }
-            else if( sliceKindIs( c, "else_clause" ) )
-            {
-                SliceRdState t = falseS;
-                stmt( sliceField( c, NodeField::Body ), t );
-                sliceRdJoin( out, t );
-                hasElse = true;
-            }
-            return true;
+                sliceRdJoin( out, t0 );
+                ifPyBranchFrom( kids, 0, falseS, out, hasElse, [ this, &out, &falseS, &state, hasElse, done = std::move( done ) ]() mutable
+                {
+                    if( !*hasElse )
+                    {
+                        sliceRdJoin( out, falseS );
+                    }
+                    state = out;
+                    push( std::move( done ) );
+                } );
+            } );
         } );
-        if( !hasElse )
+    }
+
+    void ifPyBranchFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& falseS, SliceRdState& out, std::shared_ptr<bool> hasElse,
+                          SliceRdStep done )
+    {
+        if( i >= kids->size() )
         {
-            sliceRdJoin( out, falseS );
+            push( std::move( done ) );
+            return;
         }
-        state = out;
+        const TSNode c = ( *kids )[ i ];
+        if( sliceKindIs( c, "elif_clause" ) )
+        {
+            unit( sliceField( c, NodeField::Condition ), falseS );
+            SliceRdState& t = newState( falseS );
+            const TSNode consequence = sliceField( c, NodeField::Consequence );
+            push( [ this, kids, i, consequence, &t, &out, &falseS, hasElse, done = std::move( done ) ]() mutable
+            {
+                stmt( consequence, t, [ this, kids, i, &t, &out, &falseS, hasElse, done = std::move( done ) ]() mutable
+                {
+                    sliceRdJoin( out, t );
+                    ifPyBranchFrom( kids, i + 1, falseS, out, hasElse, std::move( done ) );
+                } );
+            } );
+            return;
+        }
+        if( sliceKindIs( c, "else_clause" ) )
+        {
+            SliceRdState& t = newState( falseS );
+            const TSNode body = sliceField( c, NodeField::Body );
+            *hasElse = true;
+            push( [ this, kids, i, body, &t, &out, &falseS, hasElse, done = std::move( done ) ]() mutable
+            {
+                stmt( body, t, [ this, kids, i, &t, &out, &falseS, hasElse, done = std::move( done ) ]() mutable
+                {
+                    sliceRdJoin( out, t );
+                    ifPyBranchFrom( kids, i + 1, falseS, out, hasElse, std::move( done ) );
+                } );
+            } );
+            return;
+        }
+        ifPyBranchFrom( kids, i + 1, falseS, out, hasElse, std::move( done ) );
     }
 
     // try / except / else / finally: handlers enter from the join of the state before every unit of the
     // body; `else` continues the normal exit; `finally` is walked twice — once on the normal path (its exit
     // is the statement's) and once on the exceptional one (for the reach of its own uses only)
-    void tryPy( TSNode n, SliceRdState& state )
+    void tryPy( TSNode n, SliceRdState& state, SliceRdStep done )
     {
-        SliceRdState handlerIn = dead();
+        SliceRdState& handlerIn = newState( dead() );
         tryAcc.push_back( &handlerIn );
-        SliceRdState tryOut = state;
-        stmt( sliceField( n, NodeField::Body ), tryOut );
-        tryAcc.pop_back();
-        SliceRdState handlersOut = dead(), normalOut = tryOut;
-        TSNode       finallyClause{};
-        ChildCursor  cursor( n );
-        forEachNamedChild( n, cursor.cur, [ & ]( TSNode c )
+        SliceRdState& tryOut = newState( state );
+        const TSNode tryBody = sliceField( n, NodeField::Body );
+        auto kids = std::make_shared<std::vector<TSNode>>();
+        ChildCursor cursor( n );
+        collectNamedChildren( n, cursor.cur, *kids );
+        push( [ this, tryBody, &tryOut, &state, &handlerIn, kids, done = std::move( done ) ]() mutable
         {
-            if( sliceKindIs( c, "except_clause" ) || sliceKindIs( c, "except_group_clause" ) )
+            stmt( tryBody, tryOut, [ this, &tryOut, &state, &handlerIn, kids, done = std::move( done ) ]() mutable
             {
-                SliceRdState h = handlerIn;
-                ChildCursor  partCursor( c );
-                forEachNamedChild( c, partCursor.cur, [ & ]( TSNode part )
-                {
-                    if( sliceKindIs( part, "block" ) )
+                tryAcc.pop_back();
+                SliceRdState& handlersOut = newState( dead() );
+                SliceRdState& normalOut   = newState( tryOut );
+                auto finallyClause = std::make_shared<TSNode>( TSNode{} );
+                tryPyPartFrom( kids, 0, handlerIn, handlersOut, normalOut, finallyClause,
+                    [ this, &state, &handlerIn, &handlersOut, &normalOut, finallyClause, done = std::move( done ) ]() mutable
                     {
-                        stmt( part, h );
-                    }
-                    else
-                    {
-                        unit( part, h );   // the exception expression and the `as` name
-                    }
-                    return true;
-                } );
-                sliceRdJoin( handlersOut, h );
-            }
-            else if( sliceKindIs( c, "else_clause" ) )
-            {
-                stmt( sliceField( c, NodeField::Body ), normalOut );
-            }
-            else if( sliceKindIs( c, "finally_clause" ) )
-            {
-                finallyClause = c;
-            }
-            return true;
+                        if( ts_node_is_null( *finallyClause ) )
+                        {
+                            sliceRdJoin( normalOut, handlersOut );
+                            state = normalOut;
+                            push( std::move( done ) );
+                            return;
+                        }
+                        SliceRdState& fin = newState( normalOut );
+                        sliceRdJoin( fin, handlersOut );
+                        const TSNode fc = *finallyClause;
+                        push( [ this, fc, &fin, &handlerIn, &state, done = std::move( done ) ]() mutable
+                        {
+                            seq( fc, fin, [ this, fc, &fin, &handlerIn, &state, done = std::move( done ) ]() mutable   // the normal path — the statement's exit
+                            {
+                                SliceRdState& exceptional = newState( handlerIn );
+                                push( [ this, fc, &exceptional, &fin, &state, done = std::move( done ) ]() mutable
+                                {
+                                    seq( fc, exceptional, [ this, &fin, &state, done = std::move( done ) ]() mutable   // the uncaught path — walked for its uses' reach, then dropped
+                                    {
+                                        state = fin;
+                                        push( std::move( done ) );
+                                    } );
+                                } );
+                            } );
+                        } );
+                    } );
+            } );
         } );
-        if( ts_node_is_null( finallyClause ) )
+    }
+
+    void tryPyPartFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& handlerIn, SliceRdState& handlersOut, SliceRdState& normalOut,
+                         std::shared_ptr<TSNode> finallyClause, SliceRdStep done )
+    {
+        if( i >= kids->size() )
         {
-            sliceRdJoin( normalOut, handlersOut );
-            state = normalOut;
+            push( std::move( done ) );
             return;
         }
-        SliceRdState fin = normalOut;
-        sliceRdJoin( fin, handlersOut );
-        seq( finallyClause, fin );            // the normal path — the statement's exit
-        SliceRdState exceptional = handlerIn;
-        seq( finallyClause, exceptional );    // the uncaught path — walked for its uses' reach, then dropped
-        state = fin;
+        const TSNode c = ( *kids )[ i ];
+        if( sliceKindIs( c, "except_clause" ) || sliceKindIs( c, "except_group_clause" ) )
+        {
+            SliceRdState& h = newState( handlerIn );
+            auto parts = std::make_shared<std::vector<TSNode>>();
+            ChildCursor partCursor( c );
+            collectNamedChildren( c, partCursor.cur, *parts );
+            tryPyExceptPartFrom( parts, 0, h, [ this, kids, i, &h, &handlerIn, &handlersOut, &normalOut, finallyClause, done = std::move( done ) ]() mutable
+            {
+                sliceRdJoin( handlersOut, h );
+                tryPyPartFrom( kids, i + 1, handlerIn, handlersOut, normalOut, finallyClause, std::move( done ) );
+            } );
+            return;
+        }
+        if( sliceKindIs( c, "else_clause" ) )
+        {
+            const TSNode body = sliceField( c, NodeField::Body );
+            push( [ this, kids, i, body, &normalOut, &handlerIn, &handlersOut, finallyClause, done = std::move( done ) ]() mutable
+            {
+                stmt( body, normalOut, [ this, kids, i, &handlerIn, &handlersOut, &normalOut, finallyClause, done = std::move( done ) ]() mutable
+                {
+                    tryPyPartFrom( kids, i + 1, handlerIn, handlersOut, normalOut, finallyClause, std::move( done ) );
+                } );
+            } );
+            return;
+        }
+        if( sliceKindIs( c, "finally_clause" ) )
+        {
+            *finallyClause = c;
+        }
+        tryPyPartFrom( kids, i + 1, handlerIn, handlersOut, normalOut, finallyClause, std::move( done ) );
+    }
+
+    // an except/except* clause's parts: the exception expression and the `as` name are units; the handler
+    // `block` descends via `stmt`
+    void tryPyExceptPartFrom( std::shared_ptr<std::vector<TSNode>> parts, std::size_t i, SliceRdState& h, SliceRdStep done )
+    {
+        if( i >= parts->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode part = ( *parts )[ i ];
+        if( !sliceKindIs( part, "block" ) )
+        {
+            unit( part, h );
+            tryPyExceptPartFrom( parts, i + 1, h, std::move( done ) );
+            return;
+        }
+        push( [ this, parts, i, part, &h, done = std::move( done ) ]() mutable
+        {
+            stmt( part, h, [ this, parts, i, &h, done = std::move( done ) ]() mutable
+            {
+                tryPyExceptPartFrom( parts, i + 1, h, std::move( done ) );
+            } );
+        } );
     }
 
     // match: every case enters from the subject's state; the no-case path is always kept (exhaustiveness
     // is never proven here)
-    void matchPy( TSNode n, SliceRdState& state )
+    void matchPy( TSNode n, SliceRdState& state, SliceRdStep done )
     {
         unit( sliceField( n, NodeField::Subject ), state );
         const TSNode body = sliceField( n, NodeField::Body );
-        SliceRdState out  = state;
-        if( !ts_node_is_null( body ) )
+        SliceRdState& out = newState( state );
+        if( ts_node_is_null( body ) )
         {
-            ChildCursor bodyCursor( body );
-            forEachNamedChild( body, bodyCursor.cur, [ & ]( TSNode c )
-            {
-                if( !sliceKindIs( c, "case_clause" ) )
-                {
-                    return true;
-                }
-                SliceRdState s           = state;
-                const TSNode consequence = sliceField( c, NodeField::Consequence );
-                ChildCursor  partCursor( c );
-                forEachNamedChild( c, partCursor.cur, [ & ]( TSNode part )
-                {
-                    if( ts_node_is_null( consequence ) || !ts_node_eq( part, consequence ) )
-                    {
-                        unit( part, s );   // patterns (capture defs) and the guard
-                    }
-                    return true;
-                } );
-                stmt( consequence, s );
-                sliceRdJoin( out, s );
-                return true;
-            } );
+            state = out;
+            push( std::move( done ) );
+            return;
         }
-        state = out;
+        auto kids = std::make_shared<std::vector<TSNode>>();
+        ChildCursor bodyCursor( body );
+        collectNamedChildren( body, bodyCursor.cur, *kids );
+        matchCaseFrom( kids, 0, state, out, [ this, &state, &out, done = std::move( done ) ]() mutable
+        {
+            state = out;
+            push( std::move( done ) );
+        } );
+    }
+
+    void matchCaseFrom( std::shared_ptr<std::vector<TSNode>> kids, std::size_t i, SliceRdState& state, SliceRdState& out, SliceRdStep done )
+    {
+        if( i >= kids->size() )
+        {
+            push( std::move( done ) );
+            return;
+        }
+        const TSNode c = ( *kids )[ i ];
+        if( !sliceKindIs( c, "case_clause" ) )
+        {
+            matchCaseFrom( kids, i + 1, state, out, std::move( done ) );
+            return;
+        }
+        SliceRdState& s = newState( state );
+        const TSNode consequence = sliceField( c, NodeField::Consequence );
+        auto parts = std::make_shared<std::vector<TSNode>>();
+        ChildCursor partCursor( c );
+        collectNamedChildren( c, partCursor.cur, *parts );
+        for( const TSNode& part : *parts )
+        {
+            if( ts_node_is_null( consequence ) || !ts_node_eq( part, consequence ) )
+            {
+                unit( part, s );   // patterns (capture defs) and the guard
+            }
+        }
+        push( [ this, kids, i, consequence, &s, &out, &state, done = std::move( done ) ]() mutable
+        {
+            stmt( consequence, s, [ this, kids, i, &s, &out, &state, done = std::move( done ) ]() mutable
+            {
+                sliceRdJoin( out, s );
+                matchCaseFrom( kids, i + 1, state, out, std::move( done ) );
+            } );
+        } );
     }
 };
 
 // compute the reach table for one scan. `root` is the parsed file's root; the definition node is the smallest
 // one spanning [spanStart, spanEnd). Slots: one per binding, plus one per UNBOUND name (an outer name
-// still chains def to use inside the definition).
-inline void sliceComputeReach( SliceScan& scan, TSNode root, const SliceWalkCtx& ctx )
+// still chains def to use inside the definition). `nodeCountHint` sizes the walker's explicit work stack
+// once, the same way sliceBuildParentIndex sizes its own tables — see sliceScanDefinition.
+inline void sliceComputeReach( SliceScan& scan, TSNode root, const SliceWalkCtx& ctx, std::size_t nodeCountHint = 0 )
 {
     scan.reach.assign( scan.all.size(), {} );
     scan.reachRule = std::uint8_t( sliceReachRuleOf( ctx.fam ) );
@@ -2035,6 +2439,7 @@ inline void sliceComputeReach( SliceScan& scan, TSNode root, const SliceWalkCtx&
     w.fam   = ctx.fam;
     w.cfg   = sliceReachRuleOf( ctx.fam ) == SliceReach::Cfg;
     w.reach = &scan.reach;
+    w.work.reserve( nodeCountHint > 0 ? nodeCountHint : 64 );   // the explicit work stack — one push per node is the worst case
 
     w.byteOrder.resize( scan.all.size() );
     for( std::uint32_t occIndex = 0; occIndex < w.byteOrder.size(); ++occIndex ) { w.byteOrder[ occIndex ] = occIndex; }
@@ -2067,20 +2472,22 @@ inline void sliceComputeReach( SliceScan& scan, TSNode root, const SliceWalkCtx&
     w.slotCount = scan.bindings.size() + unboundNames.size();
 
     const TSNode defn = ts_node_descendant_for_byte_range( root, ctx.spanStart, ctx.spanEnd - 1 );
-    SliceRdState state;
+    SliceRdState state;   // a local of THIS frame, which does not return until w.run() drains — safe for every pushed closure to reference
     state.defs.resize( w.slotCount );
-    w.structure( ts_node_is_null( defn ) ? root : defn, state );
+    w.structure( ts_node_is_null( defn ) ? root : defn, state, [](){} );
+    w.run();
 }
 
-// The deepest syntax-tree nesting a definition may reach before the slice refuses it. This is a STACK guard, not a time
-// guard: with the parent table and the memoized statement anchor the walk is linear in the nesting (measured on a
-// plain build: 2,000 / 4,000 / 8,000 nested ifs in 0.05 / 0.06 / 0.08 s, where the parent-climbing walk took 48 s at
-// 2,000 and did not finish at 4,000), but the walks still recurse once per level on the calling thread, and every
-// slice path (CLI and MCP) runs on the main thread's ~8 MB stack. The worst measured shape per level is nested loops:
-// ~4,085 nested for/while needed 3,660 KB on a plain arm64 build (~870 B a level), ifs 2,012 KB, blocks 1,362 KB, and a
-// sanitizer build's frames are 2-3x wider. 2,048 levels keeps the worst shape near 1.8 MB plain, inside 8 MB under
-// ASan with margin, and is still 2.5x the deepest function measured in 47,795 parsed files across 90 repositories
-// (808 levels, a CPython chained assignment).
+// The deepest syntax-tree nesting a definition may reach before the slice refuses it. lane/slice-iterative
+// made both walks below iterative — an explicit heap work stack, never the calling thread's — so this is a
+// TIME/MEMORY guard now, not a stack one: the occurrence scan (sliceWalk) is linear regardless of depth
+// (measured on a plain build: 2,000 / 4,000 / 8,000 nested ifs in 0.05 / 0.06 / 0.08 s, where the old
+// parent-climbing walk took 48 s at 2,000 and did not finish at 4,000), but SliceRdWalker's reaching-
+// definitions fixpoint is inherently super-linear in nesting — an outer level's fixpoint redo re-walks its
+// entire nested subtree, and a chain of nested loops is the shape that costs: 8,192 nested `for` loops
+// measured 48 s. 2,048 keeps that cost small on any real input — still 2.5x the deepest function measured
+// in 47,795 parsed files across 90 repositories (808 levels, a CPython chained assignment) — while refusing
+// the pathological depths where the fixpoint's own cost, not any stack, would make the slice hang.
 inline constexpr std::uint32_t kMaxSliceDepth = 2048;
 
 // One cursor pass over the nodes overlapping [spanStart, spanEnd) and their ancestors: every visited node's parent,
@@ -2171,9 +2578,13 @@ inline SliceScan sliceScanDefinition( const std::string& src, const Symbol& sym,
         return scan;
     }
     const SliceParentIndexScope parentScope( parents );
-    sliceWalk( ts_tree_root_node( tree ), ctx, scan, SlicePp::Live );
+    // O(1): a stored field on the definition's own descendant subtree, the same node sliceBuildParentIndex
+    // already sized its tables from — reused here so the walk's explicit stack reserves once instead of
+    // growing by doubling through the whole definition.
+    const std::size_t defNodeCount = ts_node_descendant_count( ts_node_descendant_for_byte_range( ts_tree_root_node( tree ), ctx.spanStart, ctx.spanEnd > ctx.spanStart ? ctx.spanEnd - 1 : ctx.spanStart ) );
+    sliceWalk( ts_tree_root_node( tree ), ctx, scan, SlicePp::Live, defNodeCount );
     sliceResolveBindings( scan );
-    sliceComputeReach( scan, ts_tree_root_node( tree ), ctx );   // rung 3: needs the bindings resolved and the tree still alive
+    sliceComputeReach( scan, ts_tree_root_node( tree ), ctx, defNodeCount );   // rung 3: needs the bindings resolved and the tree still alive
     for( const SliceNamedOcc& no : scan.all )
     {
         if( !varName.empty() && no.name == varName )

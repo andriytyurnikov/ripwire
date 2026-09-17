@@ -17,6 +17,7 @@
 #include <array>       // Symbol::evWhy — the fixed-size ev_why tag counters
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <type_traits>   // std::is_trivially_copyable_v — the VarSpan layout pin below
 #include <vector>
 
@@ -641,10 +642,15 @@ enum class LocalBindKind : std::uint8_t
                //     (kind != Type) and the L3 fn tables skip it (typeName empty). APPENDED so no persisted
                //     kind value renumbers (RawBind rides kind through the cache as a u8).
     ParamType, // member-variable round (card A3): a C++/ObjC function DEFINITION parameter's WRITTEN type
-               //     (`void f( Counter& c )` → c:Counter), so `c.count` resolves to Counter.count in the field
-               //     use-site index (graph.h collectFieldUseSites). Consumed THERE ONLY, deliberately: Rule 2's
-               //     call narrowing (kind == Type) does not read it, so no call edge changes; the L3 fn tables
-               //     skip it by kind; shadow suppression already holds the parameter's VarDecl record.
+               //     (`void f( Counter& c )` → c:Counter) — also a lambda parameter's, a typed range-for
+               //     variable's and a reference local's — so `c.count` resolves to Counter.count in the field
+               //     use-site index (graph.h collectFieldUseSites). Rule 2's call narrowing reads it too, but
+               //     LEXICALLY (resolve.h buildScopedRecvDecls, 2026-09-16): every one of these shapes is scoped
+               //     narrower than the whole function or can be redeclared inside it, so the flat per-function
+               //     varType table would leak the type to other declarations of the name. The L3 fn tables skip
+               //     it by kind; shadow suppression already holds the declaration's VarDecl record. importedName
+               //     holds the written type WHOLE when it is qualified (`std::map<K, V>`), else "" — the same on a
+               //     declaration's Type record — so the lexical lookup can refuse a name that is only a final segment.
                //     APPENDED for the same cache reason as VarDecl.
     Import,    // Phase 5 (docs/EVALS.md "Phase 5", kParserVer 77): a FILE-SCOPE import binding — `var` is the
                //     name the import binds in the module namespace, `typeName` the module target as written
@@ -679,6 +685,11 @@ struct Binding
     NodeId        fromSymbol = kNoNode;   // enclosing function/method (the binding's scope); kNoNode if file-scope
     std::uint32_t fileId     = 0;
     LocalBindKind kind       = LocalBindKind::Type;
+    std::uint32_t startByte  = 0;         // the record's own position (RawBind::startByte). ONE declaration's
+                                          //   VarDecl and its typed record (Type or ParamType) carry the SAME
+                                          //   value — that shared byte is how Rule 2's lexical receiver lookup
+                                          //   (buildScopedRecvDecls) knows a scope and a written type belong to
+                                          //   one declaration. Rides the padding after `kind`: no size change.
     std::uint32_t spanStart  = 0;         // VarDecl: the byte span the name shadows within — a block
     std::uint32_t spanEnd    = 0;         //   declaration runs from its DECLARATION POINT (end of the complete
                                           //   declarator, [basic.scope.pdecl]) to the block's end; a whole-scope
@@ -688,12 +699,15 @@ struct Binding
                                           //   {0,0} on a scope-less shadow capture (contains nothing).
     std::string   var;                    // the declared variable identifier (`x`)
     std::string   importedName;           // JsImport: the requested export name; never a global-name fallback.
+                                          //   Type/ParamType: the written type WHOLE when it is qualified, else "".
                                           //   JsExport: the LOCAL name the exported spelling binds (empty when
                                           //   the two are identical). Elixir: see LocalBindKind's field contracts.
     std::string   typeName;               // kind==Type: the written type's final segment (`Foo`), resolved to a
                                           //   class in buildGraph. kind==FnDecl/FnAssign: the bound FUNCTION
                                           //   name as written minus `&` (`alpha`, `ns::alpha`), or a sentinel.
 };
+static_assert( sizeof( Binding ) == 6 * sizeof( std::uint32_t ) + 3 * sizeof( std::string ),
+               "Binding's scalars are five u32 and a u8 kind in 24 bytes — startByte rides the padding after `kind`" );
 
 // R5 cross-language FFI binding alias. A language-binding DECLARATION found in a C/C++ file (or a
 // ctypes-handle assignment in a Python file) that makes a C/C++ definition reachable under a DIFFERENT
@@ -1043,6 +1057,15 @@ struct IngestResult
     std::vector<std::string>   rootPaths;    // root index → the root path as passed (post-dedupe)
     std::vector<std::string>   rootReals;    // root index → realpath (cross-root include probes, git -C)
 
+    // ── The crawl root, as the crawl joined it onto every path (single root only). `files` keep that spelling
+    //    because it is also the disk spelling every read and edit opens — but it must never decide an ANSWER.
+    //    `ripwire .`, `ripwire "$PWD"`, `ripwire "$PWD/"`, a symlink to the tree and `ripwire ../repo` are one
+    //    tree, and every question about a file's place IN that tree (which file an import names, whether it
+    //    sits under test/ or fixtures/, how many path bytes a row prints) reads rootRelPath below instead.
+    //    Recorded once by ingest(); a single-file root records the file's directory. EMPTY on a multi-root
+    //    merge, whose `files` are already the labeled root-relative identity (rootRelPath is then the identity).
+    std::string                crawlRoot;
+
     // ── P1-15: how many files this run actually RE-EXTRACTED (cache miss / changed / new) rather than
     //    reusing from the content-hash cache — the number RIPWIRE_CACHE_STATS has always printed as
     //    `reparsed=`, promoted to a field so the MCP server can disclose an incremental pass's cost
@@ -1056,6 +1079,94 @@ struct IngestResult
 // multi-root workspace cap: a sane bound on N crawl roots — an agent joining a
 // handful of checkouts is the use case; hundreds of roots is a mis-glued path list, refused loudly.
 inline constexpr std::size_t kMaxWorkspaceRoots = 16;
+
+// ── S2: root-relative path for BASELINE HASHING (root-spelling portability) ─────────────────────────────
+//
+// .ripwire_arch_baseline is meant to be COMMITTED and portable; .ripwire_quality_baseline is gitignored,
+// re-pinned before a change, and stamped with the build that pinned it (a dead set depends on call resolution),
+// but both must still hash the same file the same way under every root spelling. And every path in ing.files is spelled `<ingest-root>/<relative>` verbatim — the crawl just
+// prepends the root argument. So `ripwire .` embeds `./game/x.cpp` while `ripwire /abs/repo` embeds
+// `/abs/repo/game/x.cpp`, giving DIFFERENT hashes for the same file → a baseline written under one root
+// spelling falsely fails enforcement under another (exit 0 vs 2 for a teammate/CI with a different root).
+//
+// relForHash strips the ingest-root prefix LEXICALLY (never a realpath — that would be nondeterministic and
+// pull in the filesystem, and would break on a symlinked/`..`-containing root), producing the SAME
+// root-relative key for both spellings. Every use is a root-spelling NORMALIZATION of exactly this shape:
+// the baseline hash paths, and — W3FIX — the --dead-code `./`-anchored path filter, whose "position 0 is the
+// repo root" rule holds only for a root-relative path and so silently matched nothing under an absolute root
+// spelling. It never touches `g.canonId`, resolution, or any storage key (see the S2 trap: canonId is
+// load-bearing far beyond the baseline). Determinism: pure function of (path, root); no I/O, no state.
+//
+// R-R (root-relative emission) AMENDED THE LAST CLAUSE. This used to add "and it is never an emitted VALUE
+// — only ever a comparison key". That is no longer true, deliberately: resolve.h::canonicalIdForEmit runs
+// the path segment of every EMITTED `id=` (and the MCP handle that hashes it) through this same strip, so
+// the emitted identity and the committed baseline key finally spell a file the same way. What the S2 trap
+// actually protects is unchanged and still absolute: g.canonId — the in-memory identity that resolution,
+// overload-set grouping and Regression::key depend on — is never rewritten. Emission is a VIEW of that
+// identity; the identity itself does not move.
+//
+// #228 AMENDED "never resolution". rootRelPath below applies this strip to the root ingest() recorded, and
+// the include/import index, the path predicates and the path-byte charges now read that view — the fix for
+// answers that moved with the root's spelling. The storage key and g.canonId are still never rewritten.
+//
+// The strip is: remove a leading `root` prefix (with an optional trailing '/'), then normalize any residual
+// leading `./` and leading `/`. A path that does not start with `root` (shouldn't happen — every file is
+// under the crawl root) is returned only leading-`./`/`/`-normalized, so it degrades to a stable key rather
+// than an empty one. Empty root ⇒ just the leading-`./`/`/` normalization (equivalent to root ".").
+inline std::string_view relForHash( std::string_view path, std::string_view root ) noexcept
+{
+    // 1) strip the ingest-root prefix if present (allow one optional trailing '/' on the root).
+    std::string_view rootTrim = root;
+    while( rootTrim.size() > 1 && rootTrim.back() == '/' )
+    {
+        rootTrim.remove_suffix( 1 ); // "/abs/repo/" → "/abs/repo"
+    }
+    if( !rootTrim.empty() && rootTrim != "." && path.size() >= rootTrim.size()
+        && path.compare( 0, rootTrim.size(), rootTrim ) == 0 )
+    {
+        // matched the root; the next char (if any) must be a '/' so we strip whole path components only
+        // ("/abs/repo" must not eat the "repo" in "/abs/repository/...").
+        std::string_view rest = path.substr( rootTrim.size() );
+        if( rest.empty() || rest.front() == '/' )
+        {
+            path = rest;
+        }
+    }
+
+    // 2) normalize residual leading "./" then leading "/" so "." / "./x" / "/x" all collapse to "x".
+    while( path.size() >= 2 && path[0] == '.' && path[1] == '/' )
+    {
+        path.remove_prefix( 2 );
+    }
+    while( !path.empty() && path.front() == '/' )
+    {
+        path.remove_prefix( 1 );
+    }
+    while( path.size() >= 2 && path[0] == '.' && path[1] == '/' )
+    {
+        path.remove_prefix( 2 );
+    }
+    return path;
+}
+
+// The ONE root-relative seam, the dual of the disk-path seam below: every DECISION about a file's place in the tree reads
+// this, never ing.files[fileId] directly. It is relForHash against the root the crawl recorded, so it costs a
+// prefix compare and no allocation or syscall, and it is a VIEW — the stored spelling (and so every printed
+// path, cache key and disk open) is untouched.
+//
+// Why it exists (#228). `ing.files` carry the root exactly as it was typed, and until this seam the index
+// builders and the path predicates read that spelling raw. So the answer moved with the spelling: Python's
+// root-relative import probe matched only under `ripwire .` (a Django clone read graph_ambiguous=5958 under
+// `.` and 3135 under "$PWD"); every include index collapsed to one empty key under `ripwire ../repo`, because
+// lexicalNormalize refuses a path that starts above its base; and a checkout that merely LIVES under a
+// directory named tests/ or fixtures/ had every file classified as a test or a fixture under an absolute root
+// and none under `.`. The --quality-delta HEAD side always ingests at an absolute temp root, so an unchanged
+// tree gated under `.` and passed under "$PWD". test/rootspellingcheck.sh pins all of it.
+inline std::string_view rootRelPath( const IngestResult& ing, std::uint32_t fileId ) noexcept
+{
+    const std::string_view path = ing.files[ fileId ];
+    return ing.crawlRoot.empty() ? path : relForHash( path, ing.crawlRoot );
+}
 
 // The ONE disk-path seam: every file read/stat must go through this instead of ing.files[fileId] directly.
 // Single-root (realPaths empty): returns ing.files[fileId] — byte-identical behavior, zero cost.

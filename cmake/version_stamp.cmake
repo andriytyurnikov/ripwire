@@ -20,7 +20,10 @@ endif()
 
 set(_body "#pragma once\n\n// Generated at build time by cmake/version_stamp.cmake — do not edit.\nnamespace rw\n{\ninline constexpr const char* kRipwireVersion     = \"${RIPWIRE_VERSION}\";\ninline constexpr const char* kRipwireBuildType   = \"${RIPWIRE_BUILD_TYPE}\";\ninline constexpr const char* kRipwireCompilerId  = \"${RIPWIRE_COMPILER_ID}\";\ninline constexpr const char* kRipwireCompilerVer = \"${RIPWIRE_COMPILER_VER}\";\ninline constexpr const char* kRipwireGitStamp    = \"${_git_stamp}\";\n} // namespace rw\n")
 
-set(_tmp "${RIPWIRE_OUTPUT}.tmp")
+# A tmp name of its own, next to the output: two concurrent builds of the same configuration in one tree shared
+# "<output>.tmp" (the same race cmake/source_identity.cmake closes). string(RANDOM) is seeded per process.
+string(RANDOM LENGTH 12 _tmp_tag)
+set(_tmp "${RIPWIRE_OUTPUT}.${_tmp_tag}.tmp")
 file(WRITE "${_tmp}" "${_body}")
 execute_process(COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_tmp}" "${RIPWIRE_OUTPUT}" RESULT_VARIABLE _copy_rc)
 file(REMOVE "${_tmp}")

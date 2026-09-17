@@ -34,6 +34,40 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-17, TRAIN 1 x TRAIN 2 (integration/train-1 merging main bcd3b016 = #265): RE-DERIVED ON THE MERGED TREE,
+#   carried from neither side. Train 1 pinned a37d1539 over kQSnapCacheScheme 14 (#253 13, #255 14) with parserVer 96;
+#   train 2 pinned 95818fe5 over parserVer 99 (#248 97, #254 98, #257 99) with the scheme at 12. Neither hashed the
+#   other's lines. The merged manifest carries scheme 14 and parserVer/mirror 99, and qextractionkeycheck proves the
+#   mirror. No new bump: train 2 moved extraction only, and train 1's producer identity already keys every blob per build.
+# 2026-09-17, TRAIN 2 (integration/train-2 on main 9f44a363: #248 186fcb84, #254 0585b2f3, #257 50129f8c): RE-DERIVED ON
+#   THE MERGED TREE, carried from no side. kParserVer is assigned in merge order from main's 96: #248 = 97, #254 = 98,
+#   #257 = 99, the numbers each lane already declared. kCacheVersion stays 22; kQSnapCacheScheme stays 12. Main's pin
+#   (37dac79a, #249's qsnapCountFits) hashed parserVer 96 over the new deserializeSnapshot; the lanes' pins (#248
+#   db0e8cce at 97, #254 8ca11f67 at 98, #257 01ea4c63 at 99) hashed their numbers over the manifest before #249,
+#   so none of them hashed the merged declaration lines. #243 also declares 99 and carries #257's pin 01ea4c63: a
+#   clean merge of a wrong population, so it re-bumps over this train's number when it lands.
+# 2026-09-16, STD-TYPED MEMBER FIELDS (test/fieldnarrowcheck.sh arm q): parserVer and its quality mirror move 98 -> 99 —
+#   a C++ field's compose record carries the namespace its type was written in as its qualifier (`std` for
+#   `std::string name_;`). Record layouts are unchanged, so kCacheVersion stays 22; kQSnapCacheScheme stays 12: no key
+#   or snapshot semantics changed, only the extraction identity. Old extraction facts must be re-parsed.
+# 2026-09-16, RECEIVER QUALIFIERS (test/narrowcheck.sh arms 17-24): parserVer and its quality mirror move 97 -> 98 — a
+#   C++ assignment from a constructor (`x = std::map<K, V>()`) records the constructor's qualified text, as a
+#   declaration's record already did at 97 (parameter receivers, lane/param-receiver-binding, re-pinned there).
+#   Record layouts are unchanged, so kCacheVersion stays 22; kQSnapCacheScheme stays 12: no key or snapshot semantics
+#   changed, only the extraction identity. Old extraction facts must be re-parsed.
+# 2026-09-16, PRODUCER IDENTITY (test/qsnapproducercheck.sh): serializeSnapshot/deserializeSnapshot write and refuse
+#   a new header field — fnv1a64 of the build's source identity (cmake/source_identity.cmake) — and qsnapExclHex /
+#   qbodyExclHex fold it into the key, because a dead set is a function of call RESOLUTION and nothing in the key
+#   moved with it: two builds that resolve differently served each other's dead set. HEADER SHAPE change →
+#   kQSnapCacheScheme 13 -> 14 (13 is the root-spelling bump below; the two landed in one integration train) and
+#   kQBodyCacheScheme 3 -> 4, then re-pinned. Extraction unchanged: parserVer 96.
+#   Since this pin a missed bump no longer serves a wrong answer across builds (any source change renames the
+#   blob); this gate still asks the question, and its log still records the answer.
+# 2026-09-16, ROOT-SPELLING INVARIANCE (#228, test/rootspellingcheck.sh): isDeadCandidate reads the fixture and
+#   test-script exemptions off model.h::rootRelPath instead of the path as the root was typed, and the call graph
+#   a Snapshot is built from now resolves root-relative imports under every root spelling (resolve.h, graph.h —
+#   files this manifest cannot hash, which is why the bump is argued here rather than detected). A v12 blob for an
+#   unchanged sha can carry the pre-fix dead set: kQSnapCacheScheme moves 12 -> 13. Extraction identity unchanged.
 # 2026-09-16, CRASH LANE (#249; test/cachefuzzcheck.sh Parts 2 and 5): RE-PIN ONLY, kQSnapCacheScheme STAYS 12.
 #   deserializeSnapshot now checks each vector count against the bytes left (qsnapCountFits) before it reserves.
 #   The check only refuses a count no blob of that length can hold, and every blob serializeSnapshot writes

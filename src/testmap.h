@@ -90,7 +90,7 @@ inline void partitionAffectedSeedsByTestPath( const IngestResult& ing, AffectedS
     for( NodeId n : sel.seeds )
     {
         const std::uint32_t fileId = ing.symbols[n].fileId;
-        if( isTestPath( ing.files[fileId] ) )
+        if( isTestPath( rootRelPath( ing, fileId ) ) )
         {
             sel.seedTestFiles.push_back( fileId );
         }
@@ -246,7 +246,7 @@ inline std::vector<TestRow> rankTestRows( const IngestResult& ing, std::span<con
             continue;
         }
         const std::uint32_t f = ing.symbols[n].fileId;
-        if( f < F && isTestPath( ing.files[f] ) && ( minHops[f] == 0 || depth[n] < minHops[f] ) )
+        if( f < F && isTestPath( rootRelPath( ing, f ) ) && ( minHops[f] == 0 || depth[n] < minHops[f] ) )
         {
             minHops[f] = depth[n];
         }
@@ -256,7 +256,7 @@ inline std::vector<TestRow> rankTestRows( const IngestResult& ing, std::span<con
         std::vector<std::uint32_t> testFiles;
         for( std::uint32_t f = 0; f < F; ++f )
         {
-            if( isTestPath( ing.files[f] ) )
+            if( isTestPath( rootRelPath( ing, f ) ) )
             {
                 testFiles.push_back( f );
             }
@@ -351,7 +351,7 @@ inline ChangedFileSplit splitChangedFiles( const IngestResult& ing, const std::v
     {
         if( changedFile[f] )
         {
-            ( isTestPath( ing.files[f] ) ? out.tests : out.src ).push_back( f );
+            ( isTestPath( rootRelPath( ing, f ) ) ? out.tests : out.src ).push_back( f );
         }
     }
     return out;
@@ -439,7 +439,7 @@ inline ExerciseSeeds resolveExerciseSeeds( const IngestResult& ing, std::string_
             continue;
         }
         sel.anyFileMatched = true;
-        if( !isTestPath( ing.files[f] ) ) { ++sel.nonTestMatches;  continue; }
+        if( !isTestPath( rootRelPath( ing, f ) ) ) { ++sel.nonTestMatches;  continue; }
         isSeedFile[f] = 1;
         sel.testFiles.push_back( f );
     }
@@ -462,7 +462,7 @@ inline std::vector<NodeId> exercisedSymbols( const IngestResult& ing, const Grap
     std::vector<NodeId>     out;
     for( NodeId i = 0; i < NodeId( reached.size() ) && i < NodeId( ing.symbols.size() ); ++i )
     {
-        if( reached[i] && !isTestPath( ing.files[ing.symbols[i].fileId] ) )
+        if( reached[i] && !isTestPath( rootRelPath( ing, ing.symbols[i].fileId ) ) )
         {
             out.push_back( i );
         }
@@ -510,7 +510,7 @@ public:
     {
         for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ); ++f )
         {
-            if( isTestPath( ing.files[f] ) && runnerVerb( ing.files[f] ) != nullptr )
+            if( isTestPath( rootRelPath( ing, f ) ) && runnerVerb( ing.files[f] ) != nullptr )
             {
                 runners_.push_back( f );
             }
@@ -1107,9 +1107,10 @@ inline std::uint32_t firstTestFileForFile( const IngestResult& ing, const Graph&
 inline std::size_t scriptGatesUnmodelledCount( const IngestResult& ing )
 {
     std::size_t gateCount = 0;
-    for( const std::string& filePath : ing.files )
+    for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ); ++f )
     {
-        if( isTestPath( filePath ) && filePath.size() >= 3 && filePath.compare( filePath.size() - 3, 3, ".sh" ) == 0 )
+        const std::string_view filePath = rootRelPath( ing, f );
+        if( isTestPath( filePath ) && filePath.ends_with( ".sh" ) )
         {
             ++gateCount;
         }
@@ -1300,7 +1301,7 @@ inline std::vector<std::string> registeredShellTokens( const IngestResult& ing )
     std::string manifest;
     for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ); ++f )
     {
-        if( mention_detail::baseNameOf( ing.files[f] ) == "regression.sh" && isTestPath( ing.files[f] ) )
+        if( mention_detail::baseNameOf( ing.files[f] ) == "regression.sh" && isTestPath( rootRelPath( ing, f ) ) )
         {
             manifest = docparse::detail::readWholeFile( diskPath( ing, f ) ).value_or( std::string() );
             break;
@@ -1347,7 +1348,7 @@ inline ShellGateIndex buildShellGateIndex( const IngestResult& ing, const std::v
 
     for( std::uint32_t f = 0; f < std::uint32_t( ing.files.size() ); ++f )
     {
-        const std::string_view path = ing.files[f];
+        const std::string_view path = rootRelPath( ing, f );
         if( !isTestPath( path ) || !path.ends_with( ".sh" ) || mention_detail::baseNameOf( path ) == "regression.sh" ) { continue; }
         const std::string_view stem = mention_detail::pathStem( path );
         if( std::find( registeredTokens.begin(), registeredTokens.end(), stem ) == registeredTokens.end() ) { continue; }

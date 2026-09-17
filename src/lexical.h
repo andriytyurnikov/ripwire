@@ -1832,7 +1832,7 @@ inline std::string routeAnchorEvidence( const IngestResult& ing, const HashMap<s
     {
         return "syntax";                               // carrier-only entries count commonness, they name nothing
     }
-    std::string evidence = routeAnchorPath( ing.files[at->second.fileId] );
+    std::string evidence = routeAnchorPath( rootRelPath( ing, at->second.fileId ) );   // #228: "/.../x.h" was every absolute root's anchor
     if( at->second.extraDefs != 0 )
     {
         evidence += "+" + std::to_string( at->second.extraDefs );

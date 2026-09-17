@@ -861,7 +861,7 @@ inline void computeRadius( const IngestResult& ing, const Graph& g, FlipResult& 
     const auto        noteTestFile = [ & ]( NodeId n )
     {
         const std::uint32_t f = ing.symbols[n].fileId;
-        if( isTestPath( ing.files[f] ) && !testFileSeen[f] ) { testFileSeen[f] = 1; res.tests.push_back( f ); }
+        if( isTestPath( rootRelPath( ing, f ) ) && !testFileSeen[f] ) { testFileSeen[f] = 1; res.tests.push_back( f ); }
     };
     for( NodeId n : up )
     {
@@ -877,7 +877,7 @@ inline void computeRadius( const IngestResult& ing, const Graph& g, FlipResult& 
     std::vector<NodeId> testSeeds;
     for( NodeId i = 0; i < N; ++i )
     {
-        if( isTestPath( ing.files[ing.symbols[i].fileId] ) )
+        if( isTestPath( rootRelPath( ing, ing.symbols[i].fileId ) ) )
         {
             testSeeds.push_back( i );
         }

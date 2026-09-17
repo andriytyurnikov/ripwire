@@ -1585,7 +1585,7 @@ inline constexpr char kHelpHead[] =
         "                               snapshot ccx/clones/dead-code to .ripwire_quality_baseline (run BEFORE a change, on a CLEAN tree). On a tree that\n"
         "                               DIFFERS from HEAD it computes the HEAD delta FIRST and REFUSES (exit 1) rather than pin the debt already in the\n"
         "                               tree as the floor — it names how many gating findings it would absorb and the first of them. Commit, or pass\n"
-        "                               --allow-dirty.\n"
+        "                               --allow-dirty. The pin is stamped with HEAD and with THIS build's identity, and only this build honors it.\n"
         "    --allow-dirty              (with --quality-baseline) pin the baseline even though the tree differs from HEAD\n"
         "                               (with --quality-baseline) pin anyway: the sidecar is stamped with the dirty pin and the absorbed count, and every\n"
         "                               later --quality-delta against it carries baseline_absorbed=\"N\" — so a green exit beside that attribute reads as\n"
@@ -1606,9 +1606,11 @@ inline constexpr char kHelpHead[] =
         "                               equality — an ancestor commit describes a DIFFERENT tree, so everything committed since would read as your regression). A sidecar pinned anywhere\n"
         "                               else is STALE: this verb then DELETES it from your working tree (self-heal, so the next run does not rediscover the dead pin) and auto-compares the\n"
         "                               working tree vs git HEAD instead. Re-pin with --quality-baseline. The read-only MCP quality_delta verb applies the SAME staleness test but never\n"
-        "                               deletes. Which floor was actually used is on every report as baseline=: sidecar | git-HEAD | git-HEAD (stale sidecar removed) | git-HEAD (stale\n"
-        "                               sidecar ignored) — the last two say a stale sidecar existed, and 'removed' means the file is gone. A non-git root has no HEAD to fall back to, so\n"
-        "                               its sidecar is always honored; without one there, the verb exits 1.\n"
+        "                               deletes. A sidecar at the current HEAD that ANOTHER ripwire build pinned (its producer stamp names other sources — a dead set depends on how calls\n"
+        "                               were resolved) is FOREIGN: both arms ignore it, never delete it, and auto-compare vs git HEAD. Which floor was actually used is on every report as\n"
+        "                               baseline=: sidecar | git-HEAD | git-HEAD (stale sidecar removed) | git-HEAD (stale sidecar ignored) | git-HEAD (foreign sidecar ignored) — the\n"
+        "                               stale two say a stale sidecar existed, and 'removed' means the file is gone. A non-git root has no HEAD to fall back to, so its sidecar is honored\n"
+        "                               whenever this build pinned it; without one there, or with another build's, the verb exits 1.\n"
         // R-I: the WAVE-level form. Its own row rather than a bracket on the one above, because the floor it
         // compares against is a different KIND of thing (a commit, not a sidecar or the working tree) and the
         // row above spends eight lines on sidecar staleness that this form never touches.

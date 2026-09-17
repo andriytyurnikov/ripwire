@@ -21,7 +21,7 @@ section, and it is not an afterthought.
 | **Co-change / known-item evals** | `--eval`, `--eval-retrieval` (see `bench/ANSWERQUALITY.md`) | Whether the tool surfaces the other files a real historical commit touched; and known-item retrieval across four rankers. |
 | **Ensemble calibration harness** | `bench/ensemblecal/` | Whether `--ensemble`'s four evidence families are actually orthogonal, how often each fires, how stable each is across commits — and the preset ladder derived from that (§9). |
 | **Differential argv harness** | `test/argvdiffcheck.sh` | That a refactor changed *nothing observable*: two binaries, every argv vector, stdout + stderr + exit code byte-identical. |
-| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 622 gate scripts plus the determinism, cache-transparency and golden contracts. <!-- gatecount --> |
+| **The gate suite** | `test/regression.sh`, `test/pargates.py` | 626 gate scripts plus the determinism, cache-transparency and golden contracts. <!-- gatecount --> |
 | **`--quality-delta`** | `src/quality.h` | Ten measured code-quality failure modes, reported only where a change made them worse. |
 
 ### The labeling protocol (why the held-out eval is allowed to disagree with the ranker)
@@ -3459,6 +3459,9 @@ Python and TypeScript all refuse. One limit the fixture DISCOVERED and now pins:
 (`void f( DCfg cfg ){ cfg.opts.enable(); }`) cannot narrow, because the binding capture records a
 parameter's name but not its type, and the parameter still shadows a same-named field — so the honest
 split is the only sound answer. That is the same answer Rule 2 already gives a depth-1 parameter receiver.
+*(Superseded 2026-09-16 for depth 1: Rule 2 now reads a parameter's written type lexically — the declaration in
+scope at the call site decides, and a type written in namespace `std` never narrows — so a depth-1 parameter
+receiver narrows; test/narrowcheck.sh arms 7-24. The depth-2 parameter base above is unchanged.)*
 
 **The recon report's `composeEdges` hoist is unnecessary — re-derived, and the design changed by it.**
 `graph.h::buildFieldNarrowTables` (`graph.h:648`) already runs at `graph.h:919`, ahead of the resolve
@@ -5834,7 +5837,7 @@ copy here would be exactly the dialect divergence that gate exists to catch. Com
 tags, wrap, stable-order defaults), seven individually invoked standalone gates (`g1freshcheck`,
 `skillscan`, `htmlexport`, `compresscheck`, `handoffcheck`, `releaseinstallcheck`,
 `taskroutecheck`), and a single loop
-naming **622 gate scripts**, all of which exist on disk. <!-- gatecount -->
+naming **626 gate scripts**, all of which exist on disk. <!-- gatecount -->
 
 `python3 test/pargates.py . ./build/ripwire -j 6` runs the same scripts in parallel so a full
 verification fits in one sitting. It does not modify `regression.sh`.
@@ -6846,7 +6849,7 @@ Listed because the reason is more useful than the silence.
   shipped**. See `bench/locbench/anchorhop_calib.json`. The mention anchor's reproducible numbers are
   the ablations in §4.
 - **A single round gate-count.** Two in-tree numbers disagree (`test/pargates.py`'s docstring says
-  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 622. The <!-- gatecount -->
+  ~210; `test/argvdiffcheck.sh` says 200+), while the loop in `test/regression.sh` names 626. The <!-- gatecount -->
   loop is the authority; the stale docstrings are a known drift. Since 2026-09-10 the number is not
   written by hand anywhere: `docs/gatecount_build.py` derives it from the loop and rewrites every
   published site, `test/gatecountcheck.sh` fails if any of them drifts, and `test/manifestcheck.sh`

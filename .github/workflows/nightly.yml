@@ -1,0 +1,464 @@
+name: Nightly
+
+# The slower checks, run once a day against main instead of on every pull request.
+#
+# WHY NOT PER PR. ci.yml already runs ~30 jobs per push, and the macOS runners are the bottleneck. ThreadSanitizer
+# is the first check here: contributors and maintainers run TSan builds on their own machines often, so a TSan leg on
+# every PR would add little coverage while loading the CI that every lane waits on. What a local run cannot promise
+# is that SOMEONE ran it on what is actually on main before a tag. Once a day is enough for that, and a failure lands
+# as one tracking issue within a day of the commit that caused it, not at release time.
+#
+# WHAT RUNS.
+#   - changed:  a scheduled run skips the heavy jobs when main's HEAD is the commit the last SUCCESSFUL scheduled run
+#               of this workflow already checked and no tracking issue is open. workflow_dispatch and pull_request
+#               always run. If the API read fails the checks run: a skip is only taken on evidence.
+#   - tsan:     -DRIPWIRE_TSAN=ON in its own tree (CMakeLists.txt makes ASan/TSan/fuzz mutually exclusive), a proof
+#               that the build is instrumented and that TSan reports on this runner, then the gates that drive
+#               ripwire's threads, each against the TSan binary. See the job comment for the list and the reasons.
+#   - windows:  NOT YET. A placeholder comment marks where the full-suite windows-latest job lands (D3 of the #44 plan).
+#   - report-failure / report-green: the only jobs that may write, and only to issues. A failing run on main opens
+#               this workflow's OWN issue, titled "Nightly checks failing on main (TSan)" (labels nightly-failure
+#               AND nightly-tsan) or comments on the open one; the next green scheduled run comments "green again
+#               at <sha>" and closes it. ci.yml's full-matrix schedule keeps a SEPARATE issue (nightly-full-matrix)
+#               so a green run in one workflow never closes an issue the other opened while it is still red.
+#
+# WHERE FAILURES APPEAR. The Actions tab (this workflow's run), and the tracking issue above. A pull request that
+# edits this file runs it too (paths filter below), so the change is validated before main ever schedules it; the
+# report jobs never run for a pull request.
+#
+# SCHEDULE SEMANTICS. GitHub runs `schedule` only from the workflow file on the DEFAULT branch, at main's latest
+# commit, so this file schedules nothing until it is merged. Scheduled runs start late under load at the top of the
+# hour, hence :17. GitHub also disables schedules in a public repository after 60 days without activity. There is no
+# repository-name guard: GitHub does not run a fork's schedules until its owner enables them, and a guard keyed on
+# the name would turn a rename or transfer into a nightly that skips every job and still reports success.
+#
+# Security conventions follow ci.yml: actions pinned the same way, no secret beyond the automatic GITHUB_TOKEN, every
+# value that reaches a shell passed through env and quoted, and the top-level token is read-only. Each job widens only
+# what it needs.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"   # 07:17 UTC daily
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/nightly.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  # A pull request's superseded run is cancelled. On main a queued run waits instead: two report jobs racing could open
+  # two tracking issues, and a cancelled scheduled run throws its verdict away.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changed:
+    name: changed (is there anything new on main to check?)
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read   # the last successful scheduled run of this workflow
+      issues: read    # an open tracking issue keeps the checks running
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Compare main's HEAD with the commit the last successful scheduled run checked
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" != schedule ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT: always runs"
+            exit 0
+          fi
+          # A failed read runs the checks. Skipping on a guess would turn an API outage into a silent green night.
+          if ! last="$( gh api "repos/$REPO/actions/workflows/nightly.yml/runs?event=schedule&status=success&branch=main&per_page=1" \
+                          --jq '.workflow_runs[0].head_sha // ""' )"; then
+            echo "::warning::could not read the last successful scheduled run; running the checks instead of skipping"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A failure opened by a workflow_dispatch run at this same commit must not be skipped past until it goes green.
+          # Scoped to THIS workflow's own tracking issue (nightly-failure AND nightly-tsan, both labels — see
+          # report-failure/report-green below): ci.yml's full-matrix schedule keeps its own separate issue now, and an
+          # open ci.yml issue must not hold nightly.yml's TSan leg back from running.
+          if ! open="$( gh api "repos/$REPO/issues?labels=nightly-failure,nightly-tsan&state=open&per_page=1" --jq 'length' )"; then
+            echo "::warning::could not read the open nightly-tsan issues; running the checks instead of skipping"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "main HEAD: $HEAD_SHA"
+          echo "last successful scheduled run checked: ${last:-<none>}"
+          echo "open nightly-tsan issues: $open"
+          if [ -n "$last" ] && [ "$last" = "$HEAD_SHA" ] && [ "$open" = 0 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "main has not moved since the last green nightly; the heavy jobs are skipped"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─── tsan: the gates that drive ripwire's threads, against a ThreadSanitizer build ───────────────────────────────────
+  #
+  # THE THREADS, from src/: the parallel ingest pool (ingest_parsepool.h), its query-compile and hash prewarm pools
+  # (ingest_prewarm.h) and the doc pass (ingest_docpass.h) on every run over more than one file; the --match/--lint
+  # fan-out (ingest_astquery.h); --grep's scan-prefetch thread (verbs_grep.h) and collect workers (search.h); the
+  # --doc-drift index workers (docdrift.h); the git-spawn pool behind --merge-scout, --whereis and --stray-content
+  # (crossref.h); and the long-lived --mcp server's detached qsnap prefetch worker (mcpindex.h).
+  #
+  # THE GATES, and why each:
+  #   qsnapprefetchcheck    the one gate written for TSan (its arm (e)): the MCP prefetch worker against a
+  #                         request-thread ingest, single-flight under repeated HEAD moves.
+  #   mcpeditracecheck      the MCP edit verbs against concurrent writers: the edit lock, the re-check before rename.
+  #   mcpwatchercheck       a long-lived server's re-ingest with its fd limit at 128. Linux has no kqueue watcher, so
+  #                         this is the always-sweep path the watcher falls back to (CONTRIBUTING.md, "No kqueue").
+  #   mcpstalecheck         a long-lived server re-ingesting after an edit, in the same process that served the old index.
+  #   qackconcurrencycheck  three concurrent --quality-ack writers, each running the parallel ingest.
+  #   cacheisolationcheck   the CLI parse cache, the MCP parse cache and the edit lock in one private cache directory.
+  #   det-gate              the parallel-ingest determinism gate: --match's fan-out over this whole repository (the tie
+  #                         order that once raced) plus the width arm's five verbs.
+  #   grepfastcheck         --grep's scan-prefetch thread and collect workers, cold and warm. Arm (6) needs a second,
+  #                         pre-change binary (RIPWIRE_BASE) and skips here, as it does in ci.yml.
+  #   docdriftcheck         --doc-drift's parallel index workers.
+  #   mergescoutcheck       crossref's git-spawn worker pool.
+  # No gate binds a TSan binary by its own variable (there is no RIPWIRE_TSAN_BIN), and none of these needs a plain
+  # binary beside the TSan one: each takes the binary under test as RIPWIRE_BIN.
+  #
+  # HOW A REPORT IS SEEN. TSAN_OPTIONS routes every report to a per-gate file (log_path) and halts the process that
+  # raced. A gate's own verdict cannot be trusted to notice: a server that died mid-scenario, or a report written by a
+  # process whose stderr the gate discards, can leave it green. And with log_path set, qsnapprefetchcheck's own stderr
+  # grep for "ThreadSanitizer" reads nothing. So every gate runs through tsanrun.sh, which fails the step on a non-zero
+  # gate OR on any report file. The positive control proves that check goes red on this runner before any gate relies
+  # on it, and the instrumentation step proves ripwire's own objects were compiled with -fsanitize=thread.
+  tsan:
+    name: tsan (ubuntu-24.04, clang)
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    # Ten gate steps at 20 minutes each plus setup stay under the job's 300, so a hung gate fails its OWN step, which
+    # report-failure sees, instead of the job timing out as cancelled. The slowest gate took 404 s locally under TSan.
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    outputs:
+      failed_steps: ${{ steps.summary.outputs.failed_steps }}
+      report_excerpt: ${{ steps.summary.outputs.report_excerpt }}
+    env:
+      TSAN_LOG_DIR: /tmp/tsanlog
+      # halt_on_error: the first race ends the process that raced, so a report cannot scroll past a green verdict.
+      # second_deadlock_stack: a lock-order report names both acquisition stacks, not one.
+      TSAN_BASE_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+    steps:
+      # Full history, as every ci.yml job: det-gate and the MCP gates stamp git state, and a shallow clone measures less.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # no later step pushes or fetches with the token; gate scripts must not be able to read it
+
+      - name: Install tooling
+        run: |
+          # The same apt policy as every Linux job in ci.yml: third-party sources in the runner image have twice been
+          # mid-publish and killed every Linux job in setup, so only ubuntu-archive sources stay. See ci.yml.
+          ls /etc/apt/sources.list.d/ || true
+          sudo find /etc/apt/sources.list.d -type f \( -name '*.list' -o -name '*.sources' \) \
+               ! -name 'ubuntu*' -print -delete || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml2-utils ripgrep bc clang
+
+      # TSan maps its shadow memory at fixed addresses. With more than 28 bits of mmap randomisation a TSan runtime
+      # that lacks the re-exec fallback dies at startup with "FATAL: ThreadSanitizer: unexpected memory mapping",
+      # before a single gate runs, and runner images have shipped with 32 (actions/runner-images#9491). Pinning 28
+      # makes this leg independent of that image setting. The runner is discarded after the job.
+      - name: Pin mmap randomisation to what TSan's shadow layout accepts
+        run: |
+          sudo sysctl vm.mmap_rnd_bits      # the key is root-readable on the hosted runner: a plain read is EACCES
+          sudo sysctl -w vm.mmap_rnd_bits=28
+
+      # Clang, as ci.yml's asan job: the leg means the same thing on every run whatever the image's default cc is.
+      - name: Configure (-DRIPWIRE_TSAN=ON, its own tree)
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S . -B tsan -DRIPWIRE_TSAN=ON
+
+      - name: Confirm the front end this leg actually configured with
+        run: grep -h 'CMAKE_CXX_COMPILER_ID\|CMAKE_CXX_COMPILER_VERSION' tsan/CMakeFiles/*/CMakeCXXCompiler.cmake
+
+      - name: Build
+        run: cmake --build tsan -j
+
+      - name: The emitter this leg compiled in is std::print
+        run: |
+          ./tsan/ripwire --version
+          ./tsan/ripwire --version | grep -q 'emit=std::print'
+
+      # A green TSan leg over an uninstrumented binary is the most expensive way to prove nothing. Every object of the
+      # ripwire target must call into the TSan runtime, and the runtime must be linked into the binary. grep -c, not -q:
+      # -q exits at the first match, and under pipefail the SIGPIPE it hands nm would read as "not instrumented".
+      - name: ripwire's own objects are instrumented, and the binary carries the TSan runtime
+        run: |
+          total=0; bare=0
+          while IFS= read -r obj; do
+            total=$(( total + 1 ))
+            if ! nm "$obj" | grep -c '__tsan_func_entry' >/dev/null; then
+              echo "::error::not instrumented: $obj"
+              bare=$(( bare + 1 ))
+            fi
+          done < <( find tsan/CMakeFiles/ripwire.dir -name '*.o' | LC_ALL=C sort )
+          echo "ripwire objects: $total, uninstrumented: $bare"
+          [ "$total" -gt 0 ] || { echo "::error::found no ripwire object files under tsan/CMakeFiles/ripwire.dir"; exit 1; }
+          [ "$bare" -eq 0 ]
+          nm tsan/ripwire | grep -c '__tsan_init' >/dev/null || { echo "::error::tsan/ripwire does not carry the TSan runtime"; exit 1; }
+
+      # The wrapper every gate step below runs through. Written here rather than committed under test/, so the
+      # suite's own inventory of gate scripts does not change for a CI-only helper.
+      - name: Write the TSan run wrapper (fails on a non-zero command OR any report file)
+        run: |
+          cat > "$RUNNER_TEMP/tsanrun.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # tsanrun.sh NAME CMD... : run CMD with TSan reports routed to $TSAN_LOG_DIR/NAME.<pid>; fail on either signal.
+          set -u
+          name="$1"; shift
+          mkdir -p "$TSAN_LOG_DIR"
+          TSAN_OPTIONS="$TSAN_BASE_OPTIONS:log_path=$TSAN_LOG_DIR/$name" "$@"
+          rc=$?
+          shopt -s nullglob
+          reports=( "$TSAN_LOG_DIR/$name".* )
+          if [ "${#reports[@]}" -gt 0 ]; then
+              echo "::error title=ThreadSanitizer report ($name)::${#reports[@]} report file(s), command exit $rc; first 40 lines of ${reports[0]}:"
+              head -n 40 "${reports[0]}"
+              exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+              echo "::error title=$name failed::exit $rc against the TSan binary, with no ThreadSanitizer report"
+              exit "$rc"
+          fi
+          echo "$name: exit 0, no ThreadSanitizer report"
+          EOF
+          chmod +x "$RUNNER_TEMP/tsanrun.sh"
+
+      # The wrapper's red state, observed on this runner before any gate relies on it: a planted data race must fail it
+      # WITH a data-race report, and the same program with an atomic counter must pass it clean. `volatile` keeps a load
+      # and a store in every iteration; with a plain int the optimizer folds each loop into one store, and TSan missed
+      # that single pair 8 times in 900 on the dev machine (the volatile form: 0 in 600). Up to three attempts cover
+      # what is left, so a false red night needs three misses in a row, while a runtime that never reports still
+      # fails all three.
+      - name: Positive control — a planted race is reported, its race-free twin is not
+        id: control
+        run: |
+          cat > "$RUNNER_TEMP/race.cpp" <<'EOF'
+          #include <thread>
+          volatile int counter = 0;
+          int main() { std::thread t( [] { for( int i = 0; i < 100000; ++i ) { ++counter; } } ); for( int i = 0; i < 100000; ++i ) { ++counter; } t.join(); return 0; }
+          EOF
+          cat > "$RUNNER_TEMP/norace.cpp" <<'EOF'
+          #include <atomic>
+          #include <thread>
+          std::atomic<int> counter{ 0 };
+          int main() { std::thread t( [] { for( int i = 0; i < 100000; ++i ) { ++counter; } } ); for( int i = 0; i < 100000; ++i ) { ++counter; } t.join(); return 0; }
+          EOF
+          clang++ -std=c++17 -fsanitize=thread -pthread -O2 -g "$RUNNER_TEMP/race.cpp"   -o "$RUNNER_TEMP/race"
+          clang++ -std=c++17 -fsanitize=thread -pthread -O2 -g "$RUNNER_TEMP/norace.cpp" -o "$RUNNER_TEMP/norace"
+          # The wrapper's expected failure is printed indented, so its ::error line is read as text, not as an
+          # annotation that would flag every green night.
+          reported=0
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/tsanrun.sh" "control-race-$attempt" "$RUNNER_TEMP/race" >"$RUNNER_TEMP/control-race.log" 2>&1; then
+              sed 's/^/    /' "$RUNNER_TEMP/control-race.log"
+              echo "attempt $attempt: the planted race passed the wrapper"
+              continue
+            fi
+            sed 's/^/    /' "$RUNNER_TEMP/control-race.log"
+            if ! grep -q 'WARNING: ThreadSanitizer: data race' "$TSAN_LOG_DIR/control-race-$attempt".*; then
+              echo "::error::attempt $attempt: the planted race failed the wrapper without a data-race report"
+              exit 1
+            fi
+            echo "attempt $attempt: the planted race failed the wrapper with a data-race report, as it must"
+            reported=1
+            break
+          done
+          if [ "$reported" != 1 ]; then
+            echo "::error::the planted race passed the wrapper three times: TSan is not reporting here, and every gate below would pass blind"
+            exit 1
+          fi
+          rm -f "$TSAN_LOG_DIR"/control-race-*   # consumed: an upload on failure should hold gate reports, not these
+          "$RUNNER_TEMP/tsanrun.sh" control-clean "$RUNNER_TEMP/norace"
+
+      # Every gate step runs even when an earlier gate failed (!cancelled()), so one night reports every red gate, not
+      # the first. None runs unless the positive control proved the check can fail.
+      - name: Race gate — MCP qsnap prefetch worker vs request-thread ingest (test/qsnapprefetchcheck.sh)
+        id: qsnapprefetchcheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" qsnapprefetchcheck bash test/qsnapprefetchcheck.sh
+
+      - name: Race gate — MCP edit verbs vs concurrent writers (test/mcpeditracecheck.sh)
+        id: mcpeditracecheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" mcpeditracecheck bash test/mcpeditracecheck.sh
+
+      - name: Race gate — MCP re-ingest at a 128-fd limit, the watcher's always-sweep path (test/mcpwatchercheck.sh)
+        id: mcpwatchercheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" mcpwatchercheck bash test/mcpwatchercheck.sh
+
+      - name: Race gate — MCP re-ingest after an edit in a long-lived server (test/mcpstalecheck.sh)
+        id: mcpstalecheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" mcpstalecheck bash test/mcpstalecheck.sh
+
+      - name: Race gate — concurrent --quality-ack writers (test/qackconcurrencycheck.sh)
+        id: qackconcurrencycheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" qackconcurrencycheck bash test/qackconcurrencycheck.sh
+
+      - name: Race gate — CLI and MCP caches and the edit lock in one cache dir (test/cacheisolationcheck.sh)
+        id: cacheisolationcheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" cacheisolationcheck bash test/cacheisolationcheck.sh
+
+      - name: Race gate — parallel ingest and --match fan-out determinism over this repository (test/det-gate.sh)
+        id: det-gate
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" det-gate bash test/det-gate.sh
+
+      - name: Race gate — --grep scan-prefetch thread and collect workers (test/grepfastcheck.sh)
+        id: grepfastcheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" grepfastcheck bash test/grepfastcheck.sh
+
+      - name: Race gate — --doc-drift parallel index workers (test/docdriftcheck.sh)
+        id: docdriftcheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" docdriftcheck bash test/docdriftcheck.sh
+
+      - name: Race gate — --merge-scout's git-spawn worker pool (test/mergescoutcheck.sh)
+        id: mergescoutcheck
+        if: ${{ !cancelled() && steps.control.outcome == 'success' }}
+        timeout-minutes: 20
+        run: RIPWIRE_BIN=tsan/ripwire "$RUNNER_TEMP/tsanrun.sh" mergescoutcheck bash test/mergescoutcheck.sh
+
+      # What the tracking issue quotes: the ids of the failed steps, and the head of the oldest report file. Base64, so
+      # a report's text travels as one opaque line and is decoded into a file on the other side, never into a command.
+      - name: Record what failed, for the tracking issue
+        id: summary
+        if: failure()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          failed="$( jq -r 'to_entries[] | select(.value.outcome == "failure") | .key' <<<"$STEPS_JSON" | paste -sd, - )"
+          echo "failed_steps=$failed" >> "$GITHUB_OUTPUT"
+          first="$( find "$TSAN_LOG_DIR" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -n 1 | cut -d' ' -f2- )"
+          if [ -n "$first" ]; then
+            echo "report_excerpt=$( { echo "$first"; head -n 40 "$first"; } | base64 -w0 )" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload ThreadSanitizer reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-reports
+          path: ${{ env.TSAN_LOG_DIR }}/
+          if-no-files-found: ignore
+
+  # ─── windows: the full gate suite on windows-latest — NOT YET ────────────────────────────────────────────────────────
+  # Placeholder for D3 of the #44 plan (Windows support). The job lands here when the Windows build does, and it then
+  # joins `needs:` in BOTH report jobs below, so a red Windows night opens the issue and only an all-green night closes
+  # it. Until then nothing here claims Windows coverage.
+
+  # report-failure/report-green use TWO labels: the shared `nightly-failure` (so "every nightly-scale
+  # failure" is one query) AND `nightly-tsan` (so THIS workflow only ever opens, comments on or closes an
+  # issue that also carries nightly-tsan). ci.yml's full-matrix schedule keeps its own separate tracking
+  # issue tagged `nightly-full-matrix` instead — before this split, a green TSan run here could close an
+  # issue ci.yml's full matrix had opened (and still was red for), and the reverse. See CONTRIBUTING.md §5.
+  report-failure:
+    name: report-failure (open or update the tracking issue)
+    needs: [changed, tsan]
+    if: failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Open "Nightly checks failing on main (TSan)", or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          FAILED_STEPS: ${{ needs.tsan.outputs.failed_steps }}
+          REPORT_B64: ${{ needs.tsan.outputs.report_excerpt }}
+        run: |
+          label=nightly-failure
+          ownLabel=nightly-tsan
+          body="$RUNNER_TEMP/body.md"
+          failed_jobs="$( jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS_JSON" | paste -sd, - )"
+          {
+            echo "The nightly checks failed on \`main\` at $HEAD_SHA."
+            echo
+            echo "- run: $RUN_URL ($EVENT)"
+            echo "- failing jobs: ${failed_jobs:-none recorded}"
+            echo "- failing steps in tsan: ${FAILED_STEPS:-none recorded}"
+            echo
+            if [ -n "$REPORT_B64" ]; then
+              echo "The first lines of the oldest ThreadSanitizer report (all reports are in the run's tsan-reports artifact):"
+              echo
+              echo '````'
+              printf '%s' "$REPORT_B64" | base64 -d
+              echo '````'
+            else
+              echo "No ThreadSanitizer report was written, so the failure is a gate's own verdict or a setup step. Read the job log."
+            fi
+          } > "$body"
+          if ! gh api "repos/$REPO/labels/$label" --silent 2>/dev/null; then
+            gh label create "$label" --repo "$REPO" --color B60205 \
+              --description "A nightly-scale workflow run failed on main; see the workflow-specific label for which one"
+          fi
+          if ! gh api "repos/$REPO/labels/$ownLabel" --silent 2>/dev/null; then
+            gh label create "$ownLabel" --repo "$REPO" --color 5319E7 \
+              --description "The ThreadSanitizer nightly failed on main; opened and closed by .github/workflows/nightly.yml only"
+          fi
+          open="$( gh issue list --repo "$REPO" --label "$label,$ownLabel" --state open --json number --jq '.[0].number // empty' )"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body-file "$body"
+          else
+            gh issue create --repo "$REPO" --title "Nightly checks failing on main (TSan)" --label "$label,$ownLabel" --body-file "$body"
+          fi
+
+  report-green:
+    name: report-green (close the tracking issue)
+    needs: [changed, tsan]
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main' && needs.tsan.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Comment "green again" on the open tracking issue and close it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          numbers="$( gh issue list --repo "$REPO" --label nightly-failure,nightly-tsan --state open --json number --jq '.[].number' )"
+          if [ -z "$numbers" ]; then
+            echo "no open nightly-tsan issue; nothing to close"
+            exit 0
+          fi
+          for n in $numbers; do
+            gh issue comment "$n" --repo "$REPO" --body "green again at $HEAD_SHA ($RUN_URL)"
+            gh issue close "$n" --repo "$REPO"
+          done

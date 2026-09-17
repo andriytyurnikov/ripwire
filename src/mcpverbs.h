@@ -3346,6 +3346,37 @@ inline const char* mcpBaselineMarker( const rw::quality::BaselineSelection& sele
     return selection.marker;                              // genuinely absent — "git-HEAD"
 }
 
+// The error quality_delta returns when the git-HEAD fallback was attempted and ALSO came back empty — the CLI
+// twin is verbs_quality.h's noBaselineFatalMessage, and each state below mirrors its wording, per-arm verb aside.
+// A named step rather than a conditional chain inside computeQualityDelta, for the reason mcpBaselineMarker above
+// gives: each state is one arm with one reason, and "no <file>" is reached only when there is no file.
+//   * w1 sibling sweep: this arm passes removeStaleFile=false, so a stale sidecar ALWAYS survives here
+//     (baseSel.isStaleFileOnDisk() is true whenever isSidecarStale() is) — "delete it" is therefore always the true
+//     instruction and the wording needs no removed-vs-ignored split. The CLI twin, which unlinks, does branch on it.
+//   * Round 3 (pathguard.h): "no <file>" is false while a refused link is sitting at the name.
+//   * The producer rule (quality.h BaselineSource): a foreign pin is a real floor for another build, left on disk.
+inline std::string mcpNoBaselineMessage( const rw::quality::BaselineSelection& baseSel )
+{
+    const std::string sidecarName = rw::quality::kBaselineFile;
+    if( baseSel.sidecarSymlinkRefused )
+    {
+        return sidecarName + " is a symlink, which is refused on read exactly as on write (it was not opened), and there is no git HEAD to auto-compare against — replace the link with a regular copy of its target, or remove it and run the quality_baseline verb";
+    }
+    if( baseSel.sidecarUnreadable )
+    {
+        return sidecarName + " exists but is not a readable baseline (unrecognizable, an older sidecar format, or a pre-Q1 sidecar without per-symbol loc records) and there is no git HEAD to auto-compare against — re-pin it with the quality_baseline verb BEFORE the change you want to measure";
+    }
+    if( baseSel.isSidecarForeign() )
+    {
+        return sidecarName + " was pinned by another ripwire build (its producer stamp does not name this server's sources, and a dead set depends on how calls were resolved) and there is no git HEAD to auto-compare against — it was left on disk: run quality_delta with the build that pinned it, or re-pin on a clean tree (commit or stash first) with the quality_baseline verb BEFORE the change you want to measure";
+    }
+    if( baseSel.isSidecarStale() )
+    {
+        return sidecarName + " is STALE (pinned at a different HEAD) and there is no current HEAD tree to fall back to — delete it or re-run the quality_baseline verb";
+    }
+    return "no " + sidecarName + " and no git HEAD to auto-compare against — run the quality_baseline verb BEFORE the change you want to measure";
+}
+
 inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
 {
     QualityDeltaOutcome oc;
@@ -3376,18 +3407,8 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
         auto [ headSnap, headOk ] = rw::quality::computeHeadSnapshot( root );
         if( !headOk )
         {
-            oc.ok = false;
-            // w1 sibling sweep: this arm passes removeStaleFile=false, so a stale sidecar ALWAYS survives here
-            // (baseSel.isStaleFileOnDisk() is true whenever isSidecarStale() is) — "delete it" is therefore
-            // always the true instruction and the wording needs no removed-vs-ignored split. The CLI twin,
-            // which unlinks, does branch on isStaleFileOnDisk().
-            // Round 3 (pathguard.h): a refused link gets the CLI twin's refused-link wording, per-arm verb aside —
-            // "no <file>" is false while the link is sitting at the name.
-            oc.errMsg = baseSel.sidecarSymlinkRefused
-                ? std::string( rw::quality::kBaselineFile ) + " is a symlink, which is refused on read exactly as on write (it was not opened), and there is no git HEAD to auto-compare against — replace the link with a regular copy of its target, or remove it and run the quality_baseline verb"
-                : baseSel.isSidecarStale()
-                ? std::string( rw::quality::kBaselineFile ) + " is STALE (pinned at a different HEAD) and there is no current HEAD tree to fall back to — delete it or re-run the quality_baseline verb"
-                : std::string( "no " ) + rw::quality::kBaselineFile + " and no git HEAD to auto-compare against — run the quality_baseline verb BEFORE the change you want to measure";
+            oc.ok     = false;
+            oc.errMsg = mcpNoBaselineMessage( baseSel );
             return oc;
         }
         baseSel.snapshot = std::move( headSnap );

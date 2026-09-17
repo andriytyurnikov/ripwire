@@ -515,6 +515,66 @@ Both are load-bearing, and the reason is a real regression this project shipped:
 **If you add a degrade path, it is the plain-flavour run that proves it.** Do not assume a green
 Release CI job covered it.
 
+### Light set vs. full matrix
+
+`.github/workflows/ci.yml` does not run the full 31-job matrix on every event. A `plan` job computes one
+`full` output from the event name, the pull request's labels and the ref, and every heavy job reads that
+output (fallback-emitter/rhel/asan through `if:`, `release` through the matrix `plan` itself computes,
+since a job-level `if:` cannot see the matrix context).
+
+- **Push to `main`**, and **pull requests carrying the `train-member` label** (maintainer-only — a fork
+  PR cannot label its own PR), run the **light set**: the `style` job plus the single
+  `ubuntu-24.04`/`Release`/`clang` release leg (all 4 gate shards), which already includes the
+  determinism and G4 XML checks.
+- **Every other pull request** (`integration/*` train PRs, direct-land PRs, contributor PRs),
+  **`workflow_dispatch`**, and a nightly **`schedule`** (05:41 UTC — off `:00`, and a different minute
+  from `nightly.yml`'s own 07:17 TSan run) all run the **full matrix**. Always dispatch a full run against
+  the exact commit you are about to tag; a green light-set push or an earlier nightly does not stand in
+  for it.
+
+A failure on the scheduled full-matrix run opens or updates `ci.yml`'s OWN tracking issue, titled "Nightly
+checks failing on main (full matrix)". It is a separate issue from `nightly.yml`'s TSan one, on purpose:
+every tracking issue carries the shared `nightly-failure` label (so "every nightly-scale failure" is one
+query) plus a workflow-specific second label — `nightly-full-matrix` here, `nightly-tsan` in
+`nightly.yml` — and every open/comment/close filters on BOTH labels together. Before this split the two
+workflows shared one issue and each had its own green-schedule job closing it on its OWN verdict alone;
+a green TSan night could close an issue the full matrix had opened while the matrix was still red, and
+the reverse. With two labels and two issues, a green run in one workflow can only ever touch the issue
+carrying its own second label, so it can no longer close the other workflow's still-open failure.
+
+### What runs nightly instead of on every pull request
+
+`.github/workflows/nightly.yml` runs the slower checks once a day, at 07:17 UTC, against `main`. Today
+that is a ThreadSanitizer build (`-DRIPWIRE_TSAN=ON`) and the gates that drive ripwire's threads: the
+MCP prefetch worker, the edit lock, a long-lived server's re-ingest, concurrent `--quality-ack` writers, the parallel
+ingest and `--match` fan-out, `--grep`'s prefetch thread, the `--doc-drift` workers and the git-spawn
+pool. Each gate runs through a wrapper that fails on a non-zero exit or on any TSan report file, and the
+job first proves that check can fail: a planted race must be reported and its race-free twin must not.
+
+It is not a per-PR leg on purpose. TSan builds already run often on contributors' and maintainers' own
+machines, and every PR already waits on the macOS runners, so a TSan leg on each push would cost more
+CI than it adds coverage. What a local run cannot promise is that someone ran it on what is actually on
+`main` before a tag, and once a day covers that. A scheduled run skips the heavy jobs when `main` has
+not moved since the last green scheduled run and no open issue carries BOTH `nightly-failure` and
+`nightly-tsan` — this workflow's own tracking issue, not `ci.yml`'s full-matrix one; while it is open,
+every scheduled run checks again.
+
+**Where failures appear:** the workflow's run in the Actions tab, and one issue titled "Nightly checks
+failing on main (TSan)" (labels `nightly-failure` and `nightly-tsan`). A failing night on `main` opens
+it, or comments on it if it is already open, with the failing jobs and steps, the commit, the run link
+and the head of the first TSan report. The next green scheduled run comments "green again at <sha>" and
+closes it — and only it: `ci.yml`'s full-matrix schedule keeps its own separate issue (see "Light set vs.
+full matrix" above), so this job never closes that one, and a green TSan night is never mistaken for a
+green full-matrix night. A pull request that edits the workflow runs it too, without the issue reporting.
+To reproduce a TSan failure locally, route the reports to files the way the job does, because many gates
+discard the server's stderr:
+
+```bash
+cmake -S . -B tsan -DRIPWIRE_TSAN=ON && cmake --build tsan -j
+TSAN_OPTIONS=halt_on_error=1:log_path=/tmp/tsanlog RIPWIRE_BIN=tsan/ripwire bash test/qsnapprefetchcheck.sh
+ls /tmp/tsanlog.*     # one file per process that raced; none means no report
+```
+
 ---
 
 ## 6. Submitting a change

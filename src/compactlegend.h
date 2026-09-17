@@ -409,7 +409,7 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     // XML writer. test/compactlegendcheck.sh (S) population 4 reads that legend's absence-marked row fields from source.
     { "lpin",              "lpin=K: K calls pinned by locality alone (a guess)", true },
     { "overloads",         "overloads=N: N same-name defs merged in this row; shown= counts each", true },
-    { "prov",              "prov=scip|binding|import|split: how that <c> edge bound (absent: one unique name); split = one arm of an amb= pick", true },
+    { "prov",              "prov=scip|binding|import|split|final-segment: how that <c> edge bound (absent: one unique name); split = one arm of an amb= pick; final-segment = a qualified type matched by last name only", true },
     // THE FOURTH SWEEP (2026-09-12): attributes that ride their documents with no reading here, which the earlier sweeps stopped
     // on at the byte pins. Owner decision: per-verb pins that fit honest definitions (docs/METHODOLOGY.md §9). The unconditional
     // root vocabulary of --impact, --safe-delete, --communities and --community reads in those roots' purpose lines above, and
