@@ -35,7 +35,7 @@ ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 fail=0
-ok(){ echo "  PASS  $1"; return 0; }
+ok(){ echo "  PASS  $1" || { fail=1; echo "  FAIL  could not write the PASS line for: $1"; }; return 0; }
 no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
@@ -150,23 +150,28 @@ lego(){ "$BIN" "$FIX" --no-cache --lego="$1" 2>/dev/null | sed 's/></>\n</g'; }
 
 echo "=== the fixture parsed the way this gate assumes ==="
 for want in 'n="Parent"' 'n="Child"' 'n="GrandChild"' 'n="Base" sc="Space"' 'n="Derived"' 'n="Unrelated"'; do
-    grep -q "$want" "$SPLIT" && ok "indexed: $want" || no "the fixture did not index $want"
+    grep -q "$want" "$SPLIT" && ok "indexed: $want" \
+        || no "the fixture did not index $want"
 done
 
 echo "=== a Ruby subclass is an IMPLEMENTOR in the lego view ==="
 LP="$( lego Parent )"
-echo "$LP" | grep -q '<impl n="Child"' && ok "--lego=Parent lists Child" || no "--lego=Parent lists no Child: $( echo "$LP" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
+echo "$LP" | grep -q '<impl n="Child"' && ok "--lego=Parent lists Child" \
+    || no "--lego=Parent lists no Child: $( echo "$LP" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
 LC="$( lego Child )"
-echo "$LC" | grep -q '<impl n="GrandChild"' && ok "--lego=Child lists GrandChild (a second level is its own direct edge)" || no "--lego=Child lists no GrandChild: $( echo "$LC" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
+echo "$LC" | grep -q '<impl n="GrandChild"' && ok "--lego=Child lists GrandChild (a second level is its own direct edge)" \
+    || no "--lego=Child lists no GrandChild: $( echo "$LC" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
 LB="$( lego Base )"
-echo "$LB" | grep -q '<impl n="Derived"' && ok "--lego=Base lists Derived (a scope_resolution base names its FINAL segment)" || no "--lego=Base lists no Derived: $( echo "$LB" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
+echo "$LB" | grep -q '<impl n="Derived"' && ok "--lego=Base lists Derived (a scope_resolution base names its FINAL segment)" \
+    || no "--lego=Base lists no Derived: $( echo "$LB" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
 
 echo "=== the base walk reaches a method the receiver's own class does not define ==="
 CI="$( rowOf 'n="call_inherited" ' )"
 [ "$( edgesTo "$CI" build )" -eq 1 ] && ok "Child.build → exactly one edge named build (Parent::build through the base walk)" \
     || no "Child.build produced $( edgesTo "$CI" build ) build edges: $CI"
 CLP="$( "$BIN" "$FIX" --no-cache --callers=Parent::build 2>/dev/null )"
-echo "$CLP" | grep -q 'n="call_inherited"' && ok "--callers=Parent::build lists call_inherited" || no "--callers=Parent::build does not list call_inherited"
+echo "$CLP" | grep -q 'n="call_inherited"' && ok "--callers=Parent::build lists call_inherited" \
+    || no "--callers=Parent::build does not list call_inherited"
 CLU="$( "$BIN" "$FIX" --no-cache --callers=Unrelated::build 2>/dev/null )"
 echo "$CLU" | grep -q 'n="call_inherited"' && no "--callers=Unrelated::build lists call_inherited — the walk took an unrelated same-named def" || ok "--callers=Unrelated::build does not list call_inherited"
 
@@ -177,14 +182,16 @@ CS="$( rowOf 'n="call_scoped_base" ' )"
 [ "$( edgesTo "$CS" make )" -eq 1 ] && ok "Derived.make → exactly one edge (base written as Space::Base)" \
     || no "Derived.make produced $( edgesTo "$CS" make ) make edges: $CS"
 CLM="$( "$BIN" "$FIX" --no-cache --callers=Base::make 2>/dev/null )"
-echo "$CLM" | grep -q 'n="call_scoped_base"' && ok "--callers=Base::make lists call_scoped_base" || no "--callers=Base::make does not list call_scoped_base"
+echo "$CLM" | grep -q 'n="call_scoped_base"' && ok "--callers=Base::make lists call_scoped_base" \
+    || no "--callers=Base::make does not list call_scoped_base"
 
 echo "=== an implicit-self call inside a subclass reaches the superclass method (Rule 1's bare arm) ==="
 UI="$( rowOf 'n="use_inherited" ' )"
 [ "$( edgesTo "$UI" shared_helper )" -eq 1 ] && ok "a bare shared_helper inside Child → exactly one edge (Parent#shared_helper)" \
     || no "a bare shared_helper inside Child produced $( edgesTo "$UI" shared_helper ) edges: $UI"
 CLS="$( "$BIN" "$FIX" --no-cache --callers=Parent::shared_helper 2>/dev/null )"
-echo "$CLS" | grep -q 'n="use_inherited"' && ok "--callers=Parent::shared_helper lists use_inherited" || no "--callers=Parent::shared_helper does not list use_inherited"
+echo "$CLS" | grep -q 'n="use_inherited"' && ok "--callers=Parent::shared_helper lists use_inherited" \
+    || no "--callers=Parent::shared_helper does not list use_inherited"
 
 UB="$( rowOf 'n="use_bare" ' )"
 echo "$UB" | grep -q '<c ' \
@@ -206,10 +213,18 @@ echo "$LA" | grep -q '<impl n="Rec"' && no "class Rec < ActiveRecord::Base minte
 
 echo "=== determinism, warm == cold, and --deps is untouched ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
-cmp -s "$MAP" "$DIR/b.xml" && ok "byte-identical across two --no-cache runs" || no "output differs across runs"
-"$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/cold.xml" 2>/dev/null
-"$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/warm.xml" 2>/dev/null
-cmp -s "$DIR/cold.xml" "$DIR/warm.xml" && ok "warm run == cold run" || no "the warm cache disagrees with the cold run"
+cmp -s "$MAP" "$DIR/b.xml" && ok "byte-identical across two --no-cache runs" \
+    || no "output differs across runs"
+if ! "$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/cold.xml" 2>"$DIR/cold.err"
+then
+    no "the cold cache run exited non-zero: $( head -3 "$DIR/cold.err" )"
+fi
+if ! "$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/warm.xml" 2>"$DIR/warm.err"
+then
+    no "the warm cache run exited non-zero: $( head -3 "$DIR/warm.err" )"
+fi
+cmp -s "$DIR/cold.xml" "$DIR/warm.xml" && ok "warm run == cold run" \
+    || no "the warm cache disagrees with the cold run"
 
 echo "=== mutation: drop the base clause → the inherited pin must vanish ==="
 MUT="$DIR/mut"; mkdir -p "$MUT"; cp "$FIX/caller.rb" "$MUT/caller.rb"
@@ -222,7 +237,8 @@ MQ="$( "$BIN" "$MUT" --no-cache 2>/dev/null | sed 's/></>\n</g' | awk '/n="call_
     && ok "mutation: Child.build is an honest 2-way split again — the pin was the inheritance edge and nothing else" \
     || no "mutation: Child.build produced $( echo "$MQ" | grep -c '<c n="build"' ) build edges with no base clause: $MQ"
 MCU="$( "$BIN" "$MUT" --no-cache --callers=Unrelated::build 2>/dev/null )"
-echo "$MCU" | grep -q 'n="call_inherited"' && ok "mutation: …and Unrelated::build is back among its callers" || no "mutation: Unrelated::build does not list call_inherited: $( echo "$MCU" | grep -o '<callers[^>]*' )"
+echo "$MCU" | grep -q 'n="call_inherited"' && ok "mutation: …and Unrelated::build is back among its callers" \
+    || no "mutation: Unrelated::build does not list call_inherited: $( echo "$MCU" | grep -o '<callers[^>]*' )"
 
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

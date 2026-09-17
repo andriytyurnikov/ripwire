@@ -277,7 +277,8 @@ I="$( rowOf 'n="inherited_call" ' )"
 [ "$( edgesTo "$I" build )" -eq 1 ] && ok "Child.build → exactly one edge (Parent::build, through the inheritance edge captureBases now mints for Ruby)" \
     || no "Child.build produced $( edgesTo "$I" build ) build edges — if Ruby LOST its inheritance edges, that is the regression: see ingest_relations.h::isBaseTypeNode's Ruby arm and test/rubyinheritcheck.sh: $I"
 CB="$( "$BIN" "$FIX" --no-cache --callers=Parent::build 2>/dev/null )"
-echo "$CB" | grep -q 'n="inherited_call"' && ok "--callers=Parent::build lists inherited_call" || no "--callers=Parent::build does not list inherited_call"
+echo "$CB" | grep -q 'n="inherited_call"' && ok "--callers=Parent::build lists inherited_call" \
+    || no "--callers=Parent::build does not list inherited_call"
 CBU="$( "$BIN" "$FIX" --no-cache --callers=Unrelated::build 2>/dev/null )"
 echo "$CBU" | grep -q 'n="inherited_call"' && no "--callers=Unrelated::build lists inherited_call — the walk took an unrelated same-named def" || ok "--callers=Unrelated::build does not list inherited_call"
 
