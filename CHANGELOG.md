@@ -46,8 +46,11 @@ Stated floors, each pinned by an arm of `test/rubyinheritcheck.sh`: a COMPUTED s
 Dynamic < Struct.new( :a )`) is a call, not a name, and mints nothing; a MIXIN (`include Helper`) is
 NOT an inheritance edge in this round — it is a receiver-less call in the class BODY, the same shape
 and the same decision as PHP's in-body `use SomeTrait;`, and Ruby's ancestor chain really does hold
-included modules, so it is a stated residue rather than a claim that it is not inheritance; an
-out-of-tree base (`class Rec < ActiveRecord::Base`) mints no implementor row. A fourth floor, of
+included modules, so it is a stated residue rather than a claim that it is not inheritance; a
+QUALIFIED base is keyed by its final segment alone — the byName convention every other language's bases
+use — so an out-of-tree `class Rec < ActiveRecord::Base` lists as an implementor of any in-tree class
+named `Base` (the gate's `Space::Base`), and telling the two apart needs the Ruby constant index from
+#57. A fourth floor, of
 `queries/ruby/tags.scm` rather than of this round, is pinned beside them: a receiver-less call
 written with no parentheses and no arguments parses as `(identifier)`, not `(call)`, and is not a
 call site at all.

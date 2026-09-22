@@ -26,7 +26,12 @@
 #       PHP's in-body `use SomeTrait;` (captureBases' own header). Ruby's ancestor chain really does hold
 #       included modules, so this is a real residue and a later round's subject, not a claim that it is
 #       not inheritance.
-#   (c) an OUT-OF-TREE base (`class Rec < ActiveRecord::Base`) mints no edge and no implementor row.
+#   (c) a QUALIFIED base is keyed by its final segment alone, so an out-of-tree base COLLIDES with any in-tree
+#       type of the same final name: `class Rec < ActiveRecord::Base` lists as an implementor of the fixture's
+#       `Space::Base`, and `--lego=ActiveRecord::Base` finds no type at all. That is the byName convention every
+#       other language's bases already use (and #267's floor (b) for receivers); telling the two `Base`s apart
+#       needs the Ruby constant index from #57. An out-of-tree base that shares its final segment with nothing
+#       in the tree has no row to land on.
 #
 # Usage:  test/rubyinheritcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyinheritcheck.sh
 # Exits non-zero on any failure. Does NOT edit test/regression.sh. Self-contained via mktemp.
@@ -147,6 +152,27 @@ SPLIT="$DIR/split"; sed 's/></>\n</g' "$MAP" >"$SPLIT"
 rowOf(){ awk -v pat="$1" '$0 ~ pat{f=1;print;next} /^<s /{f=0} f' "$SPLIT"; }
 edgesTo(){ echo "$1" | grep -c "<c n=\"$2\""; }
 lego(){ "$BIN" "$FIX" --no-cache --lego="$1" 2>/dev/null | sed 's/></>\n</g'; }
+# refuses TYPE — --lego=TYPE must exit non-zero with its own "type not found": the tree indexes no such type, so no
+# implementor row can exist under it. Any other failure is a FAIL, not a pass.
+refuses(){
+    if "$BIN" "$FIX" --no-cache --lego="$1" >"$DIR/ref.out" 2>"$DIR/ref.err"
+    then
+        return 1
+    fi
+    grep -q -- "--lego type not found: $1" "$DIR/ref.err"
+}
+# runq VAR ARGS… — run the binary into VAR in THIS shell and FAIL a non-zero exit on its own line. An absence arm reads
+# a crashed run's empty stdout exactly like "no edge", so it runs only when this returns 0.
+runq(){
+    local var="$1"; shift
+    if ! "$BIN" "$@" >"$DIR/runq.out" 2>"$DIR/runq.err"
+    then
+        no "ripwire ${*#"$DIR/"} exited non-zero: $( head -3 "$DIR/runq.err" )"
+        printf -v "$var" '%s' ''
+        return 1
+    fi
+    printf -v "$var" '%s' "$( cat "$DIR/runq.out" )"
+}
 
 echo "=== the fixture parsed the way this gate assumes ==="
 for want in 'n="Parent"' 'n="Child"' 'n="GrandChild"' 'n="Base" sc="Space"' 'n="Derived"' 'n="Unrelated"'; do
@@ -172,8 +198,11 @@ CI="$( rowOf 'n="call_inherited" ' )"
 CLP="$( "$BIN" "$FIX" --no-cache --callers=Parent::build 2>/dev/null )"
 echo "$CLP" | grep -q 'n="call_inherited"' && ok "--callers=Parent::build lists call_inherited" \
     || no "--callers=Parent::build does not list call_inherited"
-CLU="$( "$BIN" "$FIX" --no-cache --callers=Unrelated::build 2>/dev/null )"
-echo "$CLU" | grep -q 'n="call_inherited"' && no "--callers=Unrelated::build lists call_inherited — the walk took an unrelated same-named def" || ok "--callers=Unrelated::build does not list call_inherited"
+if runq CLU "$FIX" --no-cache --callers=Unrelated::build
+then
+    echo "$CLU" | grep -q 'n="call_inherited"' && no "--callers=Unrelated::build lists call_inherited — the walk took an unrelated same-named def" \
+        || ok "--callers=Unrelated::build does not list call_inherited"
+fi
 
 CT="$( rowOf 'n="call_two_levels" ' )"
 [ "$( edgesTo "$CT" build )" -eq 1 ] && ok "GrandChild.build → exactly one edge (the walk crosses TWO levels)" \
@@ -198,18 +227,25 @@ echo "$UB" | grep -q '<c ' \
     && no "a bare, parenthesis-less bare_helper minted an edge — queries/ruby/tags.scm captures the (call) form only, and a no-arg receiver-less call parses as (identifier): if that changed, say so HERE and in the tags.scm header" \
     || ok "a bare, parenthesis-less call still mints nothing (an extraction floor of tags.scm, not of this round)"
 
-echo "=== floors (a) computed base, (b) mixins, (c) out-of-tree base ==="
-lego Struct  | grep -q '<impl n="Dynamic"' && no "class Dynamic < Struct.new( :a ) minted an inheritance edge — a computed superclass is a call, not a constant (floor (a))" \
-    || ok "a computed superclass mints no edge (floor (a), stated)"
-LH="$( lego Helper )"
-echo "$LH" | grep -q '<impl n="Mixed"' && no "include Helper minted an inheritance edge — that is a later round, and it moves the CHA fan-out: say so HERE, in captureBases' header and in CHANGELOG.md (floor (b))" \
-    || ok "include Helper is not an inheritance edge (floor (b), stated)"
+echo "=== floors (a) computed base, (b) mixins, (c) qualified base keyed by its final segment ==="
+refuses Struct && ok "a computed superclass mints no edge: the tree indexes no Struct, so --lego=Struct refuses (floor (a), stated)" \
+    || no "--lego=Struct did not refuse with type-not-found — something now indexes a Struct, so this arm must look for <impl n=\"Dynamic\"> instead: $( head -3 "$DIR/ref.err" )"
+if runq LH "$FIX" --no-cache --lego=Helper
+then
+    echo "$LH" | grep -q '<impl n="Mixed"' && no "include Helper minted an inheritance edge — that is a later round, and it moves the CHA fan-out: say so HERE, in captureBases' header and in CHANGELOG.md (floor (b))" \
+        || ok "include Helper is not an inheritance edge (floor (b), stated)"
+fi
 CM="$( rowOf 'n="call_mixin" ' )"
 echo "$CM" | grep -q '<c n="helped"' && ok "…and Mixed.new.helped still edges the one helped def through the name ladder (a floor deletes nothing)" \
     || no "Mixed.new.helped lost its edge: $CM"
-LA="$( lego ActiveRecord::Base )"
-echo "$LA" | grep -q '<impl n="Rec"' && no "class Rec < ActiveRecord::Base minted an implementor row for a base this tree never defines (floor (c))" \
-    || ok "an out-of-tree base mints no implementor row (floor (c), stated)"
+refuses ActiveRecord::Base && ok "--lego=ActiveRecord::Base finds no type: a qualified base is keyed by its final segment, not its path (floor (c), stated)" \
+    || no "--lego=ActiveRecord::Base did not refuse with type-not-found: $( head -3 "$DIR/ref.err" )"
+if runq LBC "$FIX" --no-cache --lego=Base
+then
+    echo "$LBC" | grep -q '<impl n="Rec"' \
+        && ok "class Rec < ActiveRecord::Base lists under the in-tree Space::Base — the final-segment collision (floor (c), stated)" \
+        || no "Rec no longer lists under Space::Base: if the #57 constant index now tells the two Bases apart, invert this arm and say so in the header and CHANGELOG.md (floor (c))"
+fi
 
 echo "=== determinism, warm == cold, and --deps is untouched ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
@@ -230,8 +266,11 @@ echo "=== mutation: drop the base clause → the inherited pin must vanish ==="
 MUT="$DIR/mut"; mkdir -p "$MUT"; cp "$FIX/caller.rb" "$MUT/caller.rb"
 sed 's/^class Child < Parent$/class Child/' "$FIX/h.rb" >"$MUT/h.rb"
 grep -q '^class Child$' "$MUT/h.rb" || no "mutation did not apply"
-MLP="$( "$BIN" "$MUT" --no-cache --lego=Parent 2>/dev/null )"
-echo "$MLP" | grep -q '<impl n="Child"' && no "mutation: --lego=Parent still lists Child after the base clause was removed" || ok "mutation: Child is no longer an implementor of Parent"
+if runq MLP "$MUT" --no-cache --lego=Parent
+then
+    echo "$MLP" | grep -q '<impl n="Child"' && no "mutation: --lego=Parent still lists Child after the base clause was removed" \
+        || ok "mutation: Child is no longer an implementor of Parent"
+fi
 MQ="$( "$BIN" "$MUT" --no-cache 2>/dev/null | sed 's/></>\n</g' | awk '/n="call_inherited" /{f=1;print;next} /^<s /{f=0} f' )"
 [ "$( echo "$MQ" | grep -c '<c n="build"' )" -eq 2 ] \
     && ok "mutation: Child.build is an honest 2-way split again — the pin was the inheritance edge and nothing else" \
