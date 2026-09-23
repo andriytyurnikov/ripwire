@@ -20,18 +20,27 @@
 # language's bases. Everything else about captureBases is unchanged.
 #
 # Stated floors, pinned below so each stays a decision:
-#   (a) a COMPUTED superclass (`class Dynamic < Struct.new( :a )`) is a call, not a constant — no edge.
+#   (a) a COMPUTED superclass (`class Dynamic < Struct.new( :a )`) is a call, not a constant — no edge. Not
+#       even to the call's RECEIVER: captureBases descends one wrapper level for every language (TS's
+#       `extends_clause`, C#'s `base_list`), and in Ruby that descent landed on `Struct`, minting an edge that
+#       only read as absent because the fixture defines no Struct. `class Built < Factory.fabricate( :x )` against
+#       an in-tree `Factory` pins it.
 #   (b) a MIXIN (`include Helper` / `extend` / `prepend`) is NOT an inheritance edge in this round. It is
 #       a receiver-less call in the class BODY, not a clause — the same shape, and the same decision, as
 #       PHP's in-body `use SomeTrait;` (captureBases' own header). Ruby's ancestor chain really does hold
 #       included modules, so this is a real residue and a later round's subject, not a claim that it is
 #       not inheritance.
-#   (c) a QUALIFIED base is keyed by its final segment alone, so an out-of-tree base COLLIDES with any in-tree
-#       type of the same final name: `class Rec < ActiveRecord::Base` lists as an implementor of the fixture's
-#       `Space::Base`, and `--lego=ActiveRecord::Base` finds no type at all. That is the byName convention every
-#       other language's bases already use (and #267's floor (b) for receivers); telling the two `Base`s apart
-#       needs the Ruby constant index from #57. An out-of-tree base that shares its final segment with nothing
-#       in the tree has no row to land on.
+#   (c) the base WALK is keyed by NAME. A base is found by name (its final segment, as every language's is)
+#       and then SCOPED: the superclass as written is looked up the way Ruby looks it up — Module.nesting
+#       innermost first, then the top level, `::X` absolute — against every class/module the tree opens (the
+#       #57 constant index, wrappers included), and only a definition with THAT fully-qualified constant gets
+#       the implementor row. So `class Rec < ActiveRecord::Base` is no implementor of the fixture's `Space::Base`,
+#       `class Inner < Base` inside `module Beta` lands on Beta::Base alone, and a base the tree never opens
+#       (`ActiveRecord::Base`) adds nothing to the CHA name graph — Rec's walk no longer reaches Space::Base's
+#       methods. What stays name-keyed is the walk's METHOD probe (canonByName is keyed `Scope::method` with the
+#       IMMEDIATE scope), so two in-tree bases sharing a final name still share one probe: `UsesAlpha.beta_make`
+#       pins to Beta::Base#beta_make although UsesAlpha < Alpha::Base. Pinned below; lifting it needs a
+#       qualified scope on the symbol itself.
 #
 # Usage:  test/rubyinheritcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyinheritcheck.sh
 # Exits non-zero on any failure. Does NOT edit test/regression.sh. Self-contained via mktemp.
@@ -93,6 +102,15 @@ end
 class Dynamic < Struct.new( :a )
 end
 
+class Factory
+  def self.fabricate( x )
+    x
+  end
+end
+
+class Built < Factory.fabricate( :x )
+end
+
 module Helper
   def helped
     4
@@ -138,6 +156,60 @@ class Caller
 
   def call_mixin
     Mixed.new.helped
+  end
+
+  def call_out_of_tree_base
+    Rec.make
+  end
+end
+RUBY
+
+# floor (c)'s fixture: two MORE in-tree `Base`s, each in its own file so `--lego=FILE:Base` names one definition.
+cat > "$FIX/alpha.rb" <<'RUBY'
+module Alpha
+  class Base
+    def self.alpha_make
+      5
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/beta.rb" <<'RUBY'
+module Beta
+  class Base
+    def self.beta_make
+      6
+    end
+  end
+
+  class Inner < Base
+  end
+end
+RUBY
+
+cat > "$FIX/scoped.rb" <<'RUBY'
+class UsesAlpha < Alpha::Base
+end
+
+class Abs < ::Parent
+end
+
+class Outer
+  class Nested
+  end
+end
+
+class FromWrapper < Outer
+end
+
+class ScopedCaller
+  def call_alpha
+    UsesAlpha.alpha_make
+  end
+
+  def call_beta_through_alpha
+    UsesAlpha.beta_make
   end
 end
 RUBY
@@ -187,9 +259,9 @@ echo "$LP" | grep -q '<impl n="Child"' && ok "--lego=Parent lists Child" \
 LC="$( lego Child )"
 echo "$LC" | grep -q '<impl n="GrandChild"' && ok "--lego=Child lists GrandChild (a second level is its own direct edge)" \
     || no "--lego=Child lists no GrandChild: $( echo "$LC" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
-LB="$( lego Base )"
-echo "$LB" | grep -q '<impl n="Derived"' && ok "--lego=Base lists Derived (a scope_resolution base names its FINAL segment)" \
-    || no "--lego=Base lists no Derived: $( echo "$LB" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
+LB="$( lego h.rb:Base )"
+echo "$LB" | grep -q '<impl n="Derived"' && ok "--lego=h.rb:Base lists Derived (a scope_resolution base, found by its final segment and scoped to Space::Base)" \
+    || no "--lego=h.rb:Base lists no Derived: $( echo "$LB" | grep -E '^<(iface|impl)' | tr '\n' ' ' )"
 
 echo "=== the base walk reaches a method the receiver's own class does not define ==="
 CI="$( rowOf 'n="call_inherited" ' )"
@@ -227,9 +299,15 @@ echo "$UB" | grep -q '<c ' \
     && no "a bare, parenthesis-less bare_helper minted an edge — queries/ruby/tags.scm captures the (call) form only, and a no-arg receiver-less call parses as (identifier): if that changed, say so HERE and in the tags.scm header" \
     || ok "a bare, parenthesis-less call still mints nothing (an extraction floor of tags.scm, not of this round)"
 
-echo "=== floors (a) computed base, (b) mixins, (c) qualified base keyed by its final segment ==="
+echo "=== floors (a) computed base, (b) mixins ==="
 refuses Struct && ok "a computed superclass mints no edge: the tree indexes no Struct, so --lego=Struct refuses (floor (a), stated)" \
     || no "--lego=Struct did not refuse with type-not-found — something now indexes a Struct, so this arm must look for <impl n=\"Dynamic\"> instead: $( head -3 "$DIR/ref.err" )"
+if runq LF "$FIX" --no-cache --lego=Factory
+then
+    echo "$LF" | grep -q '<impl n="Built"' \
+        && no "class Built < Factory.fabricate( :x ) lists Built as a Factory implementor — a computed superclass's RECEIVER is not its base (floor (a))" \
+        || ok "a computed superclass mints no edge to its receiver either: --lego=Factory lists no Built (floor (a))"
+fi
 if runq LH "$FIX" --no-cache --lego=Helper
 then
     echo "$LH" | grep -q '<impl n="Mixed"' && no "include Helper minted an inheritance edge — that is a later round, and it moves the CHA fan-out: say so HERE, in captureBases' header and in CHANGELOG.md (floor (b))" \
@@ -238,14 +316,50 @@ fi
 CM="$( rowOf 'n="call_mixin" ' )"
 echo "$CM" | grep -q '<c n="helped"' && ok "…and Mixed.new.helped still edges the one helped def through the name ladder (a floor deletes nothing)" \
     || no "Mixed.new.helped lost its edge: $CM"
-refuses ActiveRecord::Base && ok "--lego=ActiveRecord::Base finds no type: a qualified base is keyed by its final segment, not its path (floor (c), stated)" \
+refuses ActiveRecord::Base && ok "--lego=ActiveRecord::Base finds no type: the tree never opens ActiveRecord::Base, so there is no row to list under" \
     || no "--lego=ActiveRecord::Base did not refuse with type-not-found: $( head -3 "$DIR/ref.err" )"
-if runq LBC "$FIX" --no-cache --lego=Base
-then
-    echo "$LBC" | grep -q '<impl n="Rec"' \
-        && ok "class Rec < ActiveRecord::Base lists under the in-tree Space::Base — the final-segment collision (floor (c), stated)" \
-        || no "Rec no longer lists under Space::Base: if the #57 constant index now tells the two Bases apart, invert this arm and say so in the header and CHANGELOG.md (floor (c))"
-fi
+
+echo "=== floor (c): a base is SCOPED — the superclass as written, looked up the way Ruby looks it up ==="
+# implOf SELECTOR NAME — 0 when `--lego=SELECTOR` lists NAME as an implementor, 1 when it does not, and a FAIL (2) when
+# the run itself failed: an absence arm must never read a crashed run as "not listed".
+implOf(){
+    if ! "$BIN" "$FIX" --no-cache --lego="$1" >"$DIR/impl.out" 2>"$DIR/impl.err"
+    then
+        no "--lego=$1 exited non-zero: $( head -3 "$DIR/impl.err" )"
+        return 2
+    fi
+    sed 's/></>\n</g' "$DIR/impl.out" | grep -q "<impl n=\"$2\""
+}
+# lists SELECTOR NAME WHY / notLists SELECTOR NAME WHY
+lists(){    implOf "$1" "$2"; case $? in 0) ok "--lego=$1 lists $2 ($3)";; 1) no "--lego=$1 does not list $2 ($3)";; esac; }
+notLists(){ implOf "$1" "$2"; case $? in 1) ok "--lego=$1 does not list $2 ($3)";; 0) no "--lego=$1 lists $2 — $3";; esac; }
+
+notLists h.rb:Base     Rec       "class Rec < ActiveRecord::Base names a constant the tree never opens; the final-segment collision with Space::Base is gone"
+notLists alpha.rb:Base Rec       "the out-of-tree base lands on no in-tree Base at all"
+notLists beta.rb:Base  Rec       "the out-of-tree base lands on no in-tree Base at all"
+lists    alpha.rb:Base UsesAlpha "class UsesAlpha < Alpha::Base lands on Alpha::Base"
+notLists h.rb:Base     UsesAlpha "Alpha::Base is not Space::Base"
+notLists beta.rb:Base  UsesAlpha "Alpha::Base is not Beta::Base"
+lists    beta.rb:Base  Inner     "class Inner < Base inside module Beta is Beta::Base — Module.nesting first"
+notLists h.rb:Base     Inner     "the lexical Beta::Base shadows every other Base"
+notLists alpha.rb:Base Inner     "the lexical Beta::Base shadows every other Base"
+notLists alpha.rb:Base Derived   "class Derived < Space::Base names Space::Base alone"
+notLists beta.rb:Base  Derived   "class Derived < Space::Base names Space::Base alone"
+lists    Parent        Abs       "class Abs < ::Parent — an absolute constant skips the nesting"
+lists    Outer         FromWrapper "class Outer holds only a nested class: a namespace WRAPPER is no definer in the #57 index, but it is still a class a base can name"
+
+echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a same-named in-tree base still shares the probe ==="
+CO="$( rowOf 'n="call_out_of_tree_base" ' )"
+[ "$( edgesTo "$CO" make )" -eq 2 ] \
+    && ok "Rec.make is an honest 2-way split (Space::Base.make, Unrelated.make): ActiveRecord::Base is not Space::Base, so the walk no longer pins it" \
+    || no "Rec.make produced $( edgesTo "$CO" make ) make edges (want 2 — the out-of-tree base must not walk into Space::Base): $CO"
+CA="$( rowOf 'n="call_alpha" ' )"
+[ "$( edgesTo "$CA" alpha_make )" -eq 1 ] && ok "UsesAlpha.alpha_make → exactly one edge (the walk reaches Alpha::Base)" \
+    || no "UsesAlpha.alpha_make produced $( edgesTo "$CA" alpha_make ) edges: $CA"
+CB="$( rowOf 'n="call_beta_through_alpha" ' )"
+[ "$( edgesTo "$CB" beta_make )" -eq 1 ] \
+    && ok "UsesAlpha.beta_make still pins Beta::Base#beta_make — the walk's method probe is keyed Base::beta_make by the IMMEDIATE scope (floor (c), stated)" \
+    || no "UsesAlpha.beta_make produced $( edgesTo "$CB" beta_make ) edges: if the walk's probe is now scoped, invert this arm and say so in the header and CHANGELOG.md (floor (c))"
 
 echo "=== determinism, warm == cold, and --deps is untouched ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
