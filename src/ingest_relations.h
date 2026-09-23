@@ -32,7 +32,7 @@ inline bool isBaseTypeNode( const char* nt, Lang lang ) noexcept
     // test/rubyinheritcheck.sh.
     if( lang == Lang::Ruby )
     {
-        return std::strcmp( nt, "constant" ) == 0 || std::strcmp( nt, "scope_resolution" ) == 0;
+        return kindIs( nt, "constant" ) || kindIs( nt, "scope_resolution" );
     }
     static const char* const kBaseTypeKinds[] = {
         "type_identifier",        // C++/TS/Java class or interface name
