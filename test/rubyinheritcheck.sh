@@ -188,6 +188,16 @@ module Beta
 end
 RUBY
 
+# A BODY-LESS base beside a same-named class WITH a body (Space::Base has `def self.make`). The C-family decl/def
+# collapse reads `class Base < StandardError; end` as a forward declaration and drops it from byName whenever a bodied
+# `Base` exists — activerecord's Encryption::Errors::Base lost its six subclasses to rails/generators' Base that way.
+cat > "$FIX/errs.rb" <<'RUBY'
+module Errs
+  class Base < StandardError; end
+  class Oops < Base; end
+end
+RUBY
+
 cat > "$FIX/scoped.rb" <<'RUBY'
 class UsesAlpha < Alpha::Base
 end
@@ -346,6 +356,8 @@ notLists alpha.rb:Base Inner     "the lexical Beta::Base shadows every other Bas
 notLists alpha.rb:Base Derived   "class Derived < Space::Base names Space::Base alone"
 notLists beta.rb:Base  Derived   "class Derived < Space::Base names Space::Base alone"
 lists    Parent        Abs       "class Abs < ::Parent — an absolute constant skips the nesting"
+lists    errs.rb:Base  Oops      "class Oops < Base inside module Errs is the body-less Errs::Base — found by constant, not through byName's decl/def collapse"
+notLists h.rb:Base     Oops      "Errs::Base is not Space::Base, though only Space::Base has a body"
 lists    Outer         FromWrapper "class Outer holds only a nested class: a namespace WRAPPER is no definer in the #57 index, but it is still a class a base can name"
 
 echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a same-named in-tree base still shares the probe ==="

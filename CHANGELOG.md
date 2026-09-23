@@ -30,35 +30,58 @@ This is floor (a) of the constant-receiver round above, lifted — and it is wha
 gem numbers down, since a gem reaches its class methods up an `ActiveRecord::Base` hierarchy. Two
 things follow at once: `--lego` answers for Ruby, and `Child.build` resolves to `Parent::build`.
 
+A base is found by its final segment, like every language's, and then SCOPED by Ruby's own constant
+lookup: the superclass as written is resolved innermost-first along the enclosing `Module.nesting`,
+then at the top level (`::X` absolute), against every class and module the tree opens — the #57
+constant index, namespace wrappers included — and only the classes that ARE that constant are its
+base. So `class Rec < ActiveRecord::Base` is not an implementor of an in-tree `Space::Base`, `class
+Inner < Base` inside `module Beta` lands on `Beta::Base` alone, and a base the tree never opens adds
+nothing to the CHA name graph, so its class's walk cannot reach an unrelated in-tree `Base`. That
+join needs no new extraction: every `class X < Y` already carries its written superclass as the
+symbolic directive #57 records. The bases are read by constant rather than through `byName`, whose
+C-family decl/def collapse takes a body-less `class Base < StandardError; end` for a forward
+declaration and drops it next to any same-named class with a body.
+
 | corpus | `--lego` implementors | edges | ambiguous |
 | --- | --- | --- | --- |
-| activerecord 8.1.3 `lib`, `--lego=Base` | 0 → 11 | 9,152 → 9,001 | 1,479 → 1,288 |
+| activerecord 8.1.3 `lib`, `--lego=active_record/base.rb:Base` | 0 → 0 | 9,152 → 9,001 | 1,479 → 1,288 |
+| activerecord 8.1.3 `lib`, `--lego=active_record/encryption/errors.rb:Base` | 0 → 6 | — | — |
 | activesupport 8.1.3 `lib` | — | 3,912 → 3,915 | 434 → 422 |
 | actionpack 8.1.3 `lib` | — | 3,140 → 3,127 | 364 → 355 |
-| Rails app A, `--lego=ApplicationRecord` | 0 → 130 | 24,376 → 24,390 | 1,263 → 1,260 |
-| Rails app A, `--lego=ApplicationController` | 0 → 132 | — | — |
-| Rails app B | — | 15,257 → 15,301 | 451 → 451 |
+| Rails app A, `--lego=ApplicationRecord` | 0 → 130 | 24,376 → 24,392 | 1,263 → 1,268 |
+| Rails app A, `--lego=app/controllers/application_controller.rb:ApplicationController` | 0 → 114 | — | — |
+| Rails app A, `--lego=app/controllers/admin/application_controller.rb:ApplicationController` | 0 → 19 | — | — |
+| Rails app B | — | 16,112 → 16,121 | 440 → 445 |
 
-`ambiguous` falls because a two-way split collapses into one pinned edge, which is also why `edges`
-falls where it does — 151 fewer on activerecord is 151 calls that stopped naming two candidates.
+`ambiguous` falls on the gems because a two-way split collapses into one pinned edge, which is also
+why `edges` falls where it does — 151 fewer on activerecord is 151 calls that stopped naming two
+candidates. No `ActiveRecord::Base` subclass lives in activerecord's own `lib`, so 0 is its answer;
+before the scoping, the final-segment key gave it 11, every one a collision (`ActiveJob::Base`, the
+encryption errors' own `Errors::Base`, the generators' `Base`). On the apps the scoping is what
+moves `ambiguous` UP: a call that reached an in-tree `Base` only through an out-of-tree one is no
+longer pinned there. App A's `self.data` in a model (`< ApplicationRecord < ActiveRecord::Base`) was
+pinned to a report handler's `data` through `Reports::ResolutionHandlers::Base`; it is an honest
+split now. App B's twelve `SomeModel.polymorphic_name` sites were each split three ways over the
+app's own `User::Base`, `Organization::Base` and `BankAccount::Base`; ActiveRecord answers them, and
+they mint nothing.
 
 Stated floors, each pinned by an arm of `test/rubyinheritcheck.sh`: a COMPUTED superclass (`class
-Dynamic < Struct.new( :a )`) is a call, not a name, and mints nothing; a MIXIN (`include Helper`) is
-NOT an inheritance edge in this round — it is a receiver-less call in the class BODY, the same shape
-and the same decision as PHP's in-body `use SomeTrait;`, and Ruby's ancestor chain really does hold
-included modules, so it is a stated residue rather than a claim that it is not inheritance; a
-QUALIFIED base is keyed by its final segment alone — the byName convention every other language's bases
-use — so an out-of-tree `class Rec < ActiveRecord::Base` lists as an implementor of any in-tree class
-named `Base` (the gate's `Space::Base`), and telling the two apart needs the Ruby constant index from
-#57. A fourth floor, of
-`queries/ruby/tags.scm` rather than of this round, is pinned beside them: a receiver-less call
-written with no parentheses and no arguments parses as `(identifier)`, not `(call)`, and is not a
-call site at all.
+Dynamic < Struct.new( :a )`) is a call, not a name, and mints nothing — not even an edge to the
+call's receiver, which `captureBases`' one-level wrapper descent used to hand over; a MIXIN
+(`include Helper`) is NOT an inheritance edge in this round — it is a receiver-less call in the class
+BODY, the same shape and the same decision as PHP's in-body `use SomeTrait;`, and Ruby's ancestor
+chain really does hold included modules, so it is a stated residue rather than a claim that it is not
+inheritance; the base walk's METHOD probe is keyed by the immediate scope (`Base::m`), so two in-tree
+bases that share a final name still share one probe — `UsesAlpha.beta_make` pins `Beta::Base`'s
+method although `UsesAlpha < Alpha::Base`. A fourth floor, of `queries/ruby/tags.scm` rather than of
+this round, is pinned beside them: a receiver-less call written with no parentheses and no arguments
+parses as `(identifier)`, not `(call)`, and is not a call site at all.
 
 `--deps` is byte-identical on activerecord, and the default map is byte-identical on four Ruby-free
-corpora, with this repository's `--report` totals unchanged. `kParserVer` 97 → 98 (new records, same
-layout; `kCacheVersion` stays 22 — a Ruby cache written at 97 holds no inheritance refs and must be
-re-parsed), with the `quality.h` mirror and `test/qschemetrip.hash` moved in the same commit.
+corpora, with this repository's `--report` totals unchanged. `kParserVer` 97 → 99 in two steps (98:
+new records, same layout — a Ruby cache written at 97 holds no inheritance refs; 99: fewer records —
+a cache written at 98 holds the computed superclass's stray receiver ref; `kCacheVersion` stays 22),
+with the `quality.h` mirror and `test/qschemetrip.hash` moved in each step's commit.
 
 ### Added — a Ruby constant receiver now pins the call, instead of splitting it across every same-named method
 

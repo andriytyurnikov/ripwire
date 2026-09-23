@@ -2048,6 +2048,10 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     // for `class C(A, B)` Python's MRO puts A's chain before B's, so when both A and B define `m`, `super().m()`
     // in C names A::m. chaUp is sorted for its membership uses and cannot say which base came first.
     HashMap<std::string, std::vector<std::string>> chaUpDeclared;
+    // Ruby bases, SCOPED by Ruby's own constant lookup (resolve.h::RubyBaseScope; test/rubyinheritcheck.sh floor
+    // (c)). Read here — a base the tree never opens (`< ActiveRecord::Base`) adds no CHA edge, so its class's walk
+    // cannot reach an unrelated in-tree `Base` — and by the implementor pass below. Empty on a Ruby-free corpus.
+    const RubyBaseScope rubyBases = buildRubyBaseScope( ing );
     {
         const auto isClassLikeK = []( SymKind k ) noexcept
         { return k == SymKind::Class || k == SymKind::Struct || k == SymKind::Interface; };
@@ -2057,6 +2061,10 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             if( !ir.isInherit )
             {
                 continue;
+            }
+            if( const std::string* scoped = rubyBases.resolvedBase( std::size_t( &ir - ing.references.data() ) ); scoped && scoped->empty() )
+            {
+                continue;   // a Ruby base the tree never opens: nothing in-tree to walk to
             }
             std::string_view derivedName;
             if( !ir.qualifier.empty() )
@@ -3090,13 +3098,31 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             continue;
         }
 
-        const auto it = byName.find( r.calleeName );
-        if( it == byName.end() )
+        // A Ruby base resolved by Ruby's own lookup: the bases are the classes whose constant it IS, read by constant
+        // (RubyBaseScope::classesByFqn — byName's decl/def collapse would hide a body-less Ruby class). nullptr ⇒ not
+        // a scoped Ruby base (every other language, or a Ruby site the join could not place) ⇒ byName stands.
+        const rw::SmallVec<NodeId, 2>* baseIds    = nullptr;
+        const std::string*             rubyScoped = rubyBases.resolvedBase( std::size_t( &r - ing.references.data() ) );
+        if( rubyScoped != nullptr )
         {
-            continue;
+            const auto sit = rubyScoped->empty() ? rubyBases.classesByFqn.end() : rubyBases.classesByFqn.find( *rubyScoped );
+            if( sit == rubyBases.classesByFqn.end() )
+            {
+                continue;   // the tree never opens the written base — no in-tree row to list it under
+            }
+            baseIds = &sit->second;
+        }
+        else
+        {
+            const auto it = byName.find( r.calleeName );
+            if( it == byName.end() )
+            {
+                continue;
+            }
+            baseIds = &it->second;
         }
         baseCand.clear();
-        for( NodeId baseId : it->second )
+        for( NodeId baseId : *baseIds )
         {
             if( !isClassLike( ing.symbols[baseId].kind ) )
             {
