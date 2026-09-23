@@ -372,6 +372,13 @@ void captureBases( TSNode classNode, std::uint32_t fileId, Lang lang, std::strin
                 emitBaseRef( bn, fileId, lang, src, refs );
                 return true;
             }
+            // Ruby has no wrapper: its `superclass` clause holds ONE expression, and anything but a constant is
+            // COMPUTED (`class Dynamic < Struct.new( :a )`). Descending into that (call) lands on its receiver
+            // `Struct` and minted an edge to it — the receiver is not the base (test/rubyinheritcheck.sh floor (a)).
+            if( lang == Lang::Ruby )
+            {
+                return true;
+            }
             // WRAPPED: descend ONE level into a wrapper (extends_clause / implements_clause / type_list)
             // and emit each type node it holds. One level is enough for every measured grammar shape.
             ChildCursor wrapCursor( bn );

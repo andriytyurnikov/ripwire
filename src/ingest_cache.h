@@ -232,7 +232,15 @@ constexpr std::uint32_t kCacheVersion = 22;           // 22: RawDef gains `inter
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 98;           // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 99;           // bump on any grammar/.scm/extraction change
+                                                      // 99 = 2026-09-23 (a computed Ruby superclass mints nothing,
+                                                      //    test/rubyinheritcheck.sh floor (a)): captureBases stops
+                                                      //    descending into a Ruby `superclass` clause's non-constant
+                                                      //    child, where it landed on the RECEIVER of
+                                                      //    `class Dynamic < Struct.new( :a )` and emitted an inherit
+                                                      //    ref to `Struct`. FEWER records, same layout (kCacheVersion
+                                                      //    stays 22): a Ruby cache written at 98 holds the stray ref.
+                                                      //    quality.h's kIngestParserVerMirror bumped in the SAME commit.
                                                       // 98 = 2026-09-17 (Ruby inheritance edges,
                                                       //    test/rubyinheritcheck.sh): isBaseTypeNode gains a Ruby arm
                                                       //    ((constant)/(scope_resolution)), so `class Child < Parent`
