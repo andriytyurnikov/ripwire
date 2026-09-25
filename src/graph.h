@@ -3097,6 +3097,10 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         {
             continue;
         }
+        if( ing.symbols[ derived ].lang == Lang::Ruby )
+        {
+            derived = rubyBases.canonicalClass( ing, derived );   // a reopened class is ONE implementor, not one per open
+        }
 
         // A Ruby base resolved by Ruby's own lookup: the bases are the classes whose constant it IS, read by constant
         // (RubyBaseScope::classesByFqn — byName's decl/def collapse would hide a body-less Ruby class). nullptr ⇒ not

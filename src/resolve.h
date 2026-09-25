@@ -1628,6 +1628,31 @@ struct RubyBaseScope
         }
         return &opens[ o ].fqn;
     }
+
+    // The implementor a Ruby class stands as: the lowest-id symbol of its constant with its own kind. A class REOPENED
+    // with its superclass repeated (`class Reop < Parent … end`, twice) is two symbols and one constant, so both opens
+    // collapse onto one row instead of listing the class twice. `id` itself when its open is not indexed.
+    NodeId canonicalClass( const IngestResult& ing, NodeId id ) const noexcept
+    {
+        const std::string* fqn = fqnOfSymbol( ing.symbols[ id ] );
+        if( fqn == nullptr )
+        {
+            return id;
+        }
+        const auto it = classesByFqn.find( *fqn );
+        if( it == classesByFqn.end() )
+        {
+            return id;
+        }
+        for( NodeId cand : it->second )   // id order → the first match is the lowest id
+        {
+            if( ing.symbols[ cand ].kind == ing.symbols[ id ].kind )
+            {
+                return cand;
+            }
+        }
+        return id;
+    }
 };
 
 // Every `class X < Y`'s written superclass, keyed by (fileId, the class's own start byte) — the symbolic directive

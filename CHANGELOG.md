@@ -48,7 +48,7 @@ declaration and drops it next to any same-named class with a body.
 | activerecord 8.1.3 `lib`, `--lego=active_record/encryption/errors.rb:Base` | 0 → 6 | — | — |
 | activesupport 8.1.3 `lib` | — | 3,912 → 3,915 | 434 → 422 |
 | actionpack 8.1.3 `lib` | — | 3,140 → 3,127 | 364 → 355 |
-| Rails app A, `--lego=ApplicationRecord` | 0 → 130 | 24,376 → 24,392 | 1,263 → 1,268 |
+| Rails app A, `--lego=ApplicationRecord` | 0 → 129 | 24,376 → 24,392 | 1,263 → 1,268 |
 | Rails app A, `--lego=app/controllers/application_controller.rb:ApplicationController` | 0 → 114 | — | — |
 | Rails app A, `--lego=app/controllers/admin/application_controller.rb:ApplicationController` | 0 → 19 | — | — |
 | Rails app B | — | 16,112 → 16,121 | 440 → 445 |
@@ -73,7 +73,12 @@ BODY, the same shape and the same decision as PHP's in-body `use SomeTrait;`, an
 chain really does hold included modules, so it is a stated residue rather than a claim that it is not
 inheritance; the base walk's METHOD probe is keyed by the immediate scope (`Base::m`), so two in-tree
 bases that share a final name still share one probe — `UsesAlpha.beta_make` pins `Beta::Base`'s
-method although `UsesAlpha < Alpha::Base`. A fourth floor, of `queries/ruby/tags.scm` rather than of
+method although `UsesAlpha < Alpha::Base`; and `Built = Class.new( Parent )`, with or without a block,
+makes `Built < Parent` at runtime but is a constant assignment whose value is a call, not a `class`
+open, so it mints no class and no edge — the same decision as a computed superclass. A class
+reopened with its superclass repeated (`class Reop < Parent … end` twice) is two symbols and one
+constant, and the lego view lists it once — app A's 129 was 130 before, one model counted twice
+because a stub reopens it with the superclass repeated. A fifth floor, of `queries/ruby/tags.scm` rather than of
 this round, is pinned beside them: a receiver-less call written with no parentheses and no arguments
 parses as `(identifier)`, not `(call)`, and is not a call site at all.
 
