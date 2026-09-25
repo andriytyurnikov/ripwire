@@ -41,6 +41,12 @@
 #       IMMEDIATE scope), so two in-tree bases sharing a final name still share one probe: `UsesAlpha.beta_make`
 #       pins to Beta::Base#beta_make although UsesAlpha < Alpha::Base. Pinned below; lifting it needs a
 #       qualified scope on the symbol itself.
+#   (d) `Built = Class.new( Parent )` — with or without a block — makes Built < Parent at runtime, but it is a constant
+#       ASSIGNMENT whose value is a call, not a `class` open: no class symbol, no superclass clause, no edge. The same
+#       decision as (a): the tool reads a base off a class header, never off a computed value.
+#
+# A class REOPENED with its superclass repeated (`class Reop < Parent … end` twice, legal Ruby) is two symbols but one
+# constant, so the lego view lists it ONCE: implementors are keyed by the derived class's constant, not by open.
 #
 # Usage:  test/rubyinheritcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyinheritcheck.sh
 # Exits non-zero on any failure. Does NOT edit test/regression.sh. Self-contained via mktemp.
@@ -224,6 +230,29 @@ class ScopedCaller
 end
 RUBY
 
+# A class reopened with its superclass repeated — two opens, one constant — and the Class.new form of floor (d).
+cat > "$FIX/reopen.rb" <<'RUBY'
+class Reop < Parent
+  def first_half
+    1
+  end
+end
+
+class Reop < Parent
+  def second_half
+    2
+  end
+end
+
+Built2 = Class.new( Parent )
+
+Blocky = Class.new( Parent ) do
+  def blocky
+    3
+  end
+end
+RUBY
+
 MAP="$DIR/map.xml"
 "$BIN" "$FIX" --no-cache >"$MAP" 2>"$DIR/map.err"
 if [ $? -eq 0 ]; then ok "default map exits 0"; else no "default map exited non-zero: $( cat "$DIR/map.err" )"; fi
@@ -359,6 +388,21 @@ lists    Parent        Abs       "class Abs < ::Parent — an absolute constant 
 lists    errs.rb:Base  Oops      "class Oops < Base inside module Errs is the body-less Errs::Base — found by constant, not through byName's decl/def collapse"
 notLists h.rb:Base     Oops      "Errs::Base is not Space::Base, though only Space::Base has a body"
 lists    Outer         FromWrapper "class Outer holds only a nested class: a namespace WRAPPER is no definer in the #57 index, but it is still a class a base can name"
+
+echo "=== a reopened class is ONE implementor; Class.new( Parent ) is floor (d) ==="
+if runq LRP "$FIX" --no-cache --lego=Parent
+then
+    LRS="$( echo "$LRP" | sed 's/></>\n</g' )"
+    NR="$( echo "$LRS" | grep -c '<impl n="Reop"' )"
+    [ "$NR" -eq 1 ] && ok "--lego=Parent lists Reop once, though reopen.rb opens it twice with the superclass repeated" \
+        || no "--lego=Parent lists Reop $NR times — two opens of ONE constant are one implementor"
+    NI="$( echo "$LRS" | grep -o '^<impl n="[^"]*"' | sort -u | grep -c . )"
+    NA="$( echo "$LRS" | grep -o 'implementors="[0-9]*"' | head -1 | tr -dc '0-9' )"
+    [ "$NI" = "$NA" ] && ok "--lego=Parent's implementors=\"$NA\" counts its $NI distinct classes" \
+        || no "--lego=Parent says implementors=\"$NA\" for $NI distinct classes"
+fi
+notLists Parent Built2 "Built2 = Class.new( Parent ) is a constant assignment whose value is a call — no class open, no edge (floor (d), stated)"
+notLists Parent Blocky "Blocky = Class.new( Parent ) do … end is the same assignment with a block (floor (d), stated)"
 
 echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a same-named in-tree base still shares the probe ==="
 CO="$( rowOf 'n="call_out_of_tree_base" ' )"
