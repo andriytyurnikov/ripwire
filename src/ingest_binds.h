@@ -87,6 +87,97 @@ struct RecvShape
 // through to the honest ladder. `Outer::run( 1 )` never arrives as a scope_resolution at all —
 // tree-sitter-ruby parses it as an ordinary (call) with a (constant) receiver, exactly like
 // `Outer.run( 1 )`, so both spellings narrow through the (constant) arm. test/rubyrecvnarrowcheck.sh.
+// The FINAL constant segment a (constant) / (scope_resolution) names — `Calc` → `Calc`, `Outer::Engine` → `Engine` —
+// or empty when the node is a (scope_resolution) whose `name:` is not a (constant). Callers have checked the kind.
+inline std::string_view rubyFinalConstant( TSNode node, std::string_view src )
+{
+    const TSNode leaf = kindIs( ts_node_type( node ), "constant" ) ? node : fieldChild( node, NodeField::Name );
+    if( ts_node_is_null( leaf ) || !kindIs( ts_node_type( leaf ), "constant" ) )
+    {
+        return {};
+    }
+    return pattern::nodeText( leaf, src );
+}
+
+inline bool isRubyConstantNode( TSNode node ) noexcept
+{
+    const char* t = ts_node_type( node );
+    return kindIs( t, "constant" ) || kindIs( t, "scope_resolution" );
+}
+
+// An RSpec EXAMPLE GROUP call: describe/context (and the feature/example_group and x-/f- spellings), called bare or
+// on `RSpec`. 1 = a group, 2 = a SHARED group (shared_examples/_for, shared_context), 0 = neither. A shared group's
+// body runs inside whichever group INCLUDES it, so its described_class is not its lexical parent's.
+inline int rspecGroupKind( TSNode call, std::string_view src )
+{
+    const TSNode recv = fieldChild( call, NodeField::Receiver );
+    if( !ts_node_is_null( recv ) && !( kindIs( ts_node_type( recv ), "constant" ) && pattern::nodeText( recv, src ) == "RSpec" ) )
+    {
+        return 0;
+    }
+    const TSNode method = fieldChild( call, NodeField::Method );
+    if( ts_node_is_null( method ) )
+    {
+        return 0;
+    }
+    static constexpr std::string_view kGroups[] = { "describe", "context", "feature", "example_group",
+                                                    "xdescribe", "fdescribe", "xcontext", "fcontext" };
+    static constexpr std::string_view kShared[] = { "shared_examples", "shared_examples_for", "shared_context" };
+    const std::string_view m = pattern::nodeText( method, src );
+    if( std::ranges::find( kGroups, m ) != std::end( kGroups ) )
+    {
+        return 1;
+    }
+    return std::ranges::find( kShared, m ) != std::end( kShared ) ? 2 : 0;
+}
+
+// One example group's FIRST description argument, as RSpec reads it: nullopt when it is nil or a String (the parent
+// group's described class stands), otherwise the answer — a constant's final segment, or empty for anything else
+// (`describe :sym`, a variable), which names no class this tool can resolve.
+inline std::optional<std::string_view> rspecGroupArgument( TSNode call, std::string_view src )
+{
+    const TSNode args  = fieldChild( call, NodeField::Arguments );
+    const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
+    if( ts_node_is_null( first ) || kindIs( ts_node_type( first ), "string" ) )
+    {
+        return std::nullopt;
+    }
+    return isRubyConstantNode( first ) ? rubyFinalConstant( first, src ) : std::string_view {};
+}
+
+// RSpec's `described_class` — a bare (identifier) receiver no binding names — read as the constant it IS. RSpec's
+// own rule (rspec-core 3.13, Metadata::ExampleGroupHash#described_class): a group's described class is its FIRST
+// description argument unless that is nil or a String; otherwise it is the parent group's. So the walk climbs the
+// enclosing calls whose BLOCK holds the site (the child it came from is a do_block/block), and the innermost example
+// group with a constant first argument answers. A string or absent argument passes outward; any other argument
+// (`describe :sym`, a variable) and a shared group stop the walk with no answer, and the site is left exactly as it
+// was. test/rubydescribedclasscheck.sh.
+inline std::string_view rspecDescribedClass( TSNode node, std::string_view src )
+{
+    TSNode prev = node;
+    for( TSNode n = ts_node_parent( node ); !ts_node_is_null( n ); prev = n, n = ts_node_parent( n ) )
+    {
+        const char* pt = ts_node_type( prev );
+        if( !kindIs( ts_node_type( n ), "call" ) || !( kindIs( pt, "do_block" ) || kindIs( pt, "block" ) ) )
+        {
+            continue;   // not a call, or the site is in its receiver/arguments rather than its block
+        }
+        const int group = rspecGroupKind( n, src );
+        if( group == 2 )
+        {
+            return {};  // a shared group: its body runs in whichever group includes it
+        }
+        if( group == 1 )
+        {
+            if( const std::optional<std::string_view> arg = rspecGroupArgument( n, src ) )
+            {
+                return *arg;
+            }
+        }
+    }
+    return {};
+}
+
 // nullopt when the node is neither (classifyReceiver's shared arms decide it); otherwise the answer, which is empty for a
 // (scope_resolution) whose `name:` is not a (constant).
 inline std::optional<RecvShape> classifyRubyReceiver( TSNode node, std::string_view src )
@@ -96,16 +187,20 @@ inline std::optional<RecvShape> classifyRubyReceiver( TSNode node, std::string_v
     {
         return RecvShape { RecvKind::ThisObj, {}, {} }; // Ruby `self` — its own node kind, not an identifier
     }
-    if( !kindIs( rt, "constant" ) && !kindIs( rt, "scope_resolution" ) )
+    if( kindIs( rt, "identifier" ) && pattern::nodeText( node, src ) == "described_class" )
+    {
+        const std::string_view cls = rspecDescribedClass( node, src );
+        if( cls.empty() )
+        {
+            return std::nullopt;   // no constant-described group encloses it: the identifier arm answers as before
+        }
+        return RecvShape { RecvKind::NamedVar, std::string( cls ), {} };             // the group's constant — Rule 2c fuel
+    }
+    if( !isRubyConstantNode( node ) )
     {
         return std::nullopt;
     }
-    const TSNode leaf = kindIs( rt, "constant" ) ? node : fieldChild( node, NodeField::Name );
-    if( ts_node_is_null( leaf ) || !kindIs( ts_node_type( leaf ), "constant" ) )
-    {
-        return RecvShape {};
-    }
-    const std::string_view v = pattern::nodeText( leaf, src );
+    const std::string_view v = rubyFinalConstant( node, src );
     if( v.empty() )
     {
         return RecvShape {};

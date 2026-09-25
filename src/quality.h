@@ -2095,7 +2095,7 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // not include this header; it relies on ingest.cpp including quality.h (line 13) before ingest_cache.h, and a reorder
 // that broke that fails the build on the undeclared name rather than passing.
 constexpr std::uint32_t kIngestCacheVersionMirror   = 25;   // MUST equal ingest.cpp's kCacheVersion (gated); 25 = #157 + #150
-constexpr std::uint32_t kIngestParserVerMirror    = 120;  // MUST equal ingest.cpp's kParserVer   (gated)
+constexpr std::uint32_t kIngestParserVerMirror    = 121;  // MUST equal ingest.cpp's kParserVer   (gated)
                                                           // 120 = 2026-09-23 (#150): RawRef::qualifierRootsStd +
                                                           //   RawDef::scopeRootsStd, folded together with a
                                                           //   same-lane F1/F2 correctness fix (2026-09-24) that

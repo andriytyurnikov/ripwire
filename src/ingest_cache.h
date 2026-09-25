@@ -279,7 +279,15 @@ constexpr std::uint32_t kCacheVersion = 25;           // 25: #150 AND #157 (trai
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 120;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 121;          // bump on any grammar/.scm/extraction change
+                                                      // 121 = 2026-09-25 (test/rubydescribedclasscheck.sh): RSpec's
+                                                      //   `described_class` receiver is classified as the constant
+                                                      //   the innermost constant-described example group names
+                                                      //   (ingest_binds.h::rspecDescribedClass), so RawRef::recv /
+                                                      //   recvVar change VALUE for those call sites — NamedVar
+                                                      //   "Calc" where they were NamedVar "described_class". Same
+                                                      //   record layout, kCacheVersion stays 25: a Ruby cache
+                                                      //   written at 120 holds the old receiver and must re-parse.
                                                       // 120 = 2026-09-23 (#150): two new per-record extraction
                                                       //   facts — RawRef::qualifierRootsStd (a C++ call's FULL
                                                       //   written qualifier chain is rooted at namespace std, at
