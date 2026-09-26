@@ -21,6 +21,9 @@
 #   (c) a `describe` call on any other receiver (`Docs.describe Calc do`) is not an RSpec example group.
 #   (d) `subject` — the implicit `described_class.new` — is NOT modeled in this round: an explicit `subject { … }`
 #       can be anything, and telling the two apart is its own round.
+#   (e) a file that REDEFINES `described_class` — `let( :described_class ) { … }`, `def described_class`, or a local
+#       `described_class = …` — declines every `described_class` in that file: the redefinition names what it means,
+#       and this rule does not read it, so it answers nothing rather than the group's constant.
 #
 # Usage:  test/rubydescribedclasscheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubydescribedclasscheck.sh
 # Exits non-zero on any failure. Does NOT edit test/regression.sh. Self-contained via mktemp.
@@ -69,6 +72,18 @@ class Calc
     a
   end
 
+  def self.m_nil( a )
+    a
+  end
+
+  def self.m_let( a )
+    a
+  end
+
+  def self.m_asgn( a )
+    a
+  end
+
   def m_chain
     1
   end
@@ -100,6 +115,18 @@ class Tally
   end
 
   def self.m_docs( a )
+    a
+  end
+
+  def self.m_nil( a )
+    a
+  end
+
+  def self.m_let( a )
+    a
+  end
+
+  def self.m_asgn( a )
     a
   end
 
@@ -147,6 +174,12 @@ RSpec.describe Calc do
     end
   end
 
+  describe nil do
+    it "passes its parent's class through, as a string does" do
+      described_class.m_nil( 1 )
+    end
+  end
+
   describe Tally do
     it "takes the innermost constant" do
       described_class.m_inner( 1 )
@@ -178,6 +211,22 @@ RUBY
 cat > "$FIX/spec/docs_spec.rb" <<'RUBY'
 Docs.describe Calc do
   described_class.m_docs( 1 )
+end
+RUBY
+
+cat > "$FIX/spec/let_spec.rb" <<'RUBY'
+RSpec.describe Calc do
+  let( :described_class ) { Tally }
+  it { described_class.m_let( 1 ) }
+end
+RUBY
+
+cat > "$FIX/spec/asgn_spec.rb" <<'RUBY'
+RSpec.describe Calc do
+  it "calls through a local of the same name" do
+    described_class = Tally
+    described_class.m_asgn( 1 )
+  end
 end
 RUBY
 
@@ -232,12 +281,15 @@ pins calc_spec.rb   m_str   Calc   Tally "a string-described group passes its pa
 pins calc_spec.rb   m_ctx   Calc   Tally "so does a string-described context"
 pins calc_spec.rb   m_inner Tally  Calc  "a nested describe Tally is the innermost constant — RSpec's own rule"
 pins engine_spec.rb e_run   Engine Other "a bare describe, and a scope_resolution constant named by its final segment"
+pins calc_spec.rb   m_nil   Calc   Tally "describe nil passes its parent's class through — RSpec reads nil like a String"
 
-echo "=== floors (a) chained, (b) no constant, (c) not RSpec — each left exactly as it was ==="
+echo "=== floors (a) chained, (b) no constant, (c) not RSpec, (e) redefined — each left exactly as it was ==="
 untouched calc_spec.rb    m_chain "described_class.new.m_chain — the receiver is a call, the #267 one-hop bound (floor (a), stated)"
 untouched noclass_spec.rb m_none  "RSpec.describe \"no class\" names no class (floor (b), stated)"
 untouched noclass_spec.rb m_sym   "RSpec.describe :sym names no class (floor (b), stated)"
 untouched docs_spec.rb    m_docs  "Docs.describe Calc is not an RSpec example group (floor (c), stated)"
+untouched let_spec.rb     m_let   "let( :described_class ) redefines it: the file declines (floor (e), stated)"
+untouched asgn_spec.rb    m_asgn  "a local described_class = Tally redefines it: the file declines (floor (e), stated)"
 
 echo "=== determinism and warm == cold ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
