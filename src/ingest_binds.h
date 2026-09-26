@@ -138,11 +138,37 @@ inline std::optional<std::string_view> rspecGroupArgument( TSNode call, std::str
 {
     const TSNode args  = fieldChild( call, NodeField::Arguments );
     const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
-    if( ts_node_is_null( first ) || kindIs( ts_node_type( first ), "string" ) )
+    if( ts_node_is_null( first ) || kindIs( ts_node_type( first ), "string" ) || kindIs( ts_node_type( first ), "nil" ) )
     {
         return std::nullopt;
     }
     return isRubyConstantNode( first ) ? rubyFinalConstant( first, src ) : std::string_view {};
+}
+
+// True when the file REDEFINES `described_class` — `let( :described_class )`, `def described_class`, or a local
+// `described_class = …` — so the name means what that assigns, which the rule below does not read. Such a file's
+// sites decline (floor (e)). Conservative on purpose: any `:described_class`, or an `=` after the name, counts.
+inline bool rubyRedefinesDescribedClass( std::string_view src ) noexcept
+{
+    static constexpr std::string_view kName = "described_class";
+    for( std::size_t at = src.find( kName ); at != std::string_view::npos; at = src.find( kName, at + kName.size() ) )
+    {
+        const std::string_view before = src.substr( 0, at );
+        if( before.ends_with( ':' ) || before.ends_with( "def " ) )
+        {
+            return true;
+        }
+        std::size_t k = at + kName.size();
+        while( k < src.size() && src[ k ] == ' ' )
+        {
+            ++k;
+        }
+        if( k + 1 < src.size() && src[ k ] == '=' && src[ k + 1 ] != '=' && src[ k + 1 ] != '~' && src[ k + 1 ] != '>' )
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 // RSpec's `described_class` — a bare (identifier) receiver no binding names — read as the constant it IS. RSpec's
@@ -189,10 +215,10 @@ inline std::optional<RecvShape> classifyRubyReceiver( TSNode node, std::string_v
     }
     if( kindIs( rt, "identifier" ) && pattern::nodeText( node, src ) == "described_class" )
     {
-        const std::string_view cls = rspecDescribedClass( node, src );
+        const std::string_view cls = rubyRedefinesDescribedClass( src ) ? std::string_view {} : rspecDescribedClass( node, src );
         if( cls.empty() )
         {
-            return std::nullopt;   // no constant-described group encloses it: the identifier arm answers as before
+            return std::nullopt;   // redefined, or no constant-described group encloses it: the identifier arm answers as before
         }
         return RecvShape { RecvKind::NamedVar, std::string( cls ), {} };             // the group's constant — Rule 2c fuel
     }
