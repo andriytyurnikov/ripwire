@@ -614,10 +614,15 @@ struct FnLocalScope
 // override. Consumers that MEASURE or SERVE a body (clones, complexity, --readability units, lexical.h's route anchor)
 // keep the plain span test: a class with no body is a definition, but it has no volume. Gate: test/kotlincheck.sh §11
 // (the PR's bodyless interface) and §13.
+// Ruby breaks it for EVERY kind: the language has no declarations at all — no prototype, no abstract member, no
+// interface — so each class, module, def, attr accessor and constant it indexes is the definition of its name. An
+// `attr_reader :aliases` accessor and an empty `def on_event; end` hook own no body span, and read as declarations the
+// collapse evicted them for any same-named bodied def in the family: a call inside Tracker to its own `aliases` bound to
+// an unrelated Join#aliases. Gate: test/rubybarecallcheck.sh ("Ruby has no declarations").
 inline bool isDefinitionNotDeclaration( const Symbol& s ) noexcept
 {
     const bool kotlinType = s.lang == Lang::Kotlin && ( s.kind == SymKind::Class || s.kind == SymKind::Struct || s.kind == SymKind::Interface );
-    return s.endByte > s.sigEndByte || kotlinType;
+    return s.endByte > s.sigEndByte || kotlinType || s.lang == Lang::Ruby;
 }
 
 // local-variable-indexing plan Phase 1 MVP scope (docs/LOCALS_INDEXING.md): C/C++ only — highest

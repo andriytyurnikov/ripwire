@@ -31,6 +31,9 @@
 # round adds: 367 of 2,952 on activerecord named an attr accessor of the caller's own file and landed in another file
 # (activesupport 26 of 721; the two applications 402 of 12,033 and 288 of 8,339). The receiver forms `self.x` and `x()`
 # were already misrouted the same way. Pinned below (model.h isDefinitionNotDeclaration, the Kotlin-type precedent).
+# And a Ruby definition is no other language's body: a C prototype with no C definition (an extension's header) stays
+# its C callers' best-available target whatever Ruby defines under that name (graph.h's collapse gives Ruby its own
+# family, as it gives Kotlin one). Before, a Ruby `def` evicted it and the C call read unresolved.
 #
 # Stated floors, each pinned below:
 #   (a) `defined?( name )` asks whether `name` exists; it calls nothing — no reference.
@@ -429,6 +432,26 @@ class Hooked < Hooks
 end
 RUBY
 
+# A mixed tree: a C extension's header declares widget_count/widget_total with no C body; Ruby defines both names.
+mkdir -p "$FIX/ext"
+cat > "$FIX/ext/widget.h" <<'C'
+int widget_count( void );
+int widget_total( void );
+C
+cat > "$FIX/ext/widget.c" <<'C'
+#include "widget.h"
+int widget_report( void ) { return widget_count() + widget_total(); }
+C
+cat > "$FIX/lib/app/widget.rb" <<'RUBY'
+class Widget
+  attr_reader :widget_total
+
+  def widget_count
+    1
+  end
+end
+RUBY
+
 cat > "$FIX/spec/implicit_spec.rb" <<'RUBY'
 RSpec.describe Person do
   it { subject.full_name }
@@ -501,6 +524,19 @@ reaches Tracker::aliases t_paren "aliases() — the parenthesised form"
 misses  Join::aliases    t_paren "aliases() never reaches Join"
 reaches Hooks::on_event  fire    "an inherited EMPTY hook is a definition: the base walk finds it"
 misses  Join::on_event   fire    "Join is not an ancestor of Hooked"
+
+# calleeIn FN NAME FILE WHY — FN's callees include NAME defined in FILE
+calleeIn(){
+    if ! "$BIN" "$FIX" --no-cache --callees="$1" >"$DIR/ce.out" 2>"$DIR/ce.err"
+    then
+        no "--callees=$1 exited non-zero: $( head -3 "$DIR/ce.err" )"
+        return
+    fi
+    sed 's/></>\n</g' "$DIR/ce.out" | grep '^<s t="' | grep " n=\"$2\"" | grep -q " p=\"$3:" && ok "$1 → $2 in $3 ($4)" \
+        || no "$1 does not reach $2 in $3 ($4): $( sed 's/></>\n</g' "$DIR/ce.out" | grep '^<s t="' | tr '\n' ' ' )"
+}
+calleeIn widget_report widget_count ext/widget.h "a Ruby def is no C prototype's body: the C declaration stays the target"
+calleeIn widget_report widget_total ext/widget.h "nor is a Ruby attr accessor"
 
 echo "=== a local is not a call: every binding form Ruby has ==="
 for x in x_asg x_op x_m2 x_rest x_req x_opt x_dflt x_splat x_kw x_kwopt x_dsplat x_blk x_bp x_dp x_bl x_lam x_err x_for \

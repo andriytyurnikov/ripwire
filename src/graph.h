@@ -900,16 +900,21 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
 //     or the reverse. Collapsed together, a Kotlin body evicted a Java interface-only declaration — so ADDING a .kt file
 //     moved a Java call's edge onto Kotlin code — and a Java body evicted a Kotlin interface member. A tree without a .kt
 //     file has one family and collapses byte-identically. Gate: test/kotlincheck.sh §13, and §14c's invariant.
+//     Ruby is a family of its own for the same reason: no Ruby def is the body of another language's prototype, and
+//     every Ruby symbol is a definition (model.h isDefinitionNotDeclaration), so in the shared family each one evicted
+//     a same-named C declaration — a C extension's header — and the C call read unresolved. In its own family a Ruby
+//     symbol evicts nothing and is never evicted. A tree without a .rb file collapses byte-identically.
+//     Gate: test/rubybarecallcheck.sh ("Ruby has no declarations").
 // One pass marks which keys hold a definition and one keeps — O(K) per name, where the per-root version it replaces
 // rescanned the name's ids once per declaration. `ids` keeps its order, and is untouched when nothing is evicted.
 inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot, rw::SmallVec<NodeId, 2>& ids )
 {
-    std::array<bool, 2u * kMaxWorkspaceRoots> keyHasDefinition {};
+    std::array<bool, 3u * kMaxWorkspaceRoots> keyHasDefinition {};
     const auto keyOf = [ & ]( NodeId id ) noexcept -> std::size_t
     {
         const Symbol&     s    = ing.symbols[ id ];
         const std::size_t root = multiRoot ? std::min<std::size_t>( ing.fileRoot[ s.fileId ], kMaxWorkspaceRoots - 1u ) : 0u;
-        return 2u * root + ( s.lang == Lang::Kotlin ? 1u : 0u );
+        return 3u * root + ( s.lang == Lang::Kotlin ? 1u : s.lang == Lang::Ruby ? 2u : 0u );
     };
     bool anyDefinition = false;
     for( NodeId id : ids )
