@@ -16,6 +16,80 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 ## [Unreleased]
 
 
+### Added — a Ruby bare-word call is a call: `full_name`, `render_profile`, the `items` of `items.sum`
+
+A Ruby call with no receiver, no arguments and no parentheses parses as a plain `(identifier)` in tree-sitter-ruby.
+That is the same node a local-variable read is, so `queries/ruby/tags.scm` never captured it, and one Ruby call site
+in five minted no reference at all. Measured with Prism's `CallNode#variable_call?`: 4,157 of 28,584 call sites in
+activerecord 7.2.3.2 `lib/`, and 50,893 of 250,320 and 56,897 of 295,879 in two Rails applications.
+
+Ruby's parser decides call-versus-local **lexically**, and `ingest_binds.h::captureRubyBareCalls` applies the same
+rule in one source-order walk:
+- An identifier is a local exactly when an assignment, parameter or pattern binds its name **earlier** in its own scope
+  or in an enclosing block's, up to the nearest `def`, `class`, `module` or `class <<`.
+- Every other bare identifier becomes a receiver-less call reference. That is the implicit-self shape resolve.h's
+  Rule 1 and its base walk already read.
+
+The binding kinds are the one table #338's `described_class` floor already used (`kRubyLocalKinds`). It gains the
+binders Ruby has beyond assignment and parameters: `for`, pattern matching (`in x`, `=> x`, array and find patterns,
+`in { x: }`), and a regex literal's named groups on the left of `=~`. So `described_class` reads those locals too.
+A few more shapes:
+- A hash or keyword-argument shorthand (`{ payload: }`) reads `payload`.
+- Inside a block with no parameter list, `it` and `_1` … `_9` are its implicit parameters.
+- RSpec: a group's `let` / `let!` / `subject` / `subject!` (and test-prof's `let_it_be` family), and the implicit
+  `subject`, bind like locals over the whole group. That covers lines before the `let`, nested groups and a `def`
+  inside the group, so a spec's `user` never reaches an application `def user`. They are not minted as definitions:
+  application code could then name them, and 1,818 and 1,036 application call sites to a uniquely-defined method
+  share a name with a `let` on the two applications.
+
+### Fixed — Ruby has no declarations: an `attr_reader` accessor or an empty `def` hook is the definition a call names
+
+`model.h::isDefinitionNotDeclaration` (`endByte > sigEndByte`, plus a Kotlin type) decides what graph.h's decl/def
+collapse may evict and what `canonByName` holds. Ruby has no prototype, abstract member or interface: every class,
+module, `def`, attr accessor and constant it indexes is a definition. A body-less one read as a declaration and was
+evicted whenever a same-named bodied `def` existed anywhere. So inside `Tracker`, `aliases`, `self.aliases` and
+`aliases()` all bound to an unrelated `Join#aliases`, and an inherited empty hook lost to another class's method.
+
+The predicate gains a Ruby clause beside the Kotlin one. The collapse also gives Ruby its own family, as Kotlin has
+one: in the shared family a Ruby `def` evicted a same-named C prototype (a C extension's header), and the C call read
+unresolved.
+
+Measured with `--no-cache`, `main` (953818d6, parser version 129) against these changes. Edges and isolated symbols
+are `--report` totals; `declined=` is the map header's.
+
+| Corpus | Edges | Call-graph isolated | `declined=` |
+| --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 8,146 → 11,169 | 3,221 → 2,564 | 5,367 → 5,485 |
+| activesupport 7.2.3.2 `lib/` | 3,094 → 3,717 | 1,468 → 1,279 | 1,591 → 1,695 |
+| Rails app A | 27,027 → 30,044 | 20,059 → 18,850 | 41,265 → 54,418 |
+| Rails app B | 24,394 → 27,695 | 6,686 → 5,752 | 34,281 → 39,021 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | |
+
+How the new edges were checked (`--pin-census`, keyed by call site):
+- **Every decided bare call is a Prism `variable_call?`** at the same file, line and name: 3,144 on activerecord, 766
+  on activesupport, 7,887 and 8,498 on the applications.
+- **Lost edges.** 195, 23, 6,449 and 1,372 call sites lost their edge. Each had been pinned to one def only because the
+  name's other definers were evicted, and it now declines. Of 50 sampled (10 activerecord, 20 per application), none
+  was correct. Examples: every RSpec `context "…" do` in app A was bound to one service's `context`, and
+  `self.class.name` to one model's `name`.
+- **Added edges.** 21 of 22 sampled non-split activerecord edges were correct, and 29 of 40 application edges.
+- **Baseline.** A sample of the applications' pre-existing edges reads 14 of 24 correct.
+
+Stated floors, each pinned by `test/rubybarecallcheck.sh`:
+- **(a)** `defined?( x )` calls nothing.
+- **(b)** A `let` from a shared context is unknown in the including file, so there the name reads as a call.
+- **(c)** Locals made at run time (`binding.local_variable_set`, `eval`) are invisible to a lexical rule.
+- **(d)** Inside `instance_eval` / `class_eval` blocks, a bare call resolves against the lexical class, as a
+  parenthesised `m()` always has.
+- **(e)** The RSpec DSL call itself (`subject( :x ) { … }`, `it "…" do`) is an ordinary call and binds by name.
+
+A known limit of the ladder, not of these rounds: a method Rails **generates** (a column, an association,
+ActiveModel's `errors`, Devise's `current_user`) has no in-tree definition. A call to it can therefore land on the
+one unrelated in-tree method of that name. For example, app A's 269 `errors` edges to one concern's
+`def errors; end` stub grow to 455.
+
+`kParserVer` 129 → 130. New records, same layout: `kCacheVersion` stays 27, and Ruby caches re-parse once.
+
 ### Added — MCP `grep` rows carry the matched text and a `fetch_body` handle (CLI parity)
 
 The MCP `grep` hit row was `{file, line, in}`: no matched text, so an agent re-read every file it had just searched, and
