@@ -2392,9 +2392,12 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
     // Parser version 121 (test/rubyattrscheck.sh): the Ruby attr family's Var defs. Appended after the
     // dead/field folds — neither touches Ruby (no preprocessor; Var is not a Field kind) — and inside the
     // same defs window, so the lex build and cache round-trip treat these defs like captured ones.
+    // Parser version 130 (test/rubybarecallcheck.sh): Ruby's bare-word calls, by Ruby's own local rule, into the
+    // same refs window — the tags query cannot tell a bare call from a local read (both are an (identifier)).
     if( le.lang == Lang::Ruby )
     {
         captureRubyAttrDefs( root, fileId, src, defs );
+        captureRubyBareCalls( root, fileId, src, refs );
     }
 }
 

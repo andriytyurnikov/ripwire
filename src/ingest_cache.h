@@ -296,7 +296,15 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 133;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 130;          // bump on any grammar/.scm/extraction change
+                                                      // 130 = 2026-10-01 (test/rubybarecallcheck.sh): Ruby's BARE-WORD call — an
+                                                      //   identifier with no receiver, arguments or parentheses, which
+                                                      //   tree-sitter-ruby parses as the same (identifier) a local read
+                                                      //   is — mints a receiver-less call RawRef wherever Ruby's own
+                                                      //   lexical rule says it is not a local (ingest_binds.h
+                                                      //   captureRubyBareCalls). New records, same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 129
+                                                      //   holds none of them and must re-parse.
                                                       // 133 = 2026-10-02 (train 24): cache-key hygiene above every branch build's number. Two
                                                       //   merged lanes changed extraction under their own numbers: 130 (a body-less C/C++
                                                       //   enum/struct/union/class specifier in a function signature keeps its own span, so

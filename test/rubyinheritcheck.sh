@@ -333,10 +333,11 @@ CLS="$( "$BIN" "$FIX" --no-cache --callers=Parent::shared_helper 2>/dev/null )"
 echo "$CLS" | grep -q 'n="use_inherited"' && ok "--callers=Parent::shared_helper lists use_inherited" \
     || no "--callers=Parent::shared_helper does not list use_inherited"
 
+# Parser version 130 (test/rubybarecallcheck.sh) mints the bare, parenthesis-less call this arm once pinned as minting
+# nothing; it now takes the same base walk as the parenthesised shared_helper( 1 ) above.
 UB="$( rowOf 'n="use_bare" ' )"
-echo "$UB" | grep -q '<c ' \
-    && no "a bare, parenthesis-less bare_helper minted an edge — queries/ruby/tags.scm captures the (call) form only, and a no-arg receiver-less call parses as (identifier): if that changed, say so HERE and in the tags.scm header" \
-    || ok "a bare, parenthesis-less call still mints nothing (an extraction floor of tags.scm, not of this round)"
+[ "$( edgesTo "$UB" bare_helper )" -eq 1 ] && ok "a bare, parenthesis-less bare_helper inside Child → exactly one edge (Parent#bare_helper, the base walk)" \
+    || no "a bare, parenthesis-less bare_helper inside Child produced $( edgesTo "$UB" bare_helper ) edges, want 1 (Parent#bare_helper): $UB"
 
 echo "=== floors (a) computed base, (b) mixins ==="
 refuses Struct && ok "a computed superclass mints no edge: the tree indexes no Struct, so --lego=Struct refuses (floor (a), stated)" \

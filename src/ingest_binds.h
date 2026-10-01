@@ -167,10 +167,13 @@ inline bool rubyDefinesDescribedClassMethod( std::string_view src ) noexcept
     return false;
 }
 
-// How a Ruby node kind takes part in LOCAL scoping, for rubyDescribedClassIsLocal. A Closure (a block, a lambda) keeps
-// its locals in but sees the enclosing ones; a Wall (a def, a class, a module) sees no outer local; the Binds* kinds
-// bind a local — the `left:` child, the `name:` child (not a parameter's default value), or any child identifier.
-enum class RubyLocalRole : std::uint8_t { Closure, Wall, BindsLeft, BindsName, BindsChildren };
+// How a Ruby node kind takes part in LOCAL scoping — Ruby's own parse-time rule, read by rubyDescribedClassIsLocal and by
+// captureRubyBareCalls. A Closure (a block, a lambda) keeps its locals in but sees the enclosing ones; a Wall (a def, a
+// class, a module) sees no outer local; the Binds* kinds bind a local — the `left:` child, the `name:` child (not a
+// parameter's default value), any child identifier, the `pattern:` child (`for x in`, `in x`, `v => x`), a hash
+// pattern's key (`in { x: }` binds x; `in { k: x }` binds x), or the named groups of a regex literal matched with `=~`
+// (`/(?<x>…)/ =~ s` — Ruby binds them only for a literal on the LEFT that holds no interpolation).
+enum class RubyLocalRole : std::uint8_t { Closure, Wall, BindsLeft, BindsName, BindsChildren, BindsPattern, BindsKey, BindsRegexGroups };
 struct RubyLocalKind
 {
     std::string_view kind;
@@ -188,7 +191,11 @@ inline constexpr RubyLocalKind kRubyLocalKinds[] = {
     { "destructured_left_assignment", RubyLocalRole::BindsChildren }, { "rest_assignment", RubyLocalRole::BindsChildren },
     { "destructured_parameter", RubyLocalRole::BindsChildren }, { "splat_parameter", RubyLocalRole::BindsChildren },
     { "hash_splat_parameter", RubyLocalRole::BindsChildren },   { "block_parameter", RubyLocalRole::BindsChildren },
-    { "exception_variable", RubyLocalRole::BindsChildren },
+    { "exception_variable", RubyLocalRole::BindsChildren },     { "for", RubyLocalRole::BindsPattern },
+    { "in_clause", RubyLocalRole::BindsPattern },               { "match_pattern", RubyLocalRole::BindsPattern },
+    { "test_pattern", RubyLocalRole::BindsPattern },            { "array_pattern", RubyLocalRole::BindsChildren },
+    { "find_pattern", RubyLocalRole::BindsChildren },           { "as_pattern", RubyLocalRole::BindsName },
+    { "keyword_pattern", RubyLocalRole::BindsKey },             { "binary", RubyLocalRole::BindsRegexGroups },
 };
 
 inline std::optional<RubyLocalRole> rubyLocalRole( const char* t ) noexcept
@@ -197,27 +204,102 @@ inline std::optional<RubyLocalRole> rubyLocalRole( const char* t ) noexcept
     return it == std::end( kRubyLocalKinds ) ? std::nullopt : std::optional<RubyLocalRole>( it->role );
 }
 
+// The one field a BindsLeft / BindsName / BindsPattern node binds through, indexed by RubyLocalRole; Count for the rest.
+inline constexpr NodeField kRubyBindingField[] = { NodeField::Count, NodeField::Count, NodeField::Left, NodeField::Name,
+                                                   NodeField::Count, NodeField::Pattern, NodeField::Count, NodeField::Count };
+static_assert( std::size( kRubyBindingField ) == std::size_t( RubyLocalRole::BindsRegexGroups ) + 1, "one row per RubyLocalRole" );
+
+// The `key:` of a hash pair or hash-pattern pair written with no value — `{ payload: }`, `in { x: }` — or null. Ruby
+// reads that key as a name: the hash shorthand reads `payload`, the pattern binds `x`.
+inline TSNode rubyShorthandKey( TSNode pair ) noexcept
+{
+    const TSNode key = fieldChild( pair, NodeField::Key );
+    const bool   bare = ts_node_is_null( fieldChild( pair, NodeField::Value ) ) && !ts_node_is_null( key ) && kindIs( ts_node_type( key ), "hash_key_symbol" );
+    return bare ? key : TSNode {};
+}
+
+// `/(?<x>…)/ =~ s` binds each named group `(?<x>…)` as a local — Ruby's rule, for a regex LITERAL on the left of `=~`
+// that holds no interpolation. Each name is handed to `onName`; `(?<=` / `(?<!` are lookbehinds and name nothing.
+template<class OnName>
+inline void rubyRegexMatchGroups( TSNode binary, std::string_view src, OnName&& onName )
+{
+    const TSNode left = fieldChild( binary, NodeField::Left );
+    if( ts_node_is_null( left ) || !kindIs( ts_node_type( left ), "regex" ) || nodeFieldText( binary, NodeField::Operator, src ) != "=~" )
+    {
+        return;
+    }
+    for( std::uint32_t i = 0, cc = ts_node_named_child_count( left ); i < cc; ++i )
+    {
+        if( kindIs( ts_node_type( ts_node_named_child( left, i ) ), "interpolation" ) )
+        {
+            return;
+        }
+    }
+    const std::string_view re = pattern::nodeText( left, src );
+    for( std::size_t at = re.find( "(?<" ); at != std::string_view::npos; at = re.find( "(?<", at + 3 ) )
+    {
+        std::size_t end = at + 3;
+        while( end < re.size() && namesplit::isIdentChar( re[ end ] ) )
+        {
+            ++end;
+        }
+        if( end > at + 3 && end < re.size() && re[ end ] == '>' )
+        {
+            onName( re.substr( at + 3, end - at - 3 ) );
+        }
+    }
+}
+
+// Every local `n` (whose kind plays `role`) binds: `onNode( identifier )` for a binding spelled by an (identifier) child —
+// that node is the binding site, never a read — and `onText( name )` for one spelled by no identifier node (a hash
+// pattern's `key:` shorthand, a regex named group). The one reading of kRubyLocalKinds' Binds* roles.
+template<class OnNode, class OnText>
+inline void rubyForEachBinding( TSNode n, RubyLocalRole role, std::string_view src, OnNode&& onNode, OnText&& onText )
+{
+    const auto bindIdentifier = [ & ]( TSNode c )
+    {
+        if( !ts_node_is_null( c ) && kindIs( ts_node_type( c ), "identifier" ) )
+        {
+            onNode( c );
+        }
+    };
+    if( const NodeField f = kRubyBindingField[ std::size_t( role ) ]; f != NodeField::Count )
+    {
+        bindIdentifier( fieldChild( n, f ) );
+    }
+    else if( role == RubyLocalRole::BindsChildren )
+    {
+        for( std::uint32_t i = 0, cc = ts_node_named_child_count( n ); i < cc; ++i )
+        {
+            bindIdentifier( ts_node_named_child( n, i ) );
+        }
+    }
+    else if( role == RubyLocalRole::BindsKey )
+    {
+        bindIdentifier( fieldChild( n, NodeField::Value ) );   // `in { k: x }`
+        if( const TSNode key = rubyShorthandKey( n ); !ts_node_is_null( key ) )
+        {
+            onText( pattern::nodeText( key, src ) );         // `in { x: }` — the key is the local
+        }
+    }
+    else if( role == RubyLocalRole::BindsRegexGroups )
+    {
+        rubyRegexMatchGroups( n, src, onText );
+    }
+}
+
 // True when `n`, whose kind plays `role`, itself BINDS the local described_class.
 inline bool rubyNodeBindsDescribedClass( TSNode n, std::optional<RubyLocalRole> role, std::string_view src )
 {
-    const auto named = [ & ]( TSNode c ) { return !ts_node_is_null( c ) && kindIs( ts_node_type( c ), "identifier" ) && pattern::nodeText( c, src ) == "described_class"; };
-    if( role == RubyLocalRole::BindsLeft || role == RubyLocalRole::BindsName )
-    {
-        return named( fieldChild( n, role == RubyLocalRole::BindsLeft ? NodeField::Left : NodeField::Name ) );
-    }
-    if( role != RubyLocalRole::BindsChildren )
+    if( !role )
     {
         return false;
     }
-    const std::uint32_t cc = ts_node_named_child_count( n );
-    for( std::uint32_t i = 0; i < cc; ++i )
-    {
-        if( named( ts_node_named_child( n, i ) ) )
-        {
-            return true;
-        }
-    }
-    return false;
+    static constexpr std::string_view kName = "described_class";
+    bool binds = false;
+    rubyForEachBinding( n, *role, src, [ & ]( TSNode c ) { binds = binds || pattern::nodeText( c, src ) == kName; },
+                        [ & ]( std::string_view name ) { binds = binds || name == kName; } );
+    return binds;
 }
 
 // True when a child of `n` that ENDS before byte `at` — an earlier statement, a block's or a def's parameters — binds
@@ -307,6 +389,287 @@ inline std::string_view rspecDescribedClass( TSNode node, std::string_view src )
         }
     }
     return {};
+}
+
+// ─── Ruby's BARE-WORD call (test/rubybarecallcheck.sh) ────────────────────────────────────────────────────────────────
+// `full_name`, `render_profile`, the `items` of `items.sum`: an identifier with no receiver, no arguments and no
+// parentheses parses as a plain (identifier) — the node a local read is — so queries/ruby/tags.scm cannot capture it,
+// and one Ruby call site in five minted no reference at all. Ruby's parser tells the two apart LEXICALLY, and
+// captureRubyBareCalls applies that rule: an identifier is a local exactly when a binding of its name (kRubyLocalKinds'
+// Binds* roles) precedes it in its own scope or in an enclosing Closure's, up to the nearest Wall; every other bare
+// identifier is a method call on self (Prism: CallNode#variable_call?). It becomes a receiver-less call reference, the
+// shape resolve.h's Rule 1 and its base walk already read as an implicit-self send.
+//
+// The bindings land when the walk reaches the BINDING node, before its children, so `x = x` reads the local on its
+// right (Ruby's own reading) and a parameter's default value sees the parameters bound before it. A hash or keyword-
+// argument shorthand (`{ payload: }`) reads `payload` and is a call when no local has that name. Inside a block or
+// lambda with no parameter list, `it` and `_1`…`_9` are its implicit parameters (Ruby 3.4).
+//
+// RSpec: the let family DEFINES a method on its example group, visible to the whole group — before the line that
+// defines it, in nested groups, and through a `def` inside the group (a method calling a method) — and every example
+// group defines `subject`. Those names bind like locals over the group's block, stopped only by a class/module wall, so a
+// spec's `user` never reaches an application `def user`. They are not minted as definitions: a let is reachable only
+// from its group, and a definition application code could name would turn unique application calls into declines.
+//
+// Floors, pinned by the gate: `defined?( x )` calls nothing and is not walked; a shared context's lets are unknown in
+// the including file; run-time locals (`binding.local_variable_set`, `eval`) are invisible; and inside
+// `instance_eval`/`class_eval` blocks the call still resolves against the lexical class, as a parenthesised `m()` does.
+inline constexpr std::string_view kRubyLetFamily[] = { "let", "let!", "subject", "subject!", "let_it_be", "let_it_be_with_reload", "let_it_be_with_refind" };
+
+// The local names visible at the walk's position: one frame per open Ruby scope, each name a stack of the frames that
+// bind it (deepest last), so a lookup is one hash probe whatever the scope's width.
+struct RubyLocalScopes
+{
+    struct Frame
+    {
+        std::uint32_t endByte;          // the scope node's end: the frame closes at the first node starting at or past it
+        std::uint32_t wall;             // index of the innermost Wall frame — this one, when it is a Wall
+        std::uint32_t classWall;        // index of the innermost class/module/`class <<`/file frame: where a let stops
+        std::uint32_t firstBound;       // this frame's names in `bound` start here
+        bool          implicitParams;   // a block or lambda with no parameter list
+    };
+    struct Entry { std::uint32_t depth; bool let; };   // one frame binding a name: a local, or a let
+    std::vector<Frame>                                 frames;
+    std::vector<std::string_view>                      bound;
+    HashMap<std::string_view, rw::SmallVec<Entry, 2>>  names;
+
+    void push( std::uint32_t endByte, bool wall, bool classLike, bool implicitParams )
+    {
+        const std::uint32_t depth = std::uint32_t( frames.size() );
+        const Frame         outer = frames.empty() ? Frame {} : frames.back();
+        frames.push_back( Frame { endByte, wall ? depth : outer.wall, classLike ? depth : outer.classWall, std::uint32_t( bound.size() ), implicitParams } );
+    }
+
+    // close every frame whose node ended at or before `atByte` — never the file's own
+    void closeEndedBy( std::uint32_t atByte )
+    {
+        while( frames.size() > 1 && frames.back().endByte <= atByte )
+        {
+            for( std::size_t i = frames.back().firstBound; i < bound.size(); ++i )
+            {
+                names.find( bound[ i ] )->second.pop_back();   // a name's deepest entry is the innermost frame's
+            }
+            bound.resize( frames.back().firstBound );
+            frames.pop_back();
+        }
+    }
+
+    void bind( std::string_view name, bool let )
+    {
+        const std::uint32_t     depth   = std::uint32_t( frames.size() - 1 );
+        rw::SmallVec<Entry, 2>& entries = names[ name ];
+        if( entries.empty() || entries.back().depth != depth || entries.back().let != let )
+        {
+            entries.push_back( Entry { depth, let } );
+            bound.push_back( name );
+        }
+    }
+
+    // a local up to the innermost wall, a let up to the innermost class wall, or a block's implicit parameter
+    bool visible( std::string_view name ) const
+    {
+        const Frame& top = frames.back();
+        if( const auto it = names.find( name ); it != names.end() )
+        {
+            for( auto e = it->second.rbegin(); e != it->second.rend() && e->depth >= top.classWall; ++e )
+            {
+                if( e->let || e->depth >= top.wall )
+                {
+                    return true;
+                }
+            }
+        }
+        const bool implicitName = name == "it" || ( name.size() == 2 && name[ 0 ] == '_' && name[ 1 ] >= '1' && name[ 1 ] <= '9' );   // `it`, `_1`…`_9`
+        return implicitName && std::any_of( frames.begin() + top.wall, frames.end(), []( const Frame& f ) { return f.implicitParams; } );
+    }
+};
+
+// The name one statement of an example group's body defines, or empty: a receiver-less let-family call, named by its
+// first simple_symbol argument — a nameless `subject { … }` defines `subject`.
+inline std::string_view rubyLetFamilyName( TSNode c, std::string_view src )
+{
+    if( !kindIs( ts_node_type( c ), "call" ) || !ts_node_is_null( fieldChild( c, NodeField::Receiver ) ) )
+    {
+        return {};
+    }
+    const std::string_view m = fieldChildTextOfKind( c, NodeField::Method, "identifier", src );
+    if( std::ranges::find( kRubyLetFamily, m ) == std::end( kRubyLetFamily ) )
+    {
+        return {};
+    }
+    const TSNode args  = fieldChild( c, NodeField::Arguments );
+    const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
+    if( ts_node_is_null( first ) || !kindIs( ts_node_type( first ), "simple_symbol" ) )
+    {
+        return m.starts_with( "subject" ) ? std::string_view( "subject" ) : std::string_view {};
+    }
+    const std::string_view sym = pattern::nodeText( first, src );
+    return sym.substr( sym.empty() ? 0 : 1 );   // `:user` → user
+}
+
+// The block of an RSpec example-group call — its last named child (tree-sitter-ruby's `block:` field) — or null.
+inline TSNode rspecGroupBlock( TSNode call, std::string_view src )
+{
+    const std::uint32_t cc = ts_node_named_child_count( call );
+    if( cc == 0 || rspecGroupKind( call, src ) == 0 )
+    {
+        return {};
+    }
+    const TSNode last = ts_node_named_child( call, cc - 1 );
+    return kindIs( ts_node_type( last ), "do_block" ) || kindIs( ts_node_type( last ), "block" ) ? last : TSNode {};
+}
+
+// Is `c` a child of `n` that NAMES something — a method, an alias — rather than reading a value? `call`'s `method:` is
+// the tags query's capture already; a def's `name:` and `object:`, a setter's name and alias/undef operands read nothing.
+inline bool rubyNamingChild( TSNode n, const char* t, TSNode c ) noexcept
+{
+    if( kindIs( t, "call" ) )
+    {
+        return ts_node_eq( c, fieldChild( n, NodeField::Method ) );
+    }
+    if( kindIs( t, "method" ) || kindIs( t, "singleton_method" ) )
+    {
+        return ts_node_eq( c, fieldChild( n, NodeField::Name ) ) || ts_node_eq( c, fieldChild( n, NodeField::Object ) );
+    }
+    return kindIs( t, "setter" ) || kindIs( t, "alias" ) || kindIs( t, "undef" );
+}
+
+// One file's bare-word calls (see the section note above): one iterative pre-order walk in source order — an explicit
+// stack, no recursion, so a hostile nesting depth costs heap, not stack.
+class RubyBareCallWalk
+{
+public:
+    RubyBareCallWalk( std::uint32_t fileId, std::string_view src, std::vector<RawRef>& refs ) : fileId_( fileId ), src_( src ), refs_( refs )
+    {
+        scopes_.names.reserve( 64 );
+        stack_.reserve( 64 );
+        kids_.reserve( 16 );
+    }
+    void run( TSNode root );
+
+private:
+    struct Item
+    {
+        TSNode node;
+        bool   naming;       // an identifier in a naming or binding position: it reads nothing
+        bool   groupBlock;   // the block of an RSpec example-group call
+    };
+    void visit( const Item& item, ChildCursor& cursor );
+    void enter( TSNode n, const char* t, RubyLocalRole role, bool groupBlock );
+    void bindGroupLets( TSNode block, bool groupBlock );
+    void pushChildren( TSNode n, const char* t, ChildCursor& cursor );
+    void emit( TSNode at, std::string_view name );
+
+    std::uint32_t        fileId_;
+    std::string_view     src_;
+    std::vector<RawRef>& refs_;
+    RubyLocalScopes      scopes_;
+    std::vector<Item>    stack_;
+    std::vector<TSNode>  kids_;
+    std::vector<TSNode>  binding_;   // the visited node's binding identifiers: its children marked `naming`
+};
+
+inline void RubyBareCallWalk::run( TSNode root )
+{
+    ChildCursor cursor( root );
+    scopes_.push( ts_node_end_byte( root ), true, true, false );
+    stack_.push_back( Item { root, false, false } );
+    while( !stack_.empty() )
+    {
+        const Item item = stack_.back();
+        stack_.pop_back();
+        visit( item, cursor );
+    }
+}
+
+inline void RubyBareCallWalk::visit( const Item& item, ChildCursor& cursor )
+{
+    const TSNode n = item.node;
+    const char*  t = ts_node_type( n );
+    scopes_.closeEndedBy( ts_node_start_byte( n ) );
+    if( kindIs( t, "identifier" ) )
+    {
+        if( !item.naming )
+        {
+            emit( n, pattern::nodeText( n, src_ ) );
+        }
+        return;
+    }
+    if( kindIs( t, "unary" ) && pattern::nodeText( n, src_ ).starts_with( "defined?" ) )
+    {
+        return;   // floor (a): defined?( x ) asks, and calls nothing
+    }
+    if( const TSNode key = kindIs( t, "pair" ) ? rubyShorthandKey( n ) : TSNode {}; !ts_node_is_null( key ) )
+    {
+        emit( key, pattern::nodeText( key, src_ ) );   // `{ payload: }` reads payload
+    }
+    binding_.clear();
+    if( const std::optional<RubyLocalRole> role = rubyLocalRole( t ) )
+    {
+        enter( n, t, *role, item.groupBlock );
+    }
+    pushChildren( n, t, cursor );
+}
+
+// a scope node opens its frame (and an example group's block binds its lets); a binding node binds its names
+inline void RubyBareCallWalk::enter( TSNode n, const char* t, RubyLocalRole role, bool groupBlock )
+{
+    if( role == RubyLocalRole::Wall || role == RubyLocalRole::Closure )
+    {
+        const bool closure = role == RubyLocalRole::Closure;
+        scopes_.push( ts_node_end_byte( n ), !closure, kindIs( t, "class" ) || kindIs( t, "module" ) || kindIs( t, "singleton_class" ),
+                      closure && ts_node_is_null( fieldChild( n, NodeField::Parameters ) ) );
+        if( closure && !kindIs( t, "lambda" ) )
+        {
+            bindGroupLets( n, groupBlock );
+        }
+        return;
+    }
+    rubyForEachBinding( n, role, src_, [ & ]( TSNode c ) { binding_.push_back( c ); scopes_.bind( pattern::nodeText( c, src_ ), false ); },
+                        [ & ]( std::string_view name ) { scopes_.bind( name, false ); } );
+}
+
+// every let the block's statements define, and `subject` when the block is an example group's
+inline void RubyBareCallWalk::bindGroupLets( TSNode block, bool groupBlock )
+{
+    if( groupBlock )
+    {
+        scopes_.bind( "subject", true );
+    }
+    const TSNode body = fieldChild( block, NodeField::Body );
+    for( std::uint32_t i = 0, cc = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body ); i < cc; ++i )
+    {
+        if( const std::string_view name = rubyLetFamilyName( ts_node_named_child( body, i ), src_ ); !name.empty() )
+        {
+            scopes_.bind( name, true );
+        }
+    }
+}
+
+inline void RubyBareCallWalk::pushChildren( TSNode n, const char* t, ChildCursor& cursor )
+{
+    const TSNode groupBlock = kindIs( t, "call" ) ? rspecGroupBlock( n, src_ ) : TSNode {};
+    collectChildren( n, cursor.cur, kids_ );
+    for( std::size_t i = kids_.size(); i > 0; --i )
+    {
+        const TSNode c      = kids_[ i - 1 ];
+        const bool   naming = rubyNamingChild( n, t, c ) || std::ranges::any_of( binding_, [ & ]( TSNode b ) { return ts_node_eq( b, c ); } );
+        stack_.push_back( Item { c, naming, !ts_node_is_null( groupBlock ) && ts_node_eq( c, groupBlock ) } );
+    }
+}
+
+// receiver-less: RecvKind::None, the implicit-self shape Rule 1 reads
+inline void RubyBareCallWalk::emit( TSNode at, std::string_view name )
+{
+    if( !name.empty() && !scopes_.visible( name ) )
+    {
+        refs_.push_back( rawRefAt( at, fileId_, Lang::Ruby, RefRole::Call, std::string( name ) ) );
+    }
+}
+
+inline void captureRubyBareCalls( TSNode root, std::uint32_t fileId, std::string_view src, std::vector<RawRef>& refs )
+{
+    RubyBareCallWalk( fileId, src, refs ).run( root );
 }
 
 // nullopt when the node is neither (classifyReceiver's shared arms decide it); otherwise the answer, which is empty for a

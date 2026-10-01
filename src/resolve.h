@@ -6080,8 +6080,9 @@ struct Narrower
 
         const bool isThisSelf = ( r.recv == RecvKind::ThisObj );
         // Ruby rides the bare arm too: a receiver-less `m(args)` inside a method is an implicit-self send —
-        // the language has no other reading of it (a bare `m` with neither receiver nor parens is a local
-        // read and is never captured; queries/ruby/tags.scm). test/rubyscopecheck.sh, Rule 1 arms.
+        // the language has no other reading of it — and so is a bare `m` with neither receiver nor parens
+        // wherever Ruby's lexical rule says it is no local (ingest_binds.h captureRubyBareCalls, parser
+        // version 130). test/rubyscopecheck.sh, Rule 1 arms; test/rubybarecallcheck.sh.
         const bool isCish      = ( r.lang == Lang::Cpp || r.lang == Lang::ObjC || r.lang == Lang::Ruby );
         const bool bareCish    = isCish && ( r.recv == RecvKind::None );   // C++ unqualified member-or-namespace lookup; Ruby implicit self
         if( !isThisSelf && !bareCish )

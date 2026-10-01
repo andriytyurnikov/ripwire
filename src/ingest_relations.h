@@ -56,6 +56,21 @@ inline bool isBaseTypeNodeIn( const char* nt, Lang lang ) noexcept
     return lang == Lang::Ruby ? ( kindIs( nt, "constant" ) || kindIs( nt, "scope_resolution" ) ) : isBaseTypeNode( nt );
 }
 
+// One use-site RawRef sited at node `at`: its start byte (the byte-span sweep attributes the ref to the enclosing def)
+// and its 1-based line (ABS-3: --uses p="file:line"), with the role and name the caller decides; every other field keeps
+// RawRef's default.
+inline RawRef rawRefAt( TSNode at, std::uint32_t fileId, Lang lang, RefRole role, std::string name )
+{
+    RawRef r;
+    r.fileId    = fileId;
+    r.startByte = ts_node_start_byte( at );
+    r.line      = ts_node_start_point( at ).row + 1;
+    r.lang      = lang;
+    r.role      = role;
+    r.name      = std::move( name );
+    return r;
+}
+
 // Emit one inherit RawRef (derived → base) for a base-type node. startByte sits inside the class header
 // (the type node's own start), so the byte-span enclosing attribution binds fromSymbol = the derived class.
 inline void emitBaseRef( TSNode typeNode, std::uint32_t fileId, Lang lang, std::string_view src, std::vector<RawRef>& refs )
@@ -65,14 +80,8 @@ inline void emitBaseRef( TSNode typeNode, std::uint32_t fileId, Lang lang, std::
     {
         return;
     }
-    RawRef r;
-    r.fileId    = fileId;
-    r.startByte = a;                       // inside the class header → attributes to the derived class
-    r.line      = ts_node_start_point( typeNode ).row + 1;   // ABS-3: 1-based use-site line for --uses
-    r.lang      = lang;
+    RawRef r    = rawRefAt( typeNode, fileId, lang, RefRole::Extends, finalSegment( src.substr( a, b - a ) ) );   // a base-class / interface use-site
     r.isInherit = true;
-    r.role      = RefRole::Extends;        // ABS-3: a base-class / interface use-site (derived → base)
-    r.name      = finalSegment( src.substr( a, b - a ) );
     refs.push_back( std::move( r ) );
 }
 
