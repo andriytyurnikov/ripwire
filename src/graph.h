@@ -885,6 +885,14 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
     return keepCount != 0;
 }
 
+// The decl/def collapse FAMILY of a language (collapseDeclarationsOfName below): a definition evicts a declaration only
+// inside its own family. Kotlin is 1, Ruby is 2, and every other language shares 0.
+inline constexpr std::size_t kCollapseFamilies = 3u;
+inline std::size_t collapseFamilyOf( Lang lang ) noexcept
+{
+    return lang == Lang::Kotlin ? 1u : lang == Lang::Ruby ? 2u : 0u;
+}
+
 // THE DECL/DEF COLLAPSE, one name at a time (buildGraph step 1e; adversarial-review #1). A C++ header declaration and its
 // .cpp definition are two same-named symbols. Left alone they make tier 3 see two candidates and DROP every cross-directory
 // call to the function, and let a bodyless prototype shadow its own body in the same-file and same-directory tiers. So once
@@ -894,8 +902,9 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
 // A declaration is evicted only by a definition of its own COLLAPSE KEY:
 //   * its ROOT, in a multi-root workspace — root A's body must not evict root B's decl-only best-available target, so each
 //     root resolves exactly as it does alone;
-//   * its FAMILY — Kotlin rows with Kotlin rows, and every other language together, which is what the whole collapse always
-//     was (the C-family bridge's header/.c pairing lives inside that one family). Kotlin shares CANDIDATES with Java through
+//   * its FAMILY (collapseFamilyOf) — Kotlin rows with Kotlin rows, Ruby rows with Ruby rows, and every other language
+//     together, which is what the whole collapse always was (the C-family bridge's header/.c pairing lives inside that one
+//     family). Kotlin shares CANDIDATES with Java through
 //     langCompatible's JVM bridge, but never a declaration: no Java interface method is a prototype of a Kotlin function,
 //     or the reverse. Collapsed together, a Kotlin body evicted a Java interface-only declaration — so ADDING a .kt file
 //     moved a Java call's edge onto Kotlin code — and a Java body evicted a Kotlin interface member. A tree without a .kt
@@ -909,12 +918,12 @@ inline bool keepStdQualifiedCandidates( const IngestResult& ing, const Reference
 // rescanned the name's ids once per declaration. `ids` keeps its order, and is untouched when nothing is evicted.
 inline void collapseDeclarationsOfName( const IngestResult& ing, bool multiRoot, rw::SmallVec<NodeId, 2>& ids )
 {
-    std::array<bool, 3u * kMaxWorkspaceRoots> keyHasDefinition {};
+    std::array<bool, kCollapseFamilies * kMaxWorkspaceRoots> keyHasDefinition {};
     const auto keyOf = [ & ]( NodeId id ) noexcept -> std::size_t
     {
         const Symbol&     s    = ing.symbols[ id ];
         const std::size_t root = multiRoot ? std::min<std::size_t>( ing.fileRoot[ s.fileId ], kMaxWorkspaceRoots - 1u ) : 0u;
-        return 3u * root + ( s.lang == Lang::Kotlin ? 1u : s.lang == Lang::Ruby ? 2u : 0u );
+        return kCollapseFamilies * root + collapseFamilyOf( s.lang );
     };
     bool anyDefinition = false;
     for( NodeId id : ids )
