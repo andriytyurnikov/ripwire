@@ -24,6 +24,14 @@
 # calls into declines (measured: 1,818 and 1,036 application call sites to a uniquely-defined method share a name with a
 # let on the two Rails applications).
 #
+# Ruby has NO DECLARATIONS. Every class, module, def, attr accessor and constant it indexes is a definition — there is
+# no prototype for a body to replace — so a body-less one (an `attr_reader` accessor, an empty `def on_event; end` hook)
+# is the answer for a call that names it, not a declaration the decl/def collapse (graph.h collapseDeclarationsOfName)
+# may evict in favour of a same-named bodied def anywhere in the tree. Measured as a lower bound on the bare calls this
+# round adds: 367 of 2,952 on activerecord named an attr accessor of the caller's own file and landed in another file
+# (activesupport 26 of 721; the two applications 402 of 12,033 and 288 of 8,339). The receiver forms `self.x` and `x()`
+# were already misrouted the same way. Pinned below (model.h isDefinitionNotDeclaration, the Kotlin-type precedent).
+#
 # Stated floors, each pinned below:
 #   (a) `defined?( name )` asks whether `name` exists; it calls nothing — no reference.
 #   (b) a `let` that a SHARED context defines (`shared_context` … `include_context`) is not known in the including file:
@@ -375,6 +383,52 @@ RSpec.describe Person do
 end
 RUBY
 
+# No declarations: the caller's own private attr_reader, and an inherited empty hook, against bodied defs elsewhere.
+cat > "$FIX/lib/app/tracker.rb" <<'RUBY'
+class Tracker
+  def t_bare
+    aliases
+  end
+
+  def t_self
+    self.aliases
+  end
+
+  def t_paren
+    aliases()
+  end
+
+  private
+    attr_reader :aliases
+end
+RUBY
+
+cat > "$FIX/lib/other/join.rb" <<'RUBY'
+class Join
+  def aliases
+    1
+  end
+
+  def on_event
+    2
+  end
+end
+RUBY
+
+cat > "$FIX/lib/base/hooks.rb" <<'RUBY'
+class Hooks
+  def on_event; end
+end
+RUBY
+
+cat > "$FIX/lib/app/hooked.rb" <<'RUBY'
+class Hooked < Hooks
+  def fire
+    on_event
+  end
+end
+RUBY
+
 cat > "$FIX/spec/implicit_spec.rb" <<'RUBY'
 RSpec.describe Person do
   it { subject.full_name }
@@ -437,6 +491,16 @@ reaches Person::helper           run "Rule 1: the enclosing class defines helper
 misses  Robot::helper            run "Robot::helper is another class's method"
 reaches Parent::inherited_helper go  "the base walk: Child < Parent"
 misses  Robot::inherited_helper  go  "Robot is not an ancestor of Child"
+
+echo "=== Ruby has no declarations: a body-less accessor or hook is the definition a call names ==="
+reaches Tracker::aliases t_bare  "the caller's own private attr_reader"
+misses  Join::aliases    t_bare  "Join::aliases is another class's method"
+reaches Tracker::aliases t_self  "self.aliases — the receiver form, misrouted before this round too"
+misses  Join::aliases    t_self  "self.aliases never reaches Join"
+reaches Tracker::aliases t_paren "aliases() — the parenthesised form"
+misses  Join::aliases    t_paren "aliases() never reaches Join"
+reaches Hooks::on_event  fire    "an inherited EMPTY hook is a definition: the base walk finds it"
+misses  Join::on_event   fire    "Join is not an ancestor of Hooked"
 
 echo "=== a local is not a call: every binding form Ruby has ==="
 for x in x_asg x_op x_m2 x_rest x_req x_opt x_dflt x_splat x_kw x_kwopt x_dsplat x_blk x_bp x_dp x_bl x_lam x_err x_for \
