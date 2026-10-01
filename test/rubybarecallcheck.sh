@@ -478,7 +478,8 @@ callers(){
 # reaches SYM CALLER WHY — CALLER (a symbol name) is a caller of SYM
 reaches(){
     callers "$FIX" "$1" || return
-    grep -q " n=\"$2\"" "$DIR/c.rows" && ok "$2 → $1 ($3)" || no "$2 does not reach $1 ($3); callers: $( tr '\n' ' ' <"$DIR/c.rows" )"
+    grep -q " n=\"$2\"" "$DIR/c.rows" && ok "$2 → $1 ($3)" \
+        || no "$2 does not reach $1 ($3); callers: $( tr '\n' ' ' <"$DIR/c.rows" )"
 }
 # misses SYM CALLER WHY — CALLER is NOT a caller of SYM
 misses(){
@@ -565,7 +566,8 @@ misses  Decoy::spec_helper_q "&lt;file-scope&gt;" "the spec's own def wins (same
 
 echo "=== determinism and warm == cold ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
-cmp -s "$MAP" "$DIR/b.xml" && ok "byte-identical across two --no-cache runs" || no "output differs across runs"
+cmp -s "$MAP" "$DIR/b.xml" && ok "byte-identical across two --no-cache runs" \
+    || no "output differs across runs"
 if ! "$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/cold.xml" 2>"$DIR/cold.err"
 then
     no "the cold cache run exited non-zero: $( head -3 "$DIR/cold.err" )"
@@ -574,7 +576,8 @@ if ! "$BIN" "$FIX" --cache="$DIR/c.bin" >"$DIR/warm.xml" 2>"$DIR/warm.err"
 then
     no "the warm cache run exited non-zero: $( head -3 "$DIR/warm.err" )"
 fi
-cmp -s "$DIR/cold.xml" "$DIR/warm.xml" && ok "warm run == cold run" || no "the warm cache disagrees with the cold run"
+cmp -s "$DIR/cold.xml" "$DIR/warm.xml" && ok "warm run == cold run" \
+    || no "the warm cache disagrees with the cold run"
 
 echo "=== mutation: rename the binding → the read becomes a call ==="
 MUT="$DIR/mut"; cp -R "$FIX" "$MUT"
