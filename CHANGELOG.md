@@ -15,6 +15,110 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a call on an RSpec matcher's chain is RSpec's: `receive( :m ).with`, `change { }.from( a ).to( b )`
+
+`expect( v ).to` stopped binding to an in-tree `def to` in the RSpec round below, but a matcher's own chain still bound
+by name. `receive( :m ).with( 1 )`, `.and_return( 2 )` after it, and the `to` of `change { }.from( a ).to( b )` are
+called on the matcher a receiver-less builder returns, and every link is RSpec's.
+
+**What is typed** (`ingest_binds.h rubyMatcherChainType`; `model.h kRspecTargets`). Inside an example group, the matcher
+builders `receive`, `have_received`, `receive_messages`, `receive_message_chain`, `change`, `raise_error` /
+`raise_exception`, `output`, `be_within` and `yield_control` build that RSpec class, as `expect` and `allow` do. A call
+on a chain rooted at one is typed as the root, at most 8 links from it. A link's own class (Change's `from` returns a
+ChangeFromValue) is RSpec's all the same. A FactoryBot build at a chain's root types nothing: its methods return anything.
+
+**Which defs shadow a builder** (`graph.h rubyDefinedBuilders`). Only a def an example group's self can reach: a top-level
+def, a reopened Object's, a def inside a group's block, or a module's in test code (what a `config.include` mixes in). A
+class's method and an application module's are not in a group's lookup. Before, any def of the name counted, so every
+Rails migration's `def change` turned the `change` builder off for the whole tree.
+
+Measured with `--no-cache`, the Rake/Jbuilder change below (parser version 135) against this change, both runs on one
+snapshot of each tree.
+
+| Corpus | Edges | Call sites that lost an edge | Newly refused (no edge before) |
+| --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/`, activesupport 7.2.3.2 `lib/` | default map byte-identical | 0 | 0 |
+| Rails app A | 29,574 → 29,524 | 135 | 2,353 |
+| Rails app B (no in-tree namesake of a chain method) | 28,374 → 28,374 | 0 | 3,720 |
+
+On application A, every lost edge was the presenter's `to`, from a `change { }` chain, as read off the source of
+all 135 sites. The newly refused calls are the chain methods themselves: `with`, `and_return`, `by`, `and_call_original`,
+`from`, `once`, `of`. 47 calls still bind to the presenter's `to`, 25 of them in spec/support helper modules (floor (a)).
+
+Stated floors, each pinned by `test/rubyrspectargetcheck.sh`:
+- **(b)** A builder's name is shadowed by a def an example group can reach, as above. An application module that a
+  `config.include` does mix in is not read as one.
+- **(c)** A link more than 8 calls from its builder binds by name as before.
+
+`kParserVer` 135 → 136. Same layout, so `kCacheVersion` stays 27, and Ruby caches re-parse once.
+
+### Changed — Rake task files and Jbuilder views are crawled as Ruby, and their top-level `self` is known
+
+A Rails application keeps Ruby in two more file kinds: Rake tasks (`lib/tasks/*.rake`) and Jbuilder JSON views
+(`app/views/**/*.json.jbuilder`). Neither was crawled, so a method that only a task or a JSON view called had no
+caller. Both now index as Ruby, with every Ruby rule a `.rb` file gets (`ingest_crawl.h kLangTable`, and the lint,
+include, comment and seed-extension tables beside it).
+
+**Self outside any class** (`graph.h RubyTopSelf`). Crawling alone was wrong in a measurable way: a template's bare
+`json` bound to the one in-tree `def json` (422 call sites on application A), and a partial's local
+bound to whichever class defines a method of that name. Outside any class Ruby's self is what runs the file:
+
+| File | Self | A receiver-less call reaches |
+| --- | --- | --- |
+| `.rake` | Rake's `main`: the file is loaded at top level, and a task's block is called as written | a top-level def, a reopened Object, Kernel or BasicObject |
+| `.jbuilder` | the view: ActionView compiles a template into a method of it | the same, each method of a module in an app/helpers/ `*_helper.rb` file (Rails' `helper :all`), and each controller method a `helper_method` declaration names |
+
+Any other in-tree namesake is refused as external: a partial's local, a route helper, ActionView's own. A def in test code
+is refused too (`filter.h isTestSymbol`): a def inside an example group's block has no class around it, and is the group's
+method. `helper_method :a, :b` at class-body position is recorded as a `LocalBindKind::RubyHelperMethod` binding against
+the declaring class or module (`ingest_binds.h captureRubyHelperMethods`).
+
+**A template's `json`** (`ingest_binds.h typeRubyJbuilderLocal`) is the local the template handler binds to the view's
+JbuilderTemplate. A read of it is no call. A call on it (`json.summary …`, `json.partial! …`) is a key the class's
+method_missing writes, and is refused as external unless the tree opens JbuilderTemplate.
+
+Measured with `--no-cache`, `feat/ruby-declarative-refs` (cce90ffd, parser version 134) against this change, both runs
+on one snapshot of each tree.
+
+| Corpus | Files added (`.jbuilder` / `.rake`) | Edges | Call-graph isolated | Template sites: an edge / refused | Task-file sites: an edge / refused |
+| --- | --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 0 / 1 | 11,381 → 11,436 | 2,552 → 2,551 | — | 119 / 34 |
+| activesupport 7.2.3.2 `lib/` | none: default map byte-identical | | | | |
+| Rails app A | 62 / 24 | 29,350 → 29,574 | 18,827 → 18,872 | 166 / 467 | 116 / 4 |
+| Rails app B | 107 / 35 | 27,684 → 28,374 | 5,607 → 5,698 | 384 / 2,101 | 506 / 97 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | none: default map byte-identical | | | | |
+
+No symbol that had a call edge lost it. Isolated rises because the added files bring symbols with no in-tree edge: a
+template whose every call is a Jbuilder key or a framework helper, a task's private def. Of the refused template sites,
+`json` keys are 420 on A and 1,818 on B, and bare words 45 and 278. Five `.rb` methods on A and three on B gain their
+first caller. On application B, 23 call sites in `.rb` files also bind to methods of two classes a task file defines
+(a model's reader, a demo seeder's), where a column of that name is what runs. That is floor (g) of the typed-receiver round.
+
+Sampled against the source:
+- **The view's rules:** every decision sampled was right. All 37 bare calls on A that bind go into app/helpers
+  modules. B's 3 go into `helper_method`s. Of the bare words crawling alone had bound, 9 on A and 56 on B are now
+  refused, and each is a partial's local.
+- **Calls on a value:** 15 of 20 template edges on A and 8 of 20 on B; 8 of 15 task-file edges on A and 4 of 15 on B.
+  Every miss is a call on an untyped receiver, or on an out-of-tree constant (`Hash.new`, `JSON.parse`), bound to the
+  one in-tree def of that name. That is the same floor as in every `.rb` file, not a rule of this change. In application
+  B's `.rb` files, `new` binds to one controller's `new` action at 2,509 call sites, and `where` to a mailer preview's mock
+  at 1,174.
+
+Stated floors, each pinned by `test/rubyrakejbuildercheck.sh`:
+- **(a)** `json.extract! user, :email` names attributes by symbol, and they are not read as calls.
+- **(b)** A `.rb` file's top level is left as before: a block there may run with another self (`describe`,
+  `routes.draw`, `FactoryBot.define`), so a receiver-less call outside any class binds by name.
+
+Not in this change:
+- Sorbet `.rbi` stubs (291 files on application A): each declares a gem's methods, and would add a namesake for nearly
+  every gem call.
+- ERB, Slim and HAML templates: no grammar for them is vendored.
+- `Rakefile`, `Gemfile` and `*.gemspec`: the crawl is keyed by extension.
+- A def in a block outside any class in application code (`Struct.new( … ) do … end`) reads as a top-level def.
+
+`kParserVer` 134 → 135. New records and an appended binding kind, same layout, so `kCacheVersion` stays 27, and Ruby
+caches re-parse once.
+
 ### Changed — a method a Rails declaration names by symbol has a caller: callbacks, conditions, rescue handlers, `send`
 
 `before_action :authenticate`, `after_save :reindex`, `validate :name_present`, an `if: :published?` condition and
