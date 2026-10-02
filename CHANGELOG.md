@@ -15,6 +15,61 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a call on RSpec's own expectation target is RSpec's: `expect( v ).to` no longer binds to an in-tree `def to`
+
+Inside an example group, `expect( v ).to eq( 1 )` calls `to` on the object `expect` returns, an
+RSpec::Expectations::ValueExpectationTarget. Its `to`, `not_to` and `to_not` are RSpec's. That receiver was untyped, so
+the call bound by name alone. On Rails application A, whose only `def to` is a presenter's, 13,480 expectations bound to
+that presenter's `to`. That ranked it second in the default map, and a utility method its body calls, fourth.
+
+**What is typed** (`ingest_binds.h rubyValueType`, the walk Round 3 types receivers on; `model.h kRspecTargets`). Inside an
+example group (a describe/context, a shared group, a `def` in one), a receiver-less builder returns an instance of one of
+RSpec's target classes, typed like any built receiver: in place, or held by a local.
+
+| Builder | Class |
+| --- | --- |
+| `expect( v )`, a bare `is_expected` | `RSpec::Expectations::ValueExpectationTarget` |
+| `expect { … }` | `RSpec::Expectations::BlockExpectationTarget` |
+| `allow( v )` | `RSpec::Mocks::AllowanceTarget` |
+| `expect_any_instance_of( K )` | `RSpec::Mocks::AnyInstanceExpectationTarget` |
+| `allow_any_instance_of( K )` | `RSpec::Mocks::AnyInstanceAllowanceTarget` |
+
+**How the call resolves** (`graph.h RubyTypedReceivers::outOfTreeTarget`). When the tree never opens the class, only a
+reopened `Object`, `Kernel` or `BasicObject` can answer. Otherwise the method Ruby runs is RSpec's, and the call is
+refused as external. A tree that opens the class (RSpec's own source, or a patch) answers from it, as from any in-tree
+class. A tree that defines a method named after the builder (`def expect`) types nothing from that name.
+
+Measured with `--no-cache`, `feat/ruby-typed-receivers` (7604c222, parser version 132) against this change, both runs on
+one snapshot of each tree. Call sites are keyed by (file, line, callee) with `--pin-census`.
+
+| Corpus | Edges | Call-graph isolated | Edges lost (refused) | Newly refused (no edge before) |
+| --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/`, activesupport 7.2.3.2 `lib/` | default map byte-identical | | 0 | 0 |
+| Rails app A | 29,670 → 28,734 | 18,999 → 19,071 | 13,480 | 1,661 |
+| Rails app B (no in-tree `def to`) | 27,173 → 27,173 | 5,831 → 5,831 | 0 | 25,365 |
+
+On application A, every lost edge was the presenter's `to`. Twelve sites sampled at random are all `expect( … ).to`.
+The presenter drops from rank 2 of the default map's 191 rows to 126, and the utility method from 4 to 127. A single
+line can carry two `to` calls (the matcher chain in floor (c)). On 78 lines one call is now refused and the other still
+binds. On application B, only the header's `external=` count moves (6,965 → 32,331).
+
+Stated floors, each pinned by `test/rubyrspectargetcheck.sh`:
+- **(a)** Outside an example group, the call binds by name as before: a helper module in `spec/support` that a
+  `config.include` mixes in, or an `RSpec.configure` hook. On application A that is 25 sites in `spec/support`.
+- **(b)** A tree that defines a method named after the builder types nothing from that name.
+- **(c)** Matcher chains are not typed. `receive( :m ).with( … )`, and the `to` of `change { }.from( a ).to( b )`, bind by
+  name as before (137 `to` sites on application A).
+- **(d)** An `expect` with a receiver (`helper.expect( 1 )`) is not RSpec's builder.
+
+The class check also exposed a Round 3 gap. The opens a qualified type is checked against came from the base scope, which
+is built only for a tree with a Ruby superclass, mixin or constant reference. In any other tree, a qualified constant was
+never trusted. `rubyOpenedPaths` now builds the full constant index for such a tree (`resolve.h rubyConstantIndexOf`, the
+ungated core of `buildRubyConstantIndex`), once a typed receiver is qualified. `test/rubytypedrecvcheck.sh` pins it with a
+flat tree.
+
+`kParserVer` 132 → 133. The layout is unchanged (a type is a string the record already carries), so `kCacheVersion`
+stays 27, and Ruby caches re-parse once.
+
 ### Changed — a Ruby call on a receiver the code builds answers from that class's lookup: locals, lets, factories, constructions
 
 A Ruby receiver the code builds is an instance of one class, and Ruby's method lookup on that class decides which `def`
