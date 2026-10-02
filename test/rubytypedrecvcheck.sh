@@ -33,6 +33,8 @@
 #   (e) a class whose lookup can leave it (a delegator, `method_missing`, the delegation DSL — rubyreachcheck floor (a)/(b))
 #       refuses nothing: its typed calls bind by name as before.
 #   (f) two factories sharing a name in different files, with different classes, type nothing.
+#   (g) a method defined only through `alias`/`alias_method` is no def the tree indexes, so a typed call to it finds no
+#       definer in reach and is refused — not bound to another class's namesake.
 #
 # Usage:  test/rubytypedrecvcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubytypedrecvcheck.sh
 # Exits non-zero on any failure. Self-contained via mktemp.
@@ -164,11 +166,17 @@ class Client
   def wrap
     Other.new
   end
+
+  alias_method :fetch, :get
 end
 RUBY
 cat > "$FIX/lib/net/other.rb" <<'RUBY'
 class Other
   def get(path)
+    path
+  end
+
+  def fetch(path)
     path
   end
 
@@ -229,6 +237,7 @@ class Sync
     Client.new.close # @direct_new
     User.find_by(id: 1).activate! # @direct_finder
     c.try_it # @implicit_root
+    c.fetch("/a") # @alias_floor
     r = Client.new
     r = r.wrap
     r.close # @reassigned
@@ -445,6 +454,7 @@ misses  Other::get               $S conflict      "floor (c): neither class is k
 misses  Widget::spin             $S own_finder    "floor (b): Widget defines self.find — w is untyped"
 reaches Rating::request      $S out_of_tree   "floor (a): Net::HTTP is outside the tree — the call binds by name as before"
 misses  Client::get              $S qualified_out "floor (a): the tree opens no Vendor::Client — its final segment is no in-tree Client"
+misses  Other::fetch             $S alias_floor   "floor (g): Client's fetch is an alias_method, which the tree indexes as no def — refused, not Other#fetch"
 reaches User::title_line         $S delegator     "floor (e): UserPresenter < SimpleDelegator forwards what it lacks"
 misses  Client::get              $S block_param   "floor (c): a block parameter c makes c untyped in its scope"
 misses  Client::get              $S ivar          "floor (d): an instance variable is not typed"

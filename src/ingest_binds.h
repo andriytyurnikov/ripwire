@@ -484,6 +484,19 @@ struct RubyLocalScopes
     }
 };
 
+// The first argument of a call when it is a plain symbol — `:user` → user — or empty.
+inline std::string_view rubyFirstSymbolArgument( TSNode call, std::string_view src )
+{
+    const TSNode args  = fieldChild( call, NodeField::Arguments );
+    const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
+    if( ts_node_is_null( first ) || !kindIs( ts_node_type( first ), "simple_symbol" ) )
+    {
+        return {};
+    }
+    const std::string_view sym = pattern::nodeText( first, src );
+    return sym.substr( sym.empty() ? 0 : 1 );
+}
+
 // The name one statement of an example group's body defines, or empty: a receiver-less let-family call, named by its
 // first simple_symbol argument — a nameless `subject { … }` defines `subject`.
 inline std::string_view rubyLetFamilyName( TSNode c, std::string_view src )
@@ -497,26 +510,22 @@ inline std::string_view rubyLetFamilyName( TSNode c, std::string_view src )
     {
         return {};
     }
-    const TSNode args  = fieldChild( c, NodeField::Arguments );
-    const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
-    if( ts_node_is_null( first ) || !kindIs( ts_node_type( first ), "simple_symbol" ) )
-    {
-        return m.starts_with( "subject" ) ? std::string_view( "subject" ) : std::string_view {};
-    }
-    const std::string_view sym = pattern::nodeText( first, src );
-    return sym.substr( sym.empty() ? 0 : 1 );   // `:user` → user
+    const std::string_view name = rubyFirstSymbolArgument( c, src );
+    return name.empty() && m.starts_with( "subject" ) ? std::string_view( "subject" ) : name;
 }
 
-// The block of an RSpec example-group call — its last named child (tree-sitter-ruby's `block:` field) — or null.
-inline TSNode rspecGroupBlock( TSNode call, std::string_view src )
+// The block a Ruby call is given — its last named child (tree-sitter-ruby's `block:` field) — or null.
+inline TSNode rubyCallBlock( TSNode call )
 {
     const std::uint32_t cc = ts_node_named_child_count( call );
-    if( cc == 0 || rspecGroupKind( call, src ) == 0 )
-    {
-        return {};
-    }
-    const TSNode last = ts_node_named_child( call, cc - 1 );
-    return kindIs( ts_node_type( last ), "do_block" ) || kindIs( ts_node_type( last ), "block" ) ? last : TSNode {};
+    const TSNode        last = cc == 0 ? TSNode {} : ts_node_named_child( call, cc - 1 );
+    return !ts_node_is_null( last ) && ( kindIs( ts_node_type( last ), "do_block" ) || kindIs( ts_node_type( last ), "block" ) ) ? last : TSNode {};
+}
+
+// The block of an RSpec example-group call, or null.
+inline TSNode rspecGroupBlock( TSNode call, std::string_view src )
+{
+    return rspecGroupKind( call, src ) == 0 ? TSNode {} : rubyCallBlock( call );
 }
 
 // Is `c` a child of `n` that NAMES something — a method, an alias — rather than reading a value? `call`'s `method:` is
@@ -534,6 +543,86 @@ inline bool rubyNamingChild( TSNode n, const char* t, TSNode c ) noexcept
     return kindIs( t, "setter" ) || kindIs( t, "alias" ) || kindIs( t, "undef" );
 }
 
+// ─── Ruby's TYPED receiver (test/rubytypedrecvcheck.sh, parser version 132) ───────────────────────────────────────────
+// A receiver the code BUILDS is an instance of one class, and Ruby's method lookup on that class decides which `def` a call
+// on it reaches (graph.h rubyTypedReceiver). What builds one is read from what the expression IS: `Const.new( … )` and the
+// Active Record finders on a constant (kRubyTypedFinders — `User.find_by( … )` returns a User), `described_class.new`
+// inside an example group that describes a constant, and a FactoryBot build — `create`/`build`/`build_stubbed( :user, … )`,
+// receiver-less inside an example group or on `FactoryBot` anywhere — whose class only the tree's factory definitions
+// know (captureRubyFactories). A call's receiver is typed when it is one of those written in place, a local whose every
+// binding in its scope builds the same one, or the let/subject RSpec runs for that name there — the innermost definition,
+// a nested group's override included — where a group with no subject of its own has its parent's, and at the top
+// `described_class.new`. RubyBareCallWalk reads all of it on the walk it already makes, beside the locals it tracks, and
+// typeReceivers writes each type into its call reference (model.h rubyTypedRecvToken). Floors (test/rubytypedrecvcheck.sh):
+// control flow is not read (one binding of another shape anywhere in the scope, a parameter or a block parameter
+// included, leaves the local untyped); instance variables, return values and a shared context's lets are not typed.
+inline constexpr std::string_view kRubyTypedFinders[] = { "create", "create!", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!",
+                                                          "find_or_initialize_by", "find_sole_by", "first", "first!", "last", "last!", "new", "sole",
+                                                          "take", "take!" };
+inline constexpr std::string_view kRubyFactoryBuilds[] = { "build", "build_stubbed", "create" };
+
+// What one value builds: a class's constant as written, or a factory name (`factory`), and the method that built it. Empty
+// `type` = untyped. Views into the file's source.
+struct RubyValueType
+{
+    std::string_view type;
+    std::string_view via;
+    bool             factory = false;
+    bool operator==( const RubyValueType& ) const = default;
+};
+
+// Where a value is read: inside an example group's block (a receiver-less `create( :user )` is FactoryBot's there), and
+// the class `described_class` names at the site — empty when no constant-described group encloses it or the file
+// redefines the name. The walk keeps both per frame, so neither costs a climb up the tree.
+struct RubyValueSite
+{
+    bool             inGroup = false;
+    std::string_view described;
+};
+
+// What the value expression `v` builds (the section note above), read at `site`.
+inline RubyValueType rubyValueType( TSNode v, std::string_view src, const RubyValueSite& site )
+{
+    if( ts_node_is_null( v ) || !kindIs( ts_node_type( v ), "call" ) )
+    {
+        return {};
+    }
+    const std::string_view m    = fieldChildTextOfKind( v, NodeField::Method, "identifier", src );
+    const TSNode           recv = fieldChild( v, NodeField::Receiver );
+    const bool             constant = !ts_node_is_null( recv ) && isRubyConstantNode( recv );
+    const std::string_view on       = constant ? rubyFinalConstant( recv, src ) : std::string_view {};
+    const bool factoryBuild = ( ( ts_node_is_null( recv ) && site.inGroup ) || on == "FactoryBot" || on == "FactoryGirl" )
+                           && std::ranges::find( kRubyFactoryBuilds, m ) != std::end( kRubyFactoryBuilds );
+    if( factoryBuild )
+    {
+        const std::string_view factory = rubyFirstSymbolArgument( v, src );
+        return factory.empty() ? RubyValueType {} : RubyValueType { factory, m, true };
+    }
+    if( !on.empty() )
+    {
+        // the constant AS WRITTEN (`OpenSSL::Cipher`): graph.h reads a qualified one only when the tree opens that path
+        const bool finder = std::ranges::find( kRubyTypedFinders, m ) != std::end( kRubyTypedFinders );
+        return finder ? RubyValueType { pattern::nodeText( recv, src ), m, false } : RubyValueType {};
+    }
+    const bool describedNew = m == "new" && !ts_node_is_null( recv ) && kindIs( ts_node_type( recv ), "identifier" )
+                           && pattern::nodeText( recv, src ) == "described_class";
+    return describedNew && !site.described.empty() ? RubyValueType { site.described, m, false } : RubyValueType {};
+}
+
+// What a let/subject call's block returns — its body's last statement — or null.
+inline TSNode rubyLetValue( TSNode letCall )
+{
+    const TSNode block = rubyCallBlock( letCall );
+    const TSNode body  = ts_node_is_null( block ) ? block : fieldChild( block, NodeField::Body );
+    TSNode       last {};
+    if( !ts_node_is_null( body ) )
+    {
+        ChildCursor cursor( body );   // O(children): a body is as wide as its comments (src/infra/tschildren.h)
+        forEachNamedChild( body, cursor.cur, [ & ]( TSNode c ) { last = kindIs( ts_node_type( c ), "comment" ) ? last : c; return true; } );
+    }
+    return last;
+}
+
 // One file's bare-word calls (see the section note above): one iterative pre-order walk in source order — an explicit
 // stack, no recursion, so a hostile nesting depth costs heap, not stack.
 class RubyBareCallWalk
@@ -546,6 +635,7 @@ public:
         kids_.reserve( 16 );
     }
     void run( TSNode root );
+    void typeReceivers( std::size_t firstRef, std::size_t endRef );   // after run: write each typed receiver into its call reference
 
 private:
     struct Item
@@ -554,11 +644,32 @@ private:
         bool   naming;       // an identifier in a naming or binding position: it reads nothing
         bool   groupBlock;   // the block of an RSpec example-group call
     };
+    // One call whose receiver is typed: the call node's start (its reference's startByte) and method, whether the receiver
+    // is an (identifier) — the reference's NamedVar — or a value, and what it builds; for a local, the scope and name whose
+    // binding types are read once the walk has seen every binding (`local` non-empty, `type` filled by typeReceivers).
+    struct TypedSite
+    {
+        std::uint32_t    callStart;
+        std::string_view method;
+        bool             identReceiver;
+        RubyValueType    type;
+        std::uint32_t    wall;
+        std::string_view local;
+    };
     void visit( const Item& item, ChildCursor& cursor );
     void enter( TSNode n, const char* t, RubyLocalRole role, bool groupBlock );
     void bindGroupLets( TSNode block, bool groupBlock );
     void pushChildren( TSNode n, const char* t, ChildCursor& cursor );
     void emit( TSNode at, std::string_view name );
+    void noteFrame( bool groupBlock, TSNode block );
+    RubyValueSite valueSite() const;
+    void noteLocalTypes( TSNode n, RubyLocalRole role );
+    void noteLetType( TSNode letCall, std::string_view name );
+    void noteImplicitSubject();
+    void noteTypedCall( TSNode call );
+    void noteNamedReceiver( std::uint32_t at, std::string_view method, std::string_view name );
+    const TypedSite* siteOf( const RawRef& r ) const;
+    const std::string& typeKey( std::uint32_t frame, std::string_view name );
 
     std::uint32_t        fileId_;
     std::string_view     src_;
@@ -567,12 +678,28 @@ private:
     std::vector<Item>    stack_;
     std::vector<TSNode>  kids_;
     std::vector<TSNode>  binding_;   // the visited node's binding identifiers: its children marked `naming`
+
+    // typed receivers (the section note above): per open frame depth, a serial naming that frame and whether it is inside
+    // an example group; "<frame serial>#<name>" → what a let defines in that group / what every binding of a local in that
+    // scope builds (a tombstone once two disagree); the group frames whose own subject is explicit; the typed call sites
+    std::vector<std::uint32_t>              frameSerial_;
+    std::vector<char>                       frameInGroup_;
+    std::vector<std::string_view>           frameDescribed_;   // the class described_class names in the frame (rspecDescribedClass's rule)
+    bool                                    describedRedefined_ = false;   // the file defines a method named described_class
+    std::uint32_t                           nextSerial_ = 0;
+    HashMap<std::string, RubyValueType>     letTypes_;
+    HashMap<std::string, RubyValueType>     localTypes_;
+    HashMap<std::uint32_t, RubyValueType>   explicitSubjects_;
+    std::vector<TypedSite>                  typedSites_;
+    std::string                             key_;
 };
 
 inline void RubyBareCallWalk::run( TSNode root )
 {
     ChildCursor cursor( root );
     scopes_.push( ts_node_end_byte( root ), true, true, false );
+    describedRedefined_ = rubyDefinesDescribedClassMethod( src_ );
+    noteFrame( false, root );
     stack_.push_back( Item { root, false, false } );
     while( !stack_.empty() )
     {
@@ -603,6 +730,10 @@ inline void RubyBareCallWalk::visit( const Item& item, ChildCursor& cursor )
     {
         emit( key, pattern::nodeText( key, src_ ) );   // `{ payload: }` reads payload
     }
+    if( kindIs( t, "call" ) )
+    {
+        noteTypedCall( n );
+    }
     binding_.clear();
     if( const std::optional<RubyLocalRole> role = rubyLocalRole( t ) )
     {
@@ -619,6 +750,7 @@ inline void RubyBareCallWalk::enter( TSNode n, const char* t, RubyLocalRole role
         const bool closure = role == RubyLocalRole::Closure;
         scopes_.push( ts_node_end_byte( n ), !closure, kindIs( t, "class" ) || kindIs( t, "module" ) || kindIs( t, "singleton_class" ),
                       closure && ts_node_is_null( fieldChild( n, NodeField::Parameters ) ) );
+        noteFrame( groupBlock, n );
         if( closure && !kindIs( t, "lambda" ) )
         {
             bindGroupLets( n, groupBlock );
@@ -627,6 +759,7 @@ inline void RubyBareCallWalk::enter( TSNode n, const char* t, RubyLocalRole role
     }
     rubyForEachBinding( n, role, src_, [ & ]( TSNode c ) { binding_.push_back( c ); scopes_.bind( pattern::nodeText( c, src_ ), false ); },
                         [ & ]( std::string_view name ) { scopes_.bind( name, false ); } );
+    noteLocalTypes( n, role );
 }
 
 // every let the block's statements define, and `subject` when the block is an example group's
@@ -635,6 +768,7 @@ inline void RubyBareCallWalk::bindGroupLets( TSNode block, bool groupBlock )
     if( groupBlock )
     {
         scopes_.bind( "subject", true );
+        noteImplicitSubject();
     }
     const TSNode body = fieldChild( block, NodeField::Body );
     for( std::uint32_t i = 0, cc = ts_node_is_null( body ) ? 0 : ts_node_named_child_count( body ); i < cc; ++i )
@@ -642,6 +776,7 @@ inline void RubyBareCallWalk::bindGroupLets( TSNode block, bool groupBlock )
         if( const std::string_view name = rubyLetFamilyName( ts_node_named_child( body, i ), src_ ); !name.empty() )
         {
             scopes_.bind( name, true );
+            noteLetType( ts_node_named_child( body, i ), name );
         }
     }
 }
@@ -667,9 +802,396 @@ inline void RubyBareCallWalk::emit( TSNode at, std::string_view name )
     }
 }
 
+// a new frame at the top of scopes_: its serial, whether it sits in an example group, and the class described_class names
+// in it — rspecDescribedClass's rule, kept per frame: an example group's block takes its group's constant argument, a
+// String or absent one passes the parent's through, any other argument and a shared group name none; any other frame
+// inherits its parent's
+inline void RubyBareCallWalk::noteFrame( bool groupBlock, TSNode block )
+{
+    const std::size_t depth = scopes_.frames.size() - 1;
+    if( frameSerial_.size() <= depth )
+    {
+        frameSerial_.resize( depth + 1 );
+        frameInGroup_.resize( depth + 1 );
+        frameDescribed_.resize( depth + 1 );
+    }
+    const std::string_view parent = depth > 0 ? frameDescribed_[ depth - 1 ] : std::string_view {};
+    const TSNode           group  = groupBlock ? ts_node_parent( block ) : TSNode {};
+    const int              kind   = ts_node_is_null( group ) ? 0 : rspecGroupKind( group, src_ );
+    const std::optional<std::string_view> argument = kind == 1 ? rspecGroupArgument( group, src_ ) : std::nullopt;
+    frameSerial_[ depth ]    = nextSerial_++;
+    frameInGroup_[ depth ]   = char( groupBlock || ( depth > 0 && frameInGroup_[ depth - 1 ] != 0 ) );
+    frameDescribed_[ depth ] = kind == 2 ? std::string_view {} : argument ? *argument : parent;
+}
+
+// the value site at the walk's position: its group, and what described_class names there unless the file or a visible
+// local or let redefines it
+inline RubyValueSite RubyBareCallWalk::valueSite() const
+{
+    const std::size_t top       = scopes_.frames.size() - 1;
+    const bool        redefined = describedRedefined_ || scopes_.visible( "described_class" );
+    return RubyValueSite { frameInGroup_[ top ] != 0, redefined ? std::string_view {} : frameDescribed_[ top ] };
+}
+
+inline const std::string& RubyBareCallWalk::typeKey( std::uint32_t frame, std::string_view name )
+{
+    key_.clear();
+    key_.append( std::to_string( frame ) ).push_back( '#' );
+    key_.append( name );
+    return key_;
+}
+
+// each local `n` binds, folded into its scope's type: what an assignment (or `||=`) builds; nothing, for every other binding
+inline void RubyBareCallWalk::noteLocalTypes( TSNode n, RubyLocalRole role )
+{
+    const std::uint32_t wall    = frameSerial_[ scopes_.frames.back().wall ];
+    const TSNode        left    = role == RubyLocalRole::BindsLeft ? fieldChild( n, NodeField::Left ) : TSNode {};
+    const bool          assigns = !ts_node_is_null( left ) && kindIs( ts_node_type( left ), "identifier" )
+                               && ( kindIs( ts_node_type( n ), "assignment" ) || nodeFieldText( n, NodeField::Operator, src_ ) == "||=" );
+    const RubyValueType built   = assigns ? rubyValueType( fieldChild( n, NodeField::Right ), src_, valueSite() ) : RubyValueType {};
+    const auto fold = [ & ]( std::string_view name, const RubyValueType& type )
+    {
+        const auto [ it, inserted ] = localTypes_.try_emplace( typeKey( wall, name ), type );
+        if( !inserted && !( it->second == type ) )
+        {
+            it->second = {};   // two bindings build different things: untyped in the whole scope
+        }
+    };
+    rubyForEachBinding( n, role, src_, [ & ]( TSNode c ) { fold( pattern::nodeText( c, src_ ), assigns && ts_node_eq( c, left ) ? built : RubyValueType {} ); },
+                        [ & ]( std::string_view name ) { fold( name, {} ); } );
+}
+
+// a let/subject statement of the group whose frame is on top: what its block builds; a named subject is the group's subject too
+inline void RubyBareCallWalk::noteLetType( TSNode letCall, std::string_view name )
+{
+    const std::uint32_t group = frameSerial_[ scopes_.frames.size() - 1 ];
+    const RubyValueType built = rubyValueType( rubyLetValue( letCall ), src_, valueSite() );
+    letTypes_[ typeKey( group, name ) ] = built;
+    if( fieldChildTextOfKind( letCall, NodeField::Method, "identifier", src_ ).starts_with( "subject" ) )
+    {
+        letTypes_[ typeKey( group, "subject" ) ] = built;
+        explicitSubjects_[ group ]               = built;
+    }
+}
+
+// an example group's implicit subject: the nearest enclosing group's explicit one — RSpec looks it up through the parent
+// groups — else `described_class.new`
+inline void RubyBareCallWalk::noteImplicitSubject()
+{
+    const std::size_t top   = scopes_.frames.size() - 1;
+    RubyValueType     built = {};
+    bool              found = false;
+    for( std::size_t d = top; d > scopes_.frames[ top ].classWall && !found; --d )
+    {
+        const auto it = explicitSubjects_.find( frameSerial_[ d - 1 ] );
+        found         = it != explicitSubjects_.end();
+        built         = found ? it->second : built;
+    }
+    const std::string_view described = found ? std::string_view {} : valueSite().described;
+    letTypes_[ typeKey( frameSerial_[ top ], "subject" ) ] = described.empty() ? built : RubyValueType { described, "new", false };
+}
+
+// a call whose receiver is typed: a value written in place, a let RSpec runs there, or a local of the scope (read at the end)
+inline void RubyBareCallWalk::noteTypedCall( TSNode call )
+{
+    const TSNode           recv   = fieldChild( call, NodeField::Receiver );
+    const std::string_view method = fieldChildTextOfKind( call, NodeField::Method, "identifier", src_ );
+    if( ts_node_is_null( recv ) || method.empty() )
+    {
+        return;
+    }
+    const std::uint32_t at = ts_node_start_byte( call );
+    if( !kindIs( ts_node_type( recv ), "identifier" ) )
+    {
+        const RubyValueType built = rubyValueType( recv, src_, valueSite() );
+        if( !built.type.empty() )
+        {
+            typedSites_.push_back( TypedSite { at, method, false, built, 0, {} } );
+        }
+        return;
+    }
+    noteNamedReceiver( at, method, pattern::nodeText( recv, src_ ) );
+}
+
+// a call whose receiver is the bare name `name`: the innermost definition of it visible here — a let, or a local of this
+// scope (whose type is read at the end, once every binding is seen) — decides, typed or not
+inline void RubyBareCallWalk::noteNamedReceiver( std::uint32_t at, std::string_view method, std::string_view name )
+{
+    const auto it = scopes_.names.find( name );
+    if( it == scopes_.names.end() )
+    {
+        return;   // no binding: a call on self, which no let or local types
+    }
+    const RubyLocalScopes::Frame& top = scopes_.frames.back();
+    const auto visible = std::find_if( it->second.rbegin(), it->second.rend(),
+                                       [ & ]( const RubyLocalScopes::Entry& e ) { return e.depth < top.classWall || e.let || e.depth >= top.wall; } );
+    if( visible == it->second.rend() || visible->depth < top.classWall )
+    {
+        return;
+    }
+    const bool          local = !visible->let;
+    const std::uint32_t frame = frameSerial_[ local ? top.wall : visible->depth ];
+    const auto&         table = local ? localTypes_ : letTypes_;
+    const auto          found = table.find( typeKey( frame, name ) );
+    if( found != table.end() && !found->second.type.empty() )
+    {
+        typedSites_.push_back( TypedSite { at, method, true, found->second, frame, local ? name : std::string_view {} } );
+    }
+}
+
+// Each typed site's local read now that every binding is seen, then each written into the call reference the tags query
+// made for it — the one in [firstRef, endRef) at the call's start, with its method, whose receiver kind is the site's
+// (an identifier receiver is NamedVar, a value receiver FieldOfVar).
+inline void RubyBareCallWalk::typeReceivers( std::size_t firstRef, std::size_t endRef )
+{
+    for( TypedSite& site : typedSites_ )
+    {
+        if( !site.local.empty() )
+        {
+            const auto it = localTypes_.find( typeKey( site.wall, site.local ) );
+            site.type     = it == localTypes_.end() ? RubyValueType {} : it->second;
+        }
+    }
+    std::erase_if( typedSites_, []( const TypedSite& site ) { return site.type.type.empty(); } );
+    std::stable_sort( typedSites_.begin(), typedSites_.end(), []( const TypedSite& a, const TypedSite& b ) { return a.callStart < b.callStart; } );
+    for( std::size_t i = firstRef; i < endRef && i < refs_.size() && !typedSites_.empty(); ++i )
+    {
+        if( const TypedSite* site = siteOf( refs_[ i ] ) )
+        {
+            refs_[ i ].recvVar = rubyTypedRecvToken( site->type.type, site->type.via, site->type.factory );
+        }
+    }
+}
+
+// the typed site a call reference was made for: the one at its start whose method it names (a setter `x.name =` names
+// `name=`) and whose receiver kind it records — an (identifier) receiver is NamedVar, a value receiver FieldOfVar
+inline const RubyBareCallWalk::TypedSite* RubyBareCallWalk::siteOf( const RawRef& r ) const
+{
+    const bool ident = r.recv == RecvKind::NamedVar;
+    if( r.lang != Lang::Ruby || r.role != RefRole::Call || ( !ident && r.recv != RecvKind::FieldOfVar ) )
+    {
+        return nullptr;
+    }
+    const std::string_view name = r.name;
+    const std::string_view bare = name.ends_with( '=' ) ? name.substr( 0, name.size() - 1 ) : name;
+    const auto byStart = []( const TypedSite& site, std::uint32_t at ) { return site.callStart < at; };
+    for( auto site = std::lower_bound( typedSites_.begin(), typedSites_.end(), r.startByte, byStart );
+         site != typedSites_.end() && site->callStart == r.startByte; ++site )
+    {
+        if( site->identReceiver == ident && ( site->method == name || site->method == bare ) )
+        {
+            return &*site;
+        }
+    }
+    return nullptr;
+}
+
+// One file's bare-word calls, and the type of each call receiver the file builds — written into the file's references
+// already in `refs` (the tags query's: the trailing run carrying this fileId); the walk's own references follow them.
 inline void captureRubyBareCalls( TSNode root, std::uint32_t fileId, std::string_view src, std::vector<RawRef>& refs )
 {
-    RubyBareCallWalk( fileId, src, refs ).run( root );
+    const std::size_t queryRefsEnd = refs.size();
+    std::size_t       firstRef     = queryRefsEnd;
+    while( firstRef > 0 && refs[ firstRef - 1 ].fileId == fileId )
+    {
+        --firstRef;
+    }
+    RubyBareCallWalk walk( fileId, src, refs );
+    walk.run( root );
+    walk.typeReceivers( firstRef, queryRefsEnd );
+}
+
+// ─── FactoryBot's factory definitions (parser version 132, test/rubytypedrecvcheck.sh) ─────────────────────────────────
+// `factory :user do … end` inside a `FactoryBot.define` (or `FactoryGirl.define`) block defines what `create( :user )`
+// builds, and its class is FactoryBot's own rule: the `class:` option as written — a constant, or a string naming one (its
+// final segment) — else the enclosing factory's (a nested factory builds its parent's class), else the `parent:` factory's
+// when the file defined it above, else the name camelised (`:user_profile` → UserProfile). One RubyFactory binding per name
+// and per `aliases:` entry; graph.h rubyFactoryClasses joins them over the tree, where two classes for one name type nothing.
+// A `class:` of any other spelling (a symbol, an expression) records no factory: its class is not known.
+
+// `user_profile` → UserProfile, `admin/user` → User: the final segment of the constant FactoryBot camelises the name into
+inline std::string rubyFactoryDefaultClass( std::string_view name )
+{
+    const std::size_t slash = name.rfind( '/' );
+    std::string       out;
+    bool              upper = true;
+    for( const char c : name.substr( slash == std::string_view::npos ? 0 : slash + 1 ) )
+    {
+        if( c == '_' )
+        {
+            upper = true;
+            continue;
+        }
+        out.push_back( upper && c >= 'a' && c <= 'z' ? char( c - 'a' + 'A' ) : c );
+        upper = false;
+    }
+    return out;
+}
+
+// The value of the `key:` option among a call's arguments (`class: "User"`, `parent: :user`), or null.
+inline TSNode rubyCallOption( TSNode call, std::string_view key, std::string_view src )
+{
+    const TSNode args = fieldChild( call, NodeField::Arguments );
+    TSNode       value {};
+    if( !ts_node_is_null( args ) )
+    {
+        ChildCursor cursor( args );
+        forEachNamedChild( args, cursor.cur, [ & ]( TSNode c )
+        {
+            const TSNode k     = kindIs( ts_node_type( c ), "pair" ) ? fieldChild( c, NodeField::Key ) : TSNode {};
+            const bool   named = !ts_node_is_null( k ) && kindIs( ts_node_type( k ), "hash_key_symbol" ) && pattern::nodeText( k, src ) == key;
+            value              = named ? fieldChild( c, NodeField::Value ) : value;
+            return !named;
+        } );
+    }
+    return value;
+}
+
+// The class a `class:` option names: a constant's final segment, or a plain string's (`"Admin::User"` → User); else empty.
+inline std::string_view rubyFactoryClassOption( TSNode value, std::string_view src )
+{
+    if( ts_node_is_null( value ) )
+    {
+        return {};
+    }
+    if( isRubyConstantNode( value ) )
+    {
+        return rubyFinalConstant( value, src );
+    }
+    if( !kindIs( ts_node_type( value ), "string" ) || ts_node_named_child_count( value ) != 1
+        || !kindIs( ts_node_type( ts_node_named_child( value, 0 ) ), "string_content" ) )
+    {
+        return {};
+    }
+    const std::string_view text = pattern::nodeText( ts_node_named_child( value, 0 ), src );
+    const std::size_t      cut  = text.rfind( "::" );
+    return cut == std::string_view::npos ? text : text.substr( cut + 2 );
+}
+
+class RubyFactoryWalk
+{
+public:
+    RubyFactoryWalk( std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds ) : fileId_( fileId ), src_( src ), binds_( binds ) {}
+    void run( TSNode root );
+
+private:
+    struct Item
+    {
+        TSNode        node;
+        bool          inDefine;   // inside a `FactoryBot.define` block
+        std::uint32_t parent;     // index into classes_ of the enclosing factory's class; kNone outside one
+    };
+    static constexpr std::uint32_t kNone = 0xFFFFFFFFu;
+    void define( TSNode call, const Item& item );
+    std::string classOf( TSNode call, std::string_view name, const Item& item ) const;
+    void emit( TSNode call, std::string_view name, const std::string& cls );
+
+    std::uint32_t                    fileId_;
+    std::string_view                 src_;
+    std::vector<RawBind>&            binds_;
+    std::vector<Item>                stack_;
+    std::vector<TSNode>              kids_;
+    std::vector<std::string>         classes_;
+    HashMap<std::string_view, std::uint32_t> byName_;   // a factory defined above in this file → its class
+};
+
+inline void RubyFactoryWalk::run( TSNode root )
+{
+    ChildCursor cursor( root );
+    stack_.push_back( Item { root, false, kNone } );
+    while( !stack_.empty() )
+    {
+        Item item = stack_.back();
+        stack_.pop_back();
+        const TSNode n = item.node;
+        if( kindIs( ts_node_type( n ), "call" ) )
+        {
+            const TSNode           recv = fieldChild( n, NodeField::Receiver );
+            const std::string_view on   = !ts_node_is_null( recv ) && isRubyConstantNode( recv ) ? rubyFinalConstant( recv, src_ ) : std::string_view {};
+            const std::string_view m    = fieldChildTextOfKind( n, NodeField::Method, "identifier", src_ );
+            item.inDefine = item.inDefine || ( ( on == "FactoryBot" || on == "FactoryGirl" ) && m == "define" );
+            if( item.inDefine && ts_node_is_null( recv ) && m == "factory" )
+            {
+                define( n, item );
+                continue;
+            }
+        }
+        collectChildren( n, cursor.cur, kids_ );
+        for( std::size_t i = kids_.size(); i > 0; --i )
+        {
+            stack_.push_back( Item { kids_[ i - 1 ], item.inDefine, item.parent } );
+        }
+    }
+}
+
+// one `factory :name, …` call: its class (the section note above), a binding per name and alias, then its block's
+// factories, which build this class unless they say otherwise
+inline void RubyFactoryWalk::define( TSNode call, const Item& item )
+{
+    const std::string_view name = rubyFirstSymbolArgument( call, src_ );
+    std::string            cls  = name.empty() ? std::string {} : classOf( call, name, item );
+    if( cls.empty() )
+    {
+        return;   // no symbol name, or a class this file does not say: no factory is recorded, and none nested in it
+    }
+    const std::uint32_t index = std::uint32_t( classes_.size() );
+    classes_.push_back( std::move( cls ) );
+    byName_.try_emplace( name, index );
+    emit( call, name, classes_[ index ] );
+    if( const TSNode aliases = rubyCallOption( call, "aliases", src_ ); !ts_node_is_null( aliases ) && kindIs( ts_node_type( aliases ), "array" ) )
+    {
+        ChildCursor cursor( aliases );
+        forEachNamedChild( aliases, cursor.cur, [ & ]( TSNode a )
+        {
+            const std::string_view alias = kindIs( ts_node_type( a ), "simple_symbol" ) ? pattern::nodeText( a, src_ ).substr( 1 ) : std::string_view {};
+            if( !alias.empty() )
+            {
+                emit( call, alias, classes_[ index ] );
+            }
+            return true;
+        } );
+    }
+    if( const TSNode block = rubyCallBlock( call ); !ts_node_is_null( block ) )
+    {
+        stack_.push_back( Item { block, true, index } );
+    }
+}
+
+// the class `factory :name, …` builds, by FactoryBot's rule (the section note above); empty when this file does not say
+inline std::string RubyFactoryWalk::classOf( TSNode call, std::string_view name, const Item& item ) const
+{
+    if( const TSNode opt = rubyCallOption( call, "class", src_ ); !ts_node_is_null( opt ) )
+    {
+        return std::string( rubyFactoryClassOption( opt, src_ ) );
+    }
+    if( const TSNode parent = rubyCallOption( call, "parent", src_ ); !ts_node_is_null( parent ) )
+    {
+        const bool symbol = kindIs( ts_node_type( parent ), "simple_symbol" );
+        const auto named  = symbol ? byName_.find( pattern::nodeText( parent, src_ ).substr( 1 ) ) : byName_.end();
+        return named == byName_.end() ? std::string {} : classes_[ named->second ];
+    }
+    return item.parent != kNone ? classes_[ item.parent ] : rubyFactoryDefaultClass( name );
+}
+
+inline void RubyFactoryWalk::emit( TSNode call, std::string_view name, const std::string& cls )
+{
+    RawBind b;
+    b.fileId    = fileId_;
+    b.startByte = ts_node_start_byte( call );
+    b.lang      = Lang::Ruby;
+    b.kind      = LocalBindKind::RubyFactory;
+    b.var       = std::string( name );
+    b.typeName  = cls;
+    binds_.push_back( std::move( b ) );
+}
+
+// One file's FactoryBot factories, into `binds` — a file with no `FactoryBot.define` / `FactoryGirl.define` is not walked.
+inline void captureRubyFactories( TSNode root, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+{
+    if( src.find( "FactoryBot.define" ) != std::string_view::npos || src.find( "FactoryGirl.define" ) != std::string_view::npos )
+    {
+        RubyFactoryWalk( fileId, src, binds ).run( root );
+    }
 }
 
 // nullopt when the node is neither (classifyReceiver's shared arms decide it); otherwise the answer, which is empty for a

@@ -2996,6 +2996,115 @@ inline RubySelfReach buildRubySelfReach( const IngestResult& ing, const HashMap<
     return reach;
 }
 
+// RUBY TYPED RECEIVERS (test/rubytypedrecvcheck.sh; parser version 132 types them — model.h rubyTypedRecvOf).
+//
+// A call whose receiver the code builds — `c = Client.new`, `User.find_by( … ).activate!`, a let whose block runs
+// `create( :user )` — sends to an instance of one class, and Ruby's lookup on that class answers: the class, its mixins,
+// its superclass chain (Narrower::methodOnTypeOrBases over the Ruby overlay, the shallowest level that defines the name
+// deciding, a tie at one level kept as a split), then a reopened Object, Kernel or BasicObject. When none of those defines
+// it a class BELOW may (Active Record's single-table inheritance hands back a subclass), so the call keeps the candidates
+// RubySelfReach says the class's instances reach, and is refused as external when none is left: a column, an
+// association, a framework method — the method Ruby runs is outside the tree.
+// The type is used only when it means what it says: a factory resolves through the tree's factory definitions, one class
+// per name; the class is one the tree defines (an out-of-tree `Net::HTTP` or a `Point = Struct.new( … )` constant says
+// nothing about in-tree candidates) — and a constant written QUALIFIED names one only when the tree opens that path
+// (`OpenSSL::Cipher` is not activerecord's `Encryption::Cipher`, `Stripe::Customer` not an app's Customer model, though
+// the classes are keyed by final segment everywhere else); and no class in its lookup defines the method that built it
+// (`def self.find` may return anything). Otherwise the call is left exactly as the name ladder decided it before.
+inline constexpr std::string_view kRubyInstanceRoots[] = { "BasicObject", "Kernel", "Object" };
+
+struct RubyTypedReceivers
+{
+    const RubySelfReach&                                  reach;
+    const HashMap<std::string, std::vector<std::string>>& up;
+    const Narrower&                                       narrower;
+    HashMap<std::string, std::string>                     factoryClass;   // factory name → its class's final segment; "" when two disagree
+    HashMap<std::string, char>                            openedPaths;    // every trailing path of every constant the tree opens:
+                                                                          //   `A::B::C` → "A::B::C", "B::C", "C"
+    mutable rw::SmallVec<NodeId, 2>                       rootHits;
+
+    // the class a Ruby reference's receiver was built as, when the tree can trust it (the note above); nullptr otherwise
+    const std::string* classOf( const Reference& r ) const
+    {
+        const std::optional<RubyTypedRecv> typed = rubyTypedRecvOf( r );
+        if( !typed )
+        {
+            return nullptr;
+        }
+        const std::string_view written = typed->type.substr( typed->type.starts_with( "::" ) ? 2 : 0 );
+        const std::size_t      cut     = typed->factory ? std::string_view::npos : written.rfind( "::" );
+        if( cut != std::string_view::npos && openedPaths.find( std::string( written ) ) == openedPaths.end() )
+        {
+            return nullptr;   // a qualified constant whose path the tree never opens: not the in-tree namesake
+        }
+        const auto        factory = typed->factory ? factoryClass.find( std::string( written ) ) : factoryClass.end();
+        const std::string name    = !typed->factory ? std::string( written.substr( cut == std::string_view::npos ? 0 : cut + 2 ) )
+                                  : factory != factoryClass.end() ? factory->second : std::string {};
+        const auto        cls     = reach.classNames.find( name );
+        if( name.empty() || cls == reach.classNames.end() )
+        {
+            return nullptr;
+        }
+        for( const std::string& a : reach.ancestorsOf( cls->first ) )
+        {
+            if( !typed->factory && narrower.definitionsIn( a, typed->via ) != nullptr )
+            {
+                return nullptr;   // the class says how it is built: `def self.find` may return anything
+            }
+        }
+        return &cls->first;
+    }
+
+    // what lookup on `cls` reaches for r's method: its own or an ancestor's definitions, else a reopened instance root's
+    const rw::SmallVec<NodeId, 2>* lookup( const Reference& r, const std::string& cls ) const
+    {
+        if( const rw::SmallVec<NodeId, 2>* hit = narrower.methodOnTypeOrBases( cls, r, up, /*skipSelf=*/false, /*unionOnMulti=*/true ) )
+        {
+            return hit;
+        }
+        rootHits.clear();
+        for( const std::string_view root : kRubyInstanceRoots )
+        {
+            if( const rw::SmallVec<NodeId, 2>* defs = narrower.definitionsIn( root, r.calleeName ) )
+            {
+                rootHits.insert( rootHits.end(), defs->begin(), defs->end() );
+            }
+        }
+        return rootHits.empty() ? nullptr : &rootHits;
+    }
+};
+
+// Every FactoryBot factory the tree defines → the class it builds (ingest_binds.h captureRubyFactories); a name two
+// definitions give different classes is a tombstone: it types nothing. And every trailing path of every constant the tree
+// opens, which a qualified constant must be.
+inline RubyTypedReceivers buildRubyTypedReceivers( const IngestResult& ing, const RubySelfReach& reach, const RubyBaseScope& bases,
+                                                   const HashMap<std::string, std::vector<std::string>>& up, const Narrower& narrower )
+{
+    RubyTypedReceivers out{ .reach = reach, .up = up, .narrower = narrower };
+    for( const auto& opened : bases.opened )
+    {
+        for( std::size_t from = 0; from != std::string::npos; )
+        {
+            out.openedPaths.try_emplace( opened.first.substr( from ), 1 );
+            const std::size_t next = opened.first.find( "::", from );
+            from                   = next == std::string::npos ? next : next + 2;
+        }
+    }
+    for( const Binding& b : ing.bindings )
+    {
+        if( b.kind != LocalBindKind::RubyFactory || b.var.empty() )
+        {
+            continue;
+        }
+        const auto [ it, inserted ] = out.factoryClass.try_emplace( b.var, b.typeName );
+        if( !inserted && it->second != b.typeName )
+        {
+            it->second.clear();
+        }
+    }
+    return out;
+}
+
 // The gate's evidence, built once per graph. Deterministic: class ids follow symbol-id order, and each file's list is
 // sorted and deduplicated before any lookup. Files with no symbol in a gated language get no list (their calls are
 // never gated), which keeps a mostly-C++ corpus from paying for a Python corner of it.
@@ -3566,6 +3675,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     const RubyCha                  rubyCha   = buildRubyCha( ing, rubyBases, chaUp, chaDown );
     const ChaUpNames&              rubyUp    = rubyCha.merged ? rubyCha.up : chaUp;     // a Ruby call to self reads mixins too
     const RubySelfReach            rubyReach = buildRubySelfReach( ing, rubyUp, rubyCha.merged ? rubyCha.down : chaDown, rubyBases );
+    const RubyTypedReceivers       rubyTypes = buildRubyTypedReceivers( ing, rubyReach, rubyBases, rubyUp, narrower );   // a receiver the code builds
     const std::vector<std::string> specializationsWithBases = sortedSpecializationNames( chaUp );   // resolve.h: what a C++ specialization inherits
     ChaConeMemo              chaCones( chaUp, chaDown );   // one cone per receiver type, computed on first use (see the type)
     const ClassIdentity      classIds = buildClassIdentity( ing, chaUp );   // Rule 2's class identity: nesting, owners, real inheritance (resolve.h)
@@ -3960,6 +4070,17 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             disposition = vetoExternal( r );
             continue;
         }
+        // Ruby: a receiver the code builds answers from its class's lookup (RubyTypedReceivers) — and, when that defines
+        // nothing, from what the class's instances reach (the RubySelfReach cut below, read with the class as self).
+        const std::string* const rubyTyped = !scipPinned && !canonical && !narrowed ? rubyTypes.classOf( r ) : nullptr;
+        if( rubyTyped != nullptr )
+        {
+            narrowed = narrowTo( rubyTypes.lookup( r, *rubyTyped ), r, cand );
+        }
+        const std::string* const rubySelf = rubyTyped != nullptr ? rubyTyped
+                                          : r.lang == Lang::Ruby && r.fromSymbol != kNoNode && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
+                                                ? &rubyReach.selfOf( ing, r )
+                                                : nullptr;
         // P2-D Rule 2 (receiver-variable type): a named-receiver call `x.m()` / `x->m()` resolves to the method on the VARIABLE's type (`Foo::m`
         // for `Foo x;`), BEFORE the bare-name spray — the other half of the [TYPE] cut — read through class identity (resolve.h identityNarrow:
         // nested namesakes dropped, an inherited body, an interface's dispatch split); otherwise narrowed stays false and the name-based fallback
@@ -4057,8 +4178,8 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         const rw::SmallVec<NodeId, 2>* nameIds = localsYield ? &reachScratch : ( it != byName.end() ? &it->second : nullptr );
         // Ruby: Rule 3 and the ladder choose only among what self's method lookup can reach (RubySelfReach) — a narrow
         // to an unreachable namesake must not hide a reachable one.
-        if( !scipPinned && !canonical && !narrowed && nameIds != nullptr && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
-            && rubyReach.reachableOf( ing, rubyReach.selfOf( ing, r ), *nameIds, rubyReachable ) )
+        if( !scipPinned && !canonical && !narrowed && nameIds != nullptr && rubySelf != nullptr
+            && rubyReach.reachableOf( ing, *rubySelf, *nameIds, rubyReachable ) )
         {
             if( rubyReachable.empty() )
             {
@@ -4153,8 +4274,8 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
 
         // ---- Ruby: the same cut over the assembled set, for the paths above that re-read the whole name list ----------
-        if( !scipPinned && !canonical && !cand.empty() && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
-            && rubyReach.reachableOf( ing, rubyReach.selfOf( ing, r ), cand, filtScratch ) )
+        if( !scipPinned && !canonical && !cand.empty() && rubySelf != nullptr
+            && rubyReach.reachableOf( ing, *rubySelf, cand, filtScratch ) )
         {
             cand.swap( filtScratch );
             if( cand.empty() )

@@ -296,7 +296,15 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 131;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 132;          // bump on any grammar/.scm/extraction change
+                                                      // 132 = 2026-10-02 (test/rubytypedrecvcheck.sh): a Ruby call
+                                                      //   receiver the file BUILDS (`Client.new`, a finder, a FactoryBot
+                                                      //   build, a let or local holding one) carries its type in the
+                                                      //   call RawRef's recvVar (model.h rubyTypedRecvToken), and each
+                                                      //   FactoryBot `factory` mints a RawBind of the APPENDED kind
+                                                      //   LocalBindKind::RubyFactory (ingest_binds.h). Same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 131
+                                                      //   holds untyped receivers and no factories and must re-parse.
                                                       // 131 = 2026-10-02 (test/rubyreachcheck.sh): a Ruby MIXIN is an
                                                       //   ancestor — `include`/`extend`/`prepend` at class-DSL
                                                       //   position mints one inherit RawRef per constant, at the

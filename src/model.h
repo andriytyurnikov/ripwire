@@ -18,6 +18,7 @@
 #include <tuple>       // std::tie — lessUnindexedExt's mixed-direction compare
 #include <array>       // Symbol::evWhy — the fixed-size ev_why tag counters
 #include <cstdint>
+#include <optional>    // rubyTypedRecvOf — a Ruby reference's built receiver type, or none
 #include <string>
 #include <string_view>
 #include <type_traits>   // std::is_trivially_copyable_v — the VarSpan layout pin below
@@ -717,6 +718,7 @@ struct Reference
     std::string   calleeName;             // referenced name (final identifier segment)
     std::string   qualifier;              // explicit scope at the call site (`A` in `A::b()`); "" if bare/method — for canonical resolve
     std::string   recvVar;                // receiver variable identifier when recv==NamedVar/FieldOfVar (`x` in `x->m()`); "" otherwise — for Rule 2
+                                          //   A Ruby receiver the code BUILDS carries its type here instead (rubyTypedRecvOf below).
     std::string   fieldName;              // member variable name when isCompose (e.g. "m_pool"); ALSO the INTERMEDIATE
                                           //   field of a depth-2 chained receiver when recv is FieldOfThis/FieldOfVar
                                           //   (`this->m_pool.run()` → "m_pool") — the two are mutually exclusive
@@ -724,6 +726,40 @@ struct Reference
                                           //   on isCompose), so one slot carries both; "" otherwise
     std::string   composeRel;             // "creates" (value/inline) or "uses" (reference/pointer) when isCompose; "" otherwise
 };
+
+// A Ruby call whose RECEIVER the code builds (parser version 132, test/rubytypedrecvcheck.sh): `c = Client.new` then `c.get`,
+// `let( :user ) { create( :user ) }` then `user.activate!`, `User.find_by( … ).activate!`. ingest_binds.h reads the shape
+// by Ruby's own local rule and writes the type into Reference::recvVar as "<Class>.<via>" — the class's constant as written
+// and the method that built it (`User.find_by`, `OpenSSL::Cipher.new`) — or ":<factory>.<via>" for a FactoryBot build (`:user.create`), whose class
+// only the tree's factory definitions know (graph.h rubyFactoryClasses). The receiver KIND is left as it was (NamedVar,
+// FieldOfVar), so every rule that does not read the type sees the call exactly as before; and a `.` is in no Ruby
+// identifier or constant segment, so no receiver the tool recorded before can read as a type.
+inline constexpr char kRubyTypedRecvSep = '.';
+
+struct RubyTypedRecv
+{
+    std::string_view type;              // the class's constant as written (`User`, `Admin::User`), or the factory name
+    std::string_view via;               // the method that built it: `new`, a finder, a factory build
+    bool             factory = false;   // `type` names a FactoryBot factory, not a class
+};
+
+inline std::string rubyTypedRecvToken( std::string_view type, std::string_view via, bool factory )
+{
+    return std::string( factory ? ":" : "" ).append( type ).append( 1, kRubyTypedRecvSep ).append( via );
+}
+
+// the type a Ruby reference's receiver was built as, or nullopt for every other reference
+inline std::optional<RubyTypedRecv> rubyTypedRecvOf( const Reference& r ) noexcept
+{
+    const std::size_t sep = r.lang == Lang::Ruby ? r.recvVar.find( kRubyTypedRecvSep ) : std::string::npos;
+    if( sep == std::string::npos )
+    {
+        return std::nullopt;
+    }
+    const std::string_view token = r.recvVar;
+    const bool             factory = token.starts_with( ':' );
+    return RubyTypedRecv { token.substr( factory ? 1 : 0, sep - ( factory ? 1 : 0 ) ), token.substr( sep + 1 ), factory };
+}
 
 // A physical dependency: one #include / import directive (file → target). The target is the raw
 // include path / module name (resolved to a file id later, for the file→file dependency graph).
@@ -865,9 +901,13 @@ enum class LocalBindKind : std::uint8_t
     ElixirDefault,  // var=callable name/arity, importedName=full name/arity, typeName=module; no synthetic symbol.
     ElixirImport,   // typeName=module, var=all/only/except/functions/macros; importedName=newline-delimited name/arities.
                    // spanStart/spanEnd delimit lexical visibility, starting after the directive.
+    RubyFactory,    // parser version 132: a FactoryBot `factory :name` definition — var=the factory name (or one of its
+                   //     `aliases:`), typeName=the final segment of the class it builds (ingest_binds.h captureRubyFactories).
+                   //     Read by graph.h rubyFactoryClasses ONLY; every other reader skips it by kind or finds no
+                   //     variable of that name. APPENDED for the same cache reason as VarDecl.
 };
 // The number of LocalBindKind enumerators — the bound readBind validates a cached kind byte against (see kSymKindCount).
-inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::ElixirImport ) + 1;
+inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubyFactory ) + 1;
 static_assert( enumCountIsExact<LocalBindKind, kLocalBindKindCount>(), "kLocalBindKindCount must name the LAST LocalBindKind enumerator — move it with the append" );
 
 inline constexpr const char* kFnBindLambdaTarget  = "(lambda)";    // parens are illegal in identifiers, so

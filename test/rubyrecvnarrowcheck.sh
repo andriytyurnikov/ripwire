@@ -34,7 +34,9 @@
 #       loses its inheritance edges again.
 #   (b) Matching is by FINAL SEGMENT, so two classes with the same last name in different namespaces
 #       both defining the callee keep BOTH candidates (an honest split), exactly as Rule 2c documents.
-#   (c) A variable receiver (`c.scale`) and a chained one (`Calc.new.scale`) are untouched by this round.
+#   (c) A variable receiver (`c.scale`) is untouched by this round. A chained one (`Calc.new.scale`) was too, until
+#       parser version 132 typed a receiver the code builds (test/rubytypedrecvcheck.sh); its arm below is kept,
+#       INVERTED: it now asserts `Calc.new.scale` pins to Calc::scale alone.
 #   (d) A constant receiver whose class defines BOTH `def self.x` and `def x` gets an honest two-way split that
 #       includes the instance method (rails `Journey::Parser.parse`): a split, not a pin. Ruby's tags.scm gives
 #       `method` and `singleton_method` one kind, so telling them apart is a later round.
@@ -295,13 +297,19 @@ SS="$( rowOf 'n="same_segment_call" ' )"
 [ "$( edgesTo "$SS" go )" -eq 2 ] && ok "Left::Shared.go → both Shared::go defs (final-segment matching; floor, stated)" \
     || no "Left::Shared.go produced $( edgesTo "$SS" go ) go edges — narrowing to ONE of them needs the Ruby constant index, and a claim in this gate: $SS"
 
-echo "=== floor (c): variable and chained receivers are untouched by this round ==="
+echo "=== floor (c): a variable receiver is untouched by this round; a chained Calc.new is typed (parser version 132) ==="
 IC="$( rowOf 'n="instance_call" ' )"
 [ "$( edgesTo "$IC" scale )" -eq 2 ] && ok "c.scale( 7 ) → unchanged 2-way split (a variable receiver has no type in Ruby; floor, stated)" \
     || no "c.scale( 7 ) produced $( edgesTo "$IC" scale ) scale edges — this round must not move a variable receiver: $IC"
 CC="$( rowOf 'n="chain_call" ' )"
-[ "$( edgesTo "$CC" scale )" -eq 2 ] && ok "Calc.new.scale( 8 ) → unchanged 2-way split (the receiver is a CALL, undecidable in one hop; floor, stated)" \
-    || no "Calc.new.scale( 8 ) produced $( edgesTo "$CC" scale ) scale edges: $CC"
+CCL="$( "$BIN" "$FIX" --no-cache --callers=Calc::scale 2>/dev/null )"
+CTL="$( "$BIN" "$FIX" --no-cache --callers=Tally::scale 2>/dev/null )"
+if echo "$CCL" | grep -q 'n="chain_call"' && ! echo "$CTL" | grep -q 'n="chain_call"'
+then
+    ok "Calc.new.scale( 8 ) → Calc::scale alone (floor (c) lifted: the receiver the code builds is a Calc — test/rubytypedrecvcheck.sh)"
+else
+    no "Calc.new.scale( 8 ) does not pin to Calc::scale alone: $CC"
+fi
 echo "$CC" | grep -q '<c n="new"' && no "Calc.new minted an edge to a new this tree never defines" || ok "…and Calc.new mints no edge (no def named new exists here)"
 
 echo "=== determinism, and the warm cache agrees with the cold one ==="
