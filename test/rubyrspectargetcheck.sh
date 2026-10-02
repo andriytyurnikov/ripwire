@@ -21,9 +21,10 @@
 #   (a) outside an example group — a helper module in spec/support that a `config.include` mixes in — the call binds by
 #       name as before.
 #   (b) a tree that defines a method named `expect` (or `allow`, `change`, …) where an example group's self can reach it — a
-#       top-level def, a module's (a `config.include` may mix it in), a reopened Object's — types nothing from that name:
-#       the call binds by name as before. A class's method is not in a group's lookup: a migration's `def change` shadows
-#       nothing.
+#       top-level def, a reopened Object's, a def inside a group's block, a module's in test code (what a `config.include`
+#       mixes in) — types nothing from that name: the call binds by name as before. A class's method is not in a group's
+#       lookup, nor an application module's: a migration's `def change`, or its mixin's, shadows nothing; an application
+#       module a `config.include` does mix in is not read as one.
 #   (c) a chain is read through at most 8 links from its builder: a later link binds by name as before.
 #   (d) an `expect` with a receiver (`helper.expect( 1 )`) is not RSpec's builder: untyped.
 #
@@ -74,11 +75,19 @@ class LinkPresenter
   end
 end
 RUBY
-# a class's `def change` — every Rails migration has one — is no method of an example group: it shadows no builder
+# a class's `def change` — every Rails migration has one — and an application module's are no methods of an example
+# group: they shadow no builder
 cat > "$FIX/db/migrate/001_add_name.rb" <<'RUBY'
 class AddName < ActiveRecord::Migration[7.2]
   def change
     add_column :users, :name, :string
+  end
+end
+RUBY
+cat > "$FIX/db/migration_mixin.rb" <<'RUBY'
+module MigrationMixin
+  def change
+    :mixin
   end
 end
 RUBY
@@ -266,7 +275,7 @@ reaches Object::to_widget $U root "a reopened Object answers on every instance, 
 
 echo "=== a matcher's chain is RSpec's: each link is called on the matcher its root builder returns ==="
 refused with       $U receive_with  "receive( :m ) is an RSpec::Mocks::Matchers::Receive — its with is RSpec's"
-refused to         $U change_to     "change { }.from( 1 ) is a Change matcher's chain — its to is RSpec's (a migration's def change shadows nothing)"
+refused to         $U change_to     "change { }.from( 1 ) is a Change matcher's chain — its to is RSpec's (a migration's def change, and its mixin's, shadow nothing)"
 refused and_return $U chain_link    "receive( … ).with( 1 ).and_return — two links from the builder"
 refused with       $U have_received "have_received( :m ).with"
 

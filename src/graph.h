@@ -3115,7 +3115,8 @@ inline RubyTopSelf buildRubyTopSelf( const IngestResult& ing, const RubySelfReac
 // `allow( v )`, `is_expected` return in an example group; test/rubyrspectargetcheck.sh). When the tree never opens the
 // class, only a reopened instance root can answer a call on one, and otherwise RSpec's method runs: the call is refused as
 // external. A tree that opens the class answers from it as above; a tree that defines a method of the builder's name
-// (`def expect`) types nothing from that name. A Jbuilder template's `json` is another (model.h kJbuilderTemplate): every
+// (`def expect`) where an example group can reach it types nothing from that name (rubyDefinedBuilders). RSpec's matchers
+// are such targets too: a call on a chain rooted at `receive( :m )` or `change { }` is RSpec's. A Jbuilder template's `json` is another (model.h kJbuilderTemplate): every
 // call on it is a key the class's method_missing writes (test/rubyrakejbuildercheck.sh).
 
 struct RubyTypedReceivers
@@ -3246,14 +3247,47 @@ inline void rubyOpenedPaths( const IngestResult& ing, const RubyBaseScope& bases
     }
 }
 
-// Which of RSpec's builders (model.h kRspecTargets) the tree defines a Ruby method of the name of — a def or an accessor.
+// Which of RSpec's builders (model.h kRspecTargets) the tree defines a Ruby method of the name of — a def or an accessor —
+// where an example group's self can reach it: a top-level def, a reopened Object's, a def inside a group's block (it has
+// no class around it), a module's in test code (what a `config.include` mixes in). A class's method is not in a group's
+// lookup, nor an application module's: a migration's `def change`, or its mixin's, shadows nothing
+// (test/rubyrspectargetcheck.sh floor (b)).
+// Every Ruby class or module name whose methods no example group's self reaches: opened, and never as a module in test
+// code (filter.h isTestSymbol, or under a spec/ directory) — and not an instance root.
+inline HashMap<std::string, char> rubyGroupForeignOwners( const IngestResult& ing )
+{
+    HashMap<std::string, char> owners, testModules;
+    for( std::size_t i = 0; i < ing.symbols.size(); ++i )
+    {
+        const Symbol& s = ing.symbols[ i ];
+        if( s.lang == Lang::Ruby && ( s.kind == SymKind::Class || s.kind == SymKind::Other ) )
+        {
+            owners.try_emplace( s.name, 1 );
+            if( s.kind == SymKind::Other && ( isTestSymbol( ing, i ) || hasDirSegment( rootRelPath( ing, s.fileId ), "spec/" ) ) )
+            {
+                testModules.try_emplace( s.name, 1 );
+            }
+        }
+    }
+    HashMap<std::string, char> foreign;
+    for( const auto& [ name, one ] : owners )
+    {
+        if( testModules.find( name ) == testModules.end() && std::ranges::find( kRubyInstanceRoots, name ) == std::end( kRubyInstanceRoots ) )
+        {
+            foreign.try_emplace( name, one );
+        }
+    }
+    return foreign;
+}
+
 inline void rubyDefinedBuilders( const IngestResult& ing, std::array<bool, std::size( kRspecTargets )>& out )
 {
+    const HashMap<std::string, char> foreign = rubyGroupForeignOwners( ing );
     for( const Symbol& s : ing.symbols )
     {
         const bool method = s.lang == Lang::Ruby && ( s.kind == SymKind::Function || s.kind == SymKind::Method || s.kind == SymKind::Var );
         const auto it     = method ? std::ranges::find( kRspecTargets, std::string_view( s.name ), &RspecTarget::builder ) : std::end( kRspecTargets );
-        if( it != std::end( kRspecTargets ) )
+        if( it != std::end( kRspecTargets ) && foreign.find( s.scope ) == foreign.end() )
         {
             out[ std::size_t( it - std::begin( kRspecTargets ) ) ] = true;
         }

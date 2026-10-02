@@ -764,6 +764,9 @@ inline std::optional<RubyTypedRecv> rubyTypedRecvOf( const Reference& r ) noexce
 // RSpec's targets (test/rubyrspectargetcheck.sh, parser version 133): inside an example group, the receiver-less builder
 // `builder` — or the bare `is_expected`, which is `expect( subject )` — returns an instance of `cls`, whose `to`/`not_to`/
 // `to_not` are RSpec's. ingest_binds.h rubyValueType types the value; graph.h RubyTypedReceivers answers a call on it.
+// The matchers whose chain methods are RSpec's join them (parser version 136): `receive( :m ).with( 1 )`, the `to` of
+// `change { }.from( 1 ).to( 2 )` — a call on a chain rooted at one is typed as the root (ingest_binds.h
+// rubyMatcherChainType); a link's own class (Change's `from` returns a ChangeFromValue) is RSpec's all the same.
 struct RspecTarget
 {
     std::string_view builder;
@@ -775,6 +778,16 @@ inline constexpr RspecTarget kRspecTargets[] = {
     { "allow", "RSpec::Mocks::AllowanceTarget" },
     { "expect_any_instance_of", "RSpec::Mocks::AnyInstanceExpectationTarget" },
     { "allow_any_instance_of", "RSpec::Mocks::AnyInstanceAllowanceTarget" },
+    { "receive", "RSpec::Mocks::Matchers::Receive" },
+    { "have_received", "RSpec::Mocks::Matchers::HaveReceived" },
+    { "receive_messages", "RSpec::Mocks::Matchers::ReceiveMessages" },
+    { "receive_message_chain", "RSpec::Mocks::Matchers::ReceiveMessageChain" },
+    { "change", "RSpec::Matchers::BuiltIn::Change" },
+    { "raise_error", "RSpec::Matchers::BuiltIn::RaiseError" },
+    { "raise_exception", "RSpec::Matchers::BuiltIn::RaiseError" },
+    { "output", "RSpec::Matchers::BuiltIn::Output" },
+    { "be_within", "RSpec::Matchers::BuiltIn::BeWithin" },
+    { "yield_control", "RSpec::Matchers::BuiltIn::YieldControl" },
 };
 inline constexpr std::string_view kRspecBlockTarget = "RSpec::Expectations::BlockExpectationTarget";
 

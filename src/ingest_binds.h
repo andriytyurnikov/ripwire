@@ -560,11 +560,14 @@ inline bool rubyNamingChild( TSNode n, const char* t, TSNode c ) noexcept
 // group a receiver-less `expect( v )`, `allow( v )`, `expect_any_instance_of( K )`, `allow_any_instance_of( K )` and a
 // bare `is_expected` build one of RSpec's target classes (model.h kRspecTargets; `expect { … }` a BlockExpectationTarget),
 // so `expect( v ).to` is a call on RSpec's object. Not read: outside a group (a helper module a `config.include` mixes
-// in), and matcher chains (`receive( :m ).with( … )`, `change { }.from( a ).to( b )`).
+// in). A matcher builder (`receive`, `change`, …) is one of them too, and a call on a chain rooted at one — the `to` of
+// `change { }.from( a ).to( b )`, `.and_return` after `receive( :m ).with( 1 )` — is typed as the root, through at most
+// kRubyMatcherChainLinks links (rubyMatcherChainType, parser version 136).
 inline constexpr std::string_view kRubyTypedFinders[] = { "create", "create!", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!",
                                                           "find_or_initialize_by", "find_sole_by", "first", "first!", "last", "last!", "new", "sole",
                                                           "take", "take!" };
 inline constexpr std::string_view kRubyFactoryBuilds[] = { "build", "build_stubbed", "create" };
+inline constexpr std::size_t      kRubyMatcherChainLinks = 8;   // a chain is short; a hostile one costs a bounded walk
 
 // What one value builds: a class's constant as written, or a factory name (`factory`), and the method that built it. Empty
 // `type` = untyped. Views into the file's source.
@@ -608,9 +611,28 @@ inline RubyValueType rubyGroupBuildType( TSNode v, std::string_view m, std::stri
     return RubyValueType { m == "expect" && block ? kRspecBlockTarget : target->cls, m, false };
 }
 
+// What a matcher chain `v` inside an example group builds: the class of the RSpec builder at its root — the receiver-less
+// call fewer than kRubyMatcherChainLinks receivers below `v`, so a call on `v` is at most that many links from it — whose
+// every link is RSpec's; untyped for any other root (a FactoryBot build's methods return anything).
+inline RubyValueType rubyMatcherChainType( TSNode v, std::string_view src )
+{
+    TSNode link = v;
+    for( std::size_t depth = 0; depth < kRubyMatcherChainLinks && !ts_node_is_null( link ) && kindIs( ts_node_type( link ), "call" ); ++depth )
+    {
+        const TSNode recv = fieldChild( link, NodeField::Receiver );
+        if( ts_node_is_null( recv ) )
+        {
+            const RubyValueType root = rubyGroupBuildType( link, fieldChildTextOfKind( link, NodeField::Method, "identifier", src ), src );
+            return root.factory ? RubyValueType {} : root;
+        }
+        link = recv;
+    }
+    return {};
+}
+
 // What a call `v` to `m` on `recv` builds, read at `site`: a FactoryBot build on `FactoryBot`, a finder on any other
 // constant — the constant AS WRITTEN (`OpenSSL::Cipher`): graph.h reads a qualified one only when the tree opens that
-// path — or `described_class.new`.
+// path — `described_class.new`, or a link of a matcher chain in an example group.
 inline RubyValueType rubyReceiverBuildType( TSNode v, TSNode recv, std::string_view m, std::string_view src, const RubyValueSite& site )
 {
     const std::string_view on = isRubyConstantNode( recv ) ? rubyFinalConstant( recv, src ) : std::string_view {};
@@ -624,7 +646,11 @@ inline RubyValueType rubyReceiverBuildType( TSNode v, TSNode recv, std::string_v
         return finder ? RubyValueType { pattern::nodeText( recv, src ), m, false } : RubyValueType {};
     }
     const bool describedNew = m == "new" && kindIs( ts_node_type( recv ), "identifier" ) && pattern::nodeText( recv, src ) == "described_class";
-    return describedNew && !site.described.empty() ? RubyValueType { site.described, m, false } : RubyValueType {};
+    if( describedNew )
+    {
+        return site.described.empty() ? RubyValueType {} : RubyValueType { site.described, m, false };
+    }
+    return site.inGroup ? rubyMatcherChainType( v, src ) : RubyValueType {};
 }
 
 // What the value expression `v` builds (the section note above), read at `site`.
