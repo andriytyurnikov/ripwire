@@ -296,7 +296,12 @@ absent(){
     local n r; n="$( line "$2" "$3" )"
     [ -n "$n" ] || { no "fixture marker @$3 missing in $2"; return; }
     r="$( rows "$2" "$n" "$1" )"
-    [ -z "$r" ] && ok "@$3 makes no :$1 call ($4)" || no "@$3 ($2:$n) records a :$1 call ($4); census: $( printf '%s' "$r" | tr '\t\n' ' ;' )"
+    if [ -z "$r" ]
+    then
+        ok "@$3 makes no :$1 call ($4)"
+    else
+        no "@$3 ($2:$n) records a :$1 call ($4); census: $( printf '%s' "$r" | tr '\t\n' ' ;' )"
+    fi
 }
 
 census "$FIX" || exit 1
