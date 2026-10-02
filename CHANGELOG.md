@@ -15,6 +15,93 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a Ruby call on a receiver the code builds answers from that class's lookup: locals, lets, factories, constructions
+
+A Ruby receiver the code builds is an instance of one class, and Ruby's method lookup on that class decides which `def`
+answers a call on it. Until now every such call bound by name alone — same file, same directory, the one definer in the
+tree, else no edge:
+- `c = Client.new` then `c.get` declined between `Client#get` and `Other#get`.
+- `u = User.find( id )` then `u.email`, a column Rails generates, bound to an unrelated `Post#email`.
+- In a spec, `let( :user ) { create( :user ) }` then `user.activate!` bound to `Post#activate!` whenever the file also
+  built a Post: the include narrow reads `Post.new` as an import, and `RSpec.describe User` names User only as an
+  argument.
+
+**What is typed** (`ingest_binds.h`, on the walk that already tracks Ruby's locals and RSpec's lets). A value is typed
+when it is `Const.new( … )`, an Active Record finder on a constant (`find`, `find_by`, `create`, `first`, … ),
+`described_class.new`, or a FactoryBot build (`create`/`build`/`build_stubbed( :user, … )` inside an example group, or
+on `FactoryBot`). A call's receiver is typed when it is:
+- one of those written in place: `Client.new.close`, `User.find_by( … ).activate!`, `create( :user ).name`;
+- a local whose every binding in its scope builds the same one;
+- the `let`/`subject` RSpec runs for that name there: the innermost, so a nested group's override wins, and a local of
+  the same name hides it. A group's implicit `subject` is its parent's explicit one, else `described_class.new`.
+
+A factory's class is FactoryBot's rule, read from the tree's `FactoryBot.define` blocks (`captureRubyFactories`): the
+`class:` option as written, else the enclosing factory's, else the `parent:` factory's, else the name camelised. The
+type rides the call reference's receiver text (`model.h rubyTypedRecvOf`) with the receiver kind unchanged, so every
+rule that does not read it sees the call exactly as before.
+
+**How a typed call resolves** (`graph.h RubyTypedReceivers`). The class's lookup answers: its own methods, its mixins
+and superclass chain over the Ruby overlay of the entry below (the shallowest level that defines the name decides), then a reopened
+`Object`, `Kernel` or `BasicObject`. When none of those defines it, a class below may (Active Record's single-table
+inheritance hands back a subclass), so the call keeps the candidates the class's instances reach (`RubySelfReach`). With
+none left the call is refused as external (`external=`): a column, an association, `errors`, `reload`, a framework
+method — the method Ruby runs is outside the tree. The type is used only when it means what it says:
+- a factory with one class tree-wide;
+- a class the tree defines, and for a qualified constant, one whose path the tree opens: `OpenSSL::Cipher.new` is not
+  activerecord's `Encryption::Cipher`, `Stripe::Customer` is not an app's `Customer` model;
+- no class in its lookup defining the method that built it: a `def self.find` may return anything.
+
+Measured with `--no-cache`, `feat/ruby-rails-definers` (255828cf, parser version 131) against these changes, both runs on
+one snapshot of each tree. Edges and isolated symbols are `--report` totals. Call sites are keyed by (file, line,
+callee) with `--pin-census`.
+
+| Corpus | Edges | Call-graph isolated | Sites gaining an edge | Retargeted | Edges lost (refused) | Newly refused (no edge before) |
+| --- | --- | --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 11,278 → 11,275 | 2,611 → 2,604 | 33 | 31 | 0 | 2 |
+| activesupport 7.2.3.2 `lib/` | 3,498 → 3,500 | 1,293 → 1,292 | 3 | 0 | 1 | 4 |
+| Rails app A | 28,733 → 29,670 | 19,023 → 18,999 | 2,616 | 212 | 625 | 3,880 |
+| Rails app B | 27,093 → 27,192 | 5,867 → 5,831 | 926 | 292 | 1,370 | 1,795 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | | | | |
+
+Most of the applications' change is in specs, where a `let` built by a factory is the commonest receiver there is.
+Sampled against the source:
+- **Edges lost were wrong:** 10 of 10 on each application. Every one bound a generated method — an association, a
+  column or its setter, `errors`, `reload`, CanCan's `can?` — to an unrelated class's namesake, a test stub's
+  `body` among them.
+- **Added edges correct:** 10 of 10 on activerecord (Arel managers built in place: `um.take`, `sm.project`) and 10 of 10
+  on each application. On application A, 2 of the 10 bind to a Sorbet `abstract` stub in a mixin (`def id; end` in
+  a reports module). Ruby's lookup does find the stub first: Rails includes its generated attribute and
+  association modules when the class is created, so a later `include` comes before them, and sorbet-runtime's stub
+  forwards to `super`.
+- **Retargets better:** 9 of 10 on activerecord (1 neutral), 6 of 6 on application B (`service.call` had bound to
+  a middleware's `call`), 9 of 10 on application A (1 now split between two classes that share a final name).
+
+Stated floors, each pinned by `test/rubytypedrecvcheck.sh`:
+- **(a)** A type the tree does not define (`Net::HTTP.new`, `SimpleDelegator.new`, a `Point = Struct.new( … )` constant)
+  changes nothing; neither does a qualified constant whose path the tree never opens.
+- **(b)** A class that defines its own `self.find` or `self.new`, or has an ancestor that does, may return anything: a
+  local built that way is untyped.
+- **(c)** Control flow is not read. A local bound any other way anywhere in its scope — another assignment, a parameter,
+  a block parameter — is untyped everywhere in that scope.
+- **(d)** Instance variables, method return values, `x.class` and a `let` defined in a shared context in another file are
+  not typed.
+- **(e)** A class whose lookup can leave it (a delegator, `method_missing`, the delegation DSL) refuses nothing, as for
+  a call to self (the entry below).
+- **(f)** Two factories sharing a name with different classes type nothing.
+- **(g)** A method defined only through `alias`/`alias_method` is no definition the tree indexes, so a typed call to it
+  is refused rather than bound to another class's namesake (activerecord's `sm.limit = 1`, which had no edge before
+  either).
+
+Classes are keyed by final segment, as everywhere in the graph: two classes sharing a name share a lookup (the
+split above; `test/rubyreachcheck.sh` floor (e)).
+
+Two earlier floors are lifted, and their gate arms are kept inverted: `test/rubyrecvnarrowcheck.sh` (c), where
+`Calc.new.scale` now pins to `Calc::scale`, and `test/rubydescribedclasscheck.sh` (a), where `described_class.new.m`
+now pins to the described class.
+
+`kParserVer` 131 → 132. Same layout (a typed receiver is a string the record already carries; factories are bindings of
+the appended `LocalBindKind::RubyFactory`): `kCacheVersion` stays 27, and Ruby caches re-parse once.
+
 
 ### Changed — a Ruby call to self reaches what Ruby's method lookup reaches: mixins are ancestors, a class body's self is the class, an unreachable namesake is no target
 
