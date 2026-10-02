@@ -5,10 +5,14 @@
 # RSpec::Mocks::AllowanceTarget, an AnyInstance…Target — and its `to`/`not_to`/`to_not` are RSpec's. Before this round the
 # receiver was untyped, so the call bound by NAME alone: on a Rails app whose only `def to` is a presenter's, every one of
 # its 13,740 expectations bound to that presenter, which then ranked first in the default map.
+# A matcher's chain is RSpec's too (parser version 136): `receive( :m ).with( 1 )`, the `to` of `change { }.from( 1 ).to( 2 )`
+# and every later link (`.and_return( 2 )`) are called on the matcher the receiver-less builder at the chain's root returns.
 # THE RULE (ingest_binds.h rubyValueType; model.h kRspecTargets; graph.h RubyTypedReceivers): inside an example group's
 # block — a describe/context or a shared group, a `def` in one included — a receiver-less `expect`, `allow`,
 # `expect_any_instance_of`, `allow_any_instance_of` call and a bare `is_expected` build a value of that RSpec class, typed
-# like any built receiver (written in place or held by a local). A call on it answers from the class's lookup: when the
+# like any built receiver (written in place or held by a local); so do the matcher builders `receive`, `have_received`,
+# `change`, `raise_error`, `output`, `be_within` and their kin, and a call on a chain rooted at one of them is typed as
+# the root (ingest_binds.h rubyMatcherChainType). A call on it answers from the class's lookup: when the
 # tree never opens the class, only a reopened Object/Kernel/BasicObject can answer, and otherwise the call is refused as
 # external (the method Ruby runs is RSpec's); a tree that opens the class (RSpec's own, or a patch) answers from it as from
 # any in-tree class.
@@ -16,10 +20,11 @@
 # Stated floors, each pinned below:
 #   (a) outside an example group — a helper module in spec/support that a `config.include` mixes in — the call binds by
 #       name as before.
-#   (b) a tree that defines a method named `expect` (or `allow`, …) anywhere types nothing from that name: the call binds by
-#       name as before.
-#   (c) matcher chains are not typed: `receive( :x ).with( 1 )` and the `to` of `change { }.from( 1 ).to( 2 )` bind by
-#       name as before.
+#   (b) a tree that defines a method named `expect` (or `allow`, `change`, …) where an example group's self can reach it — a
+#       top-level def, a module's (a `config.include` may mix it in), a reopened Object's — types nothing from that name:
+#       the call binds by name as before. A class's method is not in a group's lookup: a migration's `def change` shadows
+#       nothing.
+#   (c) a chain is read through at most 8 links from its builder: a later link binds by name as before.
 #   (d) an `expect` with a receiver (`helper.expect( 1 )`) is not RSpec's builder: untyped.
 #
 # Usage:  test/rubyrspectargetcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyrspectargetcheck.sh
@@ -36,7 +41,7 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"
-for d in app/presenters app/models app/mailers lib/core_ext spec/models spec/support
+for d in app/presenters app/models app/mailers lib/core_ext spec/models spec/support db/migrate
 do
     mkdir -p "$FIX/$d"
 done
@@ -58,6 +63,22 @@ class LinkPresenter
 
   def with
     :presenter
+  end
+
+  def and_return
+    :presenter
+  end
+
+  def twice
+    :presenter
+  end
+end
+RUBY
+# a class's `def change` — every Rails migration has one — is no method of an example group: it shadows no builder
+cat > "$FIX/db/migrate/001_add_name.rb" <<'RUBY'
+class AddName < ActiveRecord::Migration[7.2]
+  def change
+    add_column :users, :name, :string
   end
 end
 RUBY
@@ -136,6 +157,9 @@ RSpec.describe User do
   it "matcher chains" do
     expect( user ).to receive( :activate! ).with( 1 ) # @receive_with
     expect { 1 }.to change { 1 }.from( 1 ).to( 2 ) # @change_to
+    allow( user ).to receive( :activate! ).with( 1 ).and_return( 2 ) # @chain_link
+    expect( user ).to have_received( :activate! ).with( 1 ) # @have_received
+    allow( user ).to receive( :activate! ).with( 1 ).with( 2 ).with( 3 ).with( 4 ).with( 5 ).with( 6 ).with( 7 ).with( 8 ).twice # @chain_floor
   end
 
   it "a receiver" do
@@ -240,12 +264,17 @@ refused to      $U group_def    "a def inside an example group runs in it"
 refused to      $U shared       "a shared group's examples run in the including group"
 reaches Object::to_widget $U root "a reopened Object answers on every instance, RSpec's targets included"
 
+echo "=== a matcher's chain is RSpec's: each link is called on the matcher its root builder returns ==="
+refused with       $U receive_with  "receive( :m ) is an RSpec::Mocks::Matchers::Receive — its with is RSpec's"
+refused to         $U change_to     "change { }.from( 1 ) is a Change matcher's chain — its to is RSpec's (a migration's def change shadows nothing)"
+refused and_return $U chain_link    "receive( … ).with( 1 ).and_return — two links from the builder"
+refused with       $U have_received "have_received( :m ).with"
+
 echo "=== floors: what is not RSpec's target, or not read as one ==="
-reaches LinkPresenter::to   app/mailers/mailer.rb untyped "an untyped receiver outside a spec binds by name as before"
-reaches LinkPresenter::to   spec/support/helpers.rb support "floor (a): a helper module outside a group binds by name as before"
-reaches LinkPresenter::with $U receive_with "floor (c): a matcher chain is not typed — receive( … ).with binds by name"
-reaches LinkPresenter::to   $U change_to    "floor (c): change { }.from( 1 ).to( 2 ) is a matcher's to — binds by name"
-reaches LinkPresenter::to   $U recv_expect  "floor (d): helper.expect( 1 ) is not RSpec's builder — binds by name"
+reaches LinkPresenter::to    app/mailers/mailer.rb untyped "an untyped receiver outside a spec binds by name as before"
+reaches LinkPresenter::to    spec/support/helpers.rb support "floor (a): a helper module outside a group binds by name as before"
+reaches LinkPresenter::twice $U chain_floor  "floor (c): a link more than 8 from its builder binds by name as before"
+reaches LinkPresenter::to    $U recv_expect  "floor (d): helper.expect( 1 ) is not RSpec's builder — binds by name"
 
 census "$SHADOW" || exit 1
 reaches Wrapper::to spec/models/thing_spec.rb shadow "floor (b): the tree defines expect — expect( 1 ) is its Wrapper, bound by name" "$SHADOW"
