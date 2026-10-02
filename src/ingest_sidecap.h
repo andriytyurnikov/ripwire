@@ -2396,11 +2396,18 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
     // same refs window — the tags query cannot tell a bare call from a local read (both are an (identifier)).
     // Parser version 132 (test/rubytypedrecvcheck.sh): the same walk types each call receiver the file builds, written
     // into the call references this window holds; and FactoryBot's factory definitions, into binds.
+    // Parser version 135 (test/rubyrakejbuildercheck.sh): `helper_method` declarations into binds, and a Jbuilder
+    // template's `json` — a local, typed JbuilderTemplate — in the refs window.
     if( le.lang == Lang::Ruby )
     {
         captureRubyAttrDefs( root, fileId, src, defs );
         captureRubyBareCalls( root, fileId, src, refs );
         captureRubyFactories( root, fileId, src, binds );
+        captureRubyHelperMethods( root, fileId, src, binds );
+        if( le.ext == kJbuilderExt )
+        {
+            typeRubyJbuilderLocal( fileId, refs );
+        }
     }
 }
 

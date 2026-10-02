@@ -2179,7 +2179,7 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // not include this header; it relies on ingest.cpp including quality.h (line 13) before ingest_cache.h, and a reorder
 // that broke that fails the build on the undeclared name rather than passing.
 constexpr std::uint32_t kIngestCacheVersionMirror   = 27;   // MUST equal ingest.cpp's kCacheVersion (gated); 27 = corrected fnScope values, 26 = function-local def scope span (25 = #157 + #150)
-constexpr std::uint32_t kIngestParserVerMirror    = 134;  // MUST equal ingest.cpp's kParserVer   (gated)
+constexpr std::uint32_t kIngestParserVerMirror    = 135;  // MUST equal ingest.cpp's kParserVer   (gated)
                                                           // 132 = 2026-10-02 (Ruby typed receivers, see kParserVer note;
                                                           //   kIngestCacheVersionMirror stays 27)
                                                           // 131 = 2026-10-02 (Ruby mixins are ancestors, see kParserVer note;

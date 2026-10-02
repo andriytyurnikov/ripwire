@@ -208,7 +208,7 @@ inline IncludeLang includeLangOf( std::string_view path ) noexcept
         // never a basename fallback); none is deferred, because unlike a Go package path or a C# namespace,
         // each of these four names a FILE by a rule this tool can evaluate without a build system.
         { ".sh",  IncludeLang::Bash },    { ".bash", IncludeLang::Bash },  { ".zsh", IncludeLang::Bash },
-        { ".rb",  IncludeLang::Ruby },
+        { ".rb",  IncludeLang::Ruby },    { ".rake", IncludeLang::Ruby },  { ".jbuilder", IncludeLang::Ruby },
         { ".lua", IncludeLang::Lua },
         { ".ex",  IncludeLang::Elixir },  { ".exs", IncludeLang::Elixir },
         // B6.2: `.cs` has NO entry here — it falls through to IncludeLang::Other below, DEFERRED like

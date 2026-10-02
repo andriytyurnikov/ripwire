@@ -1198,6 +1198,99 @@ inline void captureRubyBareCalls( TSNode root, std::uint32_t fileId, std::string
     walk.sendTargets( firstRef, queryRefsEnd );
 }
 
+// ─── A Jbuilder template's `json`, and `helper_method` (test/rubyrakejbuildercheck.sh, parser version 135) ─────────────
+// graph.h RubyTopSelf reads a template's self outside any class as the view. The template handler binds `json` there to the
+// view's JbuilderTemplate (model.h kJbuilderTemplate), whose method_missing makes every name a key: a read of it is no
+// call, and a call on it is typed that class. A `helper_method :a, :b` at class-body position names methods of the class
+// its views call, recorded as LocalBindKind::RubyHelperMethod bindings against the declaring class or module (a concern's
+// `included do` block declares for the concern, whose def it is).
+
+// Over a template's references — the trailing run carrying this fileId: the bare-word `json` reads dropped, and each call
+// on `json` typed JbuilderTemplate.
+inline void typeRubyJbuilderLocal( std::uint32_t fileId, std::vector<RawRef>& refs )
+{
+    std::size_t first = refs.size();
+    while( first > 0 && refs[ first - 1 ].fileId == fileId )
+    {
+        --first;
+    }
+    const auto read = []( const RawRef& r ) { return r.role == RefRole::Call && r.recv == RecvKind::None && r.name == kJbuilderLocal; };
+    refs.erase( std::remove_if( refs.begin() + std::ptrdiff_t( first ), refs.end(), read ), refs.end() );
+    for( std::size_t i = first; i < refs.size(); ++i )
+    {
+        if( refs[ i ].role == RefRole::Call && refs[ i ].recv == RecvKind::NamedVar && refs[ i ].recvVar == kJbuilderLocal )
+        {
+            refs[ i ].recvVar = rubyTypedRecvToken( kJbuilderTemplate, kJbuilderLocal, false );
+        }
+    }
+}
+
+// Does `call` sit at class-body position — its nearest enclosing def-or-class a class or module, any blocks between?
+inline bool rubyAtClassBody( TSNode call ) noexcept
+{
+    for( TSNode p = ts_node_parent( call ); !ts_node_is_null( p ); p = ts_node_parent( p ) )
+    {
+        const char* t = ts_node_type( p );
+        if( kindIs( t, "class" ) || kindIs( t, "module" ) )
+        {
+            return true;
+        }
+        if( kindIs( t, "method" ) || kindIs( t, "singleton_method" ) || kindIs( t, "singleton_class" ) )
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+// Each symbol of the `helper_method` call `call`, a binding against the class or module around it.
+inline void rubyNoteHelperMethods( TSNode call, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+{
+    const std::string owner = rubyEnclosingScopeOf( call, src );
+    const TSNode      args  = fieldChild( call, NodeField::Arguments );
+    if( owner.empty() || ts_node_is_null( args ) )
+    {
+        return;
+    }
+    ChildCursor cursor( args );   // O(children) (src/infra/tschildren.h)
+    forEachNamedChild( args, cursor.cur, [ & ]( TSNode a )
+    {
+        if( kindIs( ts_node_type( a ), "simple_symbol" ) )
+        {
+            binds.push_back( RawBind { .fileId = fileId, .startByte = ts_node_start_byte( a ), .lang = Lang::Ruby, .kind = LocalBindKind::RubyHelperMethod,
+                                       .var = std::string( pattern::nodeText( a, src ).substr( 1 ) ), .typeName = owner } );
+        }
+        return true;
+    } );
+}
+
+// One file's `helper_method` declarations, into `binds` — a file that never spells the word is not walked. One iterative
+// pre-order walk: an explicit stack, so a hostile nesting depth costs heap, not stack.
+inline void captureRubyHelperMethods( TSNode root, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+{
+    if( src.find( "helper_method" ) == std::string_view::npos )
+    {
+        return;
+    }
+    std::vector<TSNode> stack { root };
+    std::vector<TSNode> kids;
+    ChildCursor         cursor( root );
+    while( !stack.empty() )
+    {
+        const TSNode n = stack.back();
+        stack.pop_back();
+        const bool declares = kindIs( ts_node_type( n ), "call" ) && ts_node_is_null( fieldChild( n, NodeField::Receiver ) )
+                           && fieldChildTextOfKind( n, NodeField::Method, "identifier", src ) == "helper_method";
+        if( declares && rubyAtClassBody( n ) )
+        {
+            rubyNoteHelperMethods( n, fileId, src, binds );
+            continue;
+        }
+        collectChildren( n, cursor.cur, kids );
+        stack.insert( stack.end(), kids.begin(), kids.end() );
+    }
+}
+
 // ─── FactoryBot's factory definitions (parser version 132, test/rubytypedrecvcheck.sh) ─────────────────────────────────
 // `factory :user do … end` inside a `FactoryBot.define` (or `FactoryGirl.define`) block defines what `create( :user )`
 // builds, and its class is FactoryBot's own rule: the `class:` option as written — a constant, or a string naming one (its

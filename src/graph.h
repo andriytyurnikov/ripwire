@@ -2713,6 +2713,8 @@ inline constexpr std::string_view kRubyDelegatorBaseNames[] = { "Decorator", "De
 // Class, so a Module. A tree that REOPENS one (activesupport's core_ext: Object#blank?, Kernel#silence_warnings,
 // Class#class_attribute) defines methods any self reaches.
 inline constexpr std::string_view kRubyImplicitRoots[] = { "BasicObject", "Class", "Kernel", "Module", "Object" };
+// An instance's implicit ancestors — a typed receiver's, or `main`'s and a view's outside any class: not a Class or Module.
+inline constexpr std::string_view kRubyInstanceRoots[] = { "BasicObject", "Kernel", "Object" };
 
 // The delegation DSL: a class that writes one defines methods the tree indexes nowhere in it (ActiveSupport's `delegate`
 // and `delegate_missing_to`, Forwardable's `def_delegator(s)`), so it may answer a name no lookup over the tree finds.
@@ -2996,6 +2998,104 @@ inline RubySelfReach buildRubySelfReach( const IngestResult& ing, const HashMap<
     return reach;
 }
 
+// RUBY TOP-LEVEL SELF of a Rake task file and a Jbuilder template (test/rubyrakejbuildercheck.sh; parser version 135).
+// Outside any class Ruby's self is what runs the file. Rake loads a `.rake` file at top level and calls a task's block as
+// written, so self there is `main`: a receiver-less call reaches a top-level def (a private method of Object) or a
+// reopened Object, Kernel or BasicObject. ActionView compiles a template into a method of the view, so self in a
+// `.jbuilder` file is the view, which also mixes in each helper module the application defines (Rails' `helper :all`:
+// the modules of the `*_helper.rb` files under app/helpers/) and answers each controller method a `helper_method`
+// declaration names (LocalBindKind::RubyHelperMethod). A candidate owned by any other Ruby class or module the tree
+// defines is a method no lookup finds — the call names a partial's local, a route helper, ActionView's own — and so is a
+// def in test code (filter.h isTestSymbol: a def inside an example group's block has no class around it, and is the
+// group's method). A call left with none is refused as external. A `.rb` file's top level is left to RubySelfReach, which leaves it alone: a block
+// there may run with another self (`describe`, `routes.draw`, `FactoryBot.define`).
+struct RubyTopSelf
+{
+    enum class Kind : std::uint8_t { None, Main, View };
+    const IngestResult&   ing;
+    const RubySelfReach&  reach;
+    std::vector<Kind>     byFile;        // per file: what self is outside any class
+    HashMap<NodeId, char> viewMethods;   // the defs a view answers besides main's: helper modules', helper_methods'
+
+    // the self a Ruby call outside any class runs against in r's file, as a key no class shares; nullptr when not known
+    const std::string* selfOf( const Reference& r ) const
+    {
+        static const std::string kMain = "<main>", kView = "<view>";
+        const Kind kind = r.fileId < byFile.size() ? byFile[ r.fileId ] : Kind::None;
+        const bool call = r.lang == Lang::Ruby && r.role == RefRole::Call && r.qualifier.empty() && r.fromSymbol != kNoNode
+                       && ( r.recv == RecvKind::None || r.recv == RecvKind::ThisObj ) && callerSelfScope( ing, r ).empty();
+        return !call || kind == Kind::None ? nullptr : kind == Kind::Main ? &kMain : &kView;
+    }
+    static bool owns( const std::string& self ) noexcept { return self == "<main>" || self == "<view>"; }
+
+    // The candidates of `ids` self reaches, into `out` (cleared first); true when any was left out. A class's self is
+    // RubySelfReach's to read; for "<main>" and "<view>", a candidate owned by no Ruby class or module the tree defines is
+    // reachable, as RubySelfReach reads it.
+    template<class In, class Out>
+    bool reachableOf( const std::string& self, const In& ids, Out& out ) const
+    {
+        if( !owns( self ) )
+        {
+            return reach.reachableOf( ing, self, ids, out );
+        }
+        out.clear();
+        for( const NodeId c : ids )
+        {
+            const std::string& owner = ing.symbols[ c ].scope;
+            const bool root  = owner.empty() || std::ranges::find( kRubyInstanceRoots, owner ) != std::end( kRubyInstanceRoots );
+            const bool known = reach.qualifiedOwner.find( c ) != reach.qualifiedOwner.end() || reach.classNames.find( owner ) != reach.classNames.end();
+            const bool view  = self == "<view>" && viewMethods.find( c ) != viewMethods.end();
+            if( ( root || !known || view ) && !isTestSymbol( ing, c ) )
+            {
+                out.push_back( c );
+            }
+        }
+        return out.size() < ids.size();
+    }
+};
+
+// Is `path` a helper file Rails' `helper :all` loads — a `*_helper.rb` under an app/helpers/ directory?
+inline bool rubyIsHelperFile( std::string_view path ) noexcept
+{
+    const std::size_t dir = path.rfind( "app/helpers/" );
+    return dir != std::string_view::npos && ( dir == 0 || path[ dir - 1 ] == '/' ) && path.ends_with( "_helper.rb" );
+}
+
+// What self is outside any class in the file at `path`: Rake's main in a task file, the view in a Jbuilder template.
+inline RubyTopSelf::Kind rubyTopSelfKindOf( std::string_view path ) noexcept
+{
+    return path.ends_with( ".rake" ) ? RubyTopSelf::Kind::Main : path.ends_with( ".jbuilder" ) ? RubyTopSelf::Kind::View : RubyTopSelf::Kind::None;
+}
+
+// RubyTopSelf over one graph: each file's top-level self by extension, and the defs a view answers — every method of a
+// helper file's modules, and each def a `helper_method` declaration names in its own class or module.
+inline RubyTopSelf buildRubyTopSelf( const IngestResult& ing, const RubySelfReach& reach )
+{
+    RubyTopSelf top{ .ing = ing, .reach = reach };
+    top.byFile.reserve( ing.files.size() );
+    for( const std::string& path : ing.files )
+    {
+        top.byFile.push_back( rubyTopSelfKindOf( path ) );
+    }
+    HashMap<std::string, char> declared;   // "<owner>#<method>"
+    for( const Binding& b : ing.bindings )
+    {
+        if( b.kind == LocalBindKind::RubyHelperMethod )
+        {
+            declared.try_emplace( b.typeName + "#" + b.var, 1 );
+        }
+    }
+    for( const Symbol& s : ing.symbols )
+    {
+        const bool method = s.lang == Lang::Ruby && ( s.kind == SymKind::Function || s.kind == SymKind::Method ) && !s.scope.empty();
+        if( method && ( rubyIsHelperFile( ing.files[ s.fileId ] ) || ( !declared.empty() && declared.find( s.scope + "#" + s.name ) != declared.end() ) ) )
+        {
+            top.viewMethods.try_emplace( s.id, 1 );
+        }
+    }
+    return top;
+}
+
 // RUBY TYPED RECEIVERS (test/rubytypedrecvcheck.sh; parser version 132 types them — model.h rubyTypedRecvOf).
 //
 // A call whose receiver the code builds — `c = Client.new`, `User.find_by( … ).activate!`, a let whose block runs
@@ -3015,8 +3115,8 @@ inline RubySelfReach buildRubySelfReach( const IngestResult& ing, const HashMap<
 // `allow( v )`, `is_expected` return in an example group; test/rubyrspectargetcheck.sh). When the tree never opens the
 // class, only a reopened instance root can answer a call on one, and otherwise RSpec's method runs: the call is refused as
 // external. A tree that opens the class answers from it as above; a tree that defines a method of the builder's name
-// (`def expect`) types nothing from that name.
-inline constexpr std::string_view kRubyInstanceRoots[] = { "BasicObject", "Kernel", "Object" };
+// (`def expect`) types nothing from that name. A Jbuilder template's `json` is another (model.h kJbuilderTemplate): every
+// call on it is a key the class's method_missing writes (test/rubyrakejbuildercheck.sh).
 
 struct RubyTypedReceivers
 {
@@ -3085,12 +3185,15 @@ inline const std::string* RubyTypedReceivers::classOf( const Reference& r ) cons
     return &cls->first;
 }
 
-// is r's receiver one of RSpec's targets, built by a builder the tree does not define, of a class the tree never opens?
+// is r's receiver one of RSpec's targets, built by a builder the tree does not define, or a template's `json` — of a
+// class the tree never opens?
 inline bool RubyTypedReceivers::outOfTreeTarget( const Reference& r ) const
 {
     const std::optional<RubyTypedRecv> typed  = rubyTypedRecvOf( r );
     const RspecTarget* const           target = typed ? rubyRspecTarget( *typed ) : nullptr;
-    return target != nullptr && !builderShadowed( target ) && openedPaths.find( std::string( rubyTypedWritten( *typed ) ) ) == openedPaths.end();
+    const bool jbuilder = typed && !typed->factory && typed->via == kJbuilderLocal && rubyTypedWritten( *typed ) == kJbuilderTemplate;
+    return ( jbuilder || ( target != nullptr && !builderShadowed( target ) ) )
+        && openedPaths.find( std::string( rubyTypedWritten( *typed ) ) ) == openedPaths.end();
 }
 
 // what lookup on `cls` reaches for r's method: its own or an ancestor's definitions, else a reopened instance root's
@@ -3752,6 +3855,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     const ChaUpNames&              rubyUp    = rubyCha.merged ? rubyCha.up : chaUp;     // a Ruby call to self reads mixins too
     const RubySelfReach            rubyReach = buildRubySelfReach( ing, rubyUp, rubyCha.merged ? rubyCha.down : chaDown, rubyBases );
     const RubyTypedReceivers       rubyTypes = buildRubyTypedReceivers( ing, rubyReach, rubyBases, rubyUp, narrower );   // a receiver the code builds
+    const RubyTopSelf              rubyTop   = buildRubyTopSelf( ing, rubyReach );   // a task file's or a template's self outside any class
     const std::vector<std::string> specializationsWithBases = sortedSpecializationNames( chaUp );   // resolve.h: what a C++ specialization inherits
     ChaConeMemo              chaCones( chaUp, chaDown );   // one cone per receiver type, computed on first use (see the type)
     const ClassIdentity      classIds = buildClassIdentity( ing, chaUp );   // Rule 2's class identity: nesting, owners, real inheritance (resolve.h)
@@ -4165,7 +4269,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         const std::string* const rubySelf = rubyTyped != nullptr ? rubyTyped
                                           : r.lang == Lang::Ruby && r.fromSymbol != kNoNode && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
                                                 ? &rubyReach.selfOf( ing, r )
-                                                : nullptr;
+                                                : rubyTop.selfOf( r );
         // P2-D Rule 2 (receiver-variable type): a named-receiver call `x.m()` / `x->m()` resolves to the method on the VARIABLE's type (`Foo::m`
         // for `Foo x;`), BEFORE the bare-name spray — the other half of the [TYPE] cut — read through class identity (resolve.h identityNarrow:
         // nested namesakes dropped, an inherited body, an interface's dispatch split); otherwise narrowed stays false and the name-based fallback
@@ -4264,7 +4368,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // Ruby: Rule 3 and the ladder choose only among what self's method lookup can reach (RubySelfReach) — a narrow
         // to an unreachable namesake must not hide a reachable one.
         if( !scipPinned && !canonical && !narrowed && nameIds != nullptr && rubySelf != nullptr
-            && rubyReach.reachableOf( ing, *rubySelf, *nameIds, rubyReachable ) )
+            && rubyTop.reachableOf( *rubySelf, *nameIds, rubyReachable ) )
         {
             if( rubyReachable.empty() )
             {
@@ -4360,7 +4464,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
 
         // ---- Ruby: the same cut over the assembled set, for the paths above that re-read the whole name list ----------
         if( !scipPinned && !canonical && !cand.empty() && rubySelf != nullptr
-            && rubyReach.reachableOf( ing, *rubySelf, cand, filtScratch ) )
+            && rubyTop.reachableOf( *rubySelf, cand, filtScratch ) )
         {
             cand.swap( filtScratch );
             if( cand.empty() )

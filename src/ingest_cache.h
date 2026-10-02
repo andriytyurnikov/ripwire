@@ -296,7 +296,14 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 134;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 135;          // bump on any grammar/.scm/extraction change
+                                                      // 135 = 2026-10-02 (test/rubyrakejbuildercheck.sh): `.rake` and
+                                                      //   `.jbuilder` files index as Ruby; a Jbuilder template's `json`
+                                                      //   is a local typed JbuilderTemplate, and `helper_method :m` at
+                                                      //   class-body position mints a LocalBindKind::RubyHelperMethod
+                                                      //   binding (an appended kind). New records, same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 134
+                                                      //   lacks them and must re-parse.
                                                       // 134 = 2026-10-02 (test/rubydeclrefcheck.sh): a Rails callback,
                                                       //   validation condition or rescue_from handler named by SYMBOL
                                                       //   mints a Ruby call RawRef at the symbol, and `send( :m )` and

@@ -792,6 +792,12 @@ inline const RspecTarget* rspecTargetOf( std::string_view cls, std::string_view 
     return nullptr;
 }
 
+// A Jbuilder template's `json` (test/rubyrakejbuildercheck.sh, parser version 135): the template handler binds it to the
+// view's JbuilderTemplate, a BasicObject whose method_missing makes every call on it a key. ingest_binds.h types the local
+// in a `.jbuilder` file; graph.h RubyTypedReceivers refuses a call on it unless the tree opens the class.
+inline constexpr std::string_view kJbuilderTemplate = "JbuilderTemplate";
+inline constexpr std::string_view kJbuilderLocal    = "json";
+
 // A physical dependency: one #include / import directive (file → target). The target is the raw
 // include path / module name (resolved to a file id later, for the file→file dependency graph).
 struct Include
@@ -936,9 +942,12 @@ enum class LocalBindKind : std::uint8_t
                    //     `aliases:`), typeName=the final segment of the class it builds (ingest_binds.h captureRubyFactories).
                    //     Read by graph.h rubyFactoryClasses ONLY; every other reader skips it by kind or finds no
                    //     variable of that name. APPENDED for the same cache reason as VarDecl.
+    RubyHelperMethod, // parser version 135: a `helper_method :name` declaration at class-body position — var=the method,
+                   //     typeName=the final segment of the class or module that declares it (ingest_binds.h
+                   //     RubyBareCallWalk::noteDeclaredCall). Read by graph.h RubyTopSelf ONLY. APPENDED, as above.
 };
 // The number of LocalBindKind enumerators — the bound readBind validates a cached kind byte against (see kSymKindCount).
-inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubyFactory ) + 1;
+inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubyHelperMethod ) + 1;
 static_assert( enumCountIsExact<LocalBindKind, kLocalBindKindCount>(), "kLocalBindKindCount must name the LAST LocalBindKind enumerator — move it with the append" );
 
 inline constexpr const char* kFnBindLambdaTarget  = "(lambda)";    // parens are illegal in identifiers, so
