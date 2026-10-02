@@ -15,6 +15,65 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a method a Rails declaration names by symbol has a caller: callbacks, conditions, rescue handlers, `send`
+
+`before_action :authenticate`, `after_save :reindex`, `validate :name_present`, an `if: :published?` condition and
+`rescue_from …, with: :not_found` each name, by symbol, a method the framework calls later on the class's instances.
+Nothing in the source calls it. Until now every callback method in a Rails app therefore had no caller, ranked as a
+leaf, and `--callers` answered nothing for it. The same was true of a method reached through `send( :m )`.
+
+**What is read** (`ingest_binds.h RubyBareCallWalk::noteDeclaredCall`). Each such symbol is a receiver-less call from the
+class body, resolved like any call to self there: the class's own method, a superclass's, or a concern's
+(`test/rubyreachcheck.sh`). A method no class in reach defines (Devise's `authenticate_user!`) is refused, not bound to
+a namesake. The macro must sit at class-body position: the innermost def-or-class wall is a class or module body. A
+concern's `included do` block counts; a def does not.
+
+| Declaration | The symbols read as calls |
+| --- | --- |
+| A callback (`kRubyCallbackMacros`): `before_action`/`after_action`/`around_action` and their `prepend_`/`append_` forms, ActiveRecord/ActiveModel `before_*`/`after_*`/`around_*` and `validate`, ActiveJob `*_perform`/`*_enqueue`/`after_discard`, mailer delivery and ActionCable channel callbacks | each positional symbol, and the `if:`/`unless:` options (a symbol or an array of them) |
+| `validates`, `validates_*_of`, `validates_with` | only `if:`/`unless:` (the positional symbols are attributes) |
+| `rescue_from` | `with:` |
+| `send`, `public_send`, `__send__`, `try`, `try!`, `method` with a literal symbol | that method, called on the same receiver (`sendTargets`) |
+
+The `send` family resolves exactly as the call written out would. The call's own reference is copied, renamed, and
+placed at the symbol, typed receiver included, so `helper.try( :assist )` answers from `Helper`.
+
+Measured with `--no-cache`, `feat/ruby-rspec-expectations` (d8a02633, parser version 133) against this change, both runs
+on one snapshot of each tree.
+
+| Corpus | Edges | Call-graph isolated | Sites gaining an edge (declarations / `send` family) | Newly refused |
+| --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 11,275 → 11,381 | 2,604 → 2,552 | 30 (2 / 28) | 0 |
+| activesupport 7.2.3.2 `lib/` | 3,500 → 3,535 | 1,292 → 1,283 | 34 | 1 |
+| Rails app A | 28,734 → 29,350 | 19,071 → 18,827 | 651 (533 / 118) | 11 |
+| Rails app B | 27,173 → 27,610 | 5,831 → 5,579 | 464 (405 / 59) | 1 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | | |
+
+Sampled against the source:
+- **Declarations:** 20 of 20 correct across the two applications. Each bound to the class's own method, the superclass's
+  (an `ApplicationController` guard, from a subclass's `before_action`), or a concern's (an integration gate's
+  guard, a notifier concern's hook).
+- **The `send` family:** 7 of 10 on application A and 8 of 10 on application B. On B the other two split across classes
+  that share a final name, including the right one (Round 3's floor (g)). On A the three misses bind an untyped
+  receiver's call to the one in-tree namesake (`x.try( :email )` → one model's `email`), as the
+  same call written out, `x.email`, already did.
+- On activerecord, `became.send( :initialize )` on an untyped receiver splits across all 78 `initialize` definitions, as
+  an untyped `x.m` with 78 definers does. That one site carries 78 of activerecord's 106 new edges.
+
+Stated floors, each pinned by `test/rubydeclrefcheck.sh`:
+- **(a)** Option values that are not calls make none: `only:`/`except:` (action names), `on:` (an event), `prepend:`.
+  Neither do `validates`' attribute names.
+- **(b)** `skip_before_action :x` removes a callback and calls nothing.
+- **(c)** `set_callback` and other ActiveSupport::Callbacks plumbing are not read.
+- **(d)** A string or computed name (`send( "m" )`, `send( name )`) is not read.
+- **(e)** A callback macro inside a method body is not read.
+
+Not in this change: methods that `delegate`, `alias_method` and `define_method` define. A def minted for them would
+need to be visible only to calls on its own class. Round 2 tried minting delegate defs as ordinary defs and produced
+388 wrong edges on application A.
+
+`kParserVer` 133 → 134. New records, same layout, so `kCacheVersion` stays 27, and Ruby caches re-parse once.
+
 ### Changed — a call on RSpec's own expectation target is RSpec's: `expect( v ).to` no longer binds to an in-tree `def to`
 
 Inside an example group, `expect( v ).to eq( 1 )` calls `to` on the object `expect` returns, an
