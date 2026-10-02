@@ -761,6 +761,37 @@ inline std::optional<RubyTypedRecv> rubyTypedRecvOf( const Reference& r ) noexce
     return RubyTypedRecv { token.substr( factory ? 1 : 0, sep - ( factory ? 1 : 0 ) ), token.substr( sep + 1 ), factory };
 }
 
+// RSpec's targets (test/rubyrspectargetcheck.sh, parser version 133): inside an example group, the receiver-less builder
+// `builder` — or the bare `is_expected`, which is `expect( subject )` — returns an instance of `cls`, whose `to`/`not_to`/
+// `to_not` are RSpec's. ingest_binds.h rubyValueType types the value; graph.h RubyTypedReceivers answers a call on it.
+struct RspecTarget
+{
+    std::string_view builder;
+    std::string_view cls;
+};
+inline constexpr RspecTarget kRspecTargets[] = {
+    { "expect", "RSpec::Expectations::ValueExpectationTarget" },   // `expect { … }`: kRspecBlockTarget
+    { "is_expected", "RSpec::Expectations::ValueExpectationTarget" },
+    { "allow", "RSpec::Mocks::AllowanceTarget" },
+    { "expect_any_instance_of", "RSpec::Mocks::AnyInstanceExpectationTarget" },
+    { "allow_any_instance_of", "RSpec::Mocks::AnyInstanceAllowanceTarget" },
+};
+inline constexpr std::string_view kRspecBlockTarget = "RSpec::Expectations::BlockExpectationTarget";
+
+// The RSpec target a receiver typed `cls` (leading `::` dropped) by the builder `via` is — `expect { … }`'s block form
+// included — or nullptr: a class reached any other way (`ValueExpectationTarget.new`) is an ordinary constant.
+inline const RspecTarget* rspecTargetOf( std::string_view cls, std::string_view via ) noexcept
+{
+    for( const RspecTarget& t : kRspecTargets )
+    {
+        if( t.builder == via )
+        {
+            return t.cls == cls || ( via == "expect" && cls == kRspecBlockTarget ) ? &t : nullptr;
+        }
+    }
+    return nullptr;
+}
+
 // A physical dependency: one #include / import directive (file → target). The target is the raw
 // include path / module name (resolved to a file id later, for the file→file dependency graph).
 struct Include

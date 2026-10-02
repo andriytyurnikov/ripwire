@@ -3011,6 +3011,11 @@ inline RubySelfReach buildRubySelfReach( const IngestResult& ing, const HashMap<
 // (`OpenSSL::Cipher` is not activerecord's `Encryption::Cipher`, `Stripe::Customer` not an app's Customer model, though
 // the classes are keyed by final segment everywhere else); and no class in its lookup defines the method that built it
 // (`def self.find` may return anything). Otherwise the call is left exactly as the name ladder decided it before.
+// One family of out-of-tree classes is known exactly: RSpec's targets (model.h kRspecTargets — what `expect( v )`,
+// `allow( v )`, `is_expected` return in an example group; test/rubyrspectargetcheck.sh). When the tree never opens the
+// class, only a reopened instance root can answer a call on one, and otherwise RSpec's method runs: the call is refused as
+// external. A tree that opens the class answers from it as above; a tree that defines a method of the builder's name
+// (`def expect`) types nothing from that name.
 inline constexpr std::string_view kRubyInstanceRoots[] = { "BasicObject", "Kernel", "Object" };
 
 struct RubyTypedReceivers
@@ -3021,75 +3026,146 @@ struct RubyTypedReceivers
     HashMap<std::string, std::string>                     factoryClass;   // factory name → its class's final segment; "" when two disagree
     HashMap<std::string, char>                            openedPaths;    // every trailing path of every constant the tree opens:
                                                                           //   `A::B::C` → "A::B::C", "B::C", "C"
+    std::array<bool, std::size( kRspecTargets )>          builderDefined {};   // the tree defines a method of that builder's name
     mutable rw::SmallVec<NodeId, 2>                       rootHits;
 
-    // the class a Ruby reference's receiver was built as, when the tree can trust it (the note above); nullptr otherwise
-    const std::string* classOf( const Reference& r ) const
-    {
-        const std::optional<RubyTypedRecv> typed = rubyTypedRecvOf( r );
-        if( !typed )
-        {
-            return nullptr;
-        }
-        const std::string_view written = typed->type.substr( typed->type.starts_with( "::" ) ? 2 : 0 );
-        const std::size_t      cut     = typed->factory ? std::string_view::npos : written.rfind( "::" );
-        if( cut != std::string_view::npos && openedPaths.find( std::string( written ) ) == openedPaths.end() )
-        {
-            return nullptr;   // a qualified constant whose path the tree never opens: not the in-tree namesake
-        }
-        const auto        factory = typed->factory ? factoryClass.find( std::string( written ) ) : factoryClass.end();
-        const std::string name    = !typed->factory ? std::string( written.substr( cut == std::string_view::npos ? 0 : cut + 2 ) )
-                                  : factory != factoryClass.end() ? factory->second : std::string {};
-        const auto        cls     = reach.classNames.find( name );
-        if( name.empty() || cls == reach.classNames.end() )
-        {
-            return nullptr;
-        }
-        for( const std::string& a : reach.ancestorsOf( cls->first ) )
-        {
-            if( !typed->factory && narrower.definitionsIn( a, typed->via ) != nullptr )
-            {
-                return nullptr;   // the class says how it is built: `def self.find` may return anything
-            }
-        }
-        return &cls->first;
-    }
+    const std::string*             classOf( const Reference& r ) const;                          // r's receiver's class, when trusted
+    bool                           outOfTreeTarget( const Reference& r ) const;                  // RSpec's, of a class the tree never opens
+    const rw::SmallVec<NodeId, 2>* lookup( const Reference& r, const std::string& cls ) const;   // what lookup on `cls` reaches
+    const rw::SmallVec<NodeId, 2>* rootLookup( const Reference& r ) const;                       // what a reopened instance root defines
 
-    // what lookup on `cls` reaches for r's method: its own or an ancestor's definitions, else a reopened instance root's
-    const rw::SmallVec<NodeId, 2>* lookup( const Reference& r, const std::string& cls ) const
+    // does the tree define a method of the name of `t`'s builder (`def expect`)? Then nothing that name builds is RSpec's.
+    bool builderShadowed( const RspecTarget* t ) const noexcept
     {
-        if( const rw::SmallVec<NodeId, 2>* hit = narrower.methodOnTypeOrBases( cls, r, up, /*skipSelf=*/false, /*unionOnMulti=*/true ) )
-        {
-            return hit;
-        }
-        rootHits.clear();
-        for( const std::string_view root : kRubyInstanceRoots )
-        {
-            if( const rw::SmallVec<NodeId, 2>* defs = narrower.definitionsIn( root, r.calleeName ) )
-            {
-                rootHits.insert( rootHits.end(), defs->begin(), defs->end() );
-            }
-        }
-        return rootHits.empty() ? nullptr : &rootHits;
+        return t != nullptr && builderDefined[ std::size_t( t - std::begin( kRspecTargets ) ) ];
     }
 };
 
+// the class `typed` names, as written without a leading `::` (a factory's name for a factory)
+inline std::string_view rubyTypedWritten( const RubyTypedRecv& typed ) noexcept
+{
+    return typed.type.substr( typed.type.starts_with( "::" ) ? 2 : 0 );
+}
+
+// the one of RSpec's targets `typed` is (model.h rspecTargetOf), or nullptr
+inline const RspecTarget* rubyRspecTarget( const RubyTypedRecv& typed ) noexcept
+{
+    return typed.factory ? nullptr : rspecTargetOf( rubyTypedWritten( typed ), typed.via );
+}
+
+// the class a Ruby reference's receiver was built as, when the tree can trust it (the note above); nullptr otherwise
+inline const std::string* RubyTypedReceivers::classOf( const Reference& r ) const
+{
+    const std::optional<RubyTypedRecv> typed = rubyTypedRecvOf( r );
+    if( !typed || builderShadowed( rubyRspecTarget( *typed ) ) )
+    {
+        return nullptr;
+    }
+    const std::string_view written = rubyTypedWritten( *typed );
+    const std::size_t      cut     = typed->factory ? std::string_view::npos : written.rfind( "::" );
+    if( cut != std::string_view::npos && openedPaths.find( std::string( written ) ) == openedPaths.end() )
+    {
+        return nullptr;   // a qualified constant whose path the tree never opens: not the in-tree namesake
+    }
+    const auto        factory = typed->factory ? factoryClass.find( std::string( written ) ) : factoryClass.end();
+    const std::string name    = !typed->factory ? std::string( written.substr( cut == std::string_view::npos ? 0 : cut + 2 ) )
+                              : factory != factoryClass.end() ? factory->second : std::string {};
+    const auto        cls     = reach.classNames.find( name );
+    if( name.empty() || cls == reach.classNames.end() )
+    {
+        return nullptr;
+    }
+    for( const std::string& a : reach.ancestorsOf( cls->first ) )
+    {
+        if( !typed->factory && narrower.definitionsIn( a, typed->via ) != nullptr )
+        {
+            return nullptr;   // the class says how it is built: `def self.find` may return anything
+        }
+    }
+    return &cls->first;
+}
+
+// is r's receiver one of RSpec's targets, built by a builder the tree does not define, of a class the tree never opens?
+inline bool RubyTypedReceivers::outOfTreeTarget( const Reference& r ) const
+{
+    const std::optional<RubyTypedRecv> typed  = rubyTypedRecvOf( r );
+    const RspecTarget* const           target = typed ? rubyRspecTarget( *typed ) : nullptr;
+    return target != nullptr && !builderShadowed( target ) && openedPaths.find( std::string( rubyTypedWritten( *typed ) ) ) == openedPaths.end();
+}
+
+// what lookup on `cls` reaches for r's method: its own or an ancestor's definitions, else a reopened instance root's
+inline const rw::SmallVec<NodeId, 2>* RubyTypedReceivers::lookup( const Reference& r, const std::string& cls ) const
+{
+    if( const rw::SmallVec<NodeId, 2>* hit = narrower.methodOnTypeOrBases( cls, r, up, /*skipSelf=*/false, /*unionOnMulti=*/true ) )
+    {
+        return hit;
+    }
+    return rootLookup( r );
+}
+
+// what a reopened Object, Kernel or BasicObject defines for r's method — every instance's ancestors
+inline const rw::SmallVec<NodeId, 2>* RubyTypedReceivers::rootLookup( const Reference& r ) const
+{
+    rootHits.clear();
+    for( const std::string_view root : kRubyInstanceRoots )
+    {
+        if( const rw::SmallVec<NodeId, 2>* defs = narrower.definitionsIn( root, r.calleeName ) )
+        {
+            rootHits.insert( rootHits.end(), defs->begin(), defs->end() );
+        }
+    }
+    return rootHits.empty() ? nullptr : &rootHits;
+}
+
+// Every trailing path of every constant the tree opens (`A::B::C` → "A::B::C", "B::C", "C"), read off the base scope's
+// constant index — or, where that built none (no Ruby superclass, mixin or constant reference in the tree), the full
+// index, built only when a typed receiver is qualified and so needs it.
+inline void rubyOpenedPaths( const IngestResult& ing, const RubyBaseScope& bases, HashMap<std::string, char>& out )
+{
+    const auto qualified = []( const Reference& r )
+    {
+        const std::optional<RubyTypedRecv> typed = rubyTypedRecvOf( r );
+        return typed && !typed->factory && typed->type.find( "::" ) != std::string_view::npos;
+    };
+    const bool              own   = bases.ix.opensByFile.empty() && std::ranges::any_of( ing.references, qualified );
+    const RubyConstantIndex ownIx = own ? rubyConstantIndexOf( ing ) : RubyConstantIndex {};
+    for( const std::vector<RubyOpenRec>& opens : ( own ? ownIx : bases.ix ).opensByFile )
+    {
+        for( const RubyOpenRec& o : opens )
+        {
+            for( std::size_t from = 0; from != std::string::npos; )
+            {
+                out.try_emplace( o.fqn.substr( from ), 1 );
+                const std::size_t next = o.fqn.find( "::", from );
+                from                   = next == std::string::npos ? next : next + 2;
+            }
+        }
+    }
+}
+
+// Which of RSpec's builders (model.h kRspecTargets) the tree defines a Ruby method of the name of — a def or an accessor.
+inline void rubyDefinedBuilders( const IngestResult& ing, std::array<bool, std::size( kRspecTargets )>& out )
+{
+    for( const Symbol& s : ing.symbols )
+    {
+        const bool method = s.lang == Lang::Ruby && ( s.kind == SymKind::Function || s.kind == SymKind::Method || s.kind == SymKind::Var );
+        const auto it     = method ? std::ranges::find( kRspecTargets, std::string_view( s.name ), &RspecTarget::builder ) : std::end( kRspecTargets );
+        if( it != std::end( kRspecTargets ) )
+        {
+            out[ std::size_t( it - std::begin( kRspecTargets ) ) ] = true;
+        }
+    }
+}
+
 // Every FactoryBot factory the tree defines → the class it builds (ingest_binds.h captureRubyFactories); a name two
-// definitions give different classes is a tombstone: it types nothing. And every trailing path of every constant the tree
-// opens, which a qualified constant must be.
+// definitions give different classes is a tombstone: it types nothing. Every trailing path of every constant the tree
+// opens, which a qualified constant must be. And which of RSpec's builders the tree defines a method of the name of.
 inline RubyTypedReceivers buildRubyTypedReceivers( const IngestResult& ing, const RubySelfReach& reach, const RubyBaseScope& bases,
                                                    const HashMap<std::string, std::vector<std::string>>& up, const Narrower& narrower )
 {
     RubyTypedReceivers out{ .reach = reach, .up = up, .narrower = narrower };
-    for( const auto& opened : bases.opened )
-    {
-        for( std::size_t from = 0; from != std::string::npos; )
-        {
-            out.openedPaths.try_emplace( opened.first.substr( from ), 1 );
-            const std::size_t next = opened.first.find( "::", from );
-            from                   = next == std::string::npos ? next : next + 2;
-        }
-    }
+    rubyOpenedPaths( ing, bases, out.openedPaths );
+    rubyDefinedBuilders( ing, out.builderDefined );
     for( const Binding& b : ing.bindings )
     {
         if( b.kind != LocalBindKind::RubyFactory || b.var.empty() )
@@ -4076,6 +4152,15 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         if( rubyTyped != nullptr )
         {
             narrowed = narrowTo( rubyTypes.lookup( r, *rubyTyped ), r, cand );
+        }
+        else if( !scipPinned && !canonical && !narrowed && rubyTypes.outOfTreeTarget( r ) )
+        {
+            if( !narrowTo( rubyTypes.rootLookup( r ), r, cand ) )
+            {
+                disposition = vetoExternal( r );   // RSpec's own target: the method Ruby runs is RSpec's
+                continue;
+            }
+            narrowed = true;
         }
         const std::string* const rubySelf = rubyTyped != nullptr ? rubyTyped
                                           : r.lang == Lang::Ruby && r.fromSymbol != kNoNode && RubySelfReach::judges( r, callerSelfScope( ing, r ) )

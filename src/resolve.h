@@ -1576,20 +1576,13 @@ inline std::uint32_t rubyInnermostOpen( const std::vector<RubyOpenRec>& opens, s
     return i;
 }
 
-inline RubyConstantIndex buildRubyConstantIndex( const IngestResult& ing )
+// The constant index of every class/module the tree opens, whether or not anything names one (buildRubyConstantIndex
+// below is the gated form the resolver reads; graph.h buildRubyTypedReceivers reads this one when that one is empty).
+inline RubyConstantIndex rubyConstantIndexOf( const IngestResult& ing )
 {
     PROFILE_SCOPE_DESCRIBE( "resolve/ruby: constant index" );
     RubyConstantIndex ix;
-    bool anySymbolic = false;
-    for( const Include& inc : ing.includes )
-    {
-        if( inc.isSymbolic )
-        {
-            anySymbolic = true;
-            break;
-        }
-    }
-    if( !anySymbolic || ing.constOpens.empty() )
+    if( ing.constOpens.empty() )
     {
         return ix;
     }
@@ -1704,6 +1697,13 @@ inline RubyConstantIndex buildRubyConstantIndex( const IngestResult& ing )
         i = j;
     }
     return ix;
+}
+
+// The constant index the resolver reads: empty unless a symbolic directive exists (a tree that names no constant needs none).
+inline RubyConstantIndex buildRubyConstantIndex( const IngestResult& ing )
+{
+    const bool anySymbolic = std::any_of( ing.includes.begin(), ing.includes.end(), []( const Include& inc ) noexcept { return inc.isSymbolic; } );
+    return anySymbolic ? rubyConstantIndexOf( ing ) : RubyConstantIndex {};
 }
 
 // Resolve one symbolic Ruby directive to its (offset, count) run in `ix.files` — {0,0} when nothing in the

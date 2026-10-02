@@ -556,6 +556,11 @@ inline bool rubyNamingChild( TSNode n, const char* t, TSNode c ) noexcept
 // typeReceivers writes each type into its call reference (model.h rubyTypedRecvToken). Floors (test/rubytypedrecvcheck.sh):
 // control flow is not read (one binding of another shape anywhere in the scope, a parameter or a block parameter
 // included, leaves the local untyped); instance variables, return values and a shared context's lets are not typed.
+// RSpec's own builders are read the same way (test/rubyrspectargetcheck.sh, parser version 133): inside an example
+// group a receiver-less `expect( v )`, `allow( v )`, `expect_any_instance_of( K )`, `allow_any_instance_of( K )` and a
+// bare `is_expected` build one of RSpec's target classes (model.h kRspecTargets; `expect { … }` a BlockExpectationTarget),
+// so `expect( v ).to` is a call on RSpec's object. Not read: outside a group (a helper module a `config.include` mixes
+// in), and matcher chains (`receive( :m ).with( … )`, `change { }.from( a ).to( b )`).
 inline constexpr std::string_view kRubyTypedFinders[] = { "create", "create!", "find", "find_by", "find_by!", "find_or_create_by", "find_or_create_by!",
                                                           "find_or_initialize_by", "find_sole_by", "first", "first!", "last", "last!", "new", "sole",
                                                           "take", "take!" };
@@ -580,33 +585,63 @@ struct RubyValueSite
     std::string_view described;
 };
 
-// What the value expression `v` builds (the section note above), read at `site`.
-inline RubyValueType rubyValueType( TSNode v, std::string_view src, const RubyValueSite& site )
+// What a FactoryBot build `v` to `m` builds — its factory, named by its first symbol argument — when `m` is a build
+// (kRubyFactoryBuilds).
+inline RubyValueType rubyFactoryBuildType( TSNode v, std::string_view m, std::string_view src )
 {
-    if( ts_node_is_null( v ) || !kindIs( ts_node_type( v ), "call" ) )
+    const bool             build   = std::ranges::find( kRubyFactoryBuilds, m ) != std::end( kRubyFactoryBuilds );
+    const std::string_view factory = build ? rubyFirstSymbolArgument( v, src ) : std::string_view {};
+    return factory.empty() ? RubyValueType {} : RubyValueType { factory, m, true };
+}
+
+// What a receiver-less call `v` to `m` builds inside an example group: one of RSpec's targets (model.h kRspecTargets —
+// `expect { … }`, a block and no argument, is the block form), else a FactoryBot build (`create( :user )`). A bare word
+// (`is_expected`) is such a call with no arguments.
+inline RubyValueType rubyGroupBuildType( TSNode v, std::string_view m, std::string_view src )
+{
+    const auto target = std::ranges::find( kRspecTargets, m, &RspecTarget::builder );
+    if( target == std::end( kRspecTargets ) )
     {
-        return {};
+        return rubyFactoryBuildType( v, m, src );
     }
-    const std::string_view m    = fieldChildTextOfKind( v, NodeField::Method, "identifier", src );
-    const TSNode           recv = fieldChild( v, NodeField::Receiver );
-    const bool             constant = !ts_node_is_null( recv ) && isRubyConstantNode( recv );
-    const std::string_view on       = constant ? rubyFinalConstant( recv, src ) : std::string_view {};
-    const bool factoryBuild = ( ( ts_node_is_null( recv ) && site.inGroup ) || on == "FactoryBot" || on == "FactoryGirl" )
-                           && std::ranges::find( kRubyFactoryBuilds, m ) != std::end( kRubyFactoryBuilds );
-    if( factoryBuild )
+    const bool block = kindIs( ts_node_type( v ), "call" ) && ts_node_is_null( fieldChild( v, NodeField::Arguments ) ) && !ts_node_is_null( rubyCallBlock( v ) );
+    return RubyValueType { m == "expect" && block ? kRspecBlockTarget : target->cls, m, false };
+}
+
+// What a call `v` to `m` on `recv` builds, read at `site`: a FactoryBot build on `FactoryBot`, a finder on any other
+// constant — the constant AS WRITTEN (`OpenSSL::Cipher`): graph.h reads a qualified one only when the tree opens that
+// path — or `described_class.new`.
+inline RubyValueType rubyReceiverBuildType( TSNode v, TSNode recv, std::string_view m, std::string_view src, const RubyValueSite& site )
+{
+    const std::string_view on = isRubyConstantNode( recv ) ? rubyFinalConstant( recv, src ) : std::string_view {};
+    if( ( on == "FactoryBot" || on == "FactoryGirl" ) && std::ranges::find( kRubyFactoryBuilds, m ) != std::end( kRubyFactoryBuilds ) )
     {
-        const std::string_view factory = rubyFirstSymbolArgument( v, src );
-        return factory.empty() ? RubyValueType {} : RubyValueType { factory, m, true };
+        return rubyFactoryBuildType( v, m, src );
     }
     if( !on.empty() )
     {
-        // the constant AS WRITTEN (`OpenSSL::Cipher`): graph.h reads a qualified one only when the tree opens that path
         const bool finder = std::ranges::find( kRubyTypedFinders, m ) != std::end( kRubyTypedFinders );
         return finder ? RubyValueType { pattern::nodeText( recv, src ), m, false } : RubyValueType {};
     }
-    const bool describedNew = m == "new" && !ts_node_is_null( recv ) && kindIs( ts_node_type( recv ), "identifier" )
-                           && pattern::nodeText( recv, src ) == "described_class";
+    const bool describedNew = m == "new" && kindIs( ts_node_type( recv ), "identifier" ) && pattern::nodeText( recv, src ) == "described_class";
     return describedNew && !site.described.empty() ? RubyValueType { site.described, m, false } : RubyValueType {};
+}
+
+// What the value expression `v` builds (the section note above), read at `site`.
+inline RubyValueType rubyValueType( TSNode v, std::string_view src, const RubyValueSite& site )
+{
+    const bool word = !ts_node_is_null( v ) && kindIs( ts_node_type( v ), "identifier" );   // a bare `is_expected`
+    if( !word && ( ts_node_is_null( v ) || !kindIs( ts_node_type( v ), "call" ) ) )
+    {
+        return {};
+    }
+    const std::string_view m    = word ? pattern::nodeText( v, src ) : fieldChildTextOfKind( v, NodeField::Method, "identifier", src );
+    const TSNode           recv = word ? TSNode {} : fieldChild( v, NodeField::Receiver );
+    if( ts_node_is_null( recv ) )
+    {
+        return site.inGroup ? rubyGroupBuildType( v, m, src ) : RubyValueType {};
+    }
+    return rubyReceiverBuildType( v, recv, m, src, site );
 }
 
 // What a let/subject call's block returns — its body's last statement — or null.
@@ -900,13 +935,15 @@ inline void RubyBareCallWalk::noteTypedCall( TSNode call )
     {
         return;
     }
-    const std::uint32_t at = ts_node_start_byte( call );
-    if( !kindIs( ts_node_type( recv ), "identifier" ) )
+    const std::uint32_t at    = ts_node_start_byte( call );
+    const bool          ident = kindIs( ts_node_type( recv ), "identifier" );
+    if( !ident || !scopes_.visible( pattern::nodeText( recv, src_ ) ) )
     {
+        // a value — or a bare word no local or let binds, which is a call on self (`is_expected`)
         const RubyValueType built = rubyValueType( recv, src_, valueSite() );
         if( !built.type.empty() )
         {
-            typedSites_.push_back( TypedSite { at, method, false, built, 0, {} } );
+            typedSites_.push_back( TypedSite { at, method, ident, built, 0, {} } );
         }
         return;
     }

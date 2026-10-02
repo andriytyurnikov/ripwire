@@ -296,7 +296,14 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 132;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 133;          // bump on any grammar/.scm/extraction change
+                                                      // 133 = 2026-10-02 (test/rubyrspectargetcheck.sh): inside an
+                                                      //   RSpec example group, a receiver built by `expect`, `allow`,
+                                                      //   `expect_any_instance_of`, `allow_any_instance_of` or a bare
+                                                      //   `is_expected` carries RSpec's target class as its type
+                                                      //   (model.h kRspecTargets). Same layout: kCacheVersion
+                                                      //   unchanged (27). A Ruby cache written at 132 holds those
+                                                      //   receivers untyped and must re-parse.
                                                       // 132 = 2026-10-02 (test/rubytypedrecvcheck.sh): a Ruby call
                                                       //   receiver the file BUILDS (`Client.new`, a finder, a FactoryBot
                                                       //   build, a let or local holding one) carries its type in the

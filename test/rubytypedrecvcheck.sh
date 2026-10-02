@@ -463,6 +463,51 @@ reaches User::title_line         $U let_untyped   "a let whose block builds noth
 reaches Post::email              $U let_twin_factory "floor (f): factory :twin names User in one file and Admin in another — untyped, binds by name"
 reaches User::title_line         $P shared_let    "floor (d): a shared context's let is not seen in the including file — binds by name as before"
 
+echo "=== a qualified constant in a tree with no superclass, mixin or constant reference ==="
+# The base scope and the resolver's constant index are built only for a tree that has those; the opens a qualified type
+# is checked against must not depend on them.
+FLAT="$DIR/flat"; mkdir -p "$FLAT/lib"
+cat > "$FLAT/lib/pool.rb" <<'RUBY'
+module Transport
+  class Pool
+    def drain
+      :pool
+    end
+  end
+end
+RUBY
+cat > "$FLAT/lib/sink.rb" <<'RUBY'
+class Sink
+  def drain
+    :sink
+  end
+
+  def flush
+    :sink
+  end
+end
+RUBY
+cat > "$FLAT/lib/run.rb" <<'RUBY'
+class Runner
+  def go
+    pool = Transport::Pool.find( 1 )
+    pool.drain # @flat_finder
+    pool.flush # @flat_refused
+  end
+end
+RUBY
+n="$( line "$FLAT" lib/run.rb flat_finder )"
+m="$( line "$FLAT" lib/run.rb flat_refused )"
+if census "$FLAT"
+then
+    targets lib/run.rb "$n" | grep -qF "::Pool::drain#" && ok "@flat_finder → Pool::drain (Transport::Pool is opened, though nothing else in the tree is scoped)" \
+        || no "@flat_finder (lib/run.rb:$n) does not reach Pool::drain; it reaches: $( targets lib/run.rb "$n" | tr '\n' ' ' )"
+    targets lib/run.rb "$n" | grep -qF "::Sink::drain#" && no "@flat_finder reaches Sink::drain — Sink is not pool's class" \
+        || ok "@flat_finder does not reach Sink::drain"
+    targets lib/run.rb "$m" | grep -qF "::Sink::flush#" && no "@flat_refused reaches Sink::flush — nothing in Pool's lookup defines flush" \
+        || ok "@flat_refused does not reach Sink::flush (refused: no definer in Pool's lookup)"
+fi
+
 echo "=== determinism and warm == cold ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
 cmp -s "$MAP" "$DIR/b.xml" && ok "byte-identical across two --no-cache runs" \
