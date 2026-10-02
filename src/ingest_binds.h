@@ -658,6 +658,114 @@ inline TSNode rubyLetValue( TSNode letCall )
     return last;
 }
 
+// ─── Ruby's DECLARED calls (test/rubydeclrefcheck.sh, parser version 134) ─────────────────────────────────────────────
+// A Rails declaration names, by SYMBOL, a method the framework calls later on the class's instances: `before_action
+// :authenticate`, `after_save :reindex`, `validate :name_present`, an `if:` / `unless:` condition, `rescue_from …, with:
+// :not_found`. Nothing in the source calls the method, so each symbol is read as a call to it — a receiver-less call from
+// the class body, whose self's lookup is the class's (graph.h RubySelfReach) — when the macro sits at class-body position
+// (receiver-less, the innermost def-or-class wall a class or module body: a concern's `included do` block counts, a def
+// does not). `send`/`public_send`/`__send__`/`try`/`try!`/`method` with a literal symbol call that method on the same
+// receiver: the call's own reference, renamed (RubyBareCallWalk::sendTargets). Floors (test/rubydeclrefcheck.sh): option
+// values that are not calls (`only:`, `except:`, `on:`), `validates`' attribute names, `skip_*_action`, `set_callback`, a
+// string or computed name, and a callback macro inside a def make none.
+inline constexpr std::string_view kRubyCallbackMacros[] = {
+    // ActionController, ActionMailer, AbstractController
+    "before_action", "after_action", "around_action", "prepend_before_action", "prepend_after_action", "prepend_around_action",
+    "append_before_action", "append_after_action", "append_around_action", "before_filter", "after_filter", "around_filter",
+    // ActiveModel, ActiveRecord
+    "before_validation", "after_validation", "before_save", "around_save", "after_save", "before_create", "around_create",
+    "after_create", "before_update", "around_update", "after_update", "before_destroy", "around_destroy", "after_destroy",
+    "after_commit", "after_rollback", "after_create_commit", "after_update_commit", "after_destroy_commit", "after_save_commit",
+    "after_initialize", "after_find", "after_touch", "validate",
+    // ActiveJob, ActionMailer delivery, ActionCable channels
+    "before_enqueue", "around_enqueue", "after_enqueue", "before_perform", "around_perform", "after_perform", "after_discard",
+    "before_deliver", "around_deliver", "after_deliver", "before_subscribe", "after_subscribe", "before_unsubscribe",
+    "after_unsubscribe" };
+inline constexpr std::string_view kRubySendCalls[] = { "__send__", "method", "public_send", "send", "try", "try!" };
+
+// What a declaration's symbols name: a callback's positional symbols and its conditions, only the conditions (a
+// validation's positional symbols are attributes), or rescue_from's `with:` handler.
+enum class RubyDeclared : std::uint8_t { None, Callback, Conditions, Rescue };
+
+inline RubyDeclared rubyDeclaredKind( std::string_view m ) noexcept
+{
+    if( std::ranges::find( kRubyCallbackMacros, m ) != std::end( kRubyCallbackMacros ) )
+    {
+        return RubyDeclared::Callback;
+    }
+    if( m == "validates" || m == "validates_with" || ( m.starts_with( "validates_" ) && m.ends_with( "_of" ) ) )
+    {
+        return RubyDeclared::Conditions;
+    }
+    return m == "rescue_from" ? RubyDeclared::Rescue : RubyDeclared::None;
+}
+
+// Is the option key `key` (`if:` or the older `:if =>`) one whose value a `kind` declaration calls?
+inline bool rubyDeclaredOption( TSNode key, RubyDeclared kind, std::string_view src ) noexcept
+{
+    std::string_view k = ts_node_is_null( key ) ? std::string_view {} : pattern::nodeText( key, src );
+    k                  = k.substr( k.starts_with( ':' ) ? 1 : 0 );
+    k                  = k.substr( 0, k.size() - ( k.ends_with( ':' ) ? 1 : 0 ) );
+    return k == "if" || k == "unless" || ( kind == RubyDeclared::Rescue && k == "with" );
+}
+
+// Each method symbol a `kind` declaration's arguments name, in source order (the section note above), handed to `fn`.
+template<class Fn>
+inline void rubyForEachDeclaredSymbol( TSNode call, RubyDeclared kind, std::string_view src, Fn&& fn )
+{
+    const TSNode args = fieldChild( call, NodeField::Arguments );
+    if( ts_node_is_null( args ) )
+    {
+        return;
+    }
+    const auto symbol = []( TSNode n ) { return kindIs( ts_node_type( n ), "simple_symbol" ); };
+    ChildCursor cursor( args );   // O(children) (src/infra/tschildren.h)
+    forEachNamedChild( args, cursor.cur, [ & ]( TSNode a )
+    {
+        const TSNode value = kindIs( ts_node_type( a ), "pair" ) && rubyDeclaredOption( fieldChild( a, NodeField::Key ), kind, src )
+                                 ? fieldChild( a, NodeField::Value ) : TSNode {};
+        if( kind == RubyDeclared::Callback && symbol( a ) )
+        {
+            fn( a );
+        }
+        else if( !ts_node_is_null( value ) && symbol( value ) )
+        {
+            fn( value );
+        }
+        else if( !ts_node_is_null( value ) && kindIs( ts_node_type( value ), "array" ) )
+        {
+            ChildCursor inner( value );
+            forEachNamedChild( value, inner.cur, [ & ]( TSNode e ) { if( symbol( e ) ) { fn( e ); } return true; } );
+        }
+        return true;
+    } );
+}
+
+// One call whose receiver is typed (RubyBareCallWalk): the call node's start (its reference's startByte) and method,
+// whether the receiver is an (identifier) — the reference's NamedVar — or a value, and what it builds; for a local, the
+// scope and name whose binding types are read once the walk has seen every binding (`local` non-empty, `type` filled by
+// typeReceivers).
+struct RubyTypedSite
+{
+    std::uint32_t    callStart;
+    std::string_view method;
+    bool             identReceiver;
+    RubyValueType    type;
+    std::uint32_t    wall;
+    std::string_view local;
+};
+
+// One `send`-family call naming its method by a literal symbol (RubyBareCallWalk::sendTargets): the call node's start
+// and method, and the symbol.
+struct RubySendSite
+{
+    std::uint32_t    callStart;
+    std::string_view method;
+    TSNode           symbol;
+    std::size_t      ref  = 0;   // the call's reference, when exactly one matched (`hits` == 1)
+    std::uint32_t    hits = 0;
+};
+
 // One file's bare-word calls (see the section note above): one iterative pre-order walk in source order — an explicit
 // stack, no recursion, so a hostile nesting depth costs heap, not stack.
 class RubyBareCallWalk
@@ -671,6 +779,7 @@ public:
     }
     void run( TSNode root );
     void typeReceivers( std::size_t firstRef, std::size_t endRef );   // after run: write each typed receiver into its call reference
+    void sendTargets( std::size_t firstRef, std::size_t endRef );     // after typeReceivers: each `send( :m )`'s call to m
 
 private:
     struct Item
@@ -678,18 +787,6 @@ private:
         TSNode node;
         bool   naming;       // an identifier in a naming or binding position: it reads nothing
         bool   groupBlock;   // the block of an RSpec example-group call
-    };
-    // One call whose receiver is typed: the call node's start (its reference's startByte) and method, whether the receiver
-    // is an (identifier) — the reference's NamedVar — or a value, and what it builds; for a local, the scope and name whose
-    // binding types are read once the walk has seen every binding (`local` non-empty, `type` filled by typeReceivers).
-    struct TypedSite
-    {
-        std::uint32_t    callStart;
-        std::string_view method;
-        bool             identReceiver;
-        RubyValueType    type;
-        std::uint32_t    wall;
-        std::string_view local;
     };
     void visit( const Item& item, ChildCursor& cursor );
     void enter( TSNode n, const char* t, RubyLocalRole role, bool groupBlock );
@@ -702,8 +799,9 @@ private:
     void noteLetType( TSNode letCall, std::string_view name );
     void noteImplicitSubject();
     void noteTypedCall( TSNode call );
+    void noteDeclaredCall( TSNode call );
     void noteNamedReceiver( std::uint32_t at, std::string_view method, std::string_view name );
-    const TypedSite* siteOf( const RawRef& r ) const;
+    const RubyTypedSite* siteOf( const RawRef& r ) const;
     const std::string& typeKey( std::uint32_t frame, std::string_view name );
 
     std::uint32_t        fileId_;
@@ -713,6 +811,7 @@ private:
     std::vector<Item>    stack_;
     std::vector<TSNode>  kids_;
     std::vector<TSNode>  binding_;   // the visited node's binding identifiers: its children marked `naming`
+    std::vector<RubySendSite> sendSites_;
 
     // typed receivers (the section note above): per open frame depth, a serial naming that frame and whether it is inside
     // an example group; "<frame serial>#<name>" → what a let defines in that group / what every binding of a local in that
@@ -725,7 +824,7 @@ private:
     HashMap<std::string, RubyValueType>     letTypes_;
     HashMap<std::string, RubyValueType>     localTypes_;
     HashMap<std::uint32_t, RubyValueType>   explicitSubjects_;
-    std::vector<TypedSite>                  typedSites_;
+    std::vector<RubyTypedSite>              typedSites_;
     std::string                             key_;
 };
 
@@ -768,6 +867,7 @@ inline void RubyBareCallWalk::visit( const Item& item, ChildCursor& cursor )
     if( kindIs( t, "call" ) )
     {
         noteTypedCall( n );
+        noteDeclaredCall( n );
     }
     binding_.clear();
     if( const std::optional<RubyLocalRole> role = rubyLocalRole( t ) )
@@ -943,7 +1043,7 @@ inline void RubyBareCallWalk::noteTypedCall( TSNode call )
         const RubyValueType built = rubyValueType( recv, src_, valueSite() );
         if( !built.type.empty() )
         {
-            typedSites_.push_back( TypedSite { at, method, ident, built, 0, {} } );
+            typedSites_.push_back( RubyTypedSite { at, method, ident, built, 0, {} } );
         }
         return;
     }
@@ -972,7 +1072,7 @@ inline void RubyBareCallWalk::noteNamedReceiver( std::uint32_t at, std::string_v
     const auto          found = table.find( typeKey( frame, name ) );
     if( found != table.end() && !found->second.type.empty() )
     {
-        typedSites_.push_back( TypedSite { at, method, true, found->second, frame, local ? name : std::string_view {} } );
+        typedSites_.push_back( RubyTypedSite { at, method, true, found->second, frame, local ? name : std::string_view {} } );
     }
 }
 
@@ -981,7 +1081,7 @@ inline void RubyBareCallWalk::noteNamedReceiver( std::uint32_t at, std::string_v
 // (an identifier receiver is NamedVar, a value receiver FieldOfVar).
 inline void RubyBareCallWalk::typeReceivers( std::size_t firstRef, std::size_t endRef )
 {
-    for( TypedSite& site : typedSites_ )
+    for( RubyTypedSite& site : typedSites_ )
     {
         if( !site.local.empty() )
         {
@@ -989,20 +1089,79 @@ inline void RubyBareCallWalk::typeReceivers( std::size_t firstRef, std::size_t e
             site.type     = it == localTypes_.end() ? RubyValueType {} : it->second;
         }
     }
-    std::erase_if( typedSites_, []( const TypedSite& site ) { return site.type.type.empty(); } );
-    std::stable_sort( typedSites_.begin(), typedSites_.end(), []( const TypedSite& a, const TypedSite& b ) { return a.callStart < b.callStart; } );
+    std::erase_if( typedSites_, []( const RubyTypedSite& site ) { return site.type.type.empty(); } );
+    std::stable_sort( typedSites_.begin(), typedSites_.end(), []( const RubyTypedSite& a, const RubyTypedSite& b ) { return a.callStart < b.callStart; } );
     for( std::size_t i = firstRef; i < endRef && i < refs_.size() && !typedSites_.empty(); ++i )
     {
-        if( const TypedSite* site = siteOf( refs_[ i ] ) )
+        if( const RubyTypedSite* site = siteOf( refs_[ i ] ) )
         {
             refs_[ i ].recvVar = rubyTypedRecvToken( site->type.type, site->type.via, site->type.factory );
         }
     }
 }
 
+// A declaration's method symbols (the section note above): a callback macro's at class-body position, each a call
+// reference at its symbol; a `send`-family call's symbol, recorded for sendTargets
+inline void RubyBareCallWalk::noteDeclaredCall( TSNode call )
+{
+    const std::string_view        m    = fieldChildTextOfKind( call, NodeField::Method, "identifier", src_ );
+    const bool                    bare = ts_node_is_null( fieldChild( call, NodeField::Receiver ) );
+    const RubyLocalScopes::Frame& top  = scopes_.frames.back();
+    const RubyDeclared            kind = bare && top.wall == top.classWall ? rubyDeclaredKind( m ) : RubyDeclared::None;
+    if( kind != RubyDeclared::None )
+    {
+        rubyForEachDeclaredSymbol( call, kind, src_, [ & ]( TSNode sym )
+        {
+            const std::string_view text = pattern::nodeText( sym, src_ );
+            refs_.push_back( rawRefAt( sym, fileId_, Lang::Ruby, RefRole::Call, std::string( text.substr( text.empty() ? 0 : 1 ) ) ) );
+        } );
+        return;
+    }
+    if( !m.empty() && std::ranges::find( kRubySendCalls, m ) != std::end( kRubySendCalls ) )
+    {
+        const TSNode args  = fieldChild( call, NodeField::Arguments );
+        const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
+        if( !ts_node_is_null( first ) && kindIs( ts_node_type( first ), "simple_symbol" ) )
+        {
+            sendSites_.push_back( RubySendSite { ts_node_start_byte( call ), m, first } );
+        }
+    }
+}
+
+// Each `send`-family call's named method, as a call on the same receiver: a copy of the call's own reference — the one
+// in [firstRef, endRef) at the call's start that names it, typed receiver and all — renamed and placed at the symbol. Two
+// same-named calls starting at one byte (`a.send( :x ).send( :y )`) are ambiguous, and neither is copied.
+inline void RubyBareCallWalk::sendTargets( std::size_t firstRef, std::size_t endRef )
+{
+    std::stable_sort( sendSites_.begin(), sendSites_.end(), []( const RubySendSite& a, const RubySendSite& b ) { return a.callStart < b.callStart; } );
+    const auto byStart = []( const RubySendSite& site, std::uint32_t at ) { return site.callStart < at; };
+    for( std::size_t i = firstRef; i < endRef && i < refs_.size() && !sendSites_.empty(); ++i )
+    {
+        const RawRef& r = refs_[ i ];
+        for( auto site = std::lower_bound( sendSites_.begin(), sendSites_.end(), r.startByte, byStart );
+             r.role == RefRole::Call && site != sendSites_.end() && site->callStart == r.startByte; ++site )
+        {
+            site->ref = site->method == r.name ? i : site->ref;
+            site->hits += site->method == r.name ? 1u : 0u;
+        }
+    }
+    for( const RubySendSite& site : sendSites_ )
+    {
+        if( site.hits == 1 )
+        {
+            RawRef                 copy = refs_[ site.ref ];
+            const std::string_view text = pattern::nodeText( site.symbol, src_ );
+            copy.name.assign( text.substr( text.empty() ? 0 : 1 ) );
+            copy.startByte = ts_node_start_byte( site.symbol );
+            copy.line      = ts_node_start_point( site.symbol ).row + 1;
+            refs_.push_back( std::move( copy ) );
+        }
+    }
+}
+
 // the typed site a call reference was made for: the one at its start whose method it names (a setter `x.name =` names
 // `name=`) and whose receiver kind it records — an (identifier) receiver is NamedVar, a value receiver FieldOfVar
-inline const RubyBareCallWalk::TypedSite* RubyBareCallWalk::siteOf( const RawRef& r ) const
+inline const RubyTypedSite* RubyBareCallWalk::siteOf( const RawRef& r ) const
 {
     const bool ident = r.recv == RecvKind::NamedVar;
     if( r.lang != Lang::Ruby || r.role != RefRole::Call || ( !ident && r.recv != RecvKind::FieldOfVar ) )
@@ -1011,7 +1170,7 @@ inline const RubyBareCallWalk::TypedSite* RubyBareCallWalk::siteOf( const RawRef
     }
     const std::string_view name = r.name;
     const std::string_view bare = name.ends_with( '=' ) ? name.substr( 0, name.size() - 1 ) : name;
-    const auto byStart = []( const TypedSite& site, std::uint32_t at ) { return site.callStart < at; };
+    const auto byStart = []( const RubyTypedSite& site, std::uint32_t at ) { return site.callStart < at; };
     for( auto site = std::lower_bound( typedSites_.begin(), typedSites_.end(), r.startByte, byStart );
          site != typedSites_.end() && site->callStart == r.startByte; ++site )
     {
@@ -1036,6 +1195,7 @@ inline void captureRubyBareCalls( TSNode root, std::uint32_t fileId, std::string
     RubyBareCallWalk walk( fileId, src, refs );
     walk.run( root );
     walk.typeReceivers( firstRef, queryRefsEnd );
+    walk.sendTargets( firstRef, queryRefsEnd );
 }
 
 // ─── FactoryBot's factory definitions (parser version 132, test/rubytypedrecvcheck.sh) ─────────────────────────────────

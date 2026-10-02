@@ -296,7 +296,14 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 133;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 134;          // bump on any grammar/.scm/extraction change
+                                                      // 134 = 2026-10-02 (test/rubydeclrefcheck.sh): a Rails callback,
+                                                      //   validation condition or rescue_from handler named by SYMBOL
+                                                      //   mints a Ruby call RawRef at the symbol, and `send( :m )` and
+                                                      //   its kin a renamed copy of their own call RawRef
+                                                      //   (ingest_binds.h noteDeclaredCall, sendTargets). New records,
+                                                      //   same layout: kCacheVersion unchanged (27). A Ruby cache
+                                                      //   written at 133 lacks them and must re-parse.
                                                       // 133 = 2026-10-02 (test/rubyrspectargetcheck.sh): inside an
                                                       //   RSpec example group, a receiver built by `expect`, `allow`,
                                                       //   `expect_any_instance_of`, `allow_any_instance_of` or a bare
