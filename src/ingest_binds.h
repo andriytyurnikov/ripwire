@@ -364,8 +364,8 @@ inline bool rubyDescribedClassIsLocal( TSNode site, std::string_view src )
 // enclosing calls whose BLOCK holds the site (the child it came from is a do_block/block), and the innermost example
 // group with a constant first argument answers. A string or absent argument passes outward; any other argument
 // (`describe :sym`, a variable) and a shared group stop the walk with no answer, and the site is left exactly as it
-// was. test/rubydescribedclasscheck.sh.
-inline std::string_view rspecDescribedClass( TSNode node, std::string_view src )
+// was. test/rubydescribedclasscheck.sh. rspecDescribingGroup is the climb: the group that answers, or a null node.
+inline TSNode rspecDescribingGroup( TSNode node, std::string_view src )
 {
     TSNode prev = node;
     for( TSNode n = ts_node_parent( node ); !ts_node_is_null( n ); prev = n, n = ts_node_parent( n ) )
@@ -378,17 +378,30 @@ inline std::string_view rspecDescribedClass( TSNode node, std::string_view src )
         const int group = rspecGroupKind( n, src );
         if( group == 2 )
         {
-            return {};  // a shared group: its body runs in whichever group includes it
+            return TSNode {};  // a shared group: its body runs in whichever group includes it
         }
-        if( group == 1 )
+        if( group == 1 && rspecGroupArgument( n, src ) )
         {
-            if( const std::optional<std::string_view> arg = rspecGroupArgument( n, src ) )
-            {
-                return *arg;
-            }
+            return n;
         }
     }
-    return {};
+    return TSNode {};
+}
+
+inline std::string_view rspecDescribedClass( TSNode node, std::string_view src )
+{
+    const TSNode group = rspecDescribingGroup( node, src );
+    return ts_node_is_null( group ) ? std::string_view {} : rspecGroupArgument( group, src ).value_or( std::string_view {} );
+}
+
+// The described class AS WRITTEN (parser version 137): the describing group's constant argument whole
+// (`BankIntegration::Sync`, where rspecDescribedClass answers its final segment); empty when that answers none.
+inline std::string_view rspecDescribedPath( TSNode node, std::string_view src )
+{
+    const TSNode group = rspecDescribingGroup( node, src );
+    const TSNode args  = ts_node_is_null( group ) ? group : fieldChild( group, NodeField::Arguments );
+    const TSNode first = ts_node_is_null( args ) ? args : ts_node_named_child( args, 0 );
+    return !ts_node_is_null( first ) && rubyIsConstantChain( first ) ? pattern::nodeText( first, src ) : std::string_view {};
 }
 
 // ─── Ruby's BARE-WORD call (test/rubybarecallcheck.sh) ────────────────────────────────────────────────────────────────
@@ -1269,12 +1282,11 @@ inline bool rubyAtClassBody( TSNode call ) noexcept
     return false;
 }
 
-// Each symbol of the `helper_method` call `call`, a binding against the class or module around it.
-inline void rubyNoteHelperMethods( TSNode call, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+// One binding per symbol argument in `args` (`helper_method :a, :b`, `attr_accessor :c`): `like` with the symbol's own start
+// byte and its name (the colon dropped).
+inline void rubyNoteSymbolArguments( TSNode args, const RawBind& like, std::string_view src, std::vector<RawBind>& binds )
 {
-    const std::string owner = rubyEnclosingScopeOf( call, src );
-    const TSNode      args  = fieldChild( call, NodeField::Arguments );
-    if( owner.empty() || ts_node_is_null( args ) )
+    if( ts_node_is_null( args ) )
     {
         return;
     }
@@ -1283,11 +1295,24 @@ inline void rubyNoteHelperMethods( TSNode call, std::uint32_t fileId, std::strin
     {
         if( kindIs( ts_node_type( a ), "simple_symbol" ) )
         {
-            binds.push_back( RawBind { .fileId = fileId, .startByte = ts_node_start_byte( a ), .lang = Lang::Ruby, .kind = LocalBindKind::RubyHelperMethod,
-                                       .var = std::string( pattern::nodeText( a, src ).substr( 1 ) ), .typeName = owner } );
+            RawBind b   = like;
+            b.startByte = ts_node_start_byte( a );
+            b.var       = std::string( pattern::nodeText( a, src ).substr( 1 ) );
+            binds.push_back( std::move( b ) );
         }
         return true;
     } );
+}
+
+// Each symbol of the `helper_method` call `call`, a binding against the class or module around it.
+inline void rubyNoteHelperMethods( TSNode call, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+{
+    const std::string owner = rubyEnclosingScopeOf( call, src );
+    if( !owner.empty() )
+    {
+        rubyNoteSymbolArguments( fieldChild( call, NodeField::Arguments ),
+                                 RawBind { .fileId = fileId, .lang = Lang::Ruby, .kind = LocalBindKind::RubyHelperMethod, .typeName = owner }, src, binds );
+    }
 }
 
 // One file's `helper_method` declarations, into `binds` — a file that never spells the word is not walked. One iterative
@@ -1310,6 +1335,83 @@ inline void captureRubyHelperMethods( TSNode root, std::uint32_t fileId, std::st
         if( declares && rubyAtClassBody( n ) )
         {
             rubyNoteHelperMethods( n, fileId, src, binds );
+            continue;
+        }
+        collectChildren( n, cursor.cur, kids );
+        stack.insert( stack.end(), kids.begin(), kids.end() );
+    }
+}
+
+// Parser version 137 (test/rubyclassrecvcheck.sh): is the Ruby def `defNode` a SINGLETON method — `def self.m`, or a def
+// inside `class << self` — which a call on the class object answers and no instance's lookup reaches? The nearest class,
+// module or def above a plain `def` decides; a block between them (`class_methods do`, `included do`) is walked through.
+inline bool rubyIsSingletonDef( TSNode defNode ) noexcept
+{
+    if( kindIs( ts_node_type( defNode ), "singleton_method" ) )
+    {
+        const TSNode object = fieldChild( defNode, NodeField::Object );
+        return !ts_node_is_null( object ) && kindIs( ts_node_type( object ), "self" );
+    }
+    for( TSNode n = ts_node_parent( defNode ); !ts_node_is_null( n ); n = ts_node_parent( n ) )
+    {
+        const char* t = ts_node_type( n );
+        if( kindIs( t, "singleton_class" ) )
+        {
+            const TSNode value = fieldChild( n, NodeField::Value );
+            return !ts_node_is_null( value ) && kindIs( ts_node_type( value ), "self" );
+        }
+        if( kindIs( t, "class" ) || kindIs( t, "module" ) || kindIs( t, "method" ) || kindIs( t, "singleton_method" ) )
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+// A LocalBindKind::RubySingletonDef binding for the def at `defNode` named `name`, when it is a singleton method.
+inline void rubyNoteSingletonDef( TSNode defNode, std::uint32_t fileId, std::string_view name, std::vector<RawBind>& binds )
+{
+    if( rubyIsSingletonDef( defNode ) )
+    {
+        binds.push_back( RawBind { .fileId = fileId, .startByte = ts_node_start_byte( defNode ), .lang = Lang::Ruby,
+                                   .kind = LocalBindKind::RubySingletonDef, .var = std::string( name ) } );
+    }
+}
+
+// What a `class << self` declares beside its defs is the class object's too (parser version 137): each accessor
+// (`attr_accessor :config`, one RubySingletonDef binding per name, where captureRubyAttrDefs starts its def) and each name
+// the delegation DSL defines (model.h kRubyDelegationCalls — `delegate :reset, to: :instance`: a binding per name against
+// the owning class; `delegate_missing_to` one with no name, as it answers every name). A file that never writes `<<` is not
+// walked; the walk is iterative, so a hostile nesting depth costs heap, not stack.
+inline void captureRubySingletonAccessors( TSNode root, std::uint32_t fileId, std::string_view src, std::vector<RawBind>& binds )
+{
+    if( src.find( "<<" ) == std::string_view::npos )
+    {
+        return;
+    }
+    std::vector<TSNode> stack { root };
+    std::vector<TSNode> kids;
+    ChildCursor         cursor( root );
+    while( !stack.empty() )
+    {
+        const TSNode           n          = stack.back();
+        stack.pop_back();
+        const bool             call       = kindIs( ts_node_type( n ), "call" );
+        const bool             accessor   = call && !rubyNamedDirective( n, src, kRubyAttrFamilyNames ).empty();
+        const std::string_view delegation = call ? rubyNamedDirective( n, src, kRubyDelegationCalls ) : std::string_view {};
+        if( ( accessor || !delegation.empty() ) && rubyAttrAtClassBodyLevel( n, src ) && rubyIsSingletonDef( n ) )
+        {
+            const std::string owner = accessor ? std::string {} : rubyEnclosingScopeOf( n, src );
+            if( delegation == "delegate_missing_to" )
+            {
+                binds.push_back( RawBind { .fileId = fileId, .startByte = ts_node_start_byte( n ), .lang = Lang::Ruby,
+                                           .kind = LocalBindKind::RubySingletonDef, .typeName = owner } );
+                continue;
+            }
+            // an accessor's binding sits at its symbol, where captureRubyAttrDefs starts its def (no owner); a delegated name has
+            // no def, and is read against the class that owns the singleton
+            rubyNoteSymbolArguments( fieldChild( n, NodeField::Arguments ),
+                                     RawBind { .fileId = fileId, .lang = Lang::Ruby, .kind = LocalBindKind::RubySingletonDef, .typeName = owner }, src, binds );
             continue;
         }
         collectChildren( n, cursor.cur, kids );
@@ -1508,6 +1610,27 @@ inline void captureRubyFactories( TSNode root, std::uint32_t fileId, std::string
     {
         RubyFactoryWalk( fileId, src, binds ).run( root );
     }
+}
+
+// `described_class::Worker` — a constant path whose head is RSpec's described_class — spelled through the path the
+// described class is written as (`Log::Worker`, parser version 137); empty for any other head, and where the file
+// redefines described_class or a local of that name reaches the head.
+inline std::string rubyDescribedRelativePath( TSNode node, std::string_view src )
+{
+    TSNode head = node;
+    for( TSNode scope = fieldChild( head, NodeField::Scope ); kindIs( ts_node_type( head ), "scope_resolution" ) && !ts_node_is_null( scope );
+         scope = fieldChild( head, NodeField::Scope ) )
+    {
+        head = scope;   // the leftmost segment, one step at a time: a deep chain costs a loop, never a frame
+    }
+    const bool described = kindIs( ts_node_type( head ), "identifier" ) && pattern::nodeText( head, src ) == "described_class"
+                        && !rubyDefinesDescribedClassMethod( src ) && !rubyDescribedClassIsLocal( head, src );
+    const std::string_view path = described ? rspecDescribedPath( head, src ) : std::string_view {};
+    if( path.empty() )
+    {
+        return {};
+    }
+    return std::string( path ).append( pattern::nodeText( node, src ).substr( ts_node_end_byte( head ) - ts_node_start_byte( node ) ) );
 }
 
 // nullopt when the node is neither (classifyReceiver's shared arms decide it); otherwise the answer, which is empty for a
@@ -1869,6 +1992,31 @@ inline RecvShape receiverOf( TSNode nameNode, Lang lang, std::string_view src )
         rs.kind = RecvKind::FieldOfVar;
     }
     return rs;
+}
+
+// The constant a Ruby call's receiver names, AS WRITTEN, when that differs from `final` — the final segment recvVar keeps
+// (parser version 137: `Stripe::Customer` is not the tree's Customer unless the tree opens that path, graph.h
+// RubyClassObjects). A qualified constant's whole path; the path through the described class for `described_class` and
+// for `described_class::Worker`; empty for a final segment alone, and for a path with any other head that is no constant
+// (`self.class::Foo`).
+inline std::string rubyReceiverWrittenPath( TSNode nameNode, std::string_view final, std::string_view src )
+{
+    const TSNode call = calleeAccessParent( nameNode );
+    const TSNode recv = ts_node_is_null( call ) || !kindIs( ts_node_type( call ), "call" ) ? TSNode {} : fieldChild( call, NodeField::Receiver );
+    std::string  written;
+    if( ts_node_is_null( recv ) )
+    {
+        return written;
+    }
+    if( kindIs( ts_node_type( recv ), "identifier" ) && pattern::nodeText( recv, src ) == "described_class" )
+    {
+        written = rspecDescribedPath( recv, src );   // classifyRubyReceiver named the group's constant: its path beside it
+    }
+    else if( isRubyConstantNode( recv ) )
+    {
+        written = rubyIsConstantChain( recv ) ? std::string( pattern::nodeText( recv, src ) ) : rubyDescribedRelativePath( recv, src );
+    }
+    return written == final ? std::string {} : written;
 }
 
 // Java method references are not ordinary member-access nodes. The pinned grammar's first named

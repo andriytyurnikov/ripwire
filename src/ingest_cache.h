@@ -296,7 +296,16 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 136;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 137;          // bump on any grammar/.scm/extraction change
+                                                      // 137 = 2026-10-02 (test/rubyclassrecvcheck.sh): a Ruby call whose
+                                                      //   receiver is a constant written with a path keeps the path in
+                                                      //   RawRef::fieldName (`Billing::Invoice.issue` → "Billing::
+                                                      //   Invoice"; recvVar keeps "Invoice"), and a singleton method —
+                                                      //   `def self.m`, a def or an accessor in `class << self` — mints a
+                                                      //   LocalBindKind::RubySingletonDef binding (an appended kind), both
+                                                      //   read by graph.h's class-object lookup. Same layout: kCacheVersion
+                                                      //   unchanged (27). A Ruby cache written at 136 lacks them and must
+                                                      //   re-parse.
                                                       // 136 = 2026-10-02 (test/rubyrspectargetcheck.sh): RSpec's matcher
                                                       //   builders (`receive`, `change`, … model.h kRspecTargets) type
                                                       //   their receivers in an example group, and a call on a chain

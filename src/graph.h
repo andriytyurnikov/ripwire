@@ -2705,6 +2705,19 @@ inline void forEachNameReached( const HashMap<std::string, std::vector<std::stri
     }
 }
 
+// `start` and every name reached from it along `edges` (forEachNameReached's order), memoised per start in `memo`.
+inline const std::vector<std::string>& memoNamesReached( const HashMap<std::string, std::vector<std::string>>& edges,
+                                                         HashMap<std::string, std::vector<std::string>>& memo, const std::string& start )
+{
+    if( const auto hit = memo.find( start ); hit != memo.end() )
+    {
+        return hit->second;
+    }
+    std::vector<std::string> out;
+    forEachNameReached( edges, start, [ & ]( const std::string& a ) { out.push_back( a ); } );
+    return memo.emplace( start, std::move( out ) ).first->second;
+}
+
 // The out-of-tree superclasses below which a class forwards what it lacks — Ruby's stdlib delegators and Draper's
 // decorator, read by final segment as the inheritance graph names every base.
 inline constexpr std::string_view kRubyDelegatorBaseNames[] = { "Decorator", "Delegator", "SimpleDelegator" };
@@ -2716,9 +2729,8 @@ inline constexpr std::string_view kRubyImplicitRoots[] = { "BasicObject", "Class
 // An instance's implicit ancestors — a typed receiver's, or `main`'s and a view's outside any class: not a Class or Module.
 inline constexpr std::string_view kRubyInstanceRoots[] = { "BasicObject", "Kernel", "Object" };
 
-// The delegation DSL: a class that writes one defines methods the tree indexes nowhere in it (ActiveSupport's `delegate`
-// and `delegate_missing_to`, Forwardable's `def_delegator(s)`), so it may answer a name no lookup over the tree finds.
-inline constexpr std::string_view kRubyDelegationCalls[] = { "def_delegator", "def_delegators", "delegate", "delegate_missing_to" };
+// The delegation DSL (model.h kRubyDelegationCalls) is read here too: a class that writes one may answer a name no lookup over
+// the tree finds.
 
 // Ruby's ancestors include its MIXINS (parser version 131), and they feed only what a Ruby call to self reads — Rule 1's
 // base walk and RubySelfReach — through this overlay: the shared inheritance graph plus each in-tree mixin edge, built
@@ -2859,13 +2871,7 @@ struct RubySelfReach
     // `start` and every name above it; memoised.
     const std::vector<std::string>& ancestorsOf( const std::string& start ) const
     {
-        if( const auto hit = ancestorsMemo.find( start ); hit != ancestorsMemo.end() )
-        {
-            return hit->second;
-        }
-        std::vector<std::string> out;
-        forEachNameReached( chaUp, start, [ & ]( const std::string& a ) { out.push_back( a ); } );
-        return ancestorsMemo.emplace( start, std::move( out ) ).first->second;
+        return memoNamesReached( chaUp, ancestorsMemo, start );
     }
 
     // The ancestors of self and of every class below it; memoised.
@@ -3118,6 +3124,99 @@ inline RubyTopSelf buildRubyTopSelf( const IngestResult& ing, const RubySelfReac
 // (`def expect`) where an example group can reach it types nothing from that name (rubyDefinedBuilders). RSpec's matchers
 // are such targets too: a call on a chain rooted at `receive( :m )` or `change { }` is RSpec's. A Jbuilder template's `json` is another (model.h kJbuilderTemplate): every
 // call on it is a key the class's method_missing writes (test/rubyrakejbuildercheck.sh).
+//
+// RUBY CLASS OBJECTS (test/rubyclassrecvcheck.sh; parser version 137). A call whose receiver is a constant —
+// `Report.generate`, `User.where( … )`, `JSON.parse( s )` — is sent to the class object, and Ruby's lookup on it answers
+// (RubyClassObjects):
+//   * WHICH class: the constant as Ruby resolves it from the call site, by fully-qualified constant over resolve.h's index —
+//     lexically (the innermost class or module open around the site, its enclosing ones, the top level), then through the
+//     ancestors of that open or of a qualified constant's head, then by Zeitwerk's directories (a constant whose last two
+//     segments or more the tree opens). The ingest keeps a path-written receiver's path (Reference::fieldName), and the
+//     described class's for `described_class`. A constant that resolves to nothing the tree opens — `JSON`, `RSpec`, a
+//     `Point = Struct.new( … )` constant, a gem's class — answers only from a reopened root. A tree with no constant index
+//     reads the final segment, as every class is keyed elsewhere.
+//   * WHAT answers: the shallowest of the class, its mixins and its superclasses — read by fully-qualified constant along
+//     what the index scopes their superclass and mixin references to (fqnUp) — to define the name as a class method: a
+//     singleton method (`def self.m`, a def or an accessor in `class << self`: LocalBindKind::RubySingletonDef), or a
+//     module's method (an extended module's, a concern's ClassMethods'); a class's instance method is its instances'
+//     alone, and so is a method of a concern that nests a ClassMethods. Then a reopened Module, Class, Object, Kernel or
+//     BasicObject. `C.new` is Class#new unless a `def self.new` answers first, and Class#new runs the first `initialize`
+//     an instance's lookup finds — never an instance method named `new`. A class below a base that forwards a class
+//     object's call to a new instance (kRubyInstanceForwardingBases: a mailer's, ActiveSupport::CurrentAttributes)
+//     answers a name it lacks from its instances' lookup.
+//   * When nothing there defines the name, Ruby's answer is outside the tree (ActiveRecord::Base's `where`,
+//     StandardError's initialize), and the call is refused as external rather than bound to an unrelated namesake.
+// Left as before: a SCREAMING constant the tree assigns (`LIMITS = Limits.new`, a value of a class nothing types), and a
+// class object that may answer any name — a method_missing in its lookup, or the name delegated by a `class << self`.
+
+// What a call on a receiver whose every answer the tree knows reaches (rubyClosedLookup).
+struct RubyClosedLookup
+{
+    bool                           closed = false;     // the lookup is known: what `hit` lacks is outside the tree
+    const rw::SmallVec<NodeId, 2>* hit    = nullptr;   // what answers in the tree; nullptr when nothing does
+};
+
+// The class object a Ruby constant receiver names (RubyClassObjects::of).
+struct RubyClassObject
+{
+    const std::string* cls      = nullptr;   // the class or module the tree opens at the constant, as RubySelfReach keys it
+    std::string        fqn;                  // its fully-qualified constant, when the tree keeps a constant index
+    bool               external = false;     // a constant the tree never opens: only a reopened root answers
+};
+
+inline constexpr std::string_view kRubyNew        = "new";          // Class#new: it allocates, then runs initialize
+inline constexpr std::string_view kRubyInitialize = "initialize";
+
+// The out-of-tree superclasses whose class object forwards a name it lacks to a new instance, read as written: a mailer's
+// `UserMailer.welcome( u )` runs the instance method `welcome` (ActionMailer::Base's method_missing, which Devise::Mailer
+// inherits), and `Current.user = u` the instance's `user=` (ActiveSupport::CurrentAttributes). A class below one answers a
+// call on the class object from its instances' lookup too.
+inline constexpr std::string_view kRubyInstanceForwardingBases[] = { "ActionMailer::Base", "ActiveSupport::CurrentAttributes", "Devise::Mailer" };
+
+struct RubyTypedReceivers;
+
+// Ruby's lookup on a class object (the RUBY CLASS OBJECTS note above): what a constant receiver names, and what answers a
+// call on it. Read by rubyClosedLookup.
+struct RubyClassObjects
+{
+    const RubyTypedReceivers&                              typed;             // the reach, overlay, narrower and paths it shares
+    const IngestResult&                                    ing;
+    const RubyBaseScope&                                   bases;             // the constant index a receiver's FQN is read off
+    HashMap<std::string, char>                             constantValues;    // every SCREAMING constant the tree assigns
+    HashMap<std::string, char>                             missingOwners;     // every class or module defining a method_missing
+    HashMap<NodeId, char>                                  classObjectDefs;   // every def a class object may answer from
+    HashMap<std::string, char>                             forwarders;        // every class written below a forwarding base
+    HashMap<std::string, char>                             classDelegated;    // "<class>#<name>" a `class << self` delegates
+    HashMap<std::string, std::vector<std::string>>         fqnUp;             // a constant → what its superclass and mixins
+                                                                              //   resolve to, and a concern's ClassMethods
+    Reference                                              initializeCall;    // a Ruby call of `initialize`: what C.new runs
+    mutable HashMap<std::string, std::vector<std::string>> fqnAncestorsMemo;
+    mutable rw::SmallVec<NodeId, 2>                        hits, rootHits;
+    mutable std::vector<const std::string*>                walkLevel, walkNext;
+    mutable HashMap<std::string_view, char>                walkSeen;
+
+    RubyClassObject                 of( const Reference& r ) const;                                     // the class a constant names
+    RubyClassObject                 ofIndexed( const Reference& r ) const;
+    const rw::SmallVec<NodeId, 2>*  lookup( const Reference& r, const RubyClassObject& object ) const;   // what answers a call on it
+    const rw::SmallVec<NodeId, 2>*  definerLookup( const RubyClassObject& object, const Reference& asked, bool classObject ) const;
+    const rw::SmallVec<NodeId, 2>*  rootLookup( const Reference& r ) const;                             // a reopened root's
+    bool                            open( const RubyClassObject& object, std::string_view callee ) const;   // it may answer any name
+    template<class Probe>
+    const rw::SmallVec<NodeId, 2>*  levelLookup( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& start, Probe&& probe ) const;
+    void                            expandLevel( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& name ) const;
+    void                            noteNamedDefs( const std::string& owner, std::string_view callee ) const;
+    void                            noteFqnDefs( const std::string& fqn, std::string_view callee, bool classObject ) const;
+    bool                            ownedBy( NodeId c, const std::string& fqn ) const;
+    bool                            anyInLookup( const std::string& cls, const HashMap<std::string, char>& owners ) const;
+    bool                            pathOpened( std::string_view written ) const;
+    std::string                     receiverFqn( const Reference& r ) const;
+    std::string                     lexicalConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const;
+    std::string                     inheritedConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const;
+    std::string                     ancestorConstant( std::string_view head, std::string_view rest ) const;
+    std::string                     zeitwerkConstant( std::string_view written ) const;
+    const std::vector<std::string>& fqnAncestors( const std::string& fqn ) const;
+    bool                            opened( const std::string& fqn ) const;
+};
 
 struct RubyTypedReceivers
 {
@@ -3221,17 +3320,385 @@ inline const rw::SmallVec<NodeId, 2>* RubyTypedReceivers::rootLookup( const Refe
     return rootHits.empty() ? nullptr : &rootHits;
 }
 
+// Is `name` a Ruby constant's — a class, a module, a SCREAMING value? Ruby reads a leading capital as one.
+inline bool rubyIsConstantName( std::string_view name ) noexcept
+{
+    return !name.empty() && name.front() >= 'A' && name.front() <= 'Z';
+}
+
+// The constant a Ruby call's receiver names, as written and without a leading `::` (model.h Reference::fieldName keeps a
+// qualified one's path); empty when the receiver is no constant — a variable, self, a receiver the code builds (whose
+// recvVar is a typed token).
+inline std::string_view rubyConstantReceiver( const Reference& r ) noexcept
+{
+    const bool constant = r.lang == Lang::Ruby && r.role == RefRole::Call && r.recv == RecvKind::NamedVar && r.qualifier.empty()
+                       && rubyIsConstantName( r.recvVar ) && r.recvVar.find( kRubyTypedRecvSep ) == std::string::npos;
+    const std::string_view written = !constant ? std::string_view {} : r.fieldName.empty() ? std::string_view( r.recvVar ) : std::string_view( r.fieldName );
+    return written.substr( written.starts_with( "::" ) ? 2 : 0 );
+}
+
+// The class object r's constant receiver names: the class or module the tree opens at it — by fully-qualified constant
+// where the tree keeps a constant index (ofIndexed), else by final segment, a qualified constant only where the tree opens
+// that path — and otherwise external, a constant the tree never opens. Neither for any other receiver, nor for a SCREAMING
+// constant the tree assigns: a value whose class nothing types.
+inline RubyClassObject RubyClassObjects::of( const Reference& r ) const
+{
+    const std::string_view written = rubyConstantReceiver( r );
+    if( written.empty() )
+    {
+        return {};
+    }
+    const std::size_t cut = written.rfind( "::" );
+    const std::string name( written.substr( cut == std::string_view::npos ? 0 : cut + 2 ) );
+    if( constantValues.find( name ) != constantValues.end() )
+    {
+        return {};
+    }
+    if( !bases.ix.opensByFile.empty() )
+    {
+        return ofIndexed( r );
+    }
+    const auto cls = typed.reach.classNames.find( name );
+    if( cls != typed.reach.classNames.end() && ( cut == std::string_view::npos || pathOpened( written ) ) )
+    {
+        return { &cls->first, {}, false };
+    }
+    return { nullptr, {}, true };
+}
+
+// The class object by fully-qualified constant (receiverFqn), keyed beside it by its final segment as RubySelfReach keys
+// every class; external when the constant resolves to nothing the tree opens.
+inline RubyClassObject RubyClassObjects::ofIndexed( const Reference& r ) const
+{
+    std::string       fqn  = receiverFqn( r );
+    const std::size_t last = fqn.rfind( "::" );
+    const auto        cls  = fqn.empty() ? typed.reach.classNames.end() : typed.reach.classNames.find( fqn.substr( last == std::string::npos ? 0 : last + 2 ) );
+    return cls != typed.reach.classNames.end() ? RubyClassObject { &cls->first, std::move( fqn ), false } : RubyClassObject { nullptr, {}, true };
+}
+
+// What a reopened root defines for a call on a class object: C.new runs initialize, which an instance's roots answer
+// (RubyTypedReceivers::rootLookup); any other name a reopened Object, Kernel or BasicObject answers, and a Class or a
+// Module too, which a class object is besides.
+inline const rw::SmallVec<NodeId, 2>* RubyClassObjects::rootLookup( const Reference& r ) const
+{
+    const bool                     ctor     = r.calleeName == kRubyNew;
+    const rw::SmallVec<NodeId, 2>* instance = typed.rootLookup( ctor ? initializeCall : r );
+    if( ctor )
+    {
+        return instance;
+    }
+    rootHits.clear();
+    if( instance != nullptr )
+    {
+        rootHits.insert( rootHits.end(), instance->begin(), instance->end() );
+    }
+    const auto alsoClassRoot = [ & ]( std::string_view root )
+    {
+        if( const rw::SmallVec<NodeId, 2>* defs = typed.narrower.definitionsIn( root, r.calleeName ) )
+        {
+            rootHits.insert( rootHits.end(), defs->begin(), defs->end() );
+        }
+    };
+    alsoClassRoot( "Class" );
+    alsoClassRoot( "Module" );
+    return rootHits.empty() ? nullptr : &rootHits;
+}
+
+// The names `name` reaches in one step along `edges` that the walk has not met, onto the next level.
+inline void RubyClassObjects::expandLevel( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& name ) const
+{
+    const auto next = edges.find( name );
+    if( next == edges.end() )
+    {
+        return;
+    }
+    for( const std::string& base : next->second )   // `edges` owns every name: the pointers outlive the walk
+    {
+        if( walkSeen.try_emplace( base, 1 ).second )
+        {
+            walkNext.push_back( &base );
+        }
+    }
+}
+
+// The shallowest level of a lookup walked from `start` along `edges` — the class, then its mixins and superclasses, level by
+// level — at which `probe`, handed one name at a time, notes a def into hits; nullptr when no level does. A level with two
+// definers answers their union.
+template<class Probe>
+inline const rw::SmallVec<NodeId, 2>* RubyClassObjects::levelLookup( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& start,
+                                                                     Probe&& probe ) const
+{
+    hits.clear();
+    walkSeen.clear();
+    walkSeen.try_emplace( start, 1 );
+    walkLevel.assign( 1, &start );
+    while( !walkLevel.empty() && hits.empty() )
+    {
+        walkNext.clear();
+        for( const std::string* name : walkLevel )
+        {
+            probe( *name );
+            expandLevel( edges, *name );
+        }
+        walkLevel.swap( walkNext );
+    }
+    return hits.empty() ? nullptr : &hits;
+}
+
+// The defs of `callee` that `owner`, read by name, holds where a class object may answer from them (classObjectDefs), into
+// hits. A nested `module ClassMethods` is keyed "<holder>::ClassMethods" in the overlay while its defs are indexed under the
+// bare name every concern's shares, so its defs are read by the concern that holds them (RubySelfReach::qualifiedOwner).
+inline void RubyClassObjects::noteNamedDefs( const std::string& owner, std::string_view callee ) const
+{
+    const std::size_t              cut    = owner.rfind( "::" );
+    const bool                     nested = cut != std::string::npos && std::string_view( owner ).substr( cut + 2 ) == kRubyConcernClassMethods;
+    const rw::SmallVec<NodeId, 2>* defs   = typed.narrower.definitionsIn( nested ? kRubyConcernClassMethods : std::string_view( owner ), callee );
+    if( defs == nullptr )
+    {
+        return;
+    }
+    for( const NodeId c : *defs )
+    {
+        const auto q = nested ? typed.reach.qualifiedOwner.find( c ) : typed.reach.qualifiedOwner.end();
+        if( classObjectDefs.find( c ) != classObjectDefs.end() && ( !nested || ( q != typed.reach.qualifiedOwner.end() && q->second == owner ) ) )
+        {
+            hits.push_back( c );
+        }
+    }
+}
+
+// The defs of `callee` the class or module whose fully-qualified constant is `fqn` holds, into hits — only those a class
+// object may answer from when `classObject`.
+inline void RubyClassObjects::noteFqnDefs( const std::string& fqn, std::string_view callee, bool classObject ) const
+{
+    const std::size_t              cut  = fqn.rfind( "::" );
+    const rw::SmallVec<NodeId, 2>* defs = typed.narrower.definitionsIn( cut == std::string::npos ? std::string_view( fqn ) : std::string_view( fqn ).substr( cut + 2 ), callee );
+    if( defs == nullptr )
+    {
+        return;
+    }
+    for( const NodeId c : *defs )
+    {
+        if( ( !classObject || classObjectDefs.find( c ) != classObjectDefs.end() ) && ownedBy( c, fqn ) )
+        {
+            hits.push_back( c );
+        }
+    }
+}
+
+// What the lookup the class object stands at defines `asked` in: as a class method when `classObject` — a class's singleton
+// method, a module's (classObjectDefs) — else as its instances' (any def). Over fully-qualified constants when the tree
+// keeps a constant index (fqnUp), else over names (the overlay), where two classes of one name share a lookup.
+inline const rw::SmallVec<NodeId, 2>* RubyClassObjects::definerLookup( const RubyClassObject& object, const Reference& asked, bool classObject ) const
+{
+    if( !object.fqn.empty() )
+    {
+        return levelLookup( fqnUp, object.fqn, [ & ]( const std::string& n ) { noteFqnDefs( n, asked.calleeName, classObject ); } );
+    }
+    if( classObject )
+    {
+        return levelLookup( typed.up, *object.cls, [ & ]( const std::string& n ) { noteNamedDefs( n, asked.calleeName ); } );
+    }
+    return typed.narrower.methodOnTypeOrBases( *object.cls, asked, typed.up, /*skipSelf=*/false, /*unionOnMulti=*/true );
+}
+
+// What Ruby's lookup on the class object reaches for r's method: the shallowest of the class, its mixins and its
+// superclasses to define it as a class method, else a reopened root. C.new is Class#new unless a `def self.new` (or a
+// concern's ClassMethods#new) answers first, and Class#new runs the first `initialize` an instance's lookup finds. A class
+// below a forwarding base (kRubyInstanceForwardingBases) answers a name it lacks from its instances' lookup.
+inline const rw::SmallVec<NodeId, 2>* RubyClassObjects::lookup( const Reference& r, const RubyClassObject& object ) const
+{
+    if( const rw::SmallVec<NodeId, 2>* hit = definerLookup( object, r, true ) )
+    {
+        return hit;
+    }
+    const bool ctor = r.calleeName == kRubyNew;
+    if( ctor || anyInLookup( *object.cls, forwarders ) )
+    {
+        if( const rw::SmallVec<NodeId, 2>* hit = definerLookup( object, ctor ? initializeCall : r, false ) )
+        {
+            return hit;
+        }
+    }
+    return rootLookup( r );
+}
+
+// The fully-qualified constant `written` names from the call site by Ruby's lexical rule — the innermost class or module
+// open around it (`site`), its enclosing ones, then the top level (resolve.h rubyResolveMixinConstant) — or empty.
+inline std::string RubyClassObjects::lexicalConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const
+{
+    if( site != kNoFile )
+    {
+        return rubyResolveMixinConstant( bases.opened, opens, site, written );
+    }
+    const std::string top( written.substr( rubyConstIsAbsolute( written ) ? 2 : 0 ) );
+    return opened( top ) ? top : std::string {};
+}
+
+// Ruby's second step, through ancestors: a bare constant one the innermost open's superclass or mixins hold; a qualified
+// one's tail held by its head's (`Sub::Failure` for a Failure Sub's superclass nests). Empty when neither does.
+inline std::string RubyClassObjects::inheritedConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const
+{
+    const std::size_t cut = written.find( "::" );
+    if( cut == std::string_view::npos )
+    {
+        return site != kNoFile ? ancestorConstant( opens[ site ].fqn, written ) : std::string {};
+    }
+    return ancestorConstant( lexicalConstant( opens, site, written.substr( 0, cut ) ), written.substr( cut + 2 ) );
+}
+
+// `rest` held by `head` (a fully-qualified constant) or by one of its ancestors, as the constant the tree opens; empty when
+// none does.
+inline std::string RubyClassObjects::ancestorConstant( std::string_view head, std::string_view rest ) const
+{
+    if( head.empty() || !opened( std::string( head ) ) )
+    {
+        return {};
+    }
+    for( const std::string& a : fqnAncestors( std::string( head ) ) )
+    {
+        std::string cand = a;
+        cand.append( "::" ).append( rest );
+        if( opened( cand ) )
+        {
+            return cand;
+        }
+    }
+    return {};
+}
+
+// A namespace Zeitwerk makes of a directory is opened by no file: a constant whose last two segments or more are one the
+// tree opens names it (`Alerts::Senders::Pay` is the tree's `Senders::Pay`). Empty when none is.
+inline std::string RubyClassObjects::zeitwerkConstant( std::string_view written ) const
+{
+    for( std::string_view tail = written.substr( rubyConstIsAbsolute( written ) ? 2 : 0 ); tail.find( "::" ) != std::string_view::npos;
+         tail = tail.substr( tail.find( "::" ) + 2 ) )
+    {
+        if( opened( std::string( tail ) ) )
+        {
+            return std::string( tail );
+        }
+    }
+    return {};
+}
+
+// The fully-qualified constant r's constant receiver names, as Ruby resolves it from the call site: lexically, then through
+// ancestors, then by Zeitwerk's directories. Empty when none answers — a `Point = Struct.new( … )` constant, a gem's class.
+inline std::string RubyClassObjects::receiverFqn( const Reference& r ) const
+{
+    const std::string_view written = r.fieldName.empty() ? std::string_view( r.recvVar ) : std::string_view( r.fieldName );
+    if( r.fileId >= bases.ix.opensByFile.size() )
+    {
+        return {};
+    }
+    const std::vector<RubyOpenRec>& opens = bases.ix.opensByFile[ r.fileId ];
+    const std::uint32_t             site  = rubyInnermostOpen( opens, r.startByte );
+    std::string                     fqn   = lexicalConstant( opens, site, written );
+    if( fqn.empty() && !rubyConstIsAbsolute( written ) )
+    {
+        fqn = inheritedConstant( opens, site, written );
+    }
+    return fqn.empty() ? zeitwerkConstant( written ) : fqn;
+}
+
+// `fqn` and every constant above it along fqnUp, breadth-first; memoised.
+inline const std::vector<std::string>& RubyClassObjects::fqnAncestors( const std::string& fqn ) const
+{
+    return memoNamesReached( fqnUp, fqnAncestorsMemo, fqn );
+}
+
+inline bool RubyClassObjects::opened( const std::string& fqn ) const
+{
+    return bases.opened.find( fqn ) != bases.opened.end();
+}
+
+// Is a class or module in cls's lookup, read by name, one of `owners`?
+inline bool RubyClassObjects::anyInLookup( const std::string& cls, const HashMap<std::string, char>& owners ) const
+{
+    const auto owned = [ &owners ]( const std::string& a ) { return owners.find( a ) != owners.end(); };
+    return !owners.empty() && std::ranges::any_of( typed.reach.ancestorsOf( cls ), owned );
+}
+
+// Does the class object answer a name the tree indexes no def of — a method_missing in its lookup, or `callee` delegated by
+// a `class << self` there (model.h kRubyDelegationCalls)? Then the tree cannot say what answers it.
+inline bool RubyClassObjects::open( const RubyClassObject& object, std::string_view callee ) const
+{
+    if( anyInLookup( *object.cls, missingOwners ) )
+    {
+        return true;
+    }
+    std::string key;
+    const auto  delegated = [ & ]( const std::string& a )
+    {
+        key.assign( a ).append( 1, '#' ).append( callee );
+        return classDelegated.find( key ) != classDelegated.end();
+    };
+    return !classDelegated.empty() && std::ranges::any_of( typed.reach.ancestorsOf( *object.cls ), delegated );
+}
+
+// Does the tree open the qualified constant `written` — is it, or its last two segments or more, a trailing path of a
+// constant the tree opens (RubyTypedReceivers::openedPaths)? Read where the tree keeps no constant index.
+inline bool RubyClassObjects::pathOpened( std::string_view written ) const
+{
+    for( std::string_view tail = written; tail.find( "::" ) != std::string_view::npos; tail = tail.substr( tail.find( "::" ) + 2 ) )
+    {
+        if( typed.openedPaths.find( std::string( tail ) ) != typed.openedPaths.end() )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Is the def `c` held by the class or module whose fully-qualified constant is `fqn` — is that the innermost open around
+// it in its file?
+inline bool RubyClassObjects::ownedBy( NodeId c, const std::string& fqn ) const
+{
+    const Symbol& s = ing.symbols[ c ];
+    if( s.fileId >= bases.ix.opensByFile.size() )
+    {
+        return false;
+    }
+    const std::vector<RubyOpenRec>& opens = bases.ix.opensByFile[ s.fileId ];
+    const std::uint32_t             o     = rubyInnermostOpen( opens, s.sigStartByte );
+    return o != kNoFile && opens[ o ].fqn == fqn;
+}
+
+// What a call reaches on a receiver whose every answer the tree knows: one of RSpec's targets or a template's `json`, which
+// only a reopened instance root answers (RubyTypedReceivers), and a class object, which its lookup answers
+// (RubyClassObjects). Not closed for any other receiver, nor for a class object that may answer any name.
+inline RubyClosedLookup rubyClosedLookup( const Reference& r, const RubyTypedReceivers& typed, const RubyClassObjects& classes )
+{
+    if( typed.outOfTreeTarget( r ) )
+    {
+        return { true, typed.rootLookup( r ) };
+    }
+    const RubyClassObject object = classes.of( r );
+    if( object.external )
+    {
+        return { true, classes.rootLookup( r ) };
+    }
+    if( object.cls == nullptr || classes.open( object, r.calleeName ) )
+    {
+        return {};
+    }
+    return { true, classes.lookup( r, object ) };
+}
+
 // Every trailing path of every constant the tree opens (`A::B::C` → "A::B::C", "B::C", "C"), read off the base scope's
 // constant index — or, where that built none (no Ruby superclass, mixin or constant reference in the tree), the full
-// index, built only when a typed receiver is qualified and so needs it.
+// index, built only when a typed or a constant receiver is qualified and so needs it.
+// Is r's receiver a qualified constant — a typed one's class (not a factory), or a constant receiver — `A::B`?
+inline bool rubyQualifiedReceiver( const Reference& r ) noexcept
+{
+    const std::optional<RubyTypedRecv> typed   = rubyTypedRecvOf( r );
+    const std::string_view             written = typed ? ( typed->factory ? std::string_view {} : typed->type ) : rubyConstantReceiver( r );
+    return written.find( "::" ) != std::string_view::npos;
+}
+
 inline void rubyOpenedPaths( const IngestResult& ing, const RubyBaseScope& bases, HashMap<std::string, char>& out )
 {
-    const auto qualified = []( const Reference& r )
-    {
-        const std::optional<RubyTypedRecv> typed = rubyTypedRecvOf( r );
-        return typed && !typed->factory && typed->type.find( "::" ) != std::string_view::npos;
-    };
-    const bool              own   = bases.ix.opensByFile.empty() && std::ranges::any_of( ing.references, qualified );
+    const bool              own   = bases.ix.opensByFile.empty() && std::ranges::any_of( ing.references, []( const Reference& r ) { return rubyQualifiedReceiver( r ); } );
     const RubyConstantIndex ownIx = own ? rubyConstantIndexOf( ing ) : RubyConstantIndex {};
     for( const std::vector<RubyOpenRec>& opens : ( own ? ownIx : bases.ix ).opensByFile )
     {
@@ -3294,6 +3761,143 @@ inline void rubyDefinedBuilders( const IngestResult& ing, std::array<bool, std::
     }
 }
 
+// The singleton bindings (LocalBindKind::RubySingletonDef): each def or accessor site — `def self.m`, a def or an accessor
+// in `class << self` — as (fileId << 32) | its start byte, which a def's own start (Symbol::sigStartByte) joins; and each
+// name a `class << self` delegates, into out.classDelegated (`delegate_missing_to`, every name: out.missingOwners).
+inline HashMap<std::uint64_t, char> rubySingletonSites( const IngestResult& ing, RubyClassObjects& out )
+{
+    HashMap<std::uint64_t, char> sites;
+    for( const Binding& b : ing.bindings )
+    {
+        if( b.kind != LocalBindKind::RubySingletonDef )
+        {
+            continue;
+        }
+        if( b.typeName.empty() )
+        {
+            sites.try_emplace( ( std::uint64_t( b.fileId ) << 32 ) | b.startByte, 1 );
+        }
+        else if( b.var.empty() )
+        {
+            out.missingOwners.try_emplace( b.typeName, 1 );
+        }
+        else
+        {
+            out.classDelegated.try_emplace( b.typeName + "#" + b.var, 1 );
+        }
+    }
+    return sites;
+}
+
+// Every Ruby module name whose methods a class object may answer from when the module is extended onto it — every module the
+// tree opens but a concern, one that nests a `module ClassMethods`: that module is included, and its class methods live
+// in its ClassMethods.
+inline HashMap<std::string, char> rubyExtendableModules( const IngestResult& ing )
+{
+    HashMap<std::string, char> modules;
+    HashMap<std::string, char> concerns;
+    for( const Symbol& s : ing.symbols )
+    {
+        if( s.lang == Lang::Ruby && s.kind == SymKind::Other )
+        {
+            modules.try_emplace( s.name, 1 );
+        }
+        if( rubyIsConcernClassMethods( s ) )
+        {
+            concerns.try_emplace( s.scope, 1 );
+        }
+    }
+    for( const auto& [ name, one ] : concerns )
+    {
+        modules.erase( name );
+    }
+    return modules;
+}
+
+// Every def a class object may answer from (RubyClassObjects::classObjectDefs): a singleton method (rubySingletonSites) and
+// every method or accessor of an extendable module (rubyExtendableModules), whose instance methods a class object reaches
+// when the module is extended onto it, and a concern's ClassMethods'. A class's instance method is its instances' alone.
+inline void rubyClassObjectDefs( const IngestResult& ing, RubyClassObjects& out )
+{
+    const HashMap<std::uint64_t, char>  singletons = rubySingletonSites( ing, out );
+    const HashMap<std::string, char>    modules    = rubyExtendableModules( ing );
+    const HashMap<NodeId, std::string>& nested     = out.typed.reach.qualifiedOwner;
+    for( const Symbol& s : ing.symbols )
+    {
+        const bool def       = s.lang == Lang::Ruby && !s.scope.empty() && ( s.kind == SymKind::Method || s.kind == SymKind::Function || s.kind == SymKind::Var );
+        const bool singleton = def && singletons.find( ( std::uint64_t( s.fileId ) << 32 ) | s.sigStartByte ) != singletons.end();
+        const bool module    = def && ( nested.find( s.id ) != nested.end() || modules.find( s.scope ) != modules.end() );
+        if( singleton || module )
+        {
+            out.classObjectDefs.try_emplace( s.id, 1 );
+        }
+    }
+}
+
+// Each Ruby inherit reference — superclass or mixin — the constant index scoped, from the constant of the class or module
+// that writes it, into the ancestry by fully-qualified constant (RubyClassObjects::fqnUp).
+inline void rubyFqnInherits( const IngestResult& ing, const RubyBaseScope& bases, HashMap<std::string, std::vector<std::string>>& out )
+{
+    for( std::size_t i = 0; i < ing.references.size(); ++i )
+    {
+        const Reference&   r       = ing.references[ i ];
+        const std::string* base    = r.isInherit && r.fromSymbol != kNoNode ? bases.resolvedBase( i ) : nullptr;
+        const std::string* derived = base != nullptr && !base->empty() ? bases.fqnOfSymbol( ing.symbols[ r.fromSymbol ] ) : nullptr;
+        if( derived != nullptr )
+        {
+            out[ *derived ].push_back( *base );
+        }
+    }
+}
+
+// The ancestry by fully-qualified constant (RubyClassObjects::fqnUp): the inherit references (rubyFqnInherits), and each
+// concern's nested `module ClassMethods`, which ActiveSupport::Concern extends onto every includer, from the concern that
+// holds it.
+inline void rubyFqnAncestry( const IngestResult& ing, const RubyBaseScope& bases, HashMap<std::string, std::vector<std::string>>& out )
+{
+    rubyFqnInherits( ing, bases, out );
+    for( const Symbol& s : ing.symbols )
+    {
+        const std::string* fqn = rubyIsConcernClassMethods( s ) ? bases.fqnOfSymbol( s ) : nullptr;
+        const std::size_t  cut = fqn != nullptr ? fqn->rfind( "::" ) : std::string::npos;
+        if( cut != std::string::npos )
+        {
+            out[ fqn->substr( 0, cut ) ].push_back( *fqn );
+        }
+    }
+    for( auto& [ k, v ] : out )
+    {
+        std::sort( v.begin(), v.end() );
+        v.erase( std::unique( v.begin(), v.end() ), v.end() );
+    }
+}
+
+// Every Ruby class whose superclass is written as a forwarding base (kRubyInstanceForwardingBases): the superclass
+// directive sits at the class's own start byte (ingest_relations.h), which is the class symbol's.
+inline void rubyInstanceForwarders( const IngestResult& ing, HashMap<std::string, char>& out )
+{
+    HashMap<std::uint64_t, char> sites;   // (fileId << 32) | the class's start byte
+    for( const Include& inc : ing.includes )
+    {
+        const std::string_view written = std::string_view( inc.target ).substr( rubyConstIsAbsolute( inc.target ) ? 2 : 0 );
+        if( inc.isSymbolic && !inc.isValueUse && std::ranges::find( kRubyInstanceForwardingBases, written ) != std::end( kRubyInstanceForwardingBases ) )
+        {
+            sites.try_emplace( ( std::uint64_t( inc.fileId ) << 32 ) | inc.byte, 1 );
+        }
+    }
+    if( sites.empty() )
+    {
+        return;
+    }
+    for( const Symbol& s : ing.symbols )
+    {
+        if( s.lang == Lang::Ruby && s.kind == SymKind::Class && sites.find( ( std::uint64_t( s.fileId ) << 32 ) | s.sigStartByte ) != sites.end() )
+        {
+            out.try_emplace( s.name, 1 );
+        }
+    }
+}
+
 // Every FactoryBot factory the tree defines → the class it builds (ingest_binds.h captureRubyFactories); a name two
 // definitions give different classes is a tombstone: it types nothing. Every trailing path of every constant the tree
 // opens, which a qualified constant must be. And which of RSpec's builders the tree defines a method of the name of.
@@ -3315,6 +3919,33 @@ inline RubyTypedReceivers buildRubyTypedReceivers( const IngestResult& ing, cons
             it->second.clear();
         }
     }
+    return out;
+}
+
+// Ruby's lookup on a class object over one graph (RubyClassObjects): beside the classes it reads the SCREAMING constants the
+// tree assigns (a call on one is on a value, left to the name ladder), every class or module defining a method_missing (a
+// nested ClassMethods by the concern that holds it, as the overlay keys it), the defs a class object answers from
+// (rubyClassObjectDefs), the classes below a forwarding base, and the ancestry by fully-qualified constant.
+inline RubyClassObjects buildRubyClassObjects( const IngestResult& ing, const RubyTypedReceivers& typed, const RubyBaseScope& bases )
+{
+    RubyClassObjects out{ .typed = typed, .ing = ing, .bases = bases };
+    for( const Symbol& s : ing.symbols )
+    {
+        const auto q = s.lang == Lang::Ruby && s.name == "method_missing" ? typed.reach.qualifiedOwner.find( s.id ) : typed.reach.qualifiedOwner.end();
+        if( s.lang == Lang::Ruby && s.kind == SymKind::Var && rubyIsConstantName( s.name ) )
+        {
+            out.constantValues.try_emplace( s.name, 1 );
+        }
+        else if( s.lang == Lang::Ruby && s.name == "method_missing" && !s.scope.empty() )
+        {
+            out.missingOwners.try_emplace( q != typed.reach.qualifiedOwner.end() ? q->second : s.scope, 1 );
+        }
+    }
+    rubyClassObjectDefs( ing, out );
+    rubyInstanceForwarders( ing, out.forwarders );
+    rubyFqnAncestry( ing, bases, out.fqnUp );
+    out.initializeCall.lang       = Lang::Ruby;
+    out.initializeCall.calleeName = kRubyInitialize;
     return out;
 }
 
@@ -3889,6 +4520,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
     const ChaUpNames&              rubyUp    = rubyCha.merged ? rubyCha.up : chaUp;     // a Ruby call to self reads mixins too
     const RubySelfReach            rubyReach = buildRubySelfReach( ing, rubyUp, rubyCha.merged ? rubyCha.down : chaDown, rubyBases );
     const RubyTypedReceivers       rubyTypes = buildRubyTypedReceivers( ing, rubyReach, rubyBases, rubyUp, narrower );   // a receiver the code builds
+    const RubyClassObjects         rubyClasses = buildRubyClassObjects( ing, rubyTypes, rubyBases );                    // a receiver that is a class
     const RubyTopSelf              rubyTop   = buildRubyTopSelf( ing, rubyReach );   // a task file's or a template's self outside any class
     const std::vector<std::string> specializationsWithBases = sortedSpecializationNames( chaUp );   // resolve.h: what a C++ specialization inherits
     ChaConeMemo              chaCones( chaUp, chaDown );   // one cone per receiver type, computed on first use (see the type)
@@ -4291,11 +4923,11 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         {
             narrowed = narrowTo( rubyTypes.lookup( r, *rubyTyped ), r, cand );
         }
-        else if( !scipPinned && !canonical && !narrowed && rubyTypes.outOfTreeTarget( r ) )
+        else if( const RubyClosedLookup closed = !scipPinned && !canonical && !narrowed ? rubyClosedLookup( r, rubyTypes, rubyClasses ) : RubyClosedLookup {}; closed.closed )
         {
-            if( !narrowTo( rubyTypes.rootLookup( r ), r, cand ) )
+            if( !narrowTo( closed.hit, r, cand ) )
             {
-                disposition = vetoExternal( r );   // RSpec's own target: the method Ruby runs is RSpec's
+                disposition = vetoExternal( r );   // RSpec's own target, a class whose lookup leaves the tree: the method Ruby runs is outside it
                 continue;
             }
             narrowed = true;

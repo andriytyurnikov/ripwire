@@ -2226,6 +2226,10 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             else if( le.lang == Lang::Ruby )
             { // enclosing class/module → id= addressability, per-class overload sets, editCheckImplicitReceiver
                 d.scope = rubyEnclosingScopeOf( nameNode, src );   // (test/rubyscopecheck.sh)
+                if( kind == SymKind::Method || kind == SymKind::Function )
+                {
+                    rubyNoteSingletonDef( defNode, fileId, d.name, binds );   // a class object's method (test/rubyclassrecvcheck.sh)
+                }
             }
             else if( le.lang == Lang::Kotlin )
             { // enclosing class/object/companion-object → same P2-D Rule-1 narrowing Python/Ruby get;
@@ -2345,6 +2349,10 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
                     r.recv = rs.kind;  r.recvVar = std::move( rs.var );                  //   → one-hop narrowing in resolve.h
                     r.fieldName = std::move( rs.field );                                 //   depth-2 intermediate field; "" otherwise
                     r.viaArrow  = rs.viaArrow;                                           //   `p->m()`: Rule 2b's smart-pointer pointee needs it
+                    if( le.lang == Lang::Ruby && r.recv == RecvKind::NamedVar )
+                    {
+                        r.fieldName = rubyReceiverWrittenPath( nameNode, r.recvVar, src );   // parser version 137: a constant's path as written
+                    }
                     auto [ ac, ak ] = callArity( nameNode, le.lang, src );               // B2.2: call-site positional arg count
                     r.argCount = ac;  r.argCountKnown = ak;                              //   → arity filter in graph.h
                 }
@@ -2398,12 +2406,15 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
     // into the call references this window holds; and FactoryBot's factory definitions, into binds.
     // Parser version 135 (test/rubyrakejbuildercheck.sh): `helper_method` declarations into binds, and a Jbuilder
     // template's `json` — a local, typed JbuilderTemplate — in the refs window.
+    // Parser version 137 (test/rubyclassrecvcheck.sh): the accessors a `class << self` declares, into binds as singleton
+    // methods — beside each singleton def, which the def capture above notes.
     if( le.lang == Lang::Ruby )
     {
         captureRubyAttrDefs( root, fileId, src, defs );
         captureRubyBareCalls( root, fileId, src, refs );
         captureRubyFactories( root, fileId, src, binds );
         captureRubyHelperMethods( root, fileId, src, binds );
+        captureRubySingletonAccessors( root, fileId, src, binds );
         if( le.ext == kJbuilderExt )
         {
             typeRubyJbuilderLocal( fileId, refs );

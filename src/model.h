@@ -723,7 +723,12 @@ struct Reference
                                           //   field of a depth-2 chained receiver when recv is FieldOfThis/FieldOfVar
                                           //   (`this->m_pool.run()` → "m_pool") — the two are mutually exclusive
                                           //   (a compose ref is never a call ref, and the compose readers all gate
-                                          //   on isCompose), so one slot carries both; "" otherwise
+                                          //   on isCompose), so one slot carries both; "" otherwise. A third reading,
+                                          //   on a Ruby call whose receiver is a constant written with a path (recv
+                                          //   NamedVar, parser version 137): the path as written (`Billing::Invoice.issue`
+                                          //   → "Billing::Invoice"; `described_class` → the group's constant whole),
+                                          //   recvVar keeping the final segment every class is keyed by (graph.h
+                                          //   RubyClassObjects::receiverFqn); no chain or compose reader reads a NamedVar's
     std::string   composeRel;             // "creates" (value/inline) or "uses" (reference/pointer) when isCompose; "" otherwise
 };
 
@@ -804,6 +809,11 @@ inline const RspecTarget* rspecTargetOf( std::string_view cls, std::string_view 
     }
     return nullptr;
 }
+
+// Ruby's delegation DSL: a class that writes one defines methods the tree indexes nowhere in it (ActiveSupport's `delegate`
+// and `delegate_missing_to`, Forwardable's `def_delegator(s)`), so it may answer a name no lookup over the tree finds (graph.h
+// RubySelfReach); one a `class << self` writes defines the class object's (ingest_binds.h captureRubySingletonAccessors).
+inline constexpr std::string_view kRubyDelegationCalls[] = { "def_delegator", "def_delegators", "delegate", "delegate_missing_to" };
 
 // A Jbuilder template's `json` (test/rubyrakejbuildercheck.sh, parser version 135): the template handler binds it to the
 // view's JbuilderTemplate, a BasicObject whose method_missing makes every call on it a key. ingest_binds.h types the local
@@ -958,9 +968,15 @@ enum class LocalBindKind : std::uint8_t
     RubyHelperMethod, // parser version 135: a `helper_method :name` declaration at class-body position — var=the method,
                    //     typeName=the final segment of the class or module that declares it (ingest_binds.h
                    //     RubyBareCallWalk::noteDeclaredCall). Read by graph.h RubyTopSelf ONLY. APPENDED, as above.
+    RubySingletonDef, // parser version 137: a Ruby SINGLETON method — `def self.m`, a def or an accessor inside `class << self`
+                   //     — at startByte, the def's own start (Symbol::sigStartByte); var=the method, typeName empty
+                   //     (ingest_binds.h rubyNoteSingletonDef, captureRubySingletonAccessors). A name the delegation DSL
+                   //     defines in a `class << self` has no def: typeName=the owning class, var=the name (empty for
+                   //     `delegate_missing_to`, every name). Read by graph.h's class-object lookup ONLY
+                   //     (rubyClassObjectDefs). APPENDED, as above.
 };
 // The number of LocalBindKind enumerators — the bound readBind validates a cached kind byte against (see kSymKindCount).
-inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubyHelperMethod ) + 1;
+inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubySingletonDef ) + 1;
 static_assert( enumCountIsExact<LocalBindKind, kLocalBindKindCount>(), "kLocalBindKindCount must name the LAST LocalBindKind enumerator — move it with the append" );
 
 inline constexpr const char* kFnBindLambdaTarget  = "(lambda)";    // parens are illegal in identifiers, so
