@@ -5,24 +5,47 @@
 # apps' `Hash.new`, `Date.new` and `Service.new` all bound to one controller's `new` action, a model's `where` to a mailer
 # preview's mock.
 # THE RULE (graph.h RubyTypedReceivers::closedLookup; ingest_binds.h classifyRubyReceiver; parser version 137):
-#   * the class the tree opens at the constant answers: its methods, the modules it extends or includes (a concern's
-#     `class_methods do`, a nested `module ClassMethods`), its superclasses', then a reopened Module, Class, Object,
-#     Kernel or BasicObject. The shallowest that defines the name decides;
-#   * `C.new` is Class#new, which runs initialize: it reaches the first `initialize` that lookup finds;
+#   * the class the tree opens at the constant answers from its lookup: the class's singleton methods (`def self.m`, a
+#     def or an accessor in `class << self`), the modules it extends or includes (a concern's `class_methods do`, a nested
+#     `module ClassMethods`), its superclasses' singleton methods, then a reopened Module, Class, Object, Kernel or
+#     BasicObject. The shallowest that defines the name decides. A class's instance method is its instances' alone;
+#   * `C.new` is Class#new unless a `def self.new` answers first, and Class#new runs the first `initialize` an instance's
+#     lookup finds — never an instance method named `new` (a controller's action);
 #   * when nothing there defines the name, Ruby's answer is outside the tree — ActiveRecord::Base's `where`,
 #     StandardError's initialize — and the call is refused as external, never bound to an unrelated namesake;
 #   * a constant the tree never opens (JSON, Time, RSpec, `Point = Struct.new( … )`) answers only from a reopened root;
 #     a QUALIFIED constant names an in-tree class only when the tree opens that path (`Stripe::Customer` is not the
 #     app's Customer);
-#   * a class whose lookup holds a method_missing answers any name, and is left as before.
+#   * a class written below a base that forwards a class object's call to a new instance — a mailer's
+#     (ActionMailer::Base, Devise::Mailer), ActiveSupport::CurrentAttributes — answers a name it lacks from its
+#     instances' lookup: `UserMailer.welcome( u )` runs UserMailer#welcome;
+#   * a class whose lookup holds a method_missing answers any name, and is left as before; so does a name a `class << self`
+#     delegates (`delegate :reset, to: :instance`), a class method the tree indexes no def of;
+#   * the constant is read as Ruby reads it from the call site, by fully-qualified constant (resolve.h's constant index):
+#     lexically — the innermost class or module open around the site, its enclosing ones, the top level — then through
+#     the ancestors of that open or of a qualified constant's head (`Sub::Failure` for a Failure Sub's superclass nests).
+#     The lookup then walks what the class's superclasses and mixins resolve to, so two classes or modules of one name no
+#     longer share it (`BankIntegration.process_event` reaches BankIntegration::HookMethods, not MailIntegration's;
+#     `Result.new` inside `module Billing`, Billing::Result's initialize). A constant that names nothing the tree opens
+#     from the site is outside it (`Row = Struct.new( … )` beside an unrelated in-tree Row);
+#   * a namespace Zeitwerk makes of a directory is opened by no file: a constant whose last two segments or more are one
+#     the tree opens names it (`Alerts::Senders::Pay` is the tree's `Senders::Pay`).
 #
 # Stated floors, each pinned below:
 #   (a) a constant the tree assigns (`DEFAULT_LIMITS = Limits.new`) is a value of a class the tree does not type: a
 #       call on it binds by name as before.
-#   (b) the tree does not tell `def self.m` from `def m`: a class's own instance method answers a call on the class.
-#   (c) `C.new` reaches initialize even when the class defines `def self.new`: the override is not read.
-#   (d) a qualified constant is read by the paths the tree opens: one Ruby finds through a class's ancestors
-#       (`Sub::Failure` for a Failure its superclass nests) is refused.
+#   (b) the tree does not tell `include` from `extend`: an included module's instance method answers a call on the class —
+#       unless the module nests a `module ClassMethods`, which makes it a concern whose class methods live there.
+#   (c) a module's every method answers a call on the module: `module_function` and `extend self` are not read, so a
+#       method without either answers too.
+#   (d) a tree with no Ruby superclass, mixin or constant reference keeps no constant index: there a constant is read by
+#       its final segment, a qualified one only where the tree opens that path, and two classes of one name share a lookup.
+#   (e) a module mixed in at run time — `Tool.extend( Tool::Ext )` written as a call on the constant, not a class-body
+#       directive — is in no lookup: a call it answers is refused.
+#   (f) a class `Struct.new( … ) do … end` or `Data.define( … ) do … end` builds is opened by no file: a def in its block
+#       (`def self.from`) answers no call on its constant, which is refused.
+#   (g) `class << Clock` opens another object's singleton: its defs read as top-level defs, which no call with a receiver
+#       reaches, so `Clock.tick` is refused (activesupport's `class << Benchmark; def ms`).
 #
 # Usage:  test/rubyclassrecvcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyclassrecvcheck.sh
 # Exits non-zero on any failure. Self-contained via mktemp.
@@ -38,7 +61,7 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"
-for d in app/models app/services lib/billing spec
+for d in app/mailers app/models app/services app/services/alerts/senders lib/billing lib/shipping lib/mail_integration lib/bank_integration spec
 do
     mkdir -p "$FIX/$d"
 done
@@ -49,6 +72,8 @@ class Report
   include Searchable
   include Taggable
   include Archivable
+  include Printable
+  include Strikes
 
   def self.generate( n )
     n
@@ -126,6 +151,25 @@ module Purgeable
       []
     end
   end
+end
+RUBY
+
+cat > "$FIX/app/mailers/application_mailer.rb" <<'RUBY'
+class ApplicationMailer < ActionMailer::Base
+end
+RUBY
+
+cat > "$FIX/app/mailers/user_mailer.rb" <<'RUBY'
+class UserMailer < ApplicationMailer
+  def welcome( u )
+    u
+  end
+end
+RUBY
+
+cat > "$FIX/app/models/current.rb" <<'RUBY'
+class Current < ActiveSupport::CurrentAttributes
+  attribute :user
 end
 RUBY
 
@@ -221,6 +265,211 @@ class Builder
 end
 RUBY
 
+# a class method and an instance method of one name, the instance half in a reopening
+cat > "$FIX/lib/service.rb" <<'RUBY'
+class Service
+  def self.call( x )
+    new( x ).call
+  end
+end
+RUBY
+
+cat > "$FIX/lib/service_instance.rb" <<'RUBY'
+class Service
+  def initialize( x )
+    @x = x
+  end
+
+  def call
+    @x
+  end
+end
+RUBY
+
+cat > "$FIX/lib/settings.rb" <<'RUBY'
+class Settings
+  class << self
+    attr_accessor :config
+
+    def build_all
+      []
+    end
+  end
+
+  attr_reader :label
+end
+RUBY
+
+# an instance method named new, as a controller's action is
+cat > "$FIX/lib/pipeline.rb" <<'RUBY'
+class Pipeline
+  def initialize( steps )
+    @steps = steps
+  end
+
+  def new
+    "an action named new"
+  end
+end
+RUBY
+
+# a concern with an instance method and a ClassMethods method of one name
+cat > "$FIX/lib/strikes.rb" <<'RUBY'
+module Strikes
+  extend ActiveSupport::Concern
+
+  def strike?
+    false
+  end
+
+  module ClassMethods
+    def strike?
+      true
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/lib/printable.rb" <<'RUBY'
+module Printable
+  def print_me
+    "p"
+  end
+end
+RUBY
+
+cat > "$FIX/lib/util.rb" <<'RUBY'
+module Util
+  def helper
+    1
+  end
+end
+RUBY
+
+cat > "$FIX/lib/registry.rb" <<'RUBY'
+class Registry
+  class << self
+    delegate :reset, to: :instance
+
+    def instance
+      @instance ||= new
+    end
+  end
+
+  def reset
+    true
+  end
+end
+RUBY
+
+# Zeitwerk: app/services/alerts/senders/ is the namespace Alerts::Senders, which no file opens
+cat > "$FIX/app/services/alerts/senders/pay.rb" <<'RUBY'
+module Alerts
+  class Senders::Pay
+    def self.done?( x )
+      x
+    end
+  end
+end
+RUBY
+
+# two modules of one name, each extended by its own integration
+for m in Mail Bank
+do
+    f="$( printf '%s' "$m" | tr 'A-Z' 'a-z' )_integration"
+    printf 'module %sIntegration\n  extend HookMethods\nend\n' "$m" > "$FIX/lib/$f.rb"
+    printf 'module %sIntegration\n  module HookMethods\n    def process_event( id )\n      id\n    end\n  end\nend\n' "$m" > "$FIX/lib/$f/hook_methods.rb"
+done
+
+# two classes of one name; a call inside `module Billing` names Billing's
+cat > "$FIX/lib/billing/result.rb" <<'RUBY'
+module Billing
+  class Result
+    def initialize( a )
+      @a = a
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/lib/shipping/result.rb" <<'RUBY'
+module Shipping
+  class Result
+    def initialize( b )
+      @b = b
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/lib/billing/charge.rb" <<'RUBY'
+module Billing
+  class Charge
+    def settle
+      Result.new( 1 ) # @lexical_new
+    end
+  end
+end
+RUBY
+
+# a Struct constant local to a class, beside an unrelated in-tree class of that name
+cat > "$FIX/lib/exporter.rb" <<'RUBY'
+class Exporter
+  Row = Struct.new( :a )
+
+  def run
+    Row.new( 1 ) # @struct_local
+  end
+end
+RUBY
+
+cat > "$FIX/lib/reports_row.rb" <<'RUBY'
+module Reports
+  class Row
+    def initialize( x )
+      @x = x
+    end
+  end
+end
+RUBY
+
+# floor (e): a module extended at run time
+cat > "$FIX/lib/tool.rb" <<'RUBY'
+module Tool
+  module Ext
+    def tool_reset
+      true
+    end
+  end
+end
+
+Tool.extend( Tool::Ext )
+RUBY
+
+# floor (f): a def in a Data.define block
+cat > "$FIX/lib/filters.rb" <<'RUBY'
+class Selection
+  Filters = Data.define( :search ) do
+    def self.from( h )
+      new( search: h[:search] )
+    end
+  end
+
+  def build( h )
+    Filters.from( h ) # @data_block_floor
+  end
+end
+RUBY
+
+# floor (g): another object's singleton class, opened from outside it
+cat > "$FIX/lib/clock_ext.rb" <<'RUBY'
+class << Clock
+  def tick
+    1
+  end
+end
+RUBY
+
 cat > "$FIX/lib/helpers.rb" <<'RUBY'
 def format_amount( n )
   n.to_s
@@ -245,6 +494,13 @@ class Decoy
   def cached_name; end
   def zone_now; end
   def archived; end
+  def render; end
+  def label; end
+  def welcome( u ); end
+  def user=( u ); end
+  def done?( x ); end
+  def tool_reset; end
+  def from( h ); end
 end
 RUBY
 
@@ -275,9 +531,25 @@ class Caller
     Report.format_amount( 7 ) # @private_top
     Dynamic.anything # @missing
     DEFAULT_LIMITS.fetch_limit( :a ) # @value_floor
-    Report.render # @instance_floor
-    Builder.new( 8 ) # @self_new_floor
-    Sub::Failure.new( "m" ) # @ancestor_const_floor
+    Service.call( 9 ) # @singleton
+    Settings.config # @singleton_accessor
+    Settings.build_all # @singleton_class
+    Settings.label # @instance_accessor
+    Report.render # @instance
+    Pipeline.new( [] ) # @new_action
+    Builder.new( 8 ) # @self_new
+    Report.print_me # @include_floor
+    Util.helper # @module_floor
+    UserMailer.welcome( 10 ) # @mailer
+    Current.user = 11 # @current
+    Registry.reset # @class_delegate
+    Alerts::Senders::Pay.done?( 12 ) # @zeitwerk
+    BankIntegration.process_event( 13 ) # @fqn_mixin
+    Billing::Result.new( 14 ) # @qualified_new
+    Tool.tool_reset # @runtime_extend_floor
+    Report.strike? # @concern_precedence
+    Clock.tick # @foreign_singleton_floor
+    Sub::Failure.new( "m" ) # @ancestor_const
   end
 end
 
@@ -289,6 +561,18 @@ cat > "$FIX/$SPEC" <<'RUBY'
 RSpec.describe Report do # @rspec_describe
   it "generates" do
     described_class.generate( 1 ) # @described
+  end
+end
+
+RSpec.describe Billing::Invoice do
+  it "issues" do
+    described_class.issue( 2 ) # @described_qualified
+  end
+end
+
+RSpec.describe Billing do
+  it "issues through the namespace" do
+    described_class::Invoice.issue( 3 ) # @described_path
   end
 end
 RUBY
@@ -368,16 +652,37 @@ only    generate      Report::generate        $CALLER inherited        "a superc
 only    lookup        Finders::lookup         $CALLER extended         "a module the class extends"
 only    search        Searchable::search      $CALLER concern          "a concern's class_methods block"
 only    tagged_with   ClassMethods::tagged_with $CALLER class_methods  "a nested module ClassMethods the concern extends onto its includer"
+only    strike?       ClassMethods::strike?   $CALLER concern_precedence "a concern's ClassMethods, not its instance method of the name"
 only    archived      lib/archivable.rb::ClassMethods::archived $CALLER concern_class_methods "the ClassMethods of the concern Report includes, not another concern's"
 only    issue         Invoice::issue          $CALLER qualified_opened "a qualified constant whose path the tree opens"
+only    process_event lib/bank_integration/hook_methods.rb::HookMethods::process_event $CALLER fqn_mixin "BankIntegration's own HookMethods, not MailIntegration's of that name"
+only    new           lib/billing/result.rb::Result::initialize lib/billing/charge.rb lexical_new "Result inside module Billing is Billing::Result, not Shipping's"
+only    new           lib/billing/result.rb::Result::initialize $CALLER qualified_new "Billing::Result, from outside the namespace"
+only    done?         Pay::done?              $CALLER zeitwerk         "Alerts::Senders::Pay ends in Senders::Pay, a path the tree opens"
 only    create_from   Customer::create_from   $CALLER customer         "the app's own Customer"
 only    generate      Report::generate        $SPEC   described        "described_class is the group's class"
+only    issue         Invoice::issue          $SPEC   described_qualified "a qualified described class is read whole"
+only    issue         Invoice::issue          $SPEC   described_path   "described_class::Invoice is Billing::Invoice"
+
+echo "=== a class's instance method is its instances' alone ==="
+only    call          lib/service.rb::Service::call $CALLER singleton  "def self.call, not the instance call a reopening defines"
+only    config        Settings::config        $CALLER singleton_accessor "an accessor class << self declares"
+only    build_all     Settings::build_all     $CALLER singleton_class  "a def in class << self"
+refused label         $CALLER instance_accessor "an instance attr_reader is no method of the class object"
+refused render        $CALLER instance          "Report#render is Report's instances'"
+
+echo "=== a base that forwards to an instance: the instances' lookup answers ==="
+only    welcome       UserMailer::welcome     $CALLER mailer           "ActionMailer::Base's class object runs the instance method"
+only    user=         Current::user=          $CALLER current          "ActiveSupport::CurrentAttributes forwards to the instance"
 
 echo "=== C.new runs initialize ==="
 only    new           Report::initialize      $CALLER new              "Report.new reaches Report#initialize, never a method named new"
 only    new           Report::initialize      $CALLER new_inherited    "a subclass with no initialize reaches its superclass's"
 refused new           $CALLER new_out_of_tree "StandardError's initialize is outside the tree"
 refused new           $CALLER struct          "Point = Struct.new: the tree never opens Point"
+refused new           lib/exporter.rb struct_local "Exporter::Row is a Struct: Reports::Row is no constant Exporter names"
+only    new           Pipeline::initialize    $CALLER new_action       "an instance method named new (a controller's action) is no Class#new"
+only    new           Builder::new            $CALLER self_new         "a def self.new answers first"
 
 echo "=== a lookup that leaves the tree is refused, never handed to a namesake ==="
 refused where         $CALLER ar_where        "User.where is ActiveRecord::Base's"
@@ -393,7 +698,14 @@ echo "=== a reopened root answers every class object ==="
 only    cached_name   Module::cached_name     $CALLER root_module      "a class is a Module"
 only    cached_name   Module::cached_name     $CALLER root_external    "so is a class the tree never opens"
 
-echo "=== method_missing answers any name: left as before ==="
+echo "=== a method_missing, or a class << self delegation, answers the name: left as before ==="
+DELEG="$( rows $CALLER "$( line $CALLER class_delegate )" reset )"
+if printf '%s\n' "$DELEG" | grep -qF "::Registry::reset#"
+then
+    ok "@class_delegate :reset binds by name as before (a class << self delegates it)"
+else
+    no "@class_delegate :reset no longer binds by name; census: $( printf '%s' "$DELEG" | tr '\t\n' ' ;' )"
+fi
 MISSING="$( rows $CALLER "$( line $CALLER missing )" anything )"
 if printf '%s\n' "$MISSING" | grep -qF "::Decoy::anything#"
 then
@@ -404,9 +716,30 @@ fi
 
 echo "=== stated floors ==="
 only    fetch_limit   Limits::fetch_limit     $CALLER value_floor      "floor (a): a constant the tree assigns binds by name"
-only    render        Report::render          $CALLER instance_floor   "floor (b): an instance method answers a call on the class"
-only    new           Builder::initialize     $CALLER self_new_floor   "floor (c): def self.new is not read"
-refused new           $CALLER ancestor_const_floor "floor (d): Sub::Failure is Base::Failure through Sub's ancestors, a path the tree never opens"
+only    print_me      Printable::print_me     $CALLER include_floor    "floor (b): an included module's method answers a call on the class"
+refused tool_reset    $CALLER runtime_extend_floor "floor (e): Tool.extend( Tool::Ext ) at run time is in no lookup"
+refused from          lib/filters.rb data_block_floor "floor (f): Filters = Data.define do … end is opened by no file"
+refused tick          $CALLER foreign_singleton_floor "floor (g): class << Clock is no open of Clock"
+only    helper        Util::helper            $CALLER module_floor     "floor (c): a module's method answers a call on the module"
+only    new           Failure::initialize     $CALLER ancestor_const   "Sub::Failure is Base::Failure, through Sub's superclass"
+
+# floor (d): a tree with no superclass, mixin or constant reference keeps no constant index
+FIX2="$DIR/noindex"; mkdir -p "$FIX2"
+printf 'module Alpha\n  class Row\n    def initialize( a )\n      @a = a\n    end\n  end\nend\n' > "$FIX2/alpha.rb"
+printf 'module Beta\n  class Row\n    def initialize( b )\n      @b = b\n    end\n  end\nend\n' > "$FIX2/beta.rb"
+printf 'class Caller\n  def run\n    Alpha::Row.new( 1 )\n  end\nend\n' > "$FIX2/caller.rb"
+if "$BIN" "$FIX2" --no-cache --pin-census="$DIR/noindex.tsv" >/dev/null 2>&1
+then
+    NOIX="$( awk -F'\t' '$1 == "C" && $7 == "new" && index( $6, "caller.rb::" ) == 1 { print $8 }' "$DIR/noindex.tsv" )"
+    if printf '%s' "$NOIX" | grep -qF "alpha.rb::Row::initialize#" && printf '%s' "$NOIX" | grep -qF "beta.rb::Row::initialize#"
+    then
+        ok "floor (d) pinned: with no constant index, Alpha::Row.new splits over both Rows' initialize"
+    else
+        no "floor (d): with no constant index, Alpha::Row.new no longer splits over both Rows; census: $NOIX"
+    fi
+else
+    no "--pin-census on the no-index fixture exited non-zero"
+fi
 
 echo "=== determinism and warm == cold ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null

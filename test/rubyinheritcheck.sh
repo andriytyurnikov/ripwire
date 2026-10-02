@@ -38,9 +38,9 @@
 #       `class Inner < Base` inside `module Beta` lands on Beta::Base alone, and a base the tree never opens
 #       (`ActiveRecord::Base`) adds nothing to the CHA name graph — Rec's walk no longer reaches Space::Base's
 #       methods. What stays name-keyed is the walk's METHOD probe (canonByName is keyed `Scope::method` with the
-#       IMMEDIATE scope), so two in-tree bases sharing a final name still share one probe: `UsesAlpha.beta_make`
-#       pins to Beta::Base#beta_make although UsesAlpha < Alpha::Base. Pinned below; lifting it needs a
-#       qualified scope on the symbol itself.
+#       IMMEDIATE scope), so two in-tree bases sharing a final name still share one probe — for a call to self. A call
+#       on a CLASS walks fully-qualified constants since parser version 137 (test/rubyclassrecvcheck.sh): the
+#       `UsesAlpha.beta_make` arm below is kept, INVERTED — UsesAlpha < Alpha::Base reaches no Beta::Base#beta_make.
 #   (d) `Built = Class.new( Parent )` — with or without a block — makes Built < Parent at runtime, but it is a constant
 #       ASSIGNMENT whose value is a call, not a `class` open: no class symbol, no superclass clause, no edge. The same
 #       decision as (a): the tool reads a base off a class header, never off a computed value.
@@ -405,18 +405,26 @@ fi
 notLists Parent Built2 "Built2 = Class.new( Parent ) is a constant assignment whose value is a call — no class open, no edge (floor (d), stated)"
 notLists Parent Blocky "Blocky = Class.new( Parent ) do … end is the same assignment with a block (floor (d), stated)"
 
-echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a same-named in-tree base still shares the probe ==="
+echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a call on a class walks fully-qualified constants ==="
 CO="$( rowOf 'n="call_out_of_tree_base" ' )"
-[ "$( edgesTo "$CO" make )" -eq 2 ] \
-    && ok "Rec.make is an honest 2-way split (Space::Base.make, Unrelated.make): ActiveRecord::Base is not Space::Base, so the walk no longer pins it" \
-    || no "Rec.make produced $( edgesTo "$CO" make ) make edges (want 2 — the out-of-tree base must not walk into Space::Base): $CO"
+# since parser version 137 a call on a class reads the class object's lookup (test/rubyclassrecvcheck.sh): Rec's leaves the
+# tree at ActiveRecord::Base, so the call is refused as external — once an honest split over Space::Base.make and Unrelated.make
+if [ "$( edgesTo "$CO" make )" -eq 0 ]
+then
+    ok "Rec.make has no edge: ActiveRecord::Base is not Space::Base, so the walk no longer pins it, and the lookup leaves the tree"
+else
+    no "Rec.make produced $( edgesTo "$CO" make ) make edges (want 0 — the out-of-tree base must not walk into Space::Base, nor the call reach a namesake): $CO"
+fi
 CA="$( rowOf 'n="call_alpha" ' )"
 [ "$( edgesTo "$CA" alpha_make )" -eq 1 ] && ok "UsesAlpha.alpha_make → exactly one edge (the walk reaches Alpha::Base)" \
     || no "UsesAlpha.alpha_make produced $( edgesTo "$CA" alpha_make ) edges: $CA"
 CB="$( rowOf 'n="call_beta_through_alpha" ' )"
-[ "$( edgesTo "$CB" beta_make )" -eq 1 ] \
-    && ok "UsesAlpha.beta_make still pins Beta::Base#beta_make — the walk's method probe is keyed Base::beta_make by the IMMEDIATE scope (floor (c), stated)" \
-    || no "UsesAlpha.beta_make produced $( edgesTo "$CB" beta_make ) edges: if the walk's probe is now scoped, invert this arm and say so in the header and CHANGELOG.md (floor (c))"
+if [ "$( edgesTo "$CB" beta_make )" -eq 0 ]
+then
+    ok "UsesAlpha.beta_make has no edge — a call on a class walks fully-qualified constants (parser version 137), and Alpha::Base defines no beta_make"
+else
+    no "UsesAlpha.beta_make produced $( edgesTo "$CB" beta_make ) edges: Beta::Base#beta_make is no method of UsesAlpha < Alpha::Base"
+fi
 
 echo "=== determinism, warm == cold, and --deps is untouched ==="
 "$BIN" "$FIX" --no-cache >"$DIR/b.xml" 2>/dev/null
@@ -443,12 +451,21 @@ then
         || ok "mutation: Child is no longer an implementor of Parent"
 fi
 MQ="$( "$BIN" "$MUT" --no-cache 2>/dev/null | sed 's/></>\n</g' | awk '/n="call_inherited" /{f=1;print;next} /^<s /{f=0} f' )"
-[ "$( echo "$MQ" | grep -c '<c n="build"' )" -eq 2 ] \
-    && ok "mutation: Child.build is an honest 2-way split again — the pin was the inheritance edge and nothing else" \
-    || no "mutation: Child.build produced $( echo "$MQ" | grep -c '<c n="build"' ) build edges with no base clause: $MQ"
+# with no base clause Child's lookup defines no build, so the call on the class is refused as external (parser version 137,
+# test/rubyclassrecvcheck.sh) — the pin was the inheritance edge and nothing else
+if [ "$( echo "$MQ" | grep -c '<c n="build"' )" -eq 0 ]
+then
+    ok "mutation: Child.build has no edge — the pin was the inheritance edge and nothing else"
+else
+    no "mutation: Child.build produced $( echo "$MQ" | grep -c '<c n="build"' ) build edges with no base clause: $MQ"
+fi
 MCU="$( "$BIN" "$MUT" --no-cache --callers=Unrelated::build 2>/dev/null )"
-echo "$MCU" | grep -q 'n="call_inherited"' && ok "mutation: …and Unrelated::build is back among its callers" \
-    || no "mutation: Unrelated::build does not list call_inherited: $( echo "$MCU" | grep -o '<callers[^>]*' )"
+if echo "$MCU" | grep -q 'n="call_inherited"'
+then
+    no "mutation: Unrelated::build lists call_inherited — a class whose lookup leaves the tree bound to a namesake"
+else
+    ok "mutation: …and Unrelated::build is not among its callers either"
+fi
 
 echo "=== #325 disclosure: a base left on the final-segment rule is counted as ruby_bases_unscoped= ==="
 # resolve.h's fallback — an inherit reference with no superclass directive at its class open keeps the byName rule —
