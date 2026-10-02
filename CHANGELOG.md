@@ -16,6 +16,84 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 ## [Unreleased]
 
 
+### Changed — a Ruby call to self reaches what Ruby's method lookup reaches: mixins are ancestors, a class body's self is the class, an unreachable namesake is no target
+
+A receiver-less Ruby call (`m`, `m( x )`) or `self.m` inside a class or module sends `m` to self. Ruby answers it from
+self's ancestors: the class, its mixins, its superclass and theirs. The resolver read three things wrong:
+- **Mixins were not ancestors.** `include Hub::SignalMixin` put nothing in the caller's base walk, so `signal`
+  split between the mixin's def and an unrelated same-file `Hub#signal`, and a concern's call to its includer's
+  method declined. Each constant of an `include`/`extend`/`prepend` at class-DSL position, or inside a concern's
+  `included do … end`, now mints an inherit reference (`ingest_relations.h captureRubyMixinBases`). It is scoped by
+  Ruby's constant lookup, starting inside the class (`resolve.h rubyScopeMixinReferences`). A concern's nested
+  `module ClassMethods` is an ancestor of the concern, since `ActiveSupport::Concern` extends it onto every includer.
+- **A class-body call ran against the namespace around the class.** `define_section :first` inside `Ns::Catalog` bound to
+  `Ns.define_section`. Its self is now the class (`graph.h callerSelfScope`).
+- **A candidate no lookup can reach still bound by name.** Examples:
+  - a controller's `render` bound to a component's `def render`;
+  - every bare `raise` in activesupport bound to `ProxyObject#raise`;
+  - `request` bound to the `request` of a class the controller only names, because Rule 3's include narrow read a
+    constant reference as evidence;
+  - a scope lambda's `where` bound to an unrelated `def where`.
+
+  `graph.h RubySelfReach` now keeps only the candidates whose owner lies in self's reach: the ancestors of self, and of
+  every class below it. So a template method reaches a subclass's hook, and a concern its includer's method. A call left
+  with none is vetoed as external (`external=`): the method Ruby runs is outside the indexed tree.
+
+Mixins feed only these Ruby self-call reads, through an overlay (`graph.h buildRubyCha`). Keyed by name like every base,
+a generic module name in the shared inheritance graph widened CHA-lite cones and the builtin-method gate's evidence for
+receiver calls (activerecord's `sql.dup` bound to `Inheritance::ClassMethods#dup`). A `ClassMethods` key is qualified by
+the module that holds it, since dozens of concerns each nest one.
+
+What the rule leaves alone:
+- **The implicit roots.** A method of a reopened `Object`, `Kernel`, `BasicObject`, `Module` or `Class` (activesupport's
+  core extensions), since every self has them as ancestors.
+- **Top-level defs**, but only while no class in reach has an out-of-tree superclass or mixin. Ruby asks
+  `ActionController::Base` before `Object`, so a controller's `render` no longer reaches a top-level `def render` in a
+  spec (453 call sites on one application).
+- **A class that answers any name**: one defining `method_missing`, one writing the delegation DSL (`delegate`,
+  `delegate_missing_to`, `def_delegator(s)` define methods the tree does not index yet), or one below `SimpleDelegator`,
+  `Delegator` or a Draper decorator.
+- **A call outside any class**: a script's top level, or an RSpec example group's blocks.
+
+Measured with `--no-cache`, `feat/ruby-bare-calls` (472cb6fc, parser version 130) against these changes. Edges and
+isolated symbols are `--report` totals. Call sites are keyed by (file, line, callee) with `--pin-census`.
+
+| Corpus | Edges | Call-graph isolated | Sites gaining an edge | Retargeted | Refused (`external=`) |
+| --- | --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 11,169 → 11,278 | 2,564 → 2,611 | 147 | 27 | 205 |
+| activesupport 7.2.3.2 `lib/` | 3,717 → 3,498 | 1,279 → 1,293 | 11 | 6 | 275 |
+| Rails app A | 30,044 → 28,733 | 18,850 → 19,023 | 91 | 277 | 1,758 (+6 declined) |
+| Rails app B | 27,695 → 26,762 | 5,752 → 5,853 | 161 | 10 | 1,521 (+24 declined) |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | | | |
+
+Sampled against the source:
+- **Refusals that removed a wrong edge:** 13 of 15 on activerecord, 15 of 15 on activesupport, 14 of 15 and 15 of 15 on
+  the applications. The losses are calls inside a `Class.new( ActiveRecord::Base ) { … }` block (floor (d)).
+- **Added edges correct:** 15 of 15 on activerecord, 14 and 15 of 15 on the applications. They are mostly mixin
+  base-walk hits: an adapter's `execute` reaching `DatabaseStatements`, a concern's call reaching its host.
+- **Retargets better:** 7 of 10 on activerecord (2 neutral, 1 now a split), 12 of 12 and 6 of 8 (2 neutral) on the
+  applications.
+
+Stated floors, each pinned by `test/rubyreachcheck.sh`:
+- **(a)** A class whose lookup can leave the class refuses nothing (see above).
+- **(b)** A class that writes the delegation DSL is exempt. Indexing delegated names as methods needs a call-to-self-only
+  visibility, so a receiver call of that name is not taken as evidence; that is a later round's job.
+- **(c)** Instance and class methods share one name space: `extend M` and `include M` both put M in reach.
+- **(d)** Inside `instance_eval`, `class_eval`, `instance_exec` or `Class.new` blocks the rule reads the lexical self,
+  as Rule 1 always has.
+- **(e)** Reach is read by class name, as the inheritance graph is keyed, so two classes sharing a name share their
+  reach. This refuses less, never more.
+- **(f)** A call outside any class is untouched.
+- **(g)** `prepend` is read as `include`.
+- **(h)** A top-level def is reachable only while no class in reach has an out-of-tree ancestor (above).
+- **(i)** A mixin written inside a method body runs when the method does, and is not read. Activerecord's `primary_key=`
+  includes `CompositePrimaryKey` this way.
+- **(j)** Rails' shared view object, into which every `app/helpers` module is mixed, is not modelled.
+- **(k)** A core class's own ancestry beyond the implicit roots is not modelled. A reopened `class Array` does not reach
+  a reopened `Enumerable`.
+
+`kParserVer` 130 → 131. New records, same layout: `kCacheVersion` stays 27, and Ruby caches re-parse once.
+
 ### Added — a Ruby bare-word call is a call: `full_name`, `render_profile`, the `items` of `items.sum`
 
 A Ruby call with no receiver, no arguments and no parentheses parses as a plain `(identifier)` in tree-sitter-ruby.
