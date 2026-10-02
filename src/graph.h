@@ -2673,6 +2673,329 @@ struct BuiltinMethodGate
     }
 };
 
+// The class a call runs against, keyed as canonByName and the inheritance graph key a class (its name). Inside a def it
+// is the def's scope. A Ruby call in a class or module BODY runs with that class as self — a DSL call there
+// (`define_section :x`, `scope :y, -> { where( … ) }`) — while the class symbol's own scope names the namespace around it.
+inline const std::string& callerSelfScope( const IngestResult& ing, const Reference& r ) noexcept
+{
+    const Symbol& from = ing.symbols[ r.fromSymbol ];
+    return ( r.lang == Lang::Ruby && BuiltinMethodGate::isClassLike( from ) ) ? from.name : from.scope;
+}
+
+// Every name reached from `start` along `edges`, `start` first, breadth-first, each once.
+template<class Visit>
+inline void forEachNameReached( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& start, Visit&& visit )
+{
+    std::vector<const std::string*> queue{ &start };
+    HashMap<std::string_view, char> seen;
+    seen.try_emplace( start, 1 );
+    for( std::size_t at = 0; at < queue.size(); ++at )
+    {
+        visit( *queue[ at ] );
+        if( const auto next = edges.find( *queue[ at ] ); next != edges.end() )
+        {
+            for( const std::string& n : next->second )
+            {
+                if( seen.try_emplace( n, 1 ).second )
+                {
+                    queue.push_back( &n );
+                }
+            }
+        }
+    }
+}
+
+// The out-of-tree superclasses below which a class forwards what it lacks — Ruby's stdlib delegators and Draper's
+// decorator, read by final segment as the inheritance graph names every base.
+inline constexpr std::string_view kRubyDelegatorBaseNames[] = { "Decorator", "Delegator", "SimpleDelegator" };
+
+// Every self's implicit ancestors: each object is an Object, so a Kernel and a BasicObject, and a class body's self is a
+// Class, so a Module. A tree that REOPENS one (activesupport's core_ext: Object#blank?, Kernel#silence_warnings,
+// Class#class_attribute) defines methods any self reaches.
+inline constexpr std::string_view kRubyImplicitRoots[] = { "BasicObject", "Class", "Kernel", "Module", "Object" };
+
+// The delegation DSL: a class that writes one defines methods the tree indexes nowhere in it (ActiveSupport's `delegate`
+// and `delegate_missing_to`, Forwardable's `def_delegator(s)`), so it may answer a name no lookup over the tree finds.
+inline constexpr std::string_view kRubyDelegationCalls[] = { "def_delegator", "def_delegators", "delegate", "delegate_missing_to" };
+
+// Ruby's ancestors include its MIXINS (parser version 131), and they feed only what a Ruby call to self reads — Rule 1's
+// base walk and RubySelfReach — through this overlay: the shared inheritance graph plus each in-tree mixin edge, built
+// only when the tree holds one. Keyed by module NAME like every base, a generic module name (`ClassMethods`, which
+// dozens of concerns define) merges every includer into one cone; in the shared graph that widened what its other
+// readers decide — CHA-lite, the builtin-method gate's file evidence, class identity — and bound activerecord's
+// `sql.dup` to Inheritance::ClassMethods#dup. Here it only ever ADDS reach, which refuses less.
+struct RubyCha
+{
+    HashMap<std::string, std::vector<std::string>> up, down;   // empty unless merged
+    bool                                           merged = false;
+};
+
+// A module's nested `module ClassMethods` is extended onto every class that includes the module — ActiveSupport::Concern
+// does it, and so does the `def self.included( base ) base.extend ClassMethods` idiom it replaced — so in the overlay it
+// is one of the module's ancestors (`Callbacks` → `Callbacks::ClassMethods`: an includer's class-body `define_callbacks`
+// reaches it). QUALIFIED by the module that holds it, unlike every other name here: dozens of concerns each nest one,
+// and keyed by the bare name every includer of any concern would reach all of them (activerecord's AbstractAdapter
+// bound `current_transaction` to Transactions::ClassMethods that way). RubySelfReach reads a candidate's qualified
+// owner by span (rubyClassMethodsOwners).
+inline constexpr std::string_view kRubyConcernClassMethods = "ClassMethods";
+
+// A nested `module ClassMethods` — a Ruby module of that name with a module around it.
+inline bool rubyIsConcernClassMethods( const Symbol& s ) noexcept
+{
+    return s.lang == Lang::Ruby && s.kind == SymKind::Other && s.name == kRubyConcernClassMethods && !s.scope.empty();
+}
+
+// The overlay key a mixin names: its final segment, as every base is keyed — except a `ClassMethods` mixin (`extend
+// ClassMethods`), which is keyed by the module its resolved constant sits in (`A::Callbacks::ClassMethods` → Callbacks).
+inline std::string rubyMixinKey( const std::string& resolved, const std::string& written )
+{
+    const std::size_t cut = resolved.rfind( "::" );
+    if( written != kRubyConcernClassMethods || cut == std::string::npos )
+    {
+        return written;
+    }
+    const std::size_t before = resolved.rfind( "::", cut - 1 );
+    const std::size_t from   = before == std::string::npos ? 0 : before + 2;
+    return resolved.substr( from, cut - from ) + "::" + written;
+}
+
+inline RubyCha buildRubyCha( const IngestResult& ing, const RubyBaseScope& bases, const HashMap<std::string, std::vector<std::string>>& chaUp,
+                             const HashMap<std::string, std::vector<std::string>>& chaDown )
+{
+    RubyCha    out;
+    const auto addEdge = [ & ]( const std::string& derived, const std::string& base )
+    {
+        if( !out.merged )
+        {
+            out.up     = chaUp;
+            out.down   = chaDown;
+            out.merged = true;
+        }
+        out.up[ derived ].push_back( base );
+        out.down[ base ].push_back( derived );
+    };
+    for( std::size_t i = 0; i < ing.references.size(); ++i )
+    {
+        const Reference&   r      = ing.references[ i ];
+        const std::string* scoped = ( i < bases.mixinRefs.size() && bases.mixinRefs[ i ] != 0 ) ? bases.resolvedBase( i ) : nullptr;
+        if( scoped != nullptr && !scoped->empty() && r.fromSymbol != kNoNode && BuiltinMethodGate::isClassLike( ing.symbols[ r.fromSymbol ] ) )
+        {
+            addEdge( ing.symbols[ r.fromSymbol ].name, rubyMixinKey( *scoped, r.calleeName ) );   // an in-tree mixin of a class or module
+        }
+    }
+    for( const Symbol& s : ing.symbols )
+    {
+        if( rubyIsConcernClassMethods( s ) )
+        {
+            addEdge( s.scope, s.scope + "::" + s.name );
+        }
+    }
+    for( auto* lists : { &out.up, &out.down } )
+    {
+        for( auto& [ k, v ] : *lists )
+        {
+            std::sort( v.begin(), v.end() );
+            v.erase( std::unique( v.begin(), v.end() ), v.end() );
+        }
+    }
+    return out;
+}
+
+// RUBY METHOD LOOKUP DECIDES WHAT A BARE CALL REACHES (test/rubyreachcheck.sh; parser version 131 makes mixins ancestors).
+//
+// A receiver-less Ruby call, or `self.m`, inside a class or module sends `m` to self, and Ruby answers it from self's
+// ancestors: the class, its mixins, its superclass and theirs. Self may be any instance BELOW the class that holds the
+// call — a subclass (the template-method idiom) or an includer (a concern calling its host's method) — so the REACH of a
+// call whose self is S is the ancestors of S and of every class below S, over the inheritance name graph with mixins
+// and a concern's ClassMethods (buildRubyCha). A candidate owned by a Ruby class or module outside that reach is a method no lookup finds:
+// `render` in a controller is ActionController's, not a component's; `request` is not the request of a class the
+// controller merely names; `outer_helper` from inside Outer::Inner is a NoMethodError (lexical nesting is constant
+// lookup, not method lookup). Such candidates leave the call's set, and a call left with none is vetoed as external:
+// the method Ruby runs is outside the indexed tree.
+// Left alone: a method of a reopened Object, Kernel, BasicObject, Module or Class (kRubyImplicitRoots, every self's
+// ancestors); a top-level def (a private method of Object) while no ancestor in reach is out of the tree; a candidate
+// whose owner is no Ruby class or module the tree defines; a call outside any class; and every call of a self whose reach holds a class that
+// answers ANY name — one defining method_missing, one writing the delegation DSL (kRubyDelegationCalls: it defines
+// methods the tree does not index), or one below an out-of-tree delegator (kRubyDelegatorBaseNames).
+// Reach is read by NAME, as the inheritance graph is keyed: two classes sharing a name share their reach, which refuses
+// less, never more. Memoised per self; the ancestor sets it unions are memoised per class, so a wide hierarchy pays once.
+struct RubySelfReach
+{
+    const HashMap<std::string, std::vector<std::string>>& chaUp;
+    const HashMap<std::string, std::vector<std::string>>& chaDown;
+    HashMap<std::string, char>                            classNames;   // every Ruby class and module name the tree defines
+    HashMap<std::string, char>                            answersAny;   // classes that answer any name sent to them
+    HashMap<std::string, char>                            outOfTree;    // classes with a superclass or mixin the tree never opens
+    HashMap<NodeId, std::string>                          qualifiedOwner;   // a def inside a nested `module ClassMethods` →
+                                                                            // "<holder>::ClassMethods" (buildRubyCha's key)
+
+    struct Reach
+    {
+        HashMap<std::string, char> names;
+        bool                       open     = false;   // a class in reach answers any name: the rule refuses nothing
+        bool                       external = false;   // a class in reach has an out-of-tree ancestor, which may answer a
+                                                       // name before Object does: a top-level def is not reachable then
+    };
+    mutable HashMap<std::string, Reach>                    memo;
+    mutable HashMap<std::string, std::vector<std::string>> ancestorsMemo;
+
+    // The key a call's SELF is reached by: a method of a nested `module ClassMethods` runs on the classes its holder is
+    // included into, so its self is "<holder>::ClassMethods" (buildRubyCha's key), not the bare name every concern shares.
+    const std::string& selfOf( const IngestResult& ing, const Reference& r ) const
+    {
+        const auto q = qualifiedOwner.find( r.fromSymbol );
+        return q != qualifiedOwner.end() ? q->second : callerSelfScope( ing, r );
+    }
+
+    // The calls the rule judges: a Ruby call to self — receiver-less or `self.` — whose self is a class or module.
+    static bool judges( const Reference& r, const std::string& self ) noexcept
+    {
+        return r.lang == Lang::Ruby && r.role == RefRole::Call && r.qualifier.empty() && !self.empty()
+            && ( r.recv == RecvKind::None || r.recv == RecvKind::ThisObj );
+    }
+
+    // `start` and every name above it; memoised.
+    const std::vector<std::string>& ancestorsOf( const std::string& start ) const
+    {
+        if( const auto hit = ancestorsMemo.find( start ); hit != ancestorsMemo.end() )
+        {
+            return hit->second;
+        }
+        std::vector<std::string> out;
+        forEachNameReached( chaUp, start, [ & ]( const std::string& a ) { out.push_back( a ); } );
+        return ancestorsMemo.emplace( start, std::move( out ) ).first->second;
+    }
+
+    // The ancestors of self and of every class below it; memoised.
+    const Reach& reachOf( const std::string& self ) const
+    {
+        if( const auto hit = memo.find( self ); hit != memo.end() )
+        {
+            return hit->second;
+        }
+        Reach reach;
+        forEachNameReached( chaDown, self, [ & ]( const std::string& below )
+        {
+            for( const std::string& a : ancestorsOf( below ) )
+            {
+                reach.names.try_emplace( a, 1 );
+                reach.open     = reach.open || answersAny.find( a ) != answersAny.end();
+                reach.external = reach.external || outOfTree.find( a ) != outOfTree.end();
+            }
+        } );
+        for( const std::string_view root : kRubyImplicitRoots )
+        {
+            reach.names.try_emplace( std::string( root ), 1 );
+        }
+        return memo.emplace( self, std::move( reach ) ).first->second;
+    }
+
+    // The candidates of `ids` self's lookup can reach, into `out` (cleared first); true when any was left out. A candidate
+    // owned by no Ruby class or module the tree defines is reachable; a top-level def (a private method of Object) only
+    // while every ancestor in reach is in the tree — an out-of-tree one (ActionController::Base) is found first by Ruby.
+    template<class In, class Out>
+    bool reachableOf( const IngestResult& ing, const std::string& self, const In& ids, Out& out ) const
+    {
+        const Reach& reach = reachOf( self );
+        out.clear();
+        for( const NodeId c : ids )
+        {
+            const auto         q     = qualifiedOwner.find( c );
+            const std::string& owner = q != qualifiedOwner.end() ? q->second : ing.symbols[ c ].scope;
+            const bool topLevel = owner.empty();
+            const bool known    = q != qualifiedOwner.end() || classNames.find( owner ) != classNames.end();
+            if( reach.open || ( topLevel && !reach.external ) || ( !topLevel && ( !known || reach.names.find( owner ) != reach.names.end() ) ) )
+            {
+                out.push_back( c );
+            }
+        }
+        return out.size() < ids.size();
+    }
+};
+
+// The innermost of `holders` whose span contains `s`, or nullptr.
+inline const Symbol* rubyInnermostHolder( const std::vector<const Symbol*>& holders, const Symbol& s ) noexcept
+{
+    const Symbol* inner = nullptr;
+    for( const Symbol* m : holders )
+    {
+        const bool contains = m->id != s.id && m->sigStartByte <= s.sigStartByte && s.endByte <= m->endByte;
+        inner = ( contains && ( inner == nullptr || m->sigStartByte > inner->sigStartByte ) ) ? m : inner;
+    }
+    return inner;
+}
+
+// Each def inside a nested `module ClassMethods`, keyed to "<holder>::ClassMethods" — the module whose span contains it
+// in its file (innermost first), the holder being that module's own scope.
+inline void rubyClassMethodsOwners( const IngestResult& ing, HashMap<NodeId, std::string>& out )
+{
+    HashMap<std::uint32_t, std::vector<const Symbol*>> holders;   // fileId → its ClassMethods modules
+    for( const Symbol& s : ing.symbols )
+    {
+        if( rubyIsConcernClassMethods( s ) )
+        {
+            holders[ s.fileId ].push_back( &s );
+        }
+    }
+    for( const Symbol& s : ing.symbols )
+    {
+        const auto    file  = s.scope == kRubyConcernClassMethods ? holders.find( s.fileId ) : holders.end();
+        const Symbol* inner = file == holders.end() ? nullptr : rubyInnermostHolder( file->second, s );
+        if( inner != nullptr )
+        {
+            out.try_emplace( s.id, inner->scope + "::" + inner->name );
+        }
+    }
+}
+
+// What one reference inside class `owner` says of it: a delegation-DSL call or an out-of-tree delegator superclass — it
+// answers any name; an inherit reference whose base the tree never opens (`scoped` empty) — it has an out-of-tree ancestor.
+inline void rubyNoteClassEvidence( const Reference& r, const std::string* scoped, bool mixin, const std::string& owner, RubySelfReach& reach )
+{
+    const bool outOfTree = r.isInherit && scoped != nullptr && scoped->empty();
+    const bool delegates = r.lang == Lang::Ruby && r.role == RefRole::Call && r.recv == RecvKind::None
+                        && std::ranges::find( kRubyDelegationCalls, r.calleeName ) != std::end( kRubyDelegationCalls );
+    const bool delegator = outOfTree && !mixin && std::ranges::find( kRubyDelegatorBaseNames, r.calleeName ) != std::end( kRubyDelegatorBaseNames );
+    if( delegates || delegator )
+    {
+        reach.answersAny.try_emplace( owner, 1 );
+    }
+    if( outOfTree )
+    {
+        reach.outOfTree.try_emplace( owner, 1 );
+    }
+}
+
+// RubySelfReach over one graph: every Ruby class and module name the tree defines; the classes that answer ANY name sent
+// to them — one defining method_missing, one writing the delegation DSL, or one whose superclass is an out-of-tree
+// delegator; and the classes with an out-of-tree superclass or mixin.
+inline RubySelfReach buildRubySelfReach( const IngestResult& ing, const HashMap<std::string, std::vector<std::string>>& chaUp,
+                                         const HashMap<std::string, std::vector<std::string>>& chaDown, const RubyBaseScope& bases )
+{
+    RubySelfReach reach{ .chaUp = chaUp, .chaDown = chaDown };
+    rubyClassMethodsOwners( ing, reach.qualifiedOwner );
+    for( const Symbol& s : ing.symbols )
+    {
+        if( s.lang == Lang::Ruby && BuiltinMethodGate::isClassLike( s ) )
+        {
+            reach.classNames.try_emplace( s.name, 1 );
+        }
+        else if( s.lang == Lang::Ruby && s.name == "method_missing" && !s.scope.empty() )
+        {
+            reach.answersAny.try_emplace( s.scope, 1 );
+        }
+    }
+    for( std::size_t i = 0; i < ing.references.size(); ++i )
+    {
+        const Reference& r = ing.references[ i ];
+        if( r.fromSymbol != kNoNode && BuiltinMethodGate::isClassLike( ing.symbols[ r.fromSymbol ] ) )
+        {
+            rubyNoteClassEvidence( r, bases.resolvedBase( i ), i < bases.mixinRefs.size() && bases.mixinRefs[ i ] != 0, ing.symbols[ r.fromSymbol ].name, reach );
+        }
+    }
+    return reach;
+}
+
 // The gate's evidence, built once per graph. Deterministic: class ids follow symbol-id order, and each file's list is
 // sorted and deduplicated before any lookup. Files with no symbol in a gated language get no list (their calls are
 // never gated), which keeps a mostly-C++ corpus from paying for a Python corner of it.
@@ -3210,14 +3533,19 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             {
                 continue;   // a Ruby base the tree never opens: nothing in-tree to walk to
             }
+            if( const std::size_t at = std::size_t( &ir - ing.references.data() ); at < rubyBases.mixinRefs.size() && rubyBases.mixinRefs[ at ] != 0 )
+            {
+                continue;   // a Ruby mixin: only the Ruby overlay (buildRubyCha) carries it
+            }
             std::string_view derivedName;
             if( !ir.qualifier.empty() )
             { // Rust impl → derived type name in qualifier
                 derivedName = ir.qualifier;
             }
-            else if( ir.fromSymbol != kNoNode && isClassLikeK( ing.symbols[ ir.fromSymbol ].kind ) )
+            else if( ir.fromSymbol != kNoNode && ( isClassLikeK( ing.symbols[ ir.fromSymbol ].kind )
+                                                   || BuiltinMethodGate::isClassLike( ing.symbols[ ir.fromSymbol ] ) ) )
             {
-                derivedName = ing.symbols[ ir.fromSymbol ].name;          // the ref sits inside the derived class header
+                derivedName = ing.symbols[ ir.fromSymbol ].name;          // the derived class header — or a Ruby module's mixin
             }
             if( derivedName.empty() || ir.calleeName.empty() )
             {
@@ -3235,11 +3563,15 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         for( auto& [ k, v ] : chaUp )   { std::sort( v.begin(), v.end() ); v.erase( std::unique( v.begin(), v.end() ), v.end() ); }
         for( auto& [ k, v ] : chaDown ) { std::sort( v.begin(), v.end() ); v.erase( std::unique( v.begin(), v.end() ), v.end() ); }
     }
+    const RubyCha                  rubyCha   = buildRubyCha( ing, rubyBases, chaUp, chaDown );
+    const ChaUpNames&              rubyUp    = rubyCha.merged ? rubyCha.up : chaUp;     // a Ruby call to self reads mixins too
+    const RubySelfReach            rubyReach = buildRubySelfReach( ing, rubyUp, rubyCha.merged ? rubyCha.down : chaDown, rubyBases );
     const std::vector<std::string> specializationsWithBases = sortedSpecializationNames( chaUp );   // resolve.h: what a C++ specialization inherits
     ChaConeMemo              chaCones( chaUp, chaDown );   // one cone per receiver type, computed on first use (see the type)
     const ClassIdentity      classIds = buildClassIdentity( ing, chaUp );   // Rule 2's class identity: nesting, owners, real inheritance (resolve.h)
     std::vector<NodeId>      filtScratch;  // reused per-call survivor buffer for CHA-lite / arity filtering
     rw::SmallVec<NodeId, 2>  reachScratch; // reused per-call buffer: the candidates a call can reach by name (reachableByName)
+    rw::SmallVec<NodeId, 2>  rubyReachable; // reused per-call buffer: the candidates a Ruby call to self can reach (RubySelfReach)
 
     // ---- census arming + the ORACLE side (eval-only; src/pincensus.h) ------------------------------
     // The oracle rows are a straight transcription of the overlay's own (from, calleeName) → target table
@@ -3613,7 +3945,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // (`narrowed` is declared above the L3 fn-binding block, which fires ahead of Rule 1.)
         if( !scipPinned && !canonical && !narrowed )
         {
-            narrowed = narrowTo( narrower.rule1ClassMember( r, ing.symbols[ r.fromSymbol ].scope ), r, cand );
+            narrowed = narrowTo( narrower.rule1ClassMember( r, callerSelfScope( ing, r ) ), r, cand );
         }
         // Phase 5 (docs/EVALS.md "Phase 5", mechanism 2): Rule 1's shapes walk the enclosing class's BASES when the
         // class itself defines no `m` — and `super().m()` (RecvKind::SuperObj) walks the bases ONLY. See
@@ -3621,7 +3953,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // would hand the site to the caller's own class — the one class `super()` skips by definition.
         if( !scipPinned && !canonical && !narrowed )
         {
-            narrowed = narrowTo( narrower.rule1BaseWalk( r, ing.symbols[ r.fromSymbol ].scope, chaUp, chaUpDeclared ), r, cand );
+            narrowed = narrowTo( narrower.rule1BaseWalk( r, callerSelfScope( ing, r ), r.lang == Lang::Ruby ? rubyUp : chaUp, chaUpDeclared ), r, cand );
         }
         if( !scipPinned && !canonical && !narrowed && r.recv == RecvKind::SuperObj && bindingTier.empty() )
         {
@@ -3723,6 +4055,18 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                                  && reachableByName( ing, it->second, r, reachScratch )
                                  && !( r.role == RefRole::Call && r.qualifier.empty() && bindingTier.empty() && externalVeto.isExternalBound( r ) );
         const rw::SmallVec<NodeId, 2>* nameIds = localsYield ? &reachScratch : ( it != byName.end() ? &it->second : nullptr );
+        // Ruby: Rule 3 and the ladder choose only among what self's method lookup can reach (RubySelfReach) — a narrow
+        // to an unreachable namesake must not hide a reachable one.
+        if( !scipPinned && !canonical && !narrowed && nameIds != nullptr && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
+            && rubyReach.reachableOf( ing, rubyReach.selfOf( ing, r ), *nameIds, rubyReachable ) )
+        {
+            if( rubyReachable.empty() )
+            {
+                disposition = vetoExternal( r );   // every namesake is out of reach: the method Ruby runs is outside the tree
+                continue;
+            }
+            nameIds = &rubyReachable;
+        }
         if( !scipPinned && !canonical && !narrowed && it != byName.end() )
         {
             if( narrower.rule3IncludeFile( *nameIds, r.fileId, rule3Out, localsYield ? 1u : 2u )
@@ -3805,6 +4149,18 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                         }
                     }
                 }
+            }
+        }
+
+        // ---- Ruby: the same cut over the assembled set, for the paths above that re-read the whole name list ----------
+        if( !scipPinned && !canonical && !cand.empty() && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
+            && rubyReach.reachableOf( ing, rubyReach.selfOf( ing, r ), cand, filtScratch ) )
+        {
+            cand.swap( filtScratch );
+            if( cand.empty() )
+            {
+                disposition = vetoExternal( r );
+                continue;
             }
         }
 
@@ -3964,7 +4320,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             // target; it drops only same-name methods of UNRELATED classes. Empty intersection ⇒ degrade.
             if( tier.size() > 1 && !identityClaim )   // a class-identity claim is type-verified; the cone cannot name `TBase<T, true>`
             {
-                const std::string_view recvType = narrower.receiverStaticType( r, ing.symbols[ r.fromSymbol ].scope );
+                const std::string_view recvType = narrower.receiverStaticType( r, callerSelfScope( ing, r ) );
                 if( !recvType.empty() )
                 {
                     // The strict cone = {recvType} ∪ ANCESTORS ∪ DESCENDANTS, two fully-independent directional

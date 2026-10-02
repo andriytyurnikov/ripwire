@@ -296,7 +296,13 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 130;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 131;          // bump on any grammar/.scm/extraction change
+                                                      // 131 = 2026-10-02 (test/rubyreachcheck.sh): a Ruby MIXIN is an
+                                                      //   ancestor — `include`/`extend`/`prepend` at class-DSL
+                                                      //   position mints one inherit RawRef per constant, at the
+                                                      //   constant's byte (ingest_relations.h captureRubyMixinBases).
+                                                      //   New records, same layout: kCacheVersion unchanged (27). A
+                                                      //   Ruby cache written at 130 holds none of them and must re-parse.
                                                       // 130 = 2026-10-01 (test/rubybarecallcheck.sh): Ruby's BARE-WORD call — an
                                                       //   identifier with no receiver, arguments or parentheses, which
                                                       //   tree-sitter-ruby parses as the same (identifier) a local read

@@ -183,10 +183,12 @@ end
 boot_now
 RUBY
 
-# Every name a local or an RSpec let binds is ALSO a method of Decoy, in another directory — so a binding misread as a
-# call would bind to Decoy as the unique global and show as a caller of it.
+# Every name a local or an RSpec let binds is ALSO a method of module Decoy, in another directory, which the calling
+# classes (Locals, Scoping) include — so a binding misread as a call would reach Decoy through the base walk (and, from a
+# spec's example group, which is in no class, as the unique global) and show as a caller of it. A module, not a class:
+# an unrelated class's method is out of a bare call's reach (test/rubyreachcheck.sh), so it could show nothing.
 cat > "$FIX/lib/decoys/decoy.rb" <<'RUBY'
-class Decoy
+module Decoy
   def x_asg; end
   def x_op; end
   def x_m2; end
@@ -232,6 +234,7 @@ RUBY
 
 cat > "$FIX/lib/app/locals.rb" <<'RUBY'
 class Locals
+  include Decoy
   def assign
     x_asg = 1
     x_asg
@@ -330,6 +333,7 @@ RUBY
 # Ruby's scoping where the SAME spelling is a call: before the binding, in a sibling block, across a def wall.
 cat > "$FIX/lib/app/scoping.rb" <<'RUBY'
 class Scoping
+  include Decoy
   wall_x = 1
 
   def before_bind
@@ -585,7 +589,7 @@ sed 's/^    x_asg = 1$/    y_asg = 1/' "$FIX/lib/app/locals.rb" >"$MUT/lib/app/l
 grep -q '^    y_asg = 1$' "$MUT/lib/app/locals.rb" || no "mutation did not apply"
 if callers "$MUT" "Decoy::x_asg"
 then
-    grep -q ' n="assign"' "$DIR/c.rows" && ok "mutation: with the binding renamed, assign → Decoy::x_asg (the unique global)" \
+    grep -q ' n="assign"' "$DIR/c.rows" && ok "mutation: with the binding renamed, assign → Decoy::x_asg (the included module's method)" \
         || no "mutation: renamed binding, but assign still does not call Decoy::x_asg"
 fi
 

@@ -25,11 +25,11 @@
 #       `extends_clause`, C#'s `base_list`), and in Ruby that descent landed on `Struct`, minting an edge that
 #       only read as absent because the fixture defines no Struct. `class Built < Factory.fabricate( :x )` against
 #       an in-tree `Factory` pins it.
-#   (b) a MIXIN (`include Helper` / `extend` / `prepend`) is NOT an inheritance edge in this round. It is
-#       a receiver-less call in the class BODY, not a clause — the same shape, and the same decision, as
-#       PHP's in-body `use SomeTrait;` (captureBases' own header). Ruby's ancestor chain really does hold
-#       included modules, so this is a real residue and a later round's subject, not a claim that it is
-#       not inheritance.
+#   (b) a MIXIN (`include Helper` / `extend` / `prepend`) is an ANCESTOR for the call graph since parser version
+#       131 — the base walk, the CHA cone and a bare call's reach read it (ingest_relations.h captureRubyMixinBases,
+#       test/rubyreachcheck.sh) — but it mints no IMPLEMENTOR row: --lego lists the classes below a CLASS, and the
+#       inheritance overlay takes only class-like bases (graph.h namespaceCompatible), which a module is not. So
+#       --lego=Helper still lists no Mixed; a module's implementor row is a separate decision, not taken here.
 #   (c) the base WALK is keyed by NAME. A base is found by name (its final segment, as every language's is)
 #       and then SCOPED: the superclass as written is looked up the way Ruby looks it up — Module.nesting
 #       innermost first, then the top level, `::X` absolute — against every class/module the tree opens (the
@@ -350,8 +350,8 @@ then
 fi
 if runq LH "$FIX" --no-cache --lego=Helper
 then
-    echo "$LH" | grep -q '<impl n="Mixed"' && no "include Helper minted an inheritance edge — that is a later round, and it moves the CHA fan-out: say so HERE, in captureBases' header and in CHANGELOG.md (floor (b))" \
-        || ok "include Helper is not an inheritance edge (floor (b), stated)"
+    echo "$LH" | grep -q '<impl n="Mixed"' && no "include Helper listed Mixed as a --lego implementor — a module's implementor row is its own decision: say so HERE, in captureRubyMixinBases' header and in CHANGELOG.md (floor (b))" \
+        || ok "include Helper is no --lego implementor row (floor (b), stated): the mixin is an ancestor for calls only"
 fi
 CM="$( rowOf 'n="call_mixin" ' )"
 echo "$CM" | grep -q '<c n="helped"' && ok "…and Mixed.new.helped still edges the one helped def through the name ladder (a floor deletes nothing)" \
@@ -461,8 +461,12 @@ then
         && no "absence: --lego=Parent carries ruby_bases_unscoped= on a tree where every Ruby base was scoped" \
         || ok "absence: no ruby_bases_unscoped= on --lego=Parent when every Ruby base was scoped (absent at zero)"
 fi
-# The expected count: every `class X < Const` in the fixture (a computed superclass mints no inherit reference).
-WANT="$( cat "$FIX"/*.rb | grep -cE '^[[:space:]]*class [A-Z][A-Za-z0-9_:]* < (::)?[A-Z][A-Za-z0-9_]*(::[A-Z][A-Za-z0-9_]*)*[[:space:]]*(;|#|$)' )"
+# The expected count: every `class X < Const` in the fixture (a computed superclass mints no inherit reference) and,
+# since parser version 131, every constant of a class-body `include`/`extend`/`prepend` — a mixin is an ancestor too
+# (ingest_relations.h captureRubyMixinBases), so the seam drops its directive from the join as well.
+SUPERS="$( cat "$FIX"/*.rb | grep -cE '^[[:space:]]*class [A-Z][A-Za-z0-9_:]* < (::)?[A-Z][A-Za-z0-9_]*(::[A-Z][A-Za-z0-9_]*)*[[:space:]]*(;|#|$)' )"
+MIXINS="$( cat "$FIX"/*.rb | grep -E '^[[:space:]]+(include|extend|prepend) ' | grep -oE '(::)?[A-Z][A-Za-z0-9_]*(::[A-Z][A-Za-z0-9_]*)*' | grep -c . )"
+WANT=$(( SUPERS + MIXINS ))
 if RIPWIRE_TEST_RUBY_BASE_UNSCOPED=1 runq SEAMED "$FIX" --no-cache --lego=Parent --legend=full
 then
     echo "$SEAMED" | grep -q " ruby_bases_unscoped=\"$WANT\"" \
