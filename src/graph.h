@@ -2918,6 +2918,7 @@ struct FalseEdgeRules
             kept.push_back( c );
             out.compatibleKept += compatible ? 1u : 0u;
         }
+        ENSURES( kept.size() <= ids.size() && out.compatibleKept <= kept.size(), "the kind rule only removes candidates" );
         return out;
     }
     // keep only the members of `kept` (of the call's language) for which `pred` holds; others of other languages stay
@@ -2934,6 +2935,7 @@ struct FalseEdgeRules
                 compatible += lang ? 1u : 0u;
             }
         }
+        ENSURES( compatible <= n, "a kept candidate of the call's language is a kept candidate" );
         kept.resize( n );
         return compatible;
     }
@@ -4287,7 +4289,10 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             {
                 case FalseEdgeRules::Verdict::External: disposition = vetoExternal( r ); continue;
                 case FalseEdgeRules::Verdict::Local:    ++g.unresolvedOut[ r.fromSymbol ]; disposition = CallDisposition::Unresolved; continue;
-                case FalseEdgeRules::Verdict::Narrow:   baseIds = &feKept; break;
+                case FalseEdgeRules::Verdict::Narrow:
+                    ASSUME( !feKept.empty(), "Narrow is returned only while a candidate of the call's language survives" );
+                    baseIds = &feKept;
+                    break;
                 case FalseEdgeRules::Verdict::Keep:     break;
             }
         }
