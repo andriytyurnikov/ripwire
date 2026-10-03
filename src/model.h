@@ -383,8 +383,7 @@ inline constexpr const char* kRefRoleTagTable[] = { "call", "read", "write", "im
 static_assert( std::size( kRefRoleTagTable ) == kRefRoleCount, "kRefRoleTagTable: one spelling per RefRole, in enum order" );
 inline const char* refRoleTag( RefRole r ) noexcept
 {
-    const auto i = static_cast<std::size_t>( r );
-    return i < kRefRoleCount ? kRefRoleTagTable[ i ] : "read";   // a byte past the enum (a corrupt cache byte is VALIDATEd on read)
+    return enumTableAt( kRefRoleTagTable, r, "read" );   // a byte past the enum (a corrupt cache byte is VALIDATEd on read)
 }
 
 // Reference-as-value round: the grammar family whose value positions src/ingest_valuerefs.h reads, and whose
@@ -404,8 +403,7 @@ inline constexpr std::array<ValueRefFamily, kLangCount> kValueRefFamilyOfLang = 
 }();
 inline ValueRefFamily valueRefFamily( Lang l ) noexcept
 {
-    const auto i = static_cast<std::size_t>( l );
-    return i < kLangCount ? kValueRefFamilyOfLang[ i ] : ValueRefFamily::None;
+    return enumTableAt( kValueRefFamilyOfLang, l, ValueRefFamily::None );
 }
 
 // Essential-complexity ev_why= reason vocabulary (the essential-complexity design note, §5.1). PUBLIC the

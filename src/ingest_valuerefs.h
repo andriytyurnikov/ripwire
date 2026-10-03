@@ -138,13 +138,6 @@ struct VrAnc
     bool          opensScope = false;
 };
 
-// Is `name` among `names`? (std::ranges::find; a named helper here re-spelled ones that live elsewhere.)
-template< class Names >
-inline bool vrHas( const Names& names, std::string_view name ) noexcept
-{
-    return std::ranges::find( names, name ) != std::ranges::end( names );
-}
-
 class ValueRefWalk
 {
 public:
@@ -223,7 +216,7 @@ public:
         // File-scope calls through a container survive only when this file fed that container a function value.
         for( RawRef& t : m_filePending )
         {
-            if( vrHas( m_fileFed, std::string_view( t.name ) ) )
+            if( std::ranges::find( m_fileFed, std::string_view( t.name ) ) != m_fileFed.end() )
             {
                 m_out.push_back( std::move( t ) );
             }
@@ -729,7 +722,7 @@ private:
             VrScope& s = m_scopes.back();
             for( RawRef& t : s.pending )
             {
-                if( vrHas( s.fed, std::string_view( t.name ) ) )
+                if( std::ranges::find( s.fed, std::string_view( t.name ) ) != s.fed.end() )
                 {
                     m_out.push_back( std::move( t ) );
                 }
@@ -744,7 +737,7 @@ private:
     {
         for( std::size_t k = m_scopes.size(); k > 1; --k )
         {
-            if( vrHas( m_scopes[k - 1].decls, name ) )
+            if( std::ranges::find( m_scopes[k - 1].decls, name ) != std::ranges::end( m_scopes[k - 1].decls ) )
             {
                 return k - 1;
             }
@@ -1006,7 +999,7 @@ private:
         {
             return;   // a parameter or local of that name hides the function
         }
-        const bool fileShadow = vrHas( m_scopes.front().decls, name );
+        const bool fileShadow = std::ranges::find( m_scopes.front().decls, name ) != std::ranges::end( m_scopes.front().decls );
 
         if( !s.container.empty() && ( s.scope == 'f' || s.scope == 'l' ) )
         {
@@ -1483,7 +1476,7 @@ private:
             sc.pending.push_back( std::move( r ) );
             return;
         }
-        if( vrHas( m_scopes.front().decls, x ) )
+        if( std::ranges::find( m_scopes.front().decls, x ) != std::ranges::end( m_scopes.front().decls ) )
         {
             r.qualifier = "f";
             m_filePending.push_back( std::move( r ) );

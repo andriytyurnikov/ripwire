@@ -1689,8 +1689,7 @@ static_assert( std::size( kCacheRejectNames ) == static_cast<std::size_t>( Cache
 
 inline const char* cacheRejectName( CacheReject r ) noexcept
 {
-    const std::size_t i = static_cast<std::size_t>( r );
-    return i < std::size( kCacheRejectNames ) ? kCacheRejectNames[i] : "corrupt-frame";
+    return enumTableAt( kCacheRejectNames, r, "corrupt-frame" );   // infra/enumcount.h: the shared bounded table lookup
 }
 
 // A validated, still-open v15 blob: everything a caller needs to pull records out of it by pathHash.
