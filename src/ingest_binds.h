@@ -124,6 +124,12 @@ inline TSNode memberOnlyReceiver( TSNode parent, Lang lang ) noexcept
     {
         return fieldChild( parent, NodeField::Value );
     }
+    if( lang == Lang::Rust && kindIs( t, "scoped_identifier" ) )
+    {
+        // a PATH call: `Type::f()`, `Self::f()`, `<T as Trait>::f()` — never bare, even when rustQualifierOf leaves the
+        // qualifier empty (the UFCS cast form), so FE-A must not read it as a receiverless call
+        return fieldChild( parent, NodeField::Path );
+    }
     if( lang == Lang::C && kindIs( t, "field_expression" ) )
     {
         return fieldChild( parent, NodeField::Argument );   // `ops->open( x )`: a call through a function-pointer FIELD

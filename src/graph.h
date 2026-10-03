@@ -3179,12 +3179,46 @@ inline std::string goModulePathOf( std::string_view text )
     return {};
 }
 
+// The module paths a go.mod puts in the tree: its `module` line, and every `replace X => ./local` (or ../, /) left side —
+// a module replaced by a LOCAL directory is this tree's code under another path (a multi-root workspace's sibling root).
+inline std::vector<std::string> goModuleTreePaths( std::string_view text )
+{
+    std::vector<std::string> paths;
+    if( std::string m = goModulePathOf( text ); !m.empty() )
+    {
+        paths.push_back( std::move( m ) );
+    }
+    for( std::size_t at = 0; at < text.size(); )
+    {
+        std::size_t end = text.find( '\n', at );
+        end = end == std::string_view::npos ? text.size() : end;
+        std::string_view line = trimWs( text.substr( at, end - at ) );
+        at = end + 1;
+        if( line.starts_with( "replace" ) )
+        {
+            line = trimWs( line.substr( 7 ) );
+        }
+        const std::size_t arrow = line.find( "=>" );
+        if( arrow == std::string_view::npos || line.starts_with( "(" ) )
+        {
+            continue;
+        }
+        const std::string_view left   = trimWs( line.substr( 0, arrow ) );
+        const std::string_view target = trimWs( line.substr( arrow + 2 ) );
+        if( !left.empty() && !target.empty() && ( target.front() == '.' || target.front() == '/' ) )
+        {
+            paths.emplace_back( left.substr( 0, left.find_first_of( " \t" ) ) );   // drop a version: `X v1.2.3 => ./x`
+        }
+    }
+    return paths;
+}
+
 // FE-A's Go module census: for every Go file, the go.mod at or above its directory INSIDE the root (read once per
 // directory); every module path found joins goModules. A file with none above it is unknown (goUnderModule 0).
 inline void collectGoModules( const IngestResult& ing, FalseEdgeRules& rules )
 {
     rules.goUnderModule.assign( ing.files.size(), 0 );
-    HashMap<std::string, std::string> modOfDir;   // disk directory → module path ("" when that directory has no go.mod)
+    HashMap<std::string, std::vector<std::string>> modOfDir;   // disk directory → its go.mod's tree paths (empty: no go.mod)
     HashMap<std::string, char>        seenModule;
     for( const Symbol& s : ing.symbols )
     {
@@ -3204,20 +3238,23 @@ inline void collectGoModules( const IngestResult& ing, FalseEdgeRules& rules )
                 break;
             }
             disk.resize( diskCut );
-            auto [ it, fresh ] = modOfDir.try_emplace( disk, std::string{} );
+            auto [ it, fresh ] = modOfDir.try_emplace( disk, std::vector<std::string>{} );
             if( fresh )
             {
                 if( const std::optional<std::string> text = docparse::detail::readWholeFile( disk + "/go.mod" ) )
                 {
-                    it->second = goModulePathOf( *text );
+                    it->second = goModuleTreePaths( *text );
                 }
             }
             if( !it->second.empty() )
             {
                 rules.goUnderModule[ s.fileId ] = 1;
-                if( seenModule.try_emplace( it->second, '\0' ).second )
+                for( const std::string& m : it->second )
                 {
-                    rules.goModules.push_back( it->second );
+                    if( seenModule.try_emplace( m, '\0' ).second )
+                    {
+                        rules.goModules.push_back( m );
+                    }
                 }
                 break;
             }

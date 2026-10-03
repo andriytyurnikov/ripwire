@@ -31,7 +31,8 @@
 #            library never reach a same-named in-repo function. Near misses keep: same-package `min` (shadows the
 #            builtin) and `score`/`hook`, also from ANOTHER file of the package; same-package `copy`; `h.append()`; a
 #            package-level func VARIABLE called bare; in-module `own.Pick()`; a dot-import's bare `Pick()`; a NESTED
-#            module's `lib.Helper()` (sub/go.mod); a function passed as a value. Root gonomod/ has NO go.mod: its
+#            module's `lib.Helper()` (sub/go.mod); a module a LOCAL go.mod `replace` maps into the tree
+#            (`lib.Shape()` via example.com/vendored); a function passed as a value. Root gonomod/ has NO go.mod: its
 #            full-path import of an in-tree package keeps its edge (an unknown module path proves nothing outside).
 #   (B) JS:  JSON.stringify, `const { stringify } = JSON`, `new URL()`, Buffer.from, `globalThis.fetch`, console/Math/
 #            Object/Array/Promise members, require('destroy'), require('supertest'), a receiver from require('qs')
@@ -59,7 +60,7 @@
 #            cpp/): `Point( v )` is a constructor call and keeps both rows it had (the struct rule is C's alone).
 #   (R) Rust (no implicit receiver either): a bare call imported from an outside crate never reaches a same-named
 #            METHOD; a same-module function, `h.render()`, `History::new()`, `History::render( &h )` and
-#            `Self::width()` keep their edges.
+#            `Self::width()` and the fully qualified `<History as Render>::render_all( h )` keep their edges.
 #   (F) propagation: --callers and --impact of the in-repo decoys no longer list the false callers.
 #   (G) disclosure: every call the arms above unbind is a `C external` census row (empty targets) — except a Python bare
 #            name nothing binds and no builtin table holds (run_all's `process`, siblings.py's `helper`), which has no
@@ -233,6 +234,7 @@ exactly go callees dot/dot.go:UseDot "fn Pick own/own.go"
 exactly go callees algo/usesub.go:UseSub "fn Helper sub/lib/lib.go"
 exactly go callees algo/fnval.go:UseFnVal "fn apply algo/fnval.go"
 exactly gonomod callees app/app.go:Run "fn Pick own/own.go"
+exactly go callees algo/vendored.go:UseVendored "fn Shape vendored/lib/lib.go"
 
 echo "=== (B) JS: globals, required packages, accessors ==="
 lacks js callees lib/response.js:length "stringify lib/query.js"
@@ -303,6 +305,7 @@ lacks rs callees src/lib.rs:draw "render src/history.rs"
 exactly rs callees src/lib.rs:paint "fn helper src/lib.rs;method render src/history.rs"
 exactly rs callees src/assoc.rs:build "method new src/assoc.rs;method render src/history.rs"
 exactly rs callees src/assoc.rs:count "method width src/assoc.rs"
+exactly rs callees src/ufcs.rs:draw_all "method render_all src/ufcs.rs"
 
 echo "=== (F) propagation: the decoys' callers and impact ==="
 exactly go callers hist/history.go:append "fn Remember hist/history.go"
