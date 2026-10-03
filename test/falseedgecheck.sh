@@ -51,7 +51,8 @@
 #            bare `helper()` beside its own class's and a sibling class's `helper` (siblings.py — the shape the S6-C
 #            locality fixtures used before FE-A; they moved to Kotlin, where a bare call IS a `this` call). Near misses keep: imported
 #            in-repo `append` and `format`, a same-module helper, a module-level callable VARIABLE, a bare class
-#            construction `Worker()`, a class-body call. Pins: bare builtins `open`/`format` reach neither the method
+#            construction `Worker()`, a class-body call, and a bound-method alias (`write = self.write; write( b )`
+#            reaches its own class's `write`, never another class's). Pins: bare builtins `open`/`format` reach neither the method
 #            nor the unimported module function.
 #   (E) C:   `opts_parse( … )` and `region( … )` reach the FUNCTION, not the same-named struct; `find_type( … )` never
 #            reaches `enum find_type`; window_count() and the function-like macro CLAMP keep their edges. C++ (root
@@ -60,7 +61,9 @@
 #            METHOD; a same-module function, `h.render()`, `History::new()`, `History::render( &h )` and
 #            `Self::width()` keep their edges.
 #   (F) propagation: --callers and --impact of the in-repo decoys no longer list the false callers.
-#   (G) disclosure: every call the arms above unbind is a `C external` census row (empty targets); each root's map
+#   (G) disclosure: every call the arms above unbind is a `C external` census row (empty targets) — except a Python bare
+#            name nothing binds and no builtin table holds (run_all's `process`, siblings.py's `helper`), which has no
+#            in-repo target and no proof of an outside one: it is unresolved=, no census row at all; each root's map
 #            header external= equals its census `# dispositions external=` and is at least the number of expected
 #            external rows; every root's dispositions still sum to calls= with unaccounted=0.
 #   (H) MCP twins (fresh TMPDIR cache): find_referencing_symbols / find_symbol name exactly the rows the CLI's
@@ -284,6 +287,7 @@ exactly py callees src/ui/worker.py:Worker "fn _default src/ui/worker.py"
 exactly py callees src/ui/star.py:use_var "var handler src/ui/star.py"
 exactly py callees src/ui/star.py:build "cls Worker src/ui/worker.py"
 exactly py callees src/ui/star.py:fmt "fn format src/ui/text.py"
+exactly py callees src/ui/alias.py:flush "fn write src/ui/alias.py"
 lacks py callees src/ui/widget.py:read_config "open src/ui/worker.py"
 lacks py callees src/ui/report.py:render "format src/ui/text.py"
 
@@ -333,8 +337,28 @@ externals ts src/utils/token.ts decodePart parse
 externals ts src/utils/sig.ts checkSig verify
 externals ts src/client.ts encode stringify
 externals tsimport src/remote.ts pull fetch
-externals py src/ui/widget.py run_all process
-externals py src/ui/siblings.py run helper
+# a Python name no import, local or module def binds and that is no builtin: no in-repo target, but nothing proves it is
+# outside the tree either (a closure variable, a star import of an unresolved module) — so it is no census row at all
+# (counted unresolved=), never a C external row and never a bound one
+unresolved_site(){
+    local r="$1" file="$2" caller="$3" callee="$4"
+    if python3 - "$TMP/$r.tsv" "$file" "$caller" "$callee" <<'PY'
+import sys
+census, path, caller, callee = sys.argv[ 1: ]
+for line in open( census, encoding="utf-8", errors="replace" ):
+    f = line.rstrip( "\n" ).split( "\t" )
+    if len( f ) >= 9 and f[ 0 ] == "C" and f[ 6 ] == callee:
+        head, _, tail = f[ 5 ].partition( "::" )
+        if head == path and tail.rsplit( "#", 1 )[ 0 ].split( "::" )[ -1 ] == caller:
+            sys.exit( 1 )
+sys.exit( 0 )
+PY
+    then ok "(G) ($r) census: $caller → $callee has no row (unresolved — neither bound nor claimed external)"
+    else no "(G) ($r) census: $file $caller → $callee has a C row (bound or claimed external)"; fi
+}
+unresolved_site py src/ui/widget.py run_all process
+unresolved_site py src/ui/siblings.py run helper
+externals py src/ui/widget.py read_config open
 externals c copy.c classify find_type
 externals rs src/lib.rs draw render
 for r in $ROOTS; do

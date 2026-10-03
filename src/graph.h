@@ -2809,6 +2809,7 @@ struct FalseEdgeRules
     std::vector<std::string>                    goModules;    // every in-tree go.mod's module path
     std::vector<char>                           goUnderModule;   // fileId → a go.mod sits at or above the file, inside the root
     HashMap<std::string, char>                  jsVocabulary;    // jsModuleVocabulary, built only when a JS alias exists
+    HashMap<std::string, char>                  rustOutsideUse;  // "<fileId>#name": a Rust `use` of a path outside the crate names it
     mutable std::string                         key;
     bool                                        active = false;
 
@@ -2940,6 +2941,12 @@ struct FalseEdgeRules
     // an emptied set is External only where the name is provably bound outside the tree, else Local/Unresolved.
     Verdict kindDecide( const Reference& r, std::span<const NodeId> ids, rw::SmallVec<NodeId, 2>& kept ) const
     {
+        if( isLocalOfCaller( r ) )
+        {
+            // a call through a parameter or local (`write = self.write; write( b )`, `fn( x )`): which definition it holds
+            // is a receiver question this rule cannot answer — the ladder keeps it exactly as before (FE-B's territory)
+            return Verdict::Keep;
+        }
         const Split split = splitReachable( r, ids, kept );
         if( !split.dropped )
         {
@@ -2968,10 +2975,6 @@ struct FalseEdgeRules
         {
             return Verdict::Narrow;
         }
-        if( isLocalOfCaller( r ) )
-        {
-            return Verdict::Local;   // a parameter or local named like the dropped member: a call through it
-        }
         switch( r.lang )
         {
             case Lang::Go:
@@ -2983,16 +2986,21 @@ struct FalseEdgeRules
             {
                 return Verdict::Local;   // JS/TS locals and parameters are not recorded here: decline, never claim external
             }
+            case Lang::Rust:
+            {
+                // a `use` of an outside path naming it (`use termkit::render;`) proves it; a closure or local does not
+                return lookup( r.fileId, r.calleeName, rustOutsideUse ) ? Verdict::External : Verdict::Local;
+            }
             default:
             {
-                return Verdict::External;   // C (a library function), Rust (a `use`d outside item; floor: a closure)
+                return Verdict::External;   // C: a library function (a local was answered above)
             }
         }
     }
-    // Python visibility for a receiverless call that lost a method candidate: an imported name keeps the ladder unless
-    // the module it is imported FROM defines a reachable candidate (then exactly those); otherwise the same file's and the
-    // imported files' (a star import) definitions; with none of those, a parameter or local is a call through it (Local),
-    // and anything else is External (a builtin, an outside import, or a star import of an outside module).
+    // Python visibility for a receiverless call that lost a method candidate (a parameter or local never gets here): an
+    // imported name keeps the ladder unless the module it is imported FROM defines a reachable candidate (then exactly
+    // those); otherwise the same file's and the imported files' (a star import) definitions, and External when there are
+    // none (a builtin, an outside import, or a star import of an outside module).
     Verdict pythonVisible( const Reference& r, rw::SmallVec<NodeId, 2>& kept ) const
     {
         const char verdict = veto.importVerdict( r, r.calleeName );
@@ -3034,7 +3042,9 @@ struct FalseEdgeRules
         {
             return Verdict::Narrow;
         }
-        return isLocalOfCaller( r ) ? Verdict::Local : Verdict::External;
+        // provably outside only for a builtin or an outside import; any other name (a closure variable of an enclosing
+        // function, a star import of an unresolved module) has no in-repo target here but is not claimed external
+        return ( verdict == 'x' || externalnames::isPythonBuiltin( r.calleeName ) ) ? Verdict::External : Verdict::Local;
     }
 
     Verdict jsDecide( const Reference& r ) const
@@ -3259,6 +3269,53 @@ inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMa
     if( anyJsAlias )
     {
         rules.jsVocabulary = jsModuleVocabulary( ing );
+    }
+    // Rust: `use a::b::c;` whose first segment is not crate/self/super/a `mod` of this tree names an outside item `c`.
+    // A module of this tree is any .rs file stem or directory name (the same vocabulary probe the JS rule uses).
+    HashMap<std::string, char> rustModules;
+    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
+    {
+        std::string_view path = rootRelPath( ing, f );
+        if( !path.ends_with( ".rs" ) )
+        {
+            continue;
+        }
+        path.remove_suffix( 3 );
+        std::size_t seg = 0;
+        while( seg <= path.size() )
+        {
+            const std::size_t slash = path.find( '/', seg );
+            const std::string_view part = path.substr( seg, ( slash == std::string_view::npos ? path.size() : slash ) - seg );
+            if( !part.empty() )
+            {
+                rustModules.try_emplace( std::string( part ), '\0' );
+            }
+            if( slash == std::string_view::npos )
+            {
+                break;
+            }
+            seg = slash + 1;
+        }
+    }
+    for( const Include& inc : ing.includes )
+    {
+        if( inc.fileId >= ing.files.size() || inc.target.empty() || inc.target.starts_with( "mod:" ) || !rootRelPath( ing, inc.fileId ).ends_with( ".rs" ) )
+        {
+            continue;
+        }
+        const std::string_view path  = inc.target;
+        const std::size_t      first = path.find( "::" );
+        const std::size_t      last  = path.rfind( "::" );
+        if( first == std::string_view::npos || path.find( '{' ) != std::string_view::npos )
+        {
+            continue;   // `use x;` (a crate root) or a brace group: no single named item
+        }
+        const std::string_view head = path.substr( 0, first );
+        if( head == "crate" || head == "self" || head == "super" || rustModules.find( std::string( head ) ) != rustModules.end() )
+        {
+            continue;
+        }
+        rules.rustOutsideUse.try_emplace( jsImportKey( inc.fileId, path.substr( last + 2 ) ), '\0' );
     }
     if( anyGo )
     {
