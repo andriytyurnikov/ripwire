@@ -34,6 +34,8 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-10-03, lane/fe-a-false-edges fix round: RE-DERIVED with UPDATE_GOLDEN=1 (hash 41dd4678dd…3e069f). kParserVer 134 -> 135 (the
+#   lane's Rust path-call extraction change; its earlier binaries ran 134 with the old extraction). kCacheVersion stays 28.
 # 2026-10-03, lane/fe-a-false-edges: RE-DERIVED with UPDATE_GOLDEN=1 (hash 30b29982af…87fa82). kParserVer 132 -> 134 (FE-A
 #   extraction: member-call shape, ModuleAlias bindings, global-name shadows; 133 is train 24's), kCacheVersion 27 -> 28
 #   (the ref record gains memberCall/memberRoot); quality.h's mirrors move with them; kQSnapCacheScheme stays 16. The

@@ -302,7 +302,10 @@ constexpr std::uint32_t kCacheVersion = 28;           // 28: FE-A (test/falseedg
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 134;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 135;          // bump on any grammar/.scm/extraction change
+                                                      // 135 = 2026-10-03 (lane FE-A fix round): Rust path calls (`<T as Trait>::f()`) are member
+                                                      //   calls — an extraction change; this lane's own earlier binaries ran 134 with the old
+                                                      //   extraction, so their caches must never be read as this build's.
                                                       // 134 = 2026-10-03 (lane FE-A, test/falseedgecheck.sh): Go/JS/TS/Rust member calls
                                                       //   record memberCall/memberRoot; JS/TS `require`, namespace-import and
                                                       //   global-destructure aliases and Go import specs are ModuleAlias bindings; JsShadow
