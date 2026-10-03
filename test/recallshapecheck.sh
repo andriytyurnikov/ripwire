@@ -734,6 +734,13 @@ class Sorter:
         return 1
 
     __str__ = render  # @PM_CLASSBODY the class body DOES see its members
+
+
+class Pipeline:
+    def run(self, xs):
+        def step(x):
+            return x
+        return sorted(map(step, xs))  # @PM_NESTED a def nested in a method is that method's local, not a member
 EOF
 cat >"$FX/cppmem/m.cpp" <<'EOF'
 #include <algorithm>
@@ -1186,6 +1193,8 @@ arm "RM3 negatives: sorted(xs, key=keyfn) inside a method never reaches the sibl
     pymem --callers=keyfn attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@PM_SIBLING'
 arm "RM4 the class BODY sees its members: __str__ = render" \
     pymem --callers=render attr:value_refs=1 nvr:1 'vr:bind=@PM_CLASSBODY;into=__str__'
+arm "RM5 a def NESTED in a method (its scope names the class too) is the method's local and stays in scope" \
+    pymem --callers=step attr:value_refs=1 nvr:1 'vr:bind=@PM_NESTED;into=map#arg0'
 arm "RX1 negatives: memcpy( data, … ) in FixedStr is its member array — never Vec::data()" \
     cppmem --callers=data attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@XM_DATA'
 arm "RX2 negatives: a C++ data member named count shadows the free function count inside its class" \

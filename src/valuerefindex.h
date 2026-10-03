@@ -54,6 +54,7 @@ public:
                 m_fnByName[ s.name ].push_back( id );
             }
         }
+        markPythonMembers();
         for( std::uint32_t i = 0; i < ing.references.size(); ++i )
         {
             const Reference& r = ing.references[i];
@@ -316,6 +317,73 @@ private:
         return resolvePythonModuleSuffix( b.typeName, m_fileIndex, m_ing.fileRoot.empty() ? nullptr : &m_ing.fileRoot, b.fileId );
     }
 
+    // Python's tags.scm has no @definition.method: every `def` is a Function, and its `scope` is the nearest
+    // enclosing class at ANY depth (a helper nested inside a method carries the class too). A Function is a class
+    // MEMBER only when its innermost enclosing definition is that class itself, which this sweep decides from the
+    // def spans: per file, defs sorted by start (widest first), a stack of the open ones.
+    void markPythonMembers()
+    {
+        std::vector<NodeId> py;
+        for( NodeId id = 0; id < m_ing.symbols.size(); ++id )
+        {
+            const Symbol& s = m_ing.symbols[id];
+            if( s.lang == Lang::Python
+                && ( s.kind == SymKind::Function || s.kind == SymKind::Method || s.kind == SymKind::Class ) )
+            {
+                py.push_back( id );
+            }
+        }
+        if( py.empty() )
+        {
+            return;
+        }
+        m_pyMember.assign( m_ing.symbols.size(), 0 );
+        std::ranges::sort( py, [ & ]( NodeId a, NodeId b )
+        {
+            const Symbol& x = m_ing.symbols[a];
+            const Symbol& y = m_ing.symbols[b];
+            if( x.fileId != y.fileId )
+            {
+                return x.fileId < y.fileId;
+            }
+            if( x.sigStartByte != y.sigStartByte )
+            {
+                return x.sigStartByte < y.sigStartByte;
+            }
+            return x.endByte != y.endByte ? x.endByte > y.endByte : a < b;
+        } );
+        std::vector<NodeId> open;
+        for( const NodeId id : py )
+        {
+            const Symbol& s = m_ing.symbols[id];
+            while( !open.empty() )
+            {
+                const Symbol& o = m_ing.symbols[ open.back() ];
+                if( o.fileId == s.fileId && o.sigStartByte <= s.sigStartByte && s.endByte <= o.endByte )
+                {
+                    break;
+                }
+                open.pop_back();
+            }
+            if( s.kind != SymKind::Class && !s.scope.empty() && !open.empty() )
+            {
+                const Symbol& owner = m_ing.symbols[ open.back() ];
+                m_pyMember[id] = owner.kind == SymKind::Class && owner.name == s.scope ? 1 : 0;
+            }
+            open.push_back( id );
+        }
+    }
+
+    // A class member, in every armed language: a Method, or a Python def whose innermost enclosing def is its class.
+    bool isClassMember( const Symbol& s ) const noexcept
+    {
+        if( s.kind == SymKind::Method )
+        {
+            return true;
+        }
+        return s.lang == Lang::Python && s.id < m_pyMember.size() && m_pyMember[ s.id ] != 0;
+    }
+
     // Is the class member `m` in bare-name scope at reference `r`? The call graph's own visibility, per language:
     //   * a decorator row names the definition it decorates — the decorated def itself, in this file;
     //   * Python: only the class BODY sees its members bare (`__str__ = render`, `property( _get )`); a method body
@@ -339,7 +407,10 @@ private:
         const Symbol& f      = m_ing.symbols[ r.fromSymbol ];
         const bool    fIsFn  = f.kind == SymKind::Function || f.kind == SymKind::Method;
         const bool    fClass = ( f.kind == SymKind::Class || f.kind == SymKind::Struct ) && f.name == m.scope;
-        const bool    inBody = !fIsFn && f.fileId == m.fileId && ( fClass || f.scope == m.scope );
+        // a statement of the class body (owned by the class, or by an annotated attribute of it); a Python NESTED class's
+        // body does not see the outer class's names, a C++ one does
+        const bool    inBody = !fIsFn && f.fileId == m.fileId
+                            && ( fClass || ( f.scope == m.scope && ( fam == VrLangFamily::C || f.kind != SymKind::Class ) ) );
         if( inBody )
         {
             return true;   // the class body itself
@@ -366,7 +437,7 @@ private:
             {
                 continue;
             }
-            if( s.kind == SymKind::Method && !memberVisibleFrom( r, s, fam ) )
+            if( isClassMember( s ) && !memberVisibleFrom( r, s, fam ) )
             {
                 continue;   // a class member is never in BARE-name scope outside its class (R1 of the final review)
             }
@@ -456,6 +527,7 @@ private:
 
     const IngestResult&                                  m_ing;
     HashMap<std::string, std::vector<NodeId>>            m_fnByName;
+    std::vector<std::uint8_t>                            m_pyMember;   // per symbol: 1 = a Python def directly in its class (empty: no Python)
     std::vector<std::uint32_t>                           m_values;            // Value reference indices, ascending
     std::vector<std::vector<NodeId>>                     m_targets;           // parallel to m_values
     HashMap<NodeId, std::vector<std::uint32_t>>          m_valuesByTarget;    // target def → positions in m_values
