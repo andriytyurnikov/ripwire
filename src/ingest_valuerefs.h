@@ -396,6 +396,7 @@ private:
                     } );
                 }
                 else if( kindIs( t, "declaration" ) || kindIs( t, "parameter_declaration" ) || kindIs( t, "for_range_loop" )
+                         || kindIs( t, "field_declaration" )
                          || kindIs( t, "optional_parameter_declaration" ) || kindIs( t, "condition_clause" ) )
                 {
                     ChildCursor c( n );
@@ -732,9 +733,9 @@ private:
         for( std::size_t k = m_scopes.size(); k > 1; --k )
         {
             const VrScope& sc = m_scopes[k - 1];
-            if( sc.isClass && k != m_scopes.size() )
+            if( sc.isClass && k != m_scopes.size() && m_lang != Lang::Cpp )
             {
-                continue;   // a class attribute is not visible inside the class's methods
+                continue;   // a Python/JS class attribute is not visible inside the class's methods; a C++ data member IS
             }
             if( std::ranges::find( sc.decls, name ) != sc.decls.end() )
             {

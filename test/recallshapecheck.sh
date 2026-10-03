@@ -704,6 +704,69 @@ static int dummy = (register_fn(reg_only), 0);
 static void truly_dead_cpp() { std::printf("x"); }
 EOF
 
+# Class MEMBERS are never in bare-name scope outside their class (final review R1, the real near misses it measured:
+# django `isinstance( x, (list, tuple) )` beside methods named list/tuple, a sibling method as `key=`, a C++ data member
+# vs another class's member function, webpack `: require` / a file-scope `let source` beside class methods).
+mkdir -p "$FX/pymem" "$FX/cppmem" "$FX/jsmem"
+cat >"$FX/pymem/m.py" <<'EOF'
+class Finder:
+    def list(self, ignore_patterns):
+        return ignore_patterns
+
+
+class Envelope:
+    def tuple(self):
+        return ()
+
+
+def classify(root):
+    return isinstance(root, (list, tuple))  # @PM_ISINSTANCE the builtins, never a method of that name
+
+
+class Sorter:
+    def keyfn(self, x):
+        return x
+
+    def sort(self, xs):
+        return sorted(xs, key=keyfn)  # @PM_SIBLING a sibling method is not in bare scope (a NameError)
+
+    def render(self):
+        return 1
+
+    __str__ = render  # @PM_CLASSBODY the class body DOES see its members
+EOF
+cat >"$FX/cppmem/m.cpp" <<'EOF'
+#include <algorithm>
+#include <cstring>
+#include <vector>
+struct Vec { int buf[4]; int* data() { return buf; } };
+struct FixedStr {
+    char data[16];
+    void set(const char* s) { std::memcpy( data, s, 15 ); }                       // @XM_DATA the member array, never Vec::data()
+};
+static int keepX(int v) { return v; }
+static int count(int x) { return x; }
+struct Counter {
+    int count = 0;
+    int get() const { return keepX(count); }                                       // @XM_FIELD the data member shadows the free count
+};
+struct Sorter {
+    static bool lessThan(int a, int b) { return a < b; }
+    void sortAll(std::vector<int>& v) { std::sort(v.begin(), v.end(), lessThan); } // @XM_SAME a member of the SAME class is in scope
+};
+int useCount() { return count(1); }
+EOF
+cat >"$FX/jsmem/m.js" <<'EOF'
+class Runner {
+  require(m) { return m; }
+  source(n) { return n; }
+}
+let source = "text";                       // a file-scope binding named like the method
+const api = { load: require };             // @JSM_REQUIRE the global require, never Runner#require
+function useSource() { return [source]; }  // @JSM_SOURCE the file-scope let, never Runner#source
+module.exports = { api, useSource, Runner };
+EOF
+
 # ── the checker ──────────────────────────────────────────────────────────────────────────────────────────
 cat >"$TMP/chk.py" <<'EOF'
 # chk.py DIR OUTFILE TOKEN... — asserts on one XML answer. Prints "OK" or one line per failed token, then a
@@ -1113,6 +1176,72 @@ arm "X3 negatives: lone (a string, a comment, decltype, an init-capture, a captu
     cpp --callers=lone attr:count=1 ns:1 noattr:value_refs nvr:0
 arm "F2 floor: ns::qf passed as a qualified value — no row" cpp --callers=qf attr:defs=1 noattr:value_refs nvr:0
 arm "F2 floor: &Cls::sm passed as a qualified value — no row" cpp --callers=sm attr:defs=1 noattr:value_refs nvr:0
+
+# ── Class members and bare names (final review R1) ───────────────────────────────────────────────────────
+echo "-- members are not bare names"
+arm "RM1 negatives: isinstance(x, (list, tuple)) names the builtins — never Finder.list" \
+    pymem --callers=list attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@PM_ISINSTANCE'
+arm "RM2 negatives: … nor Envelope.tuple" pymem --callers=tuple attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@PM_ISINSTANCE'
+arm "RM3 negatives: sorted(xs, key=keyfn) inside a method never reaches the sibling METHOD keyfn (a NameError in Python)" \
+    pymem --callers=keyfn attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@PM_SIBLING'
+arm "RM4 the class BODY sees its members: __str__ = render" \
+    pymem --callers=render attr:value_refs=1 nvr:1 'vr:bind=@PM_CLASSBODY;into=__str__'
+arm "RX1 negatives: memcpy( data, … ) in FixedStr is its member array — never Vec::data()" \
+    cppmem --callers=data attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@XM_DATA'
+arm "RX2 negatives: a C++ data member named count shadows the free function count inside its class" \
+    cppmem --callers=count attr:count=1 noattr:value_refs nvr:0 'novr:bind=@XM_FIELD'
+arm "RX3 a static member of the SAME class is in scope: std::sort(…, lessThan)" \
+    cppmem --callers=lessThan attr:value_refs=1 nvr:1 'vr:bind=@XM_SAME;into=std::sort#arg2'
+arm "RJ1 negatives: { load: require } is the global require — never the class method Runner#require" \
+    jsmem --callers=require attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@JSM_REQUIRE'
+arm "RJ2 negatives: [source] is the file-scope let — never the class method Runner#source" \
+    jsmem --callers=source attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@JSM_SOURCE'
+
+# ── --verify and --quality-delta read the same value uses (final review R4, R2) ──────────────────────────
+echo "-- verify / quality-delta"
+arm "V1 verify unused(my_open): a value use REFUTES 'unused' (the role=value sites are the evidence)" \
+    c --verify=unused(my_open) attr:verdict=refuted 'u:role=value;p=@C_TABLE'
+arm "V2 verify unused(truly_dead): nothing holds it — the verdict is unchanged" \
+    c --verify=unused(truly_dead) attr:verdict=not-established nu:0
+
+# R2: --quality-delta's dead kind applies the --dead-code verb's rule — a static a struct table holds is not dead there
+# either (one fact, two verbs, one answer). A two-commit repo: the second commit adds the table-held static and a truly
+# dead one.
+QD="$FX/qd"; mkdir -p "$QD"
+(
+    cd "$QD" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'int base_fn(int x) { return x; }\n' > qd.c && git add -A && git commit -qm base \
+    && printf '%s\n' 'struct ops { int (*open)(int); };' 'static int my_open(int x) { return x + 1; }' \
+                     'static struct ops table = { .open = my_open };' 'static int dead_new(int x) { return x; }' \
+                     'int use_table(int x) { return table.open(x); }' >> qd.c \
+    && git add -A && git commit -qm add
+) >/dev/null 2>&1 || no "Q0 the quality-delta fixture repository could not be built"
+( cd "$QD" && "$BIN" . --quality-delta=HEAD~1..HEAD --no-cache --legend=compact >"$TMP/qd.xml" 2>"$TMP/qd.err" )
+qdrc=$?
+if [ "$qdrc" -gt 2 ]; then
+    no "Q1 --quality-delta exited $qdrc ($(head -c 200 "$TMP/qd.err"))"
+else
+    res="$( python3 - "$TMP/qd.xml" <<'EOF'
+import re, sys
+t = open( sys.argv[1] ).read()
+root = re.search( r"<quality-delta[^>]*>", t )
+rows = re.findall( r'<r kind="dead-code" sym="([^"]*)"', t )
+fails = []
+if root is None:
+    fails.append( "no <quality-delta> root" )
+else:
+    m = re.search( r'value-ref-excluded="(\d+)"', root.group( 0 ) )
+    if m is None or m.group( 1 ) != "1":
+        fails.append( "value-ref-excluded=%r (want '1')" % ( m.group( 1 ) if m else None ) )
+if not any( s.endswith( "dead_new" ) for s in rows ):
+    fails.append( "no dead-code row for dead_new (the kind must still fire): %r" % rows )
+if any( s.endswith( "my_open" ) for s in rows ):
+    fails.append( "a dead-code row for my_open, which a struct table holds: %r" % rows )
+print( "FAIL " + " | ".join( fails ) if fails else "OK" )
+EOF
+)"
+    verdict "Q1 quality-delta dead kind: the table-held static is value-ref-excluded=1, the truly dead one is still a row" "$res"
+fi
 
 # ── Runaway guard (review fix 8): one function stored 300 times ─────────────────────────────────────────
 echo "-- runaway guard"

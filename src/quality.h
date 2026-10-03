@@ -22,6 +22,7 @@
 #include "model.h"
 #include "ingest.h"             // ingest() — the HEAD-tree snapshot re-ingests the archived commit (computeHeadSnapshot)
 #include "graph.h"
+#include "valuerefindex.h"       // reference-as-value round: a function a table/field/argument holds is not dead (dead kind)
 #include "clones.h"
 #include "cloneidiom.h"         // idiom-class demotion — the closed 3-idiom shape classifier that turns an idiom-COLLISION clone group into a minor row instead of a gating one
 #include "lintrules.h"          // findQualityConstructs — the built-in error-masking rule table (GitClear +47% kind) + the placeholder shapes
@@ -3366,7 +3367,11 @@ inline void evictOldHeadSnapCaches( const std::string& dir, const std::string& r
 // (log-only, rethrow-only): a BLOB SHAPE change and a change to what a cached Snapshot's mask counts mean.
 // A v15 blob is short two maps and its mask counts are low, so served here it would read every widened shape
 // as newly added. Bumped by the v4/v5 rule.
-constexpr std::uint32_t kQSnapCacheScheme = 16;
+// v17 (lane/refval-edges, reference-as-value round) — the dead set no longer holds a function a table, field or
+// argument holds as a VALUE (valuerefindex.h ValueRefIndex::isValueReferenced, checked after every other exemption,
+// counted as value-ref-excluded= like --dead-code): the dead SET moved, as in v9/v12/v15. kParserVer moved with
+// the extraction (the Value/Through rows) and its mirror moved with it. Bumped 16 -> 17.
+constexpr std::uint32_t kQSnapCacheScheme = 17;
 constexpr char          kQSnapMagic[4]    = { 'Q', 'S', 'N', 'P' };
 
 // The qsnap EXCLUDES-config key folds the qsnap SCHEME (independent of the ingest cache's kHeadSnapCacheScheme)
@@ -4535,6 +4540,7 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
     const std::vector<std::string>   macroNames      = registeredMacroNames( root );             // P2.2: built-ins + .ripwire_config
     const std::vector<NodeId>        macroIds        = registeredMacroSymbolIds( ing, macroNames );
     const std::vector<NodeId>        pythonDispatch  = pythonDispatchedMethodIds( ing, g );
+    const ValueRefIndex              valueRefs( ing );                                           // a value-held function is not dead
     for( NodeId i = 0; i < ing.symbols.size(); ++i )
     {
         if( i >= g.canonId.size() || g.canonId[i].empty() )
@@ -4561,7 +4567,8 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
         // (editcheck.h). A COUNT is overload-collision-proof for the opposite reason a MAX is: it is the one
         // number a collision cannot hide. (maskBySym is the other non-MAX kind; it sums for its own reason.)
         { std::uint32_t& slot = snap.defsBySym[ key ];    slot += 1; }
-        if( isDeadCandidate( ing, g, i, topLevelCallees, macroIds, pythonDispatch ) && !declinedCallMayReach( g, i ) )
+        if( isDeadCandidate( ing, g, i, topLevelCallees, macroIds, pythonDispatch ) && !declinedCallMayReach( g, i )
+            && !valueRefs.isValueReferenced( i ) )
         {
             snap.dead.push_back( key );
         }
@@ -7957,11 +7964,16 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                                              std::size_t* registerMacroExcludedOut = nullptr,   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
                                              std::size_t* apiNewSurfaceOut = nullptr,          // Q-DIAL-4: the api-surface new-symbol COUNT that replaced N never-gating rows
                                              std::vector<CloneIdiomFact>* cloneIdiomsOut = nullptr,   // every CURRENT-tree clone group's (hash, idiom), for the legacy-ack backfill
-                                             std::size_t* declinedCallExcludedOut = nullptr )         // symbols kept out of dead-code ONLY by a declined call (declinedCallMayReach)
+                                             std::size_t* declinedCallExcludedOut = nullptr,          // symbols kept out of dead-code ONLY by a declined call (declinedCallMayReach)
+                                             std::size_t* valueRefExcludedOut = nullptr )             // ... ONLY because a table/field/argument holds them as a VALUE
 {
     if( declinedCallExcludedOut )
     {
         *declinedCallExcludedOut = 0;
+    }
+    if( valueRefExcludedOut )
+    {
+        *valueRefExcludedOut = 0;
     }
     ASSUME( registerMacroExcludedOut == nullptr || registerMacroExcludedOut != apiNewSurfaceOut,
                  "computeDelta: registerMacroExcludedOut and apiNewSurfaceOut must be distinct" );   // both default to nullptr, so the object form would dereference null
@@ -8391,6 +8403,7 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
     const std::vector<std::string>   macroNames      = registeredMacroNames( root );      // P2.2: built-ins + .ripwire_config
     const std::vector<NodeId>        macroIds        = registeredMacroSymbolIds( ing, macroNames );
     const std::vector<NodeId>        pythonDispatch  = pythonDispatchedMethodIds( ing, g );
+    const ValueRefIndex              valueRefs( ing );                                     // reference-as-value round: the --dead-code verb's rule
     for( NodeId i = 0; i < ing.symbols.size(); ++i )
     {
         if( i >= g.canonId.size() || g.canonId[i].empty() )
@@ -8411,6 +8424,14 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             if( declinedCallExcludedOut )
             {
                 ++( *declinedCallExcludedOut );    // would be dead-code but for a declined call that may reach it — disclosed count
+            }
+            continue;
+        }
+        if( valueRefs.isValueReferenced( i ) )   // checked LAST: one entity, one reason (the --dead-code verb's order)
+        {
+            if( valueRefExcludedOut )
+            {
+                ++( *valueRefExcludedOut );        // a table, field or argument holds it as a value — disclosed count
             }
             continue;
         }

@@ -3764,6 +3764,7 @@ struct QualityDeltaOutcome
     std::size_t                       ackedByContent   = 0;
     std::size_t                       registerMacroExcluded = 0;   // P2.2: the CLI's disclosed dead-code exemption count — see quality.h
     std::size_t                       declinedCallExcluded  = 0;   // the CLI's declined-call-excluded= (absent at zero, as there)
+    std::size_t                       valueRefExcluded      = 0;   // the CLI's value-ref-excluded= (absent at zero, as there)
     std::size_t                       apiNewSurface         = 0;   // Q-DIAL-4: the CLI's api-new-surface= count — see quality.h
     // #228: the CLI root's head_basis= twin — see quality::HeadBasis for the value vocabulary. Present-only in
     // the JSON, under the same absent-means-the-ordinary-archived-tree rule as the CLI, so mcpclidiffcheck's
@@ -3893,7 +3894,7 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
     const auto heal = rw::quality::healIdentity( baseSel.snapshot, acks, ing, g, root, root, /*wantContentIds=*/false );
 
     oc.regs       = rw::quality::computeDelta( ing, g, baseSel.snapshot, root, {}, rw::kDefaultMaxFileBytes, &oc.registerMacroExcluded, &oc.apiNewSurface,
-                                               nullptr, &oc.declinedCallExcluded );
+                                               nullptr, &oc.declinedCallExcluded, &oc.valueRefExcluded );
 
     // signal-to-noise round: honor the per-finding ack ratchet exactly like the CLI — the acks sidecar is
     // root-qualified (same SIDECAR LOCATION discipline as the baseline), suppression is reported via `acked`.
@@ -3972,6 +3973,7 @@ inline std::pair<std::string, std::string> qualityDeltaJson( const std::string& 
                     // Q-DIAL-4 — same always-present rule, same mcpclidiffcheck key-set lens.
                     + ",\"api-new-surface\":" + std::to_string( oc.apiNewSurface )
                     + ( oc.declinedCallExcluded == 0 ? std::string() : ",\"declined-call-excluded\":" + std::to_string( oc.declinedCallExcluded ) )
+                    + countFieldOrEmpty( "value-ref-excluded", oc.valueRefExcluded, /*json=*/true )
                     // R1 IDENTITY — the CLI root's identity disclosure, spelled in JSON. Present only when
                     // git could be read at all, exactly like the CLI arm (absent ≠ zero — see the legend).
                     + oc.identityJson

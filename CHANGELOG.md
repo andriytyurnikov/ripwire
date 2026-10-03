@@ -38,14 +38,21 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
 - **Other verbs.**
   - `--impact` and `--safe-delete` disclose the rows.
   - A value use counts in `--safe-delete`'s `uses=` and keeps it off `dead_code_candidate`/`risk="none-found"`.
-  - `--dead-code` excludes such functions, counted in `value-ref-excluded=`.
+  - `--dead-code` excludes such functions, counted in `value-ref-excluded=`. `--quality-delta`'s dead-code kind
+    applies the same rule, with the same counter on its root (and the cached quality snapshot's scheme moves), so the
+    two verbs answer one question one way.
+  - `--verify 'unused(X)'` now answers `refuted` for a function a table or argument holds: its `role="value"`
+    sites are the evidence (it was `not-established` before, for C and JS).
   - `--uses` shows the site as `role="value"` (a decorator row is a fact about the definition and stays on
     `--callers` only).
   - `--path` adds `to_value_refs=` when no call path exists.
   - The rows also appear in CLI `--json`, in MCP `find_referencing_symbols`/`find_symbol` (`valueRefs`,
     `valueCallees`), and in MCP `impact`, `uses` and `path_between`.
-- **Matching.** Rows are matched by name with the call graph's own visibility:
+- **Matching.** Rows are matched by name with the call graph's visibility rules:
   - same file first;
+  - a class member is never matched by a bare name outside its class: only a Python class body, or a C++ class
+    body or a member function of the same class, sees its members bare. JS/TS and Go members are never bare (the
+    JS call graph binds a bare call to a method by name; these rows deliberately do not);
   - a C/C++ `static` stays in its file;
   - a JS/TS/Python name needs a named import, resolved by the import graph's own module resolver;
   - Go stays in its package.
@@ -59,7 +66,9 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
   - an import alias;
   - a function used as the object of a member access (`f.bind`);
   - a macro body;
-  - a class used as a value.
+  - a class used as a value;
+  - a C++ member function defined OUT of its class (`int T::f() { … }`) does not see T's data members, so a data
+    member named like a free function can still read as that function there.
   Every decorated def is a row: the capture is syntactic and cannot tell a registering decorator from
   `@property`.
 - **Byte identity.** An answer with no value reference is byte-identical. On 33 sampled commands over this

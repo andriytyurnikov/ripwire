@@ -935,7 +935,7 @@ Discloses: `name_ladder_capped`
 | `kTestHopBasenameRowCap` | `3` | OUTPUT | — |
 | `kTestHopCalleeRowCap` | `5` | OUTPUT | — |
 
-### `src/valuerefs.h`
+### `src/valuerefindex.h`
 
 Discloses: **none**
 
