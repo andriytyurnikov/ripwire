@@ -45,7 +45,6 @@
 #include <cstdio>
 #include <cstdlib>             // std::getenv — RIPWIRE_CACHE_STATS drift observable
 #include <cstring>
-#include <deque>               // ingest_valuerefs.h: stable storage the per-scope container views point into
 #include "infra/os.h"          // rw::os — stat for the (size,mtime) warm-run shortcut (A4-P7); open/pread/fstat for the cache blob's own read descriptor (v15); getpid for the per-process cache temp name
 #include <filesystem>
 #include <fstream>

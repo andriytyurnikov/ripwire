@@ -49,19 +49,7 @@ namespace rw
 namespace
 {
 
-enum class VrFam : std::uint8_t { None, C, Js, Py, Go };
-
-inline VrFam vrFamOf( Lang l ) noexcept
-{
-    switch( l )
-    {
-        case Lang::C: case Lang::Cpp:               return VrFam::C;
-        case Lang::JavaScript: case Lang::TypeScript: return VrFam::Js;
-        case Lang::Python:                           return VrFam::Py;
-        case Lang::Go:                               return VrFam::Go;
-        default:                                     return VrFam::None;
-    }
-}
+using VrFam = ValueRefFamily;   // model.h: the one armed-language table the resolver indexes too
 
 inline constexpr std::uint32_t kVrMaxDepth   = 512;   // the value-uses pass's own depth guard (ingest_sidecap.h kSideDepthUses)
 inline constexpr std::size_t   kVrTextCap    = 96;    // a written slot / callee longer than this is cut with "…"
@@ -112,15 +100,21 @@ inline std::string_view vrStringContent( std::string_view s ) noexcept
     return {};
 }
 
-inline bool vrIsStringKind( const char* t ) noexcept
+// A key / index literal's kind, for the normalised match key: a string (its content), a number (as written), or
+// anything else (a computed key).
+enum class VrKeyKind : std::uint8_t { Other, String, Number };
+inline VrKeyKind vrKeyKind( const char* t ) noexcept
 {
-    return kindIs( t, "string" ) || kindIs( t, "string_literal" ) || kindIs( t, "interpreted_string_literal" )
-        || kindIs( t, "raw_string_literal" ) || kindIs( t, "template_string" );
-}
-
-inline bool vrIsNumberKind( const char* t ) noexcept
-{
-    return kindIs( t, "number" ) || kindIs( t, "number_literal" ) || kindIs( t, "integer" ) || kindIs( t, "int_literal" );
+    if( kindIs( t, "string" ) || kindIs( t, "string_literal" ) || kindIs( t, "interpreted_string_literal" )
+        || kindIs( t, "raw_string_literal" ) || kindIs( t, "template_string" ) )
+    {
+        return VrKeyKind::String;
+    }
+    if( kindIs( t, "number" ) || kindIs( t, "number_literal" ) || kindIs( t, "integer" ) || kindIs( t, "int_literal" ) )
+    {
+        return VrKeyKind::Number;
+    }
+    return VrKeyKind::Other;
 }
 
 struct VrScope
@@ -130,7 +124,7 @@ struct VrScope
     std::vector<std::string_view> decls;           // every name this scope declares (parameters included)
     std::vector<std::string_view> params;          // positional parameter names, in order ("" when unnamed)
     std::string_view              fnName;          // the function's own name, when it has one
-    std::vector<std::string_view> fed;             // containers declared here that received a function value
+    std::vector<std::string>      fed;             // containers declared here that received a function value
     std::vector<RawRef>           pending;         // calls through a container declared here, awaiting `fed`
 };
 
@@ -144,9 +138,11 @@ struct VrAnc
     bool          opensScope = false;
 };
 
-inline bool vrContains( const std::vector<std::string_view>& v, std::string_view s ) noexcept
+// Is `name` among `names`? (std::ranges::find; a named helper here re-spelled ones that live elsewhere.)
+template< class Names >
+inline bool vrHas( const Names& names, std::string_view name ) noexcept
 {
-    return std::find( v.begin(), v.end(), s ) != v.end();
+    return std::ranges::find( names, name ) != std::ranges::end( names );
 }
 
 class ValueRefWalk
@@ -227,7 +223,7 @@ public:
         // File-scope calls through a container survive only when this file fed that container a function value.
         for( RawRef& t : m_filePending )
         {
-            if( vrContains( m_fileFed, std::string_view( t.name ) ) )
+            if( vrHas( m_fileFed, std::string_view( t.name ) ) )
             {
                 m_out.push_back( std::move( t ) );
             }
@@ -236,30 +232,36 @@ public:
 
 private:
     // ── node-kind tables ───────────────────────────────────────────────────────────────────────────────
-    bool isFunctionScope( const char* t ) const noexcept
+    // What a node opens: a function scope (owns parameters and locals), a block scope (a Python comprehension), a
+    // class body (not this walk's scope: its names are attributes), or nothing.
+    enum class ScopeKind : std::uint8_t { None, Function, Block, Class };
+    ScopeKind scopeKindOf( const char* t ) const noexcept
     {
+        if( kindIs( t, "class_definition" ) || kindIs( t, "class_declaration" ) || kindIs( t, "class" )
+            || kindIs( t, "class_specifier" ) || kindIs( t, "struct_specifier" ) )
+        {
+            return ScopeKind::Class;
+        }
         switch( m_fam )
         {
-            case VrFam::C:  return kindIs( t, "function_definition" ) || kindIs( t, "lambda_expression" );
-            case VrFam::Js: return kindIs( t, "function_declaration" ) || kindIs( t, "function_expression" ) || kindIs( t, "function" )
-                                || kindIs( t, "arrow_function" ) || kindIs( t, "method_definition" )
-                                || kindIs( t, "generator_function_declaration" ) || kindIs( t, "generator_function" );
-            case VrFam::Py: return kindIs( t, "function_definition" ) || kindIs( t, "lambda" );
-            case VrFam::Go: return kindIs( t, "function_declaration" ) || kindIs( t, "method_declaration" ) || kindIs( t, "func_literal" );
+            case VrFam::C:
+                return kindIs( t, "function_definition" ) || kindIs( t, "lambda_expression" ) ? ScopeKind::Function : ScopeKind::None;
+            case VrFam::Js:
+                return kindIs( t, "function_declaration" ) || kindIs( t, "function_expression" ) || kindIs( t, "function" )
+                    || kindIs( t, "arrow_function" ) || kindIs( t, "method_definition" )
+                    || kindIs( t, "generator_function_declaration" ) || kindIs( t, "generator_function" ) ? ScopeKind::Function : ScopeKind::None;
+            case VrFam::Py:
+                if( kindIs( t, "function_definition" ) || kindIs( t, "lambda" ) )
+                {
+                    return ScopeKind::Function;
+                }
+                return kindIs( t, "list_comprehension" ) || kindIs( t, "set_comprehension" ) || kindIs( t, "dictionary_comprehension" )
+                    || kindIs( t, "generator_expression" ) ? ScopeKind::Block : ScopeKind::None;
+            case VrFam::Go:
+                return kindIs( t, "function_declaration" ) || kindIs( t, "method_declaration" ) || kindIs( t, "func_literal" ) ? ScopeKind::Function : ScopeKind::None;
             case VrFam::None: break;
         }
-        return false;
-    }
-    bool isBlockScope( const char* t ) const noexcept
-    {
-        return m_fam == VrFam::Py
-            && ( kindIs( t, "list_comprehension" ) || kindIs( t, "set_comprehension" ) || kindIs( t, "dictionary_comprehension" )
-                 || kindIs( t, "generator_expression" ) );
-    }
-    bool isClassNode( const char* t ) const noexcept
-    {
-        return kindIs( t, "class_definition" ) || kindIs( t, "class_declaration" ) || kindIs( t, "class" )
-            || kindIs( t, "class_specifier" ) || kindIs( t, "struct_specifier" );
+        return ScopeKind::None;
     }
     bool isIdentifierKind( const char* t ) const noexcept
     {
@@ -284,23 +286,19 @@ private:
 
     // ── declarations ───────────────────────────────────────────────────────────────────────────────────
     // C declarator → its declared identifier (through pointer/array/function/parenthesized/init declarators).
-    std::string_view declaratorName( TSNode d ) const noexcept
+    std::string_view declaratorName( TSNode d, int depth = 0 ) const noexcept
     {
-        for( int guard = 0; guard < 32 && !ts_node_is_null( d ); ++guard )
+        if( ts_node_is_null( d ) || depth > 32 )
         {
-            const char* t = ts_node_type( d );
-            if( kindIs( t, "identifier" ) || kindIs( t, "field_identifier" ) )
-            {
-                return text( d );
-            }
-            TSNode next = child( d, m_fDeclarator );
-            if( ts_node_is_null( next ) )
-            {
-                next = ts_node_named_child( d, 0 );
-            }
-            d = next;
+            return {};
         }
-        return {};
+        const char* t = ts_node_type( d );
+        if( kindIs( t, "identifier" ) || kindIs( t, "field_identifier" ) )
+        {
+            return text( d );
+        }
+        const TSNode inner = child( d, m_fDeclarator );   // pointer/array/function/init declarators; else the wrapper's first child
+        return declaratorName( ts_node_is_null( inner ) ? ts_node_named_child( d, 0 ) : inner, depth + 1 );
     }
 
     // The identifiers a binding PATTERN declares (JS destructuring, Python targets, Go identifier lists).
@@ -515,7 +513,7 @@ private:
             const char*  t = ts_node_type( n );
             const bool   isRoot = depth == 0;
             bool descend = depth < kVrMaxDepth;
-            if( !isRoot && ( isFunctionScope( t ) || isBlockScope( t ) || isClassNode( t ) ) )
+            if( !isRoot && scopeKindOf( t ) != ScopeKind::None )
             {
                 descend = false;   // a nested scope collects its own; a class body is not this scope's
             }
@@ -691,8 +689,9 @@ private:
         {
             a.namedIndex = m_anc.back().childNamed++;
         }
-        const bool fnScope = !m_anc.empty() && isFunctionScope( a.kind );
-        if( fnScope || ( !m_anc.empty() && isBlockScope( a.kind ) ) )
+        const ScopeKind sk      = m_anc.empty() ? ScopeKind::None : scopeKindOf( a.kind );
+        const bool      fnScope = sk == ScopeKind::Function;
+        if( fnScope || sk == ScopeKind::Block )
         {
             VrScope s;
             s.node       = n;
@@ -730,7 +729,7 @@ private:
             VrScope& s = m_scopes.back();
             for( RawRef& t : s.pending )
             {
-                if( vrContains( s.fed, std::string_view( t.name ) ) )
+                if( vrHas( s.fed, std::string_view( t.name ) ) )
                 {
                     m_out.push_back( std::move( t ) );
                 }
@@ -745,7 +744,7 @@ private:
     {
         for( std::size_t k = m_scopes.size(); k > 1; --k )
         {
-            if( vrContains( m_scopes[k - 1].decls, name ) )
+            if( vrHas( m_scopes[k - 1].decls, name ) )
             {
                 return k - 1;
             }
@@ -950,7 +949,7 @@ private:
         }
         const char*            kt = ts_node_type( k );
         const std::string_view w  = text( k );
-        if( vrIsStringKind( kt ) )
+        if( vrKeyKind( kt ) == VrKeyKind::String )
         {
             const std::string content( vrStringContent( w ) );
             if( m_fam == VrFam::Js )
@@ -965,7 +964,7 @@ private:
             }
             return;
         }
-        if( vrIsNumberKind( kt ) )
+        if( vrKeyKind( kt ) == VrKeyKind::Number )
         {
             into = "[" + std::string( w ) + "]";
             key  = "[" + std::string( w ) + "]";
@@ -1007,7 +1006,7 @@ private:
         {
             return;   // a parameter or local of that name hides the function
         }
-        const bool fileShadow = vrContains( m_scopes.front().decls, name );
+        const bool fileShadow = vrHas( m_scopes.front().decls, name );
 
         if( !s.container.empty() && ( s.scope == 'f' || s.scope == 'l' ) )
         {
@@ -1015,12 +1014,12 @@ private:
             if( d != 0 )
             {
                 s.scope = 'l';
-                m_scopes[d].fed.push_back( internContainer( s.container ) );
+                m_scopes[d].fed.push_back( s.container );
             }
             else
             {
                 s.scope = 'f';
-                m_fileFed.push_back( internContainer( s.container ) );
+                m_fileFed.push_back( s.container );
             }
         }
 
@@ -1038,20 +1037,6 @@ private:
         r.argCount      = s.argIndex;
         r.argCountKnown = s.isArg;
         m_out.push_back( std::move( r ) );
-    }
-
-    // Container names live in m_containerStore so the fed lists can hold views that outlive the Slot.
-    std::string_view internContainer( const std::string& c )
-    {
-        for( const std::string& have : m_containerStore )
-        {
-            if( have == c )
-            {
-                return have;
-            }
-        }
-        m_containerStore.push_back( c );
-        return m_containerStore.back();
     }
 
     // Classify the value position of identifier anc[i], whose effective position (after pass-through wrappers)
@@ -1429,12 +1414,12 @@ private:
                 idx = ts_node_named_child( idx, 0 );
             }
             const char* it = ts_node_is_null( idx ) ? "" : ts_node_type( idx );
-            if( !ts_node_is_null( idx ) && vrIsStringKind( it ) )
+            if( !ts_node_is_null( idx ) && vrKeyKind( it ) == VrKeyKind::String )
             {
                 const std::string content( vrStringContent( text( idx ) ) );
                 key = m_fam == VrFam::Js ? "." + content : "[" + content + "]";
             }
-            else if( !ts_node_is_null( idx ) && vrIsNumberKind( it ) )
+            else if( !ts_node_is_null( idx ) && vrKeyKind( it ) == VrKeyKind::Number )
             {
                 key = "[" + std::string( text( idx ) ) + "]";
             }
@@ -1498,7 +1483,7 @@ private:
             sc.pending.push_back( std::move( r ) );
             return;
         }
-        if( vrContains( m_scopes.front().decls, x ) )
+        if( vrHas( m_scopes.front().decls, x ) )
         {
             r.qualifier = "f";
             m_filePending.push_back( std::move( r ) );
@@ -1512,9 +1497,8 @@ private:
     std::vector<RawRef>&           m_out;
     std::vector<VrScope>           m_scopes;
     std::vector<VrAnc>             m_anc;
-    std::vector<std::string_view>  m_fileFed;
+    std::vector<std::string>       m_fileFed;
     std::vector<RawRef>            m_filePending;
-    std::deque<std::string>        m_containerStore;   // stable addresses: the fed lists view into it
     TSFieldId m_fValue = 0, m_fKey = 0, m_fLeft = 0, m_fRight = 0, m_fFunction = 0, m_fName = 0, m_fDeclarator = 0;
     TSFieldId m_fConsequence = 0, m_fAlternative = 0, m_fParameters = 0, m_fParameter = 0, m_fObject = 0, m_fProperty = 0, m_fField = 0;
     TSFieldId m_fArgument = 0, m_fOperand = 0, m_fAttribute = 0, m_fOperator = 0, m_fPattern = 0, m_fDefinition = 0;
@@ -1525,7 +1509,7 @@ private:
 // language outside the armed set (C, C++, JavaScript/JSX, TypeScript/TSX, Python, Go).
 inline void captureValueRefs( Lang lang, std::uint32_t fileId, std::string_view src, TSNode root, std::vector<RawRef>& refs )
 {
-    const VrFam fam = vrFamOf( lang );
+    const VrFam fam = valueRefFamily( lang );
     if( fam == VrFam::None || ts_node_is_null( root ) )
     {
         return;

@@ -3164,7 +3164,7 @@ inline std::optional<std::string> pathText( const std::string& root, const std::
     // verb has no legend of its own either, and the two dialects must not differ on what they explain.
     // H5: the same brief floor legend + marker the CLI --path prints (verbs_navigate.h) — one wording, two transports.
     // Reference-as-value round: the CLI --path's to_value_refs=, by the same call.
-    const std::size_t ptToValueRefs = pth.empty() ? valueRefCallerRows( ing, ValueRefIndex( ing ), dstDefs ).rows.size() : 0;
+    const std::size_t ptToValueRefs = toValueRefsCount( ing, pth.empty(), dstDefs );
     rw::emitTo( mem, "<!-- ripwire path: one DIRECTED call path from= to to= (each <s> a hop); reachable= is 0 and hops= 0 when the "
                        "graph holds none. {}{}{}-->{}", unprovenDefsVerbLegend( UnprovenDefsVerb::Path, unprovenDefs > 0 ).c_str(),
                   toValueRefsLegend( ptToValueRefs > 0 ),
@@ -3174,10 +3174,7 @@ inline std::optional<std::string> pathText( const std::string& root, const std::
                   srcDefs.size(), dstDefs.size(), unprovenDefsAttrXml( unprovenDefs ).c_str(),   // H1: as the CLI root carries it
                   pth.empty() ? 0 : 1, pth.empty() ? std::size_t( 0 ) : pth.size() - 1, ptRootAttr.c_str(),
                   graphCountFloorAttrXml( g ).c_str()  );   // M15: gauge + marker
-    if( ptToValueRefs > 0 )
-    {
-        rw::emitTo( mem, " to_value_refs=\"{}\"", ptToValueRefs );   // absent at zero, as on the CLI
-    }
+    rw::emitTo( mem, "{}", countAttrXmlOrEmpty( "to_value_refs", ptToValueRefs ) );   // absent at zero, as on the CLI
     if( pth.empty() )
     {
         rw::emitTo( mem, " hint=\"no directed call path — try the connect verb on {},{} (undirected: finds a shared caller), or uses/impact for non-call references\"",

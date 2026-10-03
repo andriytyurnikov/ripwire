@@ -376,22 +376,36 @@ inline constexpr std::size_t kRefRoleCount = static_cast<std::size_t>( RefRole::
 static_assert( enumCountIsExact<RefRole, kRefRoleCount>(), "kRefRoleCount must name the LAST RefRole enumerator — move it with the append" );
 static_assert( sizeof( RefRole ) == 1, "RefRole must be a single byte (SoA-friendly, smallest int that fits)" );
 
-// the terse `role=` attribute string for the use-site index (declarative table, not a switch chain).
+// the terse `role=` attribute string for the use-site index — a declarative table indexed by the enum, in enum
+// order. The static_assert is the guard a switch's -Werror=switch used to be: a NEW role without a spelling is a
+// build error, never a silent fallback.
+inline constexpr const char* kRefRoleTagTable[] = { "call", "read", "write", "import", "extends", "macro", "type", "value", "through" };
+static_assert( std::size( kRefRoleTagTable ) == kRefRoleCount, "kRefRoleTagTable: one spelling per RefRole, in enum order" );
 inline const char* refRoleTag( RefRole r ) noexcept
 {
-    switch( r )
-    {
-        case RefRole::Call:    return "call";
-        case RefRole::Read:    return "read";
-        case RefRole::Write:   return "write";
-        case RefRole::Import:  return "import";
-        case RefRole::Extends: return "extends";
-        case RefRole::Macro:   return "macro";
-        case RefRole::Type:    return "type";
-        case RefRole::Value:   return "value";
-        case RefRole::Through: return "through";
-    }
-    return "read";   // a byte past the enum; every enumerator is named above, so a NEW role is a -Werror=switch error
+    const auto i = static_cast<std::size_t>( r );
+    return i < kRefRoleCount ? kRefRoleTagTable[ i ] : "read";   // a byte past the enum (a corrupt cache byte is VALIDATEd on read)
+}
+
+// Reference-as-value round: the grammar family whose value positions src/ingest_valuerefs.h reads, and whose
+// visibility rule src/valuerefs.h resolves under — ONE table both sides index, so the capture and the resolver
+// cannot disagree about which languages are armed. None = not armed (no Value/Through rows are captured).
+enum class ValueRefFamily : std::uint8_t { None, C, Js, Py, Go };
+inline constexpr std::array<ValueRefFamily, kLangCount> kValueRefFamilyOfLang = []
+{
+    std::array<ValueRefFamily, kLangCount> table {};   // value-initialised: every language None unless armed below
+    table[ static_cast<std::size_t>( Lang::C ) ]          = ValueRefFamily::C;
+    table[ static_cast<std::size_t>( Lang::Cpp ) ]        = ValueRefFamily::C;
+    table[ static_cast<std::size_t>( Lang::JavaScript ) ] = ValueRefFamily::Js;
+    table[ static_cast<std::size_t>( Lang::TypeScript ) ] = ValueRefFamily::Js;
+    table[ static_cast<std::size_t>( Lang::Python ) ]     = ValueRefFamily::Py;
+    table[ static_cast<std::size_t>( Lang::Go ) ]         = ValueRefFamily::Go;
+    return table;
+}();
+inline ValueRefFamily valueRefFamily( Lang l ) noexcept
+{
+    const auto i = static_cast<std::size_t>( l );
+    return i < kLangCount ? kValueRefFamilyOfLang[ i ] : ValueRefFamily::None;
 }
 
 // Essential-complexity ev_why= reason vocabulary (the essential-complexity design note, §5.1). PUBLIC the

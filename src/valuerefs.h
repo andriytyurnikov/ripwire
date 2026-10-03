@@ -15,7 +15,10 @@
 // non-function declaration of the same name in the reference's file hides every definition elsewhere. Only
 // functions and methods are targets (a class used as a value is out of scope).
 
-#include "graph.h"
+#include "graph.h"             // jsImportKey — the "fileId#name" key, reused for containers
+#include "graphlegend.h"       // countFieldOrEmpty — the absent-at-zero count spelling
+#include "mention.h"           // pathStem — a module path's file stem
+#include "resolve.h"           // includerDir — a path's directory
 #include "infra/Diagnostics.h"   // EXPECTS/ENSURES — the window and index invariants
 #include "model.h"
 #include "sarif.h"
@@ -24,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -37,38 +41,7 @@ namespace rw
 // beyond it are counted (capped="1") and the next= verb (--uses=SYM) pages every site.
 inline constexpr std::size_t kValueRefRowCap = 64;
 
-enum class VrLangFamily : std::uint8_t { None, C, Js, Py, Go };
-
-inline VrLangFamily vrLangFamily( Lang l ) noexcept
-{
-    switch( l )
-    {
-        case Lang::C: case Lang::Cpp:                 return VrLangFamily::C;
-        case Lang::JavaScript: case Lang::TypeScript: return VrLangFamily::Js;
-        case Lang::Python:                            return VrLangFamily::Py;
-        case Lang::Go:                                return VrLangFamily::Go;
-        default:                                      return VrLangFamily::None;
-    }
-}
-
-inline bool vrIsFunctionKind( SymKind k ) noexcept
-{
-    return k == SymKind::Function || k == SymKind::Method;
-}
-
-inline std::string_view vrDirOf( std::string_view path ) noexcept
-{
-    const std::size_t slash = path.rfind( '/' );
-    return slash == std::string_view::npos ? std::string_view() : path.substr( 0, slash );
-}
-
-inline std::string_view vrStemOf( std::string_view path ) noexcept
-{
-    const std::size_t slash = path.rfind( '/' );
-    std::string_view  base  = slash == std::string_view::npos ? path : path.substr( slash + 1 );
-    const std::size_t dot   = base.find( '.' );
-    return dot == std::string_view::npos ? base : base.substr( 0, dot );
-}
+using VrLangFamily = ValueRefFamily;   // model.h: the armed-language table the capture indexes too
 
 // A Through key matches a Value key: "*" (a computed subscript) reaches every keyed or indexed slot, "" (a bare
 // call through the variable) only the variable itself, anything else only its own key.
@@ -90,7 +63,7 @@ public:
         for( NodeId id = 0; id < ing.symbols.size(); ++id )
         {
             const Symbol& s = ing.symbols[id];
-            if( vrIsFunctionKind( s.kind ) && vrLangFamily( s.lang ) != VrLangFamily::None )
+            if( ( s.kind == SymKind::Function || s.kind == SymKind::Method ) && valueRefFamily( s.lang ) != VrLangFamily::None )
             {
                 m_fnByName[ s.name ].push_back( id );
             }
@@ -103,7 +76,7 @@ public:
                 m_values.push_back( i );
                 if( !r.recvVar.empty() )
                 {
-                    m_valueByContainer[ containerKey( r.fileId, r.recvVar ) ].push_back( i );
+                    m_valueByContainer[ jsImportKey( r.fileId, r.recvVar ) ].push_back( i );
                 }
             }
             else if( r.role == RefRole::Through )
@@ -114,7 +87,7 @@ public:
                 }
                 else
                 {
-                    m_throughByContainer[ containerKey( r.fileId, r.calleeName ) ].push_back( i );
+                    m_throughByContainer[ jsImportKey( r.fileId, r.calleeName ) ].push_back( i );
                 }
             }
         }
@@ -151,7 +124,8 @@ public:
                 }
             }
         }
-        sortUnique( out );
+        std::ranges::sort( out );
+        out.erase( std::ranges::unique( out ).begin(), out.end() );
         return out;
     }
 
@@ -202,7 +176,7 @@ public:
         const char                 sc = scopeOf( v );
         if( sc == 'f' || sc == 'l' )
         {
-            if( const auto it = m_throughByContainer.find( containerKey( v.fileId, v.recvVar ) ); it != m_throughByContainer.end() )
+            if( const auto it = m_throughByContainer.find( jsImportKey( v.fileId, v.recvVar ) ); it != m_throughByContainer.end() )
             {
                 for( const std::uint32_t t : it->second )
                 {
@@ -236,7 +210,8 @@ public:
                 }
             }
         }
-        sortUnique( out );
+        std::ranges::sort( out );
+        out.erase( std::ranges::unique( out ).begin(), out.end() );
         return out;
     }
 
@@ -248,7 +223,7 @@ public:
         const char                 sc = scopeOf( t );
         if( sc == 'f' || sc == 'l' )
         {
-            if( const auto it = m_valueByContainer.find( containerKey( t.fileId, t.calleeName ) ); it != m_valueByContainer.end() )
+            if( const auto it = m_valueByContainer.find( jsImportKey( t.fileId, t.calleeName ) ); it != m_valueByContainer.end() )
             {
                 for( const std::uint32_t v : it->second )
                 {
@@ -282,36 +257,33 @@ public:
                 }
             }
         }
-        sortUnique( out );
+        std::ranges::sort( out );
+        out.erase( std::ranges::unique( out ).begin(), out.end() );
         return out;
     }
 
-    // Through references made inside any of `fns`.
-    std::vector<std::uint32_t> throughsIn( std::span<const NodeId> fns ) const
+    // Through references (role Through) or Value references (role Value) made inside any of `fns`.
+    std::vector<std::uint32_t> madeIn( std::span<const NodeId> fns, RefRole role ) const
     {
         std::vector<std::uint32_t> out;
-        for( std::uint32_t i = 0; i < m_ing.references.size(); ++i )
+        const auto inFns = [ & ]( std::uint32_t i ) { return std::ranges::find( fns, m_ing.references[i].fromSymbol ) != fns.end(); };
+        if( role == RefRole::Value )
         {
-            const Reference& r = m_ing.references[i];
-            if( r.role == RefRole::Through && std::find( fns.begin(), fns.end(), r.fromSymbol ) != fns.end() )
+            std::ranges::copy_if( m_values, std::back_inserter( out ), inFns );
+            return out;
+        }
+        for( const auto& [ key, list ] : m_throughByContainer )
+        {
+            std::ranges::copy_if( list, std::back_inserter( out ), inFns );
+        }
+        for( const auto& [ sym, list ] : m_throughParamBySym )
+        {
+            if( std::ranges::find( fns, sym ) != fns.end() )
             {
-                out.push_back( i );
+                out.insert( out.end(), list.begin(), list.end() );
             }
         }
-        return out;
-    }
-
-    // Value references made inside any of `fns`.
-    std::vector<std::uint32_t> valuesIn( std::span<const NodeId> fns ) const
-    {
-        std::vector<std::uint32_t> out;
-        for( const std::uint32_t v : m_values )
-        {
-            if( std::find( fns.begin(), fns.end(), m_ing.references[v].fromSymbol ) != fns.end() )
-            {
-                out.push_back( v );
-            }
-        }
+        std::ranges::sort( out );
         return out;
     }
 
@@ -321,14 +293,6 @@ public:
     }
 
 private:
-    static std::string containerKey( std::uint32_t fileId, std::string_view name )
-    {
-        std::string k = std::to_string( fileId );
-        k.push_back( '#' );
-        k.append( name );
-        return k;
-    }
-
     // A value key "#N" (an argument position) or "#name" (a keyword / a parameter default) against a parameter Through.
     static bool paramMatches( std::string_view valueKey, const Reference& through ) noexcept
     {
@@ -344,12 +308,6 @@ private:
         return through.calleeName == tail;
     }
 
-    static void sortUnique( std::vector<std::uint32_t>& v )
-    {
-        std::sort( v.begin(), v.end() );
-        v.erase( std::unique( v.begin(), v.end() ), v.end() );
-    }
-
     // `name` as seen from reference `r`'s file, under the visibility rules in the header comment.
     std::vector<NodeId> resolveName( const Reference& r, std::string_view name ) const
     {
@@ -358,12 +316,12 @@ private:
         {
             return {};
         }
-        const VrLangFamily  fam = vrLangFamily( r.lang );
+        const VrLangFamily  fam = valueRefFamily( r.lang );
         std::vector<NodeId> sameFile, other;
         for( const NodeId id : it->second )
         {
             const Symbol& s = m_ing.symbols[id];
-            if( vrLangFamily( s.lang ) != fam )
+            if( valueRefFamily( s.lang ) != fam )
             {
                 continue;
             }
@@ -397,7 +355,7 @@ private:
             {
                 for( const NodeId id : other )
                 {
-                    if( vrDirOf( m_ing.files[ m_ing.symbols[id].fileId ] ) == vrDirOf( refPath ) )
+                    if( includerDir( m_ing.files[ m_ing.symbols[id].fileId ] ) == includerDir( refPath ) )
                     {
                         out.push_back( id );
                     }
@@ -425,12 +383,12 @@ private:
                     std::string_view       stem = cut == std::string_view::npos ? mod : mod.substr( cut + 1 );
                     if( b->kind == LocalBindKind::JsImport )
                     {
-                        stem = vrStemOf( mod );
+                        stem = mention_detail::pathStem( mod );
                     }
                     for( const NodeId id : other )
                     {
-                        const std::string_view defStem = vrStemOf( m_ing.files[ m_ing.symbols[id].fileId ] );
-                        if( defStem == stem || ( defStem == "__init__" && vrStemOf( vrDirOf( m_ing.files[ m_ing.symbols[id].fileId ] ) ) == stem ) )
+                        const std::string_view defStem = mention_detail::pathStem( m_ing.files[ m_ing.symbols[id].fileId ] );
+                        if( defStem == stem || ( defStem == "__init__" && mention_detail::pathStem( includerDir( m_ing.files[ m_ing.symbols[id].fileId ] ) ) == stem ) )
                         {
                             out.push_back( id );
                         }
@@ -516,7 +474,7 @@ inline ValueRefRows valueRefCallerRows( const IngestResult& ing, const ValueRefI
 inline ValueRefRows valueRefCalleeRows( const IngestResult& ing, const ValueRefIndex& idx, std::span<const NodeId> fns )
 {
     ValueRefRows out;
-    for( const std::uint32_t v : idx.valuesIn( fns ) )
+    for( const std::uint32_t v : idx.madeIn( fns, RefRole::Value ) )
     {
         for( const NodeId t : idx.targetsOf( v ) )
         {
@@ -527,7 +485,7 @@ inline ValueRefRows valueRefCalleeRows( const IngestResult& ing, const ValueRefI
         }
     }
     std::vector<ValueRefRow> via;
-    for( const std::uint32_t t : idx.throughsIn( fns ) )
+    for( const std::uint32_t t : idx.madeIn( fns, RefRole::Through ) )
     {
         const Reference& tr = ing.references[t];
         for( const std::uint32_t v : idx.valuesThrough( t ) )
@@ -765,14 +723,14 @@ private:
     std::vector<std::uint64_t> m_sites;
 };
 
-inline std::string valueRefsCountAttrXml( std::size_t n )
+// --path / path_between: with NO directed call path (`unreachable`), how often `dstDefs` are used as values; 0 when a
+// path exists, so the attribute is absent and the answer byte-identical.
+inline std::size_t toValueRefsCount( const IngestResult& ing, bool unreachable, std::span<const NodeId> dstDefs )
 {
-    return n == 0 ? std::string() : " value_refs=\"" + std::to_string( n ) + "\"";
+    return unreachable ? valueRefCallerRows( ing, ValueRefIndex( ing ), dstDefs ).rows.size() : 0;
 }
 
-inline std::string valueRefsCountKeyJson( std::size_t n )
-{
-    return n == 0 ? std::string() : ",\"value_refs\":" + std::to_string( n );
-}
+inline std::string valueRefsCountAttrXml( std::size_t n ) { return countFieldOrEmpty( "value_refs", n, /*json=*/false ); }
+inline std::string valueRefsCountKeyJson( std::size_t n ) { return countFieldOrEmpty( "value_refs", n, /*json=*/true ); }
 
 }   // namespace rw

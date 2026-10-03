@@ -2150,7 +2150,7 @@ std::optional<int> runPath( const MainDispatch& d )
         // same brief sentence, on both transports (mcpverbs.h path_between mirrors this line).
         // Reference-as-value round: with no directed call path, how often to= is used as a VALUE — a run through such a
         // slot is not a hop the graph can show, so the count is the clue (the callers verb lists the binding sites).
-        const std::size_t pthToValueRefs = path.empty() ? rw::valueRefCallerRows( ing, rw::ValueRefIndex( ing ), dstDefs ).rows.size() : 0;
+        const std::size_t pthToValueRefs = rw::toValueRefsCount( ing, path.empty(), dstDefs );
         rw::emitTo( stdout, "<!-- ripwire path: one DIRECTED call path from= to to= (each <s> a hop); reachable= is 0 and hops= 0 when the "
                      "graph holds none. {}{}{}-->{}", rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::Path, pthUnprovenDefs > 0 ).c_str(),
                      rw::toValueRefsLegend( pthToValueRefs > 0 ),
@@ -2160,10 +2160,7 @@ std::optional<int> runPath( const MainDispatch& d )
                      srcDefs.size(), dstDefs.size(), rw::unprovenDefsAttrXml( pthUnprovenDefs ).c_str(),   // H1: beside the defs counts it is not in
                      path.empty() ? 0 : 1, path.empty() ? std::size_t( 0 ) : path.size() - 1, pthRootAttr.c_str(),
                      rw::graphCountFloorAttrXml( g ).c_str() );
-        if( pthToValueRefs > 0 )
-        {
-            rw::emitTo( stdout, " to_value_refs=\"{}\"", pthToValueRefs );   // absent at zero: byte-identical otherwise
-        }
+        rw::emitTo( stdout, "{}", rw::countAttrXmlOrEmpty( "to_value_refs", pthToValueRefs ) );   // absent at zero: byte-identical otherwise
         // P2.10: a dead end is exactly the moment to name the next verb. --path is DIRECTED; --connect searches
         // undirected and finds the shared-caller join a directed walk can never see.
         if( path.empty() )
