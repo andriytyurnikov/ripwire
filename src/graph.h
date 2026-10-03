@@ -1739,6 +1739,37 @@ inline void recordMemberImportFile( const Binding& b, std::uint32_t resolved, co
     }
 }
 
+// FE-A: every Python import DIRECTIVE's file, per importing file, sorted (a star import binds no name, so only the
+// directive says which module it read) — Step-A, else the memoized suffix match.
+inline std::vector<std::vector<std::uint32_t>> buildPythonImportFiles( const IngestResult& ing, const HashMap<std::string, std::uint32_t>& fileIndex,
+                                                                      PythonSuffixMemo& memo )
+{
+    std::vector<std::vector<std::uint32_t>> files( ing.files.size() );
+    for( const Include& inc : ing.includes )
+    {
+        const std::string_view from = inc.fileId < ing.files.size() ? rootRelPath( ing, inc.fileId ) : std::string_view{};
+        if( inc.target.empty() || !( from.ends_with( ".py" ) || from.ends_with( ".pyi" ) ) )
+        {
+            continue;
+        }
+        std::uint32_t f = resolvePreciseInclude( from, inc.target, /*isAngle=*/ false, fileIndex );
+        if( f == kNoFile && inc.target.front() != '.' )
+        {
+            f = memo.resolve( inc.target, fileIndex, inc.fileId );
+        }
+        if( f != kNoFile )
+        {
+            files[ inc.fileId ].push_back( f );
+        }
+    }
+    for( std::vector<std::uint32_t>& list : files )
+    {
+        std::sort( list.begin(), list.end() );
+        list.erase( std::unique( list.begin(), list.end() ), list.end() );
+    }
+    return files;
+}
+
 inline PythonImportVetoes buildPythonImportVetoes( const IngestResult& ing, const HashMap<std::string, std::uint32_t>& fileIndex,
                                                     const HashMap<std::string, char>& moduleNames,
                                                     const HashMap<std::string, char>& pythonModuleRebind )
@@ -1785,30 +1816,7 @@ inline PythonImportVetoes buildPythonImportVetoes( const IngestResult& ing, cons
             it->second = verdict;   // any in-repo/unknown binding of the name outranks an external one
         }
     }
-    // FE-A: every Python import DIRECTIVE's file (a star import binds no name, so only the directive says which module it read)
-    t.importFiles.assign( ing.files.size(), {} );
-    for( const Include& inc : ing.includes )
-    {
-        const std::string_view from = inc.fileId < ing.files.size() ? rootRelPath( ing, inc.fileId ) : std::string_view{};
-        if( inc.target.empty() || !( from.ends_with( ".py" ) || from.ends_with( ".pyi" ) ) )
-        {
-            continue;
-        }
-        std::uint32_t f = resolvePreciseInclude( from, inc.target, /*isAngle=*/ false, fileIndex );
-        if( f == kNoFile && inc.target.front() != '.' )
-        {
-            f = memo.resolve( inc.target, fileIndex, inc.fileId );
-        }
-        if( f != kNoFile )
-        {
-            t.importFiles[ inc.fileId ].push_back( f );
-        }
-    }
-    for( std::vector<std::uint32_t>& files : t.importFiles )
-    {
-        std::sort( files.begin(), files.end() );
-        files.erase( std::unique( files.begin(), files.end() ), files.end() );
-    }
+    t.importFiles = buildPythonImportFiles( ing, fileIndex, memo );
     return t;
 }
 
@@ -2785,6 +2793,16 @@ struct DispositionTally
 // Go package whose name differs from its path's last element is not recognised as an import (its calls keep the
 // ladder); a JS `require` inside a function body and browser-only globals are not modelled; a JS script's top-level
 // function reached from another script by a bare global-table name would read as external.
+// "<id>#name" into the caller's reused buffer — the key every FE-A table is spelled in (jsImportKey's shape, no allocation).
+inline const std::string& fileNameKey( std::string& key, std::uint32_t id, std::string_view name )
+{
+    key.clear();
+    Narrower::appendUint( key, id );
+    key.push_back( '#' );
+    key.append( name );
+    return key;
+}
+
 struct FalseEdgeRules
 {
     enum class Verdict : std::uint8_t { Keep, Narrow, External, Local };   // Local: no reachable candidate and no proof the name is
@@ -2815,34 +2833,31 @@ struct FalseEdgeRules
 
     bool lookup( std::uint32_t fileId, std::string_view name, const HashMap<std::string, char>& set ) const
     {
-        key.clear();  Narrower::appendUint( key, fileId );  key.push_back( '#' );  key.append( name );
-        return set.find( key ) != set.end();
+        return set.contains( fileNameKey( key, fileId, name ) );
     }
     const Alias* aliasOf( std::uint32_t fileId, std::string_view name ) const
     {
-        key.clear();  Narrower::appendUint( key, fileId );  key.push_back( '#' );  key.append( name );
-        const auto it = alias.find( key );
+        const auto it = alias.find( fileNameKey( key, fileId, name ) );
         return ( it == alias.end() || it->second.tombstone ) ? nullptr : &it->second;
     }
     bool shadowedAt( const Reference& r, std::string_view name ) const
     {
-        key.clear();  Narrower::appendUint( key, r.fileId );  key.push_back( '#' );  key.append( name );
-        const auto it = shadows.find( key );
-        if( it == shadows.end() )
-        {
-            return false;
-        }
-        return std::any_of( it->second.begin(), it->second.end(), [ & ]( const VarSpan& s ) { return r.startByte >= s.startByte && r.startByte < s.endByte; } );
+        const auto it = shadows.find( fileNameKey( key, r.fileId, name ) );
+        return it != shadows.end()
+            && std::any_of( it->second.begin(), it->second.end(), [ & ]( const VarSpan& s ) { return r.startByte >= s.startByte && r.startByte < s.endByte; } );
     }
     // the file binds `name` at this site: an import or alias of it, or a declaration whose scope holds the site
     bool jsFileBinds( const Reference& r, std::string_view name ) const
     {
-        return lookup( r.fileId, name, bound ) || shadowedAt( r, name );
+        if( lookup( r.fileId, name, bound ) )
+        {
+            return true;
+        }
+        return shadowedAt( r, name );
     }
     bool goPathOutsideTree( std::string_view path ) const
     {
-        return std::none_of( goModules.begin(), goModules.end(), [ & ]( const std::string& m )
-                             { return path == m || ( path.size() > m.size() && path.starts_with( m ) && path[ m.size() ] == '/' ); } );
+        return std::none_of( goModules.begin(), goModules.end(), [ & ]( const std::string& m ) { return pathIsUnder( path, m ); } );
     }
 
     // A candidate the call can only reach through an instance: a method, accessor or field — for Python, a function
@@ -2878,14 +2893,9 @@ struct FalseEdgeRules
         {
             const bool exported = !r.calleeName.empty() && r.calleeName[ 0 ] >= 'A' && r.calleeName[ 0 ] <= 'Z';
             const bool dot      = r.fileId < goDotImport.size() && goDotImport[ r.fileId ] != 0;
-            return !( exported && dot ) && parentDir( rootRelPath( ing, cand.fileId ) ) != callerDir;
+            return !( exported && dot ) && includerDir( rootRelPath( ing, cand.fileId ) ) != callerDir;
         }
         return false;
-    }
-    static std::string_view parentDir( std::string_view path ) noexcept
-    {
-        const std::size_t cut = path.rfind( '/' );
-        return cut == std::string_view::npos ? std::string_view{} : path.substr( 0, cut );
     }
 
     // Rule (1): split the candidates into what a receiverless call cannot reach (`dropped`) and the rest. `kept` receives the
@@ -2898,7 +2908,7 @@ struct FalseEdgeRules
     Split splitReachable( const Reference& r, std::span<const NodeId> ids, rw::SmallVec<NodeId, 2>& kept ) const
     {
         const Symbol&          caller    = ing.symbols[ r.fromSymbol ];
-        const std::string_view callerDir = parentDir( rootRelPath( ing, r.fileId ) );
+        const std::string_view callerDir = includerDir( rootRelPath( ing, r.fileId ) );
         Split out;
         for( NodeId c : ids )
         {
@@ -3006,8 +3016,7 @@ struct FalseEdgeRules
         const char verdict = veto.importVerdict( r, r.calleeName );
         if( verdict == 'i' || verdict == 'u' )
         {
-            key.clear();  Narrower::appendUint( key, r.fileId );  key.push_back( '#' );  key.append( r.calleeName );
-            const auto mf = vetoTables.memberImportFile.find( key );
+            const auto mf = vetoTables.memberImportFile.find( fileNameKey( key, r.fileId, r.calleeName ) );
             if( mf == vetoTables.memberImportFile.end() || mf->second == kNoFile )
             {
                 kept.clear();
@@ -3047,43 +3056,48 @@ struct FalseEdgeRules
         return ( verdict == 'x' || externalnames::isPythonBuiltin( r.calleeName ) ) ? Verdict::External : Verdict::Local;
     }
 
-    Verdict jsDecide( const Reference& r ) const
+    // JS/TS: `name` (a bare callee, or a member call's receiver root) bound in this file by an alias — Keep or External by
+    // the alias's source; nullopt when no alias binds it at this site
+    std::optional<Verdict> jsAliasVerdict( const Reference& r, std::string_view name ) const
     {
-        if( r.memberCall )
-        {
-            const std::string_view root = r.memberRoot;
-            if( root.empty() || root == "this" || shadowedAt( r, root ) )
-            {
-                return Verdict::Keep;
-            }
-            if( const Alias* a = aliasOf( r.fileId, root ) )
-            {
-                return aliasIsForeign( *a, r ) ? Verdict::External : Verdict::Keep;
-            }
-            if( jsFileBinds( r, root ) )
-            {
-                return Verdict::Keep;
-            }
-            if( externalnames::inSortedTable( externalnames::kJsGlobalObjectNames, root )
-                || ( externalnames::inSortedTable( externalnames::kJsGlobalAliasNames, root ) && externalnames::isJsGlobalName( r.calleeName ) ) )
-            {
-                return Verdict::External;
-            }
-            return Verdict::Keep;
-        }
-        if( shadowedAt( r, r.calleeName ) )
+        if( shadowedAt( r, name ) )
         {
             return Verdict::Keep;
         }
-        if( const Alias* a = aliasOf( r.fileId, r.calleeName ) )
+        if( const Alias* a = aliasOf( r.fileId, name ) )
         {
             return aliasIsForeign( *a, r ) ? Verdict::External : Verdict::Keep;
         }
-        if( !lookup( r.fileId, r.calleeName, bound ) && externalnames::isJsGlobalName( r.calleeName ) )
+        return std::nullopt;
+    }
+    // JS/TS member call: through an outside alias, a global object, or the global object itself on a global name
+    Verdict jsMemberDecide( const Reference& r ) const
+    {
+        const std::string_view root = r.memberRoot;
+        if( root.empty() || root == "this" )
         {
-            return Verdict::External;
+            return Verdict::Keep;
         }
-        return Verdict::Keep;
+        if( const std::optional<Verdict> v = jsAliasVerdict( r, root ) )
+        {
+            return *v;
+        }
+        if( lookup( r.fileId, root, bound ) )
+        {
+            return Verdict::Keep;
+        }
+        const bool globalObject = externalnames::inSortedTable( externalnames::kJsGlobalObjectNames, root );
+        const bool globalAlias  = externalnames::inSortedTable( externalnames::kJsGlobalAliasNames, root ) && externalnames::isJsGlobalName( r.calleeName );
+        return ( globalObject || globalAlias ) ? Verdict::External : Verdict::Keep;
+    }
+    // JS/TS bare call: through an outside alias, or to a global no binding of the file hides
+    Verdict jsBareDecide( const Reference& r ) const
+    {
+        if( const std::optional<Verdict> v = jsAliasVerdict( r, r.calleeName ) )
+        {
+            return *v;
+        }
+        return ( !lookup( r.fileId, r.calleeName, bound ) && externalnames::isJsGlobalName( r.calleeName ) ) ? Verdict::External : Verdict::Keep;
     }
     bool aliasIsForeign( const Alias& a, const Reference& r ) const
     {
@@ -3106,7 +3120,7 @@ struct FalseEdgeRules
         {
             case Lang::JavaScript: case Lang::TypeScript:
             {
-                const Verdict v = jsDecide( r );
+                const Verdict v = r.memberCall ? jsMemberDecide( r ) : jsBareDecide( r );
                 if( v != Verdict::Keep || r.memberCall || lookup( r.fileId, r.calleeName, bound ) )
                 {
                     return v;   // an imported or required name keeps its ladder: it may name an object's method
@@ -3219,27 +3233,23 @@ inline void collectGoModules( const IngestResult& ing, FalseEdgeRules& rules )
     std::sort( rules.goModules.begin(), rules.goModules.end() );   // determinism: discovery order follows symbol order
 }
 
-inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMap<std::string, char>& classNames, const ExternalVeto& veto,
-                                           const ExternalVetoTables& vetoTables, const std::vector<std::vector<std::uint32_t>>& directIncludes )
+// FE-A: the binding facts — every ModuleAlias (Go dot imports apart), every name a JS/TS import or alias binds, and every
+// JsShadow span. Returns whether any alias exists (only then is the JS module vocabulary worth building).
+inline bool collectFalseEdgeBindings( const IngestResult& ing, FalseEdgeRules& rules )
 {
-    PROFILE_SCOPE_DESCRIBE( "buildGraph/2h: FE-A false-edge rules" );
-    FalseEdgeRules rules{ ing, classNames, veto, vetoTables, directIncludes };
-    rules.goDotImport.assign( ing.files.size(), 0 );
-    bool anyJsAlias = false;
-    bool anyGo      = false;
+    bool anyAlias = false;
     for( const Binding& b : ing.bindings )
     {
         if( b.fileId >= ing.files.size() || b.var.empty() )
         {
             continue;
         }
-        if( b.kind == LocalBindKind::ModuleAlias )
+        if( b.kind == LocalBindKind::ModuleAlias && b.var == "." )
         {
-            if( b.var == "." )
-            {
-                rules.goDotImport[ b.fileId ] = 1;
-                continue;
-            }
+            rules.goDotImport[ b.fileId ] = 1;
+        }
+        else if( b.kind == LocalBindKind::ModuleAlias )
+        {
             const std::string k = jsImportKey( b.fileId, b.var );
             auto [ it, fresh ] = rules.alias.try_emplace( k, FalseEdgeRules::Alias{ b.typeName, b.isFromAssignment, false } );
             if( !fresh && ( it->second.source != b.typeName || it->second.fromIdentifier != b.isFromAssignment ) )
@@ -3247,7 +3257,7 @@ inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMa
                 it->second.tombstone = true;   // one name, two different bindings: decide nothing
             }
             rules.bound.try_emplace( k, '\0' );
-            anyJsAlias = true;
+            anyAlias = true;
         }
         else if( b.kind == LocalBindKind::JsImport )
         {
@@ -3258,21 +3268,13 @@ inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMa
             rules.shadows[ jsImportKey( b.fileId, b.var ) ].push_back( { b.spanStart, b.spanEnd } );
         }
     }
-    for( const Symbol& s : ing.symbols )
-    {
-        anyGo = anyGo || s.lang == Lang::Go;
-        if( anyGo )
-        {
-            break;
-        }
-    }
-    if( anyJsAlias )
-    {
-        rules.jsVocabulary = jsModuleVocabulary( ing );
-    }
-    // Rust: `use a::b::c;` whose first segment is not crate/self/super/a `mod` of this tree names an outside item `c`.
-    // A module of this tree is any .rs file stem or directory name (the same vocabulary probe the JS rule uses).
-    HashMap<std::string, char> rustModules;
+    return anyAlias;
+}
+
+// FE-A Rust: the modules of this tree — every .rs file stem and every directory name a .rs path passes through.
+inline HashMap<std::string, char> rustModuleNames( const IngestResult& ing )
+{
+    HashMap<std::string, char> names;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
         std::string_view path = rootRelPath( ing, f );
@@ -3281,43 +3283,59 @@ inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMa
             continue;
         }
         path.remove_suffix( 3 );
-        std::size_t seg = 0;
-        while( seg <= path.size() )
+        for( std::size_t at = 0; at <= path.size(); )
         {
-            const std::size_t slash = path.find( '/', seg );
-            const std::string_view part = path.substr( seg, ( slash == std::string_view::npos ? path.size() : slash ) - seg );
-            if( !part.empty() )
+            const std::size_t slash = std::min( path.find( '/', at ), path.size() );
+            if( slash > at )
             {
-                rustModules.try_emplace( std::string( part ), '\0' );
+                names.try_emplace( std::string( path.substr( at, slash - at ) ), '\0' );
             }
-            if( slash == std::string_view::npos )
-            {
-                break;
-            }
-            seg = slash + 1;
+            at = slash + 1;
         }
+    }
+    return names;
+}
+
+// FE-A Rust: `use a::b::c;` whose first segment is not crate/self/super/a module of this tree names an outside item `c`.
+inline void collectRustOutsideUses( const IngestResult& ing, FalseEdgeRules& rules )
+{
+    const HashMap<std::string, char> modules = rustModuleNames( ing );
+    if( modules.empty() )
+    {
+        return;   // no Rust in the tree
     }
     for( const Include& inc : ing.includes )
     {
-        if( inc.fileId >= ing.files.size() || inc.target.empty() || inc.target.starts_with( "mod:" ) || !rootRelPath( ing, inc.fileId ).ends_with( ".rs" ) )
+        const std::string_view path = inc.target;
+        if( inc.fileId >= ing.files.size() || path.starts_with( "mod:" ) || !rootRelPath( ing, inc.fileId ).ends_with( ".rs" ) )
         {
             continue;
         }
-        const std::string_view path  = inc.target;
-        const std::size_t      first = path.find( "::" );
-        const std::size_t      last  = path.rfind( "::" );
+        const std::size_t first = path.find( "::" );
         if( first == std::string_view::npos || path.find( '{' ) != std::string_view::npos )
         {
             continue;   // `use x;` (a crate root) or a brace group: no single named item
         }
         const std::string_view head = path.substr( 0, first );
-        if( head == "crate" || head == "self" || head == "super" || rustModules.find( std::string( head ) ) != rustModules.end() )
+        if( head != "crate" && head != "self" && head != "super" && !modules.contains( std::string( head ) ) )
         {
-            continue;
+            rules.rustOutsideUse.try_emplace( jsImportKey( inc.fileId, path.substr( path.rfind( "::" ) + 2 ) ), '\0' );
         }
-        rules.rustOutsideUse.try_emplace( jsImportKey( inc.fileId, path.substr( last + 2 ) ), '\0' );
     }
-    if( anyGo )
+}
+
+inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMap<std::string, char>& classNames, const ExternalVeto& veto,
+                                           const ExternalVetoTables& vetoTables, const std::vector<std::vector<std::uint32_t>>& directIncludes )
+{
+    PROFILE_SCOPE_DESCRIBE( "buildGraph/2h: FE-A false-edge rules" );
+    FalseEdgeRules rules{ ing, classNames, veto, vetoTables, directIncludes };
+    rules.goDotImport.assign( ing.files.size(), 0 );
+    if( collectFalseEdgeBindings( ing, rules ) )
+    {
+        rules.jsVocabulary = jsModuleVocabulary( ing );
+    }
+    collectRustOutsideUses( ing, rules );
+    if( std::ranges::any_of( ing.symbols, []( const Symbol& s ) { return s.lang == Lang::Go; } ) )
     {
         collectGoModules( ing, rules );
     }

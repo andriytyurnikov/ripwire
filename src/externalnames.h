@@ -335,14 +335,16 @@ static_assert( isStrictlySortedTable( kJsGlobalFunctionNames ), "kJsGlobalFuncti
 static_assert( isStrictlySortedTable( kJsGlobalAliasNames ), "kJsGlobalAliasNames must be strictly sorted (binary search)" );
 static_assert( isStrictlySortedTable( kGoBuiltinNames ), "kGoBuiltinNames must be strictly sorted (binary search)" );
 
-// FE-A: is `name` a JS/TS global — an object (`JSON`), a function (`fetch`), or, with `alias`, a name for the global object itself?
+// FE-A: membership in one of the sorted tables above (graph.h FalseEdgeRules reads them by name), and "is `name` a JS/TS
+// global at all" — an object (`JSON`, also a constructor when called bare) or a function (`fetch`).
 inline bool inSortedTable( std::span<const std::string_view> table, std::string_view name ) noexcept
 {
-    return std::binary_search( table.begin(), table.end(), name, rw::sortutil::svLess );
+    return std::ranges::binary_search( table, name, rw::sortutil::svLess );
 }
 inline bool isJsGlobalName( std::string_view name ) noexcept
 {
-    return inSortedTable( kJsGlobalObjectNames, name ) || inSortedTable( kJsGlobalFunctionNames, name );
+    const std::span<const std::string_view> tables[] = { kJsGlobalObjectNames, kJsGlobalFunctionNames };
+    return std::ranges::any_of( tables, [ & ]( std::span<const std::string_view> t ) { return inSortedTable( t, name ); } );
 }
 
 }   // namespace externalnames
