@@ -458,6 +458,7 @@
 "recallparitycheck.sh": 1.4,
 "recallrankdepthcheck.sh": 1.5,
 "recallrelcheck.sh": 0.4,
+"recallshapecheck.sh": 12.0,
 "recalltablecheck.sh": 0.2,
 "recalltotalcheck.sh": 24.7,
 "receiptpostcheck.sh": 20.4,
