@@ -309,6 +309,28 @@ private:
         return through.calleeName == tail;
     }
 
+    std::uint32_t importedModuleFile( const Binding& b ) const
+    {
+        if( b.typeName.empty() || b.fileId >= m_ing.files.size() )
+        {
+            return kNoFile;
+        }
+        if( m_fileIndex.empty() )
+        {
+            m_fileIndex.reserve( m_ing.files.size() );
+            for( std::uint32_t f = 0; f < m_ing.files.size(); ++f )
+            {
+                m_fileIndex.emplace( lexicalNormalize( rootRelPath( m_ing, f ) ), f );
+            }
+        }
+        const std::uint32_t precise = resolvePreciseInclude( rootRelPath( m_ing, b.fileId ), b.typeName, /*isAngle=*/false, m_fileIndex );
+        if( precise != kNoFile || b.kind != LocalBindKind::Import )
+        {
+            return precise;
+        }
+        return resolvePythonModuleSuffix( b.typeName, m_fileIndex, m_ing.fileRoot.empty() ? nullptr : &m_ing.fileRoot, b.fileId );
+    }
+
     // `name` as seen from reference `r`'s file, under the visibility rules in the header comment.
     std::vector<NodeId> resolveName( const Reference& r, std::string_view name ) const
     {
@@ -390,17 +412,14 @@ private:
                     {
                         continue;
                     }
-                    const std::string_view mod  = b->typeName;
-                    const std::size_t      cut  = mod.find_last_of( "/." );
-                    std::string_view       stem = cut == std::string_view::npos ? mod : mod.substr( cut + 1 );
-                    if( b->kind == LocalBindKind::JsImport )
-                    {
-                        stem = mention_detail::pathStem( mod );
-                    }
+                    // The import's module, resolved by the call graph's own Step-A (resolve.h resolvePreciseInclude: a
+                    // relative JS/TS specifier against the importer, a Python module relative-to-file then root, then the
+                    // whole-component suffix for an absolute Python spec). A bare package specifier resolves to no file:
+                    // no row — a stem match across directories bound `import { test } from "./a"` to every a.js.
+                    const std::uint32_t moduleFile = importedModuleFile( *b );
                     for( const NodeId id : other )
                     {
-                        const std::string_view defStem = mention_detail::pathStem( m_ing.files[ m_ing.symbols[id].fileId ] );
-                        if( defStem == stem || ( defStem == "__init__" && mention_detail::pathStem( includerDir( m_ing.files[ m_ing.symbols[id].fileId ] ) ) == stem ) )
+                        if( m_ing.symbols[id].fileId == moduleFile )
                         {
                             out.push_back( id );
                         }
@@ -424,6 +443,7 @@ private:
     HashMap<std::string, std::vector<std::uint32_t>>     m_throughByContainer;
     HashMap<NodeId, std::vector<std::uint32_t>>          m_throughParamBySym;
     HashMap<std::uint32_t, std::vector<const Binding*>>  m_importsByFile;
+    mutable HashMap<std::string, std::uint32_t>          m_fileIndex;   // root-relative normalised path → fileId, built on first import
 };
 
 // ── the rows every surface serves ─────────────────────────────────────────────────────────────────────────────
