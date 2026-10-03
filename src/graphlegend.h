@@ -618,11 +618,11 @@ inline constexpr const char* kValueRefsCalleesLegend =
 inline constexpr const char* kValueRefsReachLegend =
     "value_refs=N (absent when 0) counts <vr> rows: SYM is USED AS A VALUE at bind= (stored into into= or passed), matched by name. It is not a proven call: reaches= and impact_reaches= exclude them, and a caller that runs it through that slot is not in the radius. <vrs total= shown= capped= next=> is their window; <vr in_id= bind= into= called_by=>: the enclosing symbol, the binding site, where it lands, functions that may call through it. ";
 inline constexpr const char* kValueRefsSafeDeleteLegend =
-    "value_refs=N (absent when 0): SYM is USED AS A VALUE N times (a table, field or argument holds it; matched by name, not a proven call). Each such site is in uses=, keeps dead_code_candidate at 0 and risk off none-found: deleting SYM breaks the table even though no call reaches it. <vrs>/<vr in_id= bind= into= called_by=> list them. ";
+    "value_refs=N (absent when 0): SYM is USED AS A VALUE N times (a table, field or argument holds it; matched by name, not a proven call). Each such site (a decorator row aside: a fact about the definition) is in uses=; any row keeps dead_code_candidate at 0 and risk off none-found: deleting SYM breaks the table even though no call reaches it. <vrs>/<vr in_id= bind= into= called_by=> list them. ";
 inline constexpr const char* kToValueRefsLegend =
     "to_value_refs=N (absent when 0): to= is USED AS A VALUE N times (stored or passed, matched by name); a run through such a slot is not a proven call and is no hop here: the callers verb on to= lists the binding sites and called_by=. ";
 inline constexpr const char* kUsesValueRoleLegend =
-    "role=\"value\" (reference-as-value round): the function is USED AS A VALUE there, stored into a table, field or variable or passed as an argument, matched by name with the callers verb's own visibility rules. It is not a proven call; the callers verb shows where the value lands and who may call through it. ";
+    "role=\"value\" (reference-as-value round): the function is USED AS A VALUE there, stored into a table, field or variable or passed as an argument, matched by name with the callers verb's own visibility rules. It is not a proven call; the callers verb shows where the value lands and who may call through it. A decorator row is a fact about the definition, not a site: the callers verb lists it, this verb does not. ";
 inline const char* usesValueRoleLegend( bool on ) noexcept { return on ? kUsesValueRoleLegend : ""; }
 inline const char* valueRefsLegend( bool on, bool callersSide ) noexcept
 {

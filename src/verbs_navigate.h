@@ -1051,7 +1051,7 @@ std::optional<int> runSafeDelete( const MainDispatch& d )
         if( c < g.ambOut.size() && g.ambOut[c] > 0 ) { ++ambiguousCallers; }
     }
 
-    const bool  anyEvidence = !callerIds.empty() || !sites.empty();
+    const bool  anyEvidence = !callerIds.empty() || !sites.empty() || !sdValueRefs.rows.empty();   // a decorator row is not a use site, still evidence
     const char* risk        = !anyEvidence                                    ? "none-found"
                             : ( !reach.empty() && radiusTested == 0 )         ? "untested-radius"
                             :                                                   "uses-exist";

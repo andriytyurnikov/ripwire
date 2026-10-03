@@ -181,7 +181,8 @@ public:
         file.node = root;
         m_scopes.push_back( std::move( file ) );
 
-        TSTreeCursor cur = ts_tree_cursor_new( root );
+        ChildCursor  walker( root );   // RAII: the walk's one cursor, released on every exit (hazardpatterncheck E)
+        TSTreeCursor& cur = walker.cur;
         enter( root, 0 );
         for( ;; )
         {
@@ -211,7 +212,6 @@ public:
                 break;
             }
         }
-        ts_tree_cursor_delete( &cur );
 
         // File-scope calls through a container survive only when this file fed that container a function value.
         for( RawRef& t : m_filePending )

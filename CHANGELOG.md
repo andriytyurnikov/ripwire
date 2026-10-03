@@ -39,7 +39,8 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
   - `--impact` and `--safe-delete` disclose the rows.
   - A value use counts in `--safe-delete`'s `uses=` and keeps it off `dead_code_candidate`/`risk="none-found"`.
   - `--dead-code` excludes such functions, counted in `value-ref-excluded=`.
-  - `--uses` shows the site as `role="value"`.
+  - `--uses` shows the site as `role="value"` (a decorator row is a fact about the definition and stays on
+    `--callers` only).
   - `--path` adds `to_value_refs=` when no call path exists.
   - The rows also appear in CLI `--json`, in MCP `find_referencing_symbols`/`find_symbol` (`valueRefs`,
     `valueCallees`), and in MCP `impact`, `uses` and `path_between`.

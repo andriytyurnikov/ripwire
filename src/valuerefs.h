@@ -716,9 +716,9 @@ public:
         for( std::uint32_t i = 0; i < ing.references.size(); ++i )
         {
             const Reference& r = ing.references[i];
-            if( r.role != RefRole::Value || r.calleeName != name )
+            if( r.role != RefRole::Value || r.calleeName != name || r.fieldName.starts_with( '@' ) )
             {
-                continue;
+                continue;   // a decorator row is a fact about the DEFINITION, not a use site elsewhere: the callers verb lists it
             }
             const std::vector<NodeId> targets = vri.targetsOf( i );
             const bool chosen = !targets.empty()
@@ -741,7 +741,7 @@ public:
         }
         if( r.role == RefRole::Value )
         {
-            return !std::binary_search( m_accepted.begin(), m_accepted.end(), refIndex );
+            return !std::binary_search( m_accepted.begin(), m_accepted.end(), refIndex );   // decorator rows included: never accepted
         }
         if( ( r.role == RefRole::Read || r.role == RefRole::Write ) && !m_sites.empty() )
         {
