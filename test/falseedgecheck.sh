@@ -52,11 +52,13 @@
 #            bare `helper()` beside its own class's and a sibling class's `helper` (siblings.py — the shape the S6-C
 #            locality fixtures used before FE-A; they moved to Kotlin, where a bare call IS a `this` call). Near misses keep: imported
 #            in-repo `append` and `format`, a same-module helper, a module-level callable VARIABLE, a bare class
-#            construction `Worker()`, a class-body call, and a bound-method alias (`write = self.write; write( b )`
-#            reaches its own class's `write`, never another class's). Pins: bare builtins `open`/`format` reach neither the method
+#            construction `Worker()`, a class-body call, a bound-method alias (`write = self.write; write( b )`
+#            reaches its own class's `write`, never another class's), and the same alias or a parameter of an ENCLOSING
+#            function captured by a nested def (closure.py: the call keeps its previous resolution). Pins: bare builtins `open`/`format` reach neither the method
 #            nor the unimported module function.
 #   (E) C:   `opts_parse( … )` and `region( … )` reach the FUNCTION, not the same-named struct; `find_type( … )` never
-#            reaches `enum find_type`; window_count() and the function-like macro CLAMP keep their edges. C++ (root
+#            reaches `enum find_type` and, with no function anywhere and no library table naming it, is unresolved= (no
+#            census row), while `clock()` beside `struct clock` is external= (the C library table proves it); window_count() and the function-like macro CLAMP keep their edges. C++ (root
 #            cpp/): `Point( v )` is a constructor call and keeps both rows it had (the struct rule is C's alone).
 #   (R) Rust (no implicit receiver either): a bare call imported from an outside crate never reaches a same-named
 #            METHOD; a same-module function, `h.render()`, `History::new()`, `History::render( &h )` and
@@ -290,6 +292,9 @@ exactly py callees src/ui/star.py:use_var "var handler src/ui/star.py"
 exactly py callees src/ui/star.py:build "cls Worker src/ui/worker.py"
 exactly py callees src/ui/star.py:fmt "fn format src/ui/text.py"
 exactly py callees src/ui/alias.py:flush "fn write src/ui/alias.py"
+exactly py callees src/ui/closure.py:line_width "fn label_width src/ui/closure.py"
+# a pin, not a claim of truth: a call through a CAPTURED parameter keeps whatever the unchanged ladder decided
+has py callees src/ui/closure.py:run "fn reparse src/ui/sheet.py"
 lacks py callees src/ui/widget.py:read_config "open src/ui/worker.py"
 lacks py callees src/ui/report.py:render "format src/ui/text.py"
 
@@ -298,6 +303,7 @@ reaches_fn c copy.c:copy_command opts_parse 'arguments\.c|mux\.h'
 reaches_fn c usemacro.c:clampit region 'region\.c|usemacro\.c'
 has c callees usemacro.c:clampit "macro CLAMP macro.h"
 exactly c callees copy.c:classify "fn window_count window.c"
+exactly c callees window.c:elapsed ""
 exactly cpp callees use.cpp:origin "cls Point point.hpp;fn Point point.hpp"
 
 echo "=== (R) Rust: no implicit receiver either — a bare call never reaches a method ==="
@@ -362,7 +368,8 @@ PY
 unresolved_site py src/ui/widget.py run_all process
 unresolved_site py src/ui/siblings.py run helper
 externals py src/ui/widget.py read_config open
-externals c copy.c classify find_type
+unresolved_site c copy.c classify find_type
+externals c window.c elapsed clock
 externals rs src/lib.rs draw render
 for r in $ROOTS; do
     hdr="$( grep -oE '<!-- files=[^>]*-->' "$TMP/$r.map.xml" | head -1 )"

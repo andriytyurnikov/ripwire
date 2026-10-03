@@ -29,7 +29,8 @@ the result as a confident edge. Three shapes are now resolved the way the langua
 - a call through `require( 'pkg' )`, `import * as ns from 'pkg'` or a name destructured from a global object, and a Go
   call through an import whose path no go.mod in the tree contains.
 Such a call has no edge and is counted `external=` where the language proves the target is outside the tree (a
-builtin, a global, an outside package), `unresolved=` otherwise. A call through a parameter or local, a name an import
+builtin, a global, an outside package or `use`, a Go predeclared function, a C library name), `unresolved=` otherwise. A
+call through a parameter or local of the calling function or of a function enclosing it (a closure), a name an import
 binds from inside the tree, and every implicit-receiver language (Java, C#, C++, Kotlin, Swift, Ruby, Objective-C) keep
 the previous resolution. On four public repositories the change keeps every caller of eight sampled definitions and
 adds callers the previous resolution declined; total call sites are unchanged. Gate: `test/falseedgecheck.sh`; the

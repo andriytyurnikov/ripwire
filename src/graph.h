@@ -2824,6 +2824,7 @@ struct FalseEdgeRules
     std::vector<char>                           goUnderModule;   // fileId → a go.mod sits at or above the file, inside the root
     HashMap<std::string, char>                  jsVocabulary;    // jsModuleVocabulary, built only when a JS alias exists
     HashMap<std::string, char>                  rustOutsideUse;  // "<fileId>#name": a Rust `use` of a path outside the crate names it
+    std::vector<std::vector<NodeId>>            functionsByFile; // fileId → its functions/methods sorted by sigStartByte (enclosingFunction)
     mutable std::string                         key;
     bool                                        active = false;
 
@@ -2939,9 +2940,53 @@ struct FalseEdgeRules
         kept.resize( n );
         return compatible;
     }
+    // A local or parameter of the caller — or of a function ENCLOSING it, which a nested def/closure captures (textual:
+    // `get_label_width = self.get_label_width` in a method, called from a `def` nested in it). The enclosing chain is read
+    // by span: the innermost function or method of the same file whose span holds the current one, at most 8 levels.
     bool isLocalOfCaller( const Reference& r ) const
     {
-        return veto.hasLocal( r, r.calleeName );
+        if( veto.hasLocal( r, r.calleeName ) )
+        {
+            return true;
+        }
+        NodeId cur = r.fromSymbol;
+        for( int depth = 0; depth < 8; ++depth )
+        {
+            cur = enclosingFunction( cur );
+            if( cur == kNoNode )
+            {
+                return false;
+            }
+            if( veto.localNameSet.contains( fileNameKey( key, cur, r.calleeName ) ) )
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+    // the innermost function/method of the same file whose span strictly holds `id`'s span; kNoNode when none
+    NodeId enclosingFunction( NodeId id ) const
+    {
+        const Symbol& inner = ing.symbols[ id ];
+        if( inner.fileId >= functionsByFile.size() )
+        {
+            return kNoNode;
+        }
+        NodeId best = kNoNode;
+        for( NodeId c : functionsByFile[ inner.fileId ] )
+        {
+            const Symbol& s = ing.symbols[ c ];
+            if( s.sigStartByte > inner.sigStartByte )
+            {
+                break;   // sorted by start: nothing later can hold it
+            }
+            const bool holds = c != id && s.endByte >= inner.endByte && ( s.sigStartByte < inner.sigStartByte || s.endByte > inner.endByte );
+            if( holds )
+            {
+                best = c;   // later starts are more inner
+            }
+        }
+        return best;
     }
 
     // Rule (1) for a receiverless call, per language. Nothing dropped → Keep: the ladder decides exactly as before. What
@@ -3002,7 +3047,9 @@ struct FalseEdgeRules
             }
             default:
             {
-                return Verdict::External;   // C: a library function (a local was answered above)
+                // C: a C library name (the Phase-5 table) is provably outside; any other name whose only in-repo spellings are
+                // types has no in-repo function and no proof of an outside one — unresolved=
+                return externalnames::isCFamilyStdName( r.calleeName ) ? Verdict::External : Verdict::Local;
             }
         }
     }
@@ -3372,6 +3419,19 @@ inline FalseEdgeRules buildFalseEdgeRules( const IngestResult& ing, const HashMa
         rules.jsVocabulary = jsModuleVocabulary( ing );
     }
     collectRustOutsideUses( ing, rules );
+    rules.functionsByFile.assign( ing.files.size(), {} );
+    for( const Symbol& s : ing.symbols )
+    {
+        if( ( s.kind == SymKind::Function || s.kind == SymKind::Method ) && s.fileId < ing.files.size() )
+        {
+            rules.functionsByFile[ s.fileId ].push_back( s.id );
+        }
+    }
+    for( std::vector<NodeId>& list : rules.functionsByFile )
+    {
+        std::ranges::sort( list, [ & ]( NodeId a, NodeId b ) { return ing.symbols[ a ].sigStartByte < ing.symbols[ b ].sigStartByte
+                                                                      || ( ing.symbols[ a ].sigStartByte == ing.symbols[ b ].sigStartByte && a < b ); } );
+    }
     if( std::ranges::any_of( ing.symbols, []( const Symbol& s ) { return s.lang == Lang::Go; } ) )
     {
         collectGoModules( ing, rules );

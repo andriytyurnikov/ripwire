@@ -14,6 +14,11 @@ enum find_type {
 	FIND_SESSION
 };
 
+/* A struct spelled like the C library's clock(): only the library function is callable. */
+struct clock {
+	long ticks;
+};
+
 struct args *opts_parse(const struct opts_parse *, const char **, int);
 int window_count(void);
 
