@@ -68,10 +68,13 @@
 #      a row (REG#arg0).
 #   F6 a class used as a value (`{"x": MyClass}`) is out of scope: functions and methods only.
 #
-# MUTATION PROOF (checklist 1, pre-registered; run at the implementation head): disabling the shadow guard turns C5 J2
-# P3 G3 C2f J2g P2i CX4 CX5 red; disabling the key/label guard turns C15 J11 P10 G7 red; disabling the string/comment
-# guard turns C15 J11 T6 P10 G7 X3 red; disabling the static-linkage guard turns CX1 CX3 red; disabling the container
-# shadow turns C2 J1 P1 G1 C16 J12 P11 G8 red.
+# MUTATION PROOF (checklist 1; sim/refval_mutate.sh, measured at the implementation head — the pre-registered list was
+# corrected to what each mutant measured): disabling the local/parameter shadow guard turns C5 C14 C2f C2g J2 J2g T2 P2
+# P3 P2i G3 X3 red; disabling the keyed-element / keyword-LABEL guard turns P10 P12 P13 G7 G9 red (a C designated field
+# and a JS key are field_identifier / property_identifier nodes, never visited, so no guard of this pass protects them);
+# reading string contents as identifiers turns C15 C17 C18 J11 J13 J14 T6 T7 P10 P12 P13 G7 G9 X3 red; disabling the
+# container shadow turns C1 C2 C6 C16 J1 J12 P1 P11 G1 G8 D1 D2 red; disabling C static linkage turns CX1 CX2 CX3a CX3b
+# CX6 red; ignoring the file-scope-object shadow turns CX7 red (JS/Python's CX4/CX5 are ALSO held by the import rule).
 #
 # The fixtures are generated here (nothing is committed under test/). Markers `@NAME` in a comment on a line resolve to
 # that line, so no arm hard-codes a line number.
@@ -600,12 +603,15 @@ static int handler_a(int x) { return x; }
 static int stored(int x) { return x; }
 static int (*tbl[])(int) = { stored };          /* @CXA_TBL */
 int use_tbl(int i) { return tbl[i](i); }
+int ext_fn(int x) { return x; }                 /* external linkage: other files may name it */
 EOF
 cat >"$FX/cx/b.c" <<'EOF'
 static int stored = 7;                          /* a non-function global named like a.c's static function */
 static int keep_b(int v) { return v; }
 int use_var(void) { return keep_b(stored); }    /* @CXB_VAR the variable, not a.c's function */
 int (*far[])(int) = { handler_a };              /* @CXB_FAR a.c's handler_a is static: unreachable from here */
+static int ext_fn = 7;                          /* a file-scope OBJECT hiding a.c's extern function inside b.c */
+int use_ext(void) { return keep_b(ext_fn); }    /* @CXB_EXT the object, not a.c's function */
 EOF
 cat >"$FX/cx/x.py" <<'EOF'
 XS = [handler_a, stored]  # @CXP_X another language
@@ -888,6 +894,8 @@ arm "CX4 callers fa.js:jsVal: not fb.js's same-named const" \
     cx --callers=fa.js:jsVal attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@CXJ_A;into=JT[0]' 'novr:bind=@CXJ_B'
 arm "CX5 callers pa.py:py_val: not pb.py's same-named module variable" \
     cx --callers=pa.py:py_val attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@CXQ_A;into=PT[0]' 'novr:bind=@CXQ_B'
+arm "CX7 callers a.c:ext_fn: an extern function is hidden in b.c by b.c's own file-scope object of that name — no row" \
+    cx --callers=a.c:ext_fn attr:count=0 noattr:value_refs nvr:0 'novr:bind=@CXB_EXT'
 arm "CX6 safe-delete a.c:handler_a: still a dead-code candidate with risk=none-found" \
     cx --safe-delete=a.c:handler_a attr:callers=0 attr:dead_code_candidate=1 attr:risk=none-found noattr:value_refs
 
