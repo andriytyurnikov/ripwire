@@ -352,10 +352,22 @@ inline JsGlobal jsGlobalKindOf( std::string_view name ) noexcept
     }
     return holds( kJsGlobalAliasNames ) ? JsGlobal::GlobalObject : JsGlobal::None;
 }
-inline bool isJsGlobalName( std::string_view name ) noexcept
+inline bool isJsGlobalName( std::string_view name ) noexcept   // an object or a function: a name a bare call can mean
 {
-    const JsGlobal kind = jsGlobalKindOf( name );
-    return kind == JsGlobal::Object || kind == JsGlobal::Function;
+    switch( jsGlobalKindOf( name ) )
+    {
+        case JsGlobal::Object:
+        case JsGlobal::Function:
+        {
+            return true;
+        }
+        case JsGlobal::GlobalObject:
+        case JsGlobal::None:
+        {
+            return false;
+        }
+    }
+    return false;
 }
 
 }   // namespace externalnames
