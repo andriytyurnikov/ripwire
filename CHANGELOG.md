@@ -15,6 +15,26 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Fixed — a call the language resolves outside the tree no longer binds to a same-named in-repo definition
+
+The call graph bound a call to the in-repo definitions of its spelling even where the language's own name lookup
+cannot reach them, and every graph verb (`--callers`, `--callees`, `--impact`, `--path`, the map, the MCP twins) showed
+the result as a confident edge. Three shapes are now resolved the way the language resolves them:
+- a call with no receiver reaches no method, accessor or field in Go, Python, JavaScript/TypeScript or Rust, and a C
+  call reaches no struct or enum (`append( xs, x )` is not a call of a method named `append`; the C call of the
+  function `opts_parse()` now reaches the function, not `struct opts_parse`); a bare Go call reaches its own package
+  only; a Python name imported from a module reaches that module's definition rather than a same-named method;
+- a JavaScript/TypeScript call on a global object (`JSON.parse`, `Buffer.from`, `crypto.subtle.verify`) or to a global
+  function (`fetch`) in a file that neither imports nor declares that name;
+- a call through `require( 'pkg' )`, `import * as ns from 'pkg'` or a name destructured from a global object, and a Go
+  call through an import whose path no go.mod in the tree contains.
+Such a call has no edge and is counted `external=` where the language proves the target is outside the tree (a
+builtin, a global, an outside package), `unresolved=` otherwise. A call through a parameter or local, a name an import
+binds from inside the tree, and every implicit-receiver language (Java, C#, C++, Kotlin, Swift, Ruby, Objective-C) keep
+the previous resolution. On four public repositories the change keeps every caller of eight sampled definitions and
+adds callers the previous resolution declined; total call sites are unchanged. Gate: `test/falseedgecheck.sh`; the
+locality tie-break fixtures (`test/lpinfix`, `test/pincensusfix`) now use Kotlin, where a bare call is a `this` call.
+
 ### Added — `Class.method` and `Class#method` are selectors wherever `Class::method` is
 
 Agents and documentation name a method `Class.method` (Python, JS, Java) or `Class#method` (Ruby, JSDoc), and every
