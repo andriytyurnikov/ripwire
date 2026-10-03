@@ -16,3 +16,4 @@ fn helper(n: usize) -> usize {
 pub fn paint(h: &History) -> usize {
     helper(h.render())
 }
+mod assoc;

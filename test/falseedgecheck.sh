@@ -18,43 +18,62 @@
 #       or used as a receiver), an ES namespace import of a bare specifier, a Go import of a path outside the module.
 # Each was a confident false row in a graded answer; this fixture holds a paraphrased minimal repro of each.
 #
-# THE CONTRACT. Such a call loses its in-repo edge and is counted EXTERNAL (one `C external` census row, the header's
-# external=), never declined and never silently dropped. When the language makes exactly one in-repo FUNCTION
-# reachable, that one is the edge (Python's imported `match`, C's function opts_parse). A name the calling scope
-# defines, imports from inside the tree, or shadows keeps its edge: the near-miss arms below are true edges that must
-# survive (a same-package Go `min` that shadows the builtin, a JS `const JSON = require( './query' )`, an imported
-# in-repo `fetch`/`append`, a Go package-level function variable, an in-module Go import, a C++ constructor call).
+# THE CONTRACT. Such a call loses its in-repo edge and is counted EXTERNAL — one `C external` census row with no
+# target, and in the external= gauge of the map header (arm G checks both, and that they agree with the census
+# `# dispositions external=`) — never declined and never silently dropped. When the language makes exactly one in-repo
+# FUNCTION reachable, that one is the edge (Python's imported or star-imported `match`, C's function opts_parse). A name
+# the calling scope defines, imports from inside the tree, or shadows keeps its edge: the near-miss arms are true edges
+# the pre-change binary keeps and a new rule could kill, pinned with `exactly`.
 #
 # ARMS (one fixture root per language under test/falseedgefix/; each root is indexed on its own).
 #   (A) Go:  builtin append/max/copy/delete/len/close never reach a method, a function-local var or another
 #            package's function; qualified calls into an outside package (plain and aliased import) and the standard
 #            library never reach a same-named in-repo function. Near misses keep: same-package `min` (shadows the
-#            builtin), same-package `copy`, a receiver call `h.append()`, a package-level func VARIABLE called bare,
-#            an in-module qualified call `own.Pick()`.
-#   (B) JS:  JSON.stringify, `new URL()`, Buffer.from, console/Math/Object/Array/Promise members, require('destroy'),
-#            require('supertest'), a receiver from require('qs') and a name destructured from require('cookie') never
-#            reach an in-repo function, getter, method or object property. Near misses keep: a destructured relative
-#            require, a relative-module receiver, a file-local `const JSON` shadow, a same-file `function fetch`, a
+#            builtin) and `score`/`hook`, also from ANOTHER file of the package; same-package `copy`; `h.append()`; a
+#            package-level func VARIABLE called bare; in-module `own.Pick()`; a dot-import's bare `Pick()`; a NESTED
+#            module's `lib.Helper()` (sub/go.mod); a function passed as a value. Root gonomod/ has NO go.mod: its
+#            full-path import of an in-tree package keeps its edge (an unknown module path proves nothing outside).
+#   (B) JS:  JSON.stringify, `const { stringify } = JSON`, `new URL()`, Buffer.from, `globalThis.fetch`, console/Math/
+#            Object/Array/Promise members, require('destroy'), require('supertest'), a receiver from require('qs')
+#            and a name destructured from require('cookie') never reach an in-repo function, getter, method or object
+#            property. Near misses keep: a destructured relative require, a relative-module receiver, relative ES
+#            namespace and default imports (esm/), a file-local `const JSON` shadow, a same-file `function fetch`, a
 #            const arrow function, `ContentType.from` on the in-repo class, `this.set`/`this.get`.
 #   (C) TS:  the global fetch never reaches a class FIELD named fetch, JSON.parse never reaches an exported `parse`,
 #            crypto.subtle.verify never reaches an exported `verify`, `import * as qs from 'qs'` never reaches an
 #            in-repo `stringify`; a file that imports nothing does not reach another file's exported `fetch` (root
-#            tsimport/). Near misses keep: named imports of in-repo `parse` and `fetch`, `new App()` + `app.dispatch()`;
-#            default and named imports of outside packages stay unbound (a pin: already true before this gate).
-#   (D) Python (src/ layout): an imported module function `match` is the edge — not the two same-named methods; a
-#            bare `process()` that only a METHOD defines has no edge. Near misses keep: imported in-repo `append`,
-#            a same-module helper, a class-body call to a function of the class body. Pins: bare builtins `open` and
-#            `format` reach neither the method nor the unimported module function.
-#   (E) C:   `opts_parse( … )` reaches the FUNCTION, not `struct opts_parse`; `find_type( … )` never reaches
-#            `enum find_type`; window_count() keeps its edge. C++ (root cpp/): `Point( v )` is a constructor call and
-#            keeps both rows it had (the struct rule is C's alone).
+#            tsimport/). Near misses keep: named and relative namespace imports of in-repo `parse`/`stringify`/
+#            `verify`/`fetch`, `new App()` + `app.dispatch()`, an ambient `declare function track` (globals.d.ts)
+#            called from a file that imports nothing; ESM default/named imports of outside packages stay unbound (pin).
+#   (D) Python (src/ layout): an imported or STAR-imported module function `match` is the edge — not the two
+#            same-named methods; a bare `process()` that only a METHOD defines has no edge. Near misses keep: imported
+#            in-repo `append` and `format`, a same-module helper, a module-level callable VARIABLE, a bare class
+#            construction `Worker()`, a class-body call. Pins: bare builtins `open`/`format` reach neither the method
+#            nor the unimported module function.
+#   (E) C:   `opts_parse( … )` and `region( … )` reach the FUNCTION, not the same-named struct; `find_type( … )` never
+#            reaches `enum find_type`; window_count() and the function-like macro CLAMP keep their edges. C++ (root
+#            cpp/): `Point( v )` is a constructor call and keeps both rows it had (the struct rule is C's alone).
 #   (R) Rust (no implicit receiver either): a bare call imported from an outside crate never reaches a same-named
-#            METHOD; a same-module free function and a receiver call keep their edges.
+#            METHOD; a same-module function, `h.render()`, `History::new()`, `History::render( &h )` and
+#            `Self::width()` keep their edges.
 #   (F) propagation: --callers and --impact of the in-repo decoys no longer list the false callers.
-#   (G) disclosure: every call the arms above unbind is a `C external` census row (empty targets), and every root's
-#            census dispositions still sum to calls= with unaccounted=0.
-#   (H) MCP twins: find_referencing_symbols and find_symbol carry exactly the CLI's rows (fresh TMPDIR cache).
-#   (K) the predicates can fail: a document carrying the false row is caught; an empty document is not a pass.
+#   (G) disclosure: every call the arms above unbind is a `C external` census row (empty targets); each root's map
+#            header external= equals its census `# dispositions external=` and is at least the number of expected
+#            external rows; every root's dispositions still sum to calls= with unaccounted=0.
+#   (H) MCP twins (fresh TMPDIR cache): find_referencing_symbols / find_symbol name exactly the rows the CLI's
+#            --callers / --callees answer names for the same selector (name@file), and that set is the expected one.
+#   (K) the predicates can fail: a document carrying the false row is caught; an empty or not-found document is not
+#            a pass; the census predicate rejects a bound row. Every binary run (CLI and MCP) must exit 0.
+#
+# FLOORS — named, not gated here:
+#   * implicit-receiver languages (Java, C#, C++, Kotlin, Swift, Ruby, ObjC): a bare call legitimately reaches the
+#     enclosing class's methods, so rule (1) cannot apply; a bare call into an UNRELATED class still binds (Java
+#     probed). The precise rule needs the caller's class cone — a later lane.
+#   * no-implicit-receiver languages without an arm here: PHP, Lua, Zig.
+#   * dynamic receivers (`promise.then`, `map.set`, `dict.get`, a parameter called as a function) — a later lane.
+#   * Python `max = mymax; max( a, b )`: no edge before or after (the builtin veto wins over the rebinding).
+#   * JS `const f = make(); f()` and a Go method value `f := h.append; f()`: no edge before or after.
+#   * rows() compares (kind, name, file) without the line: two same-named definitions in one file read as one row.
 #
 # Exits non-zero on any failure.
 
@@ -97,12 +116,22 @@ for line in sorted( out ):
     print( line )
 PY
 }
-# answer ROOT VERB SEL — write the verb's answer to a per-call file and echo its path
-answer(){ local f; f="$TMP/$1.$2.$( printf '%s' "$3" | tr '/:.' '___' ).xml"; rw "$1" "--$2=$3" >"$f"; printf '%s' "$f"; }
+# answer ROOT VERB SEL — write the verb's answer to a per-call file, its exit status beside it (FILE.rc), echo the path
+answer(){
+    local f; f="$TMP/$1.$2.$( printf '%s' "$3" | tr '/:.' '___' ).xml"
+    rw "$1" "--$2=$3" >"$f"; printf '%s' "$?" >"$f.rc"
+    printf '%s' "$f"
+}
+# ran_ok ROOT VERB SEL FILE — the run behind FILE exited 0 (a non-zero exit FAILs the arm, whatever it printed)
+ran_ok(){
+    local rc; rc="$( cat "$4.rc" 2>/dev/null )"
+    if [ "$rc" = "0" ]; then return 0; fi
+    no "($1) --$2=$3 exited rc=${rc:-unknown}"; return 1
+}
 # lacks ROOT VERB SEL "N FILE" … — no row names N at FILE (any kind); the root element must be present
 lacks(){
     local r="$1" v="$2" s="$3"; shift 3
-    local f got; f="$( answer "$r" "$v" "$s" )"; got="$( rows "$f" )"
+    local f got; f="$( answer "$r" "$v" "$s" )"; ran_ok "$r" "$v" "$s" "$f" || return; got="$( rows "$f" )"
     if [ "$got" = "NOROOT" ]; then no "($r) --$v=$s produced no <$v> answer about a symbol"; return; fi
     local nf
     for nf in "$@"; do
@@ -116,7 +145,7 @@ lacks(){
 # has ROOT VERB SEL "t n file" … — each named row is present (the near-miss form where other rows are not pinned)
 has(){
     local r="$1" v="$2" s="$3"; shift 3
-    local f got; f="$( answer "$r" "$v" "$s" )"; got="$( rows "$f" )"
+    local f got; f="$( answer "$r" "$v" "$s" )"; ran_ok "$r" "$v" "$s" "$f" || return; got="$( rows "$f" )"
     if [ "$got" = "NOROOT" ]; then no "($r) --$v=$s produced no <$v> answer about a symbol"; return; fi
     local row
     for row in "$@"; do
@@ -127,16 +156,31 @@ has(){
 # exactly ROOT VERB SEL "t n file;t n file" — the exact row set (";"-separated, sorted); "" = no rows at all
 exactly(){
     local r="$1" v="$2" s="$3" want="$4"
-    local f got; f="$( answer "$r" "$v" "$s" )"; got="$( rows "$f" )"
+    local f got; f="$( answer "$r" "$v" "$s" )"; ran_ok "$r" "$v" "$s" "$f" || return; got="$( rows "$f" )"
     if [ "$got" = "NOROOT" ]; then no "($r) --$v=$s produced no <$v> answer about a symbol"; return; fi
     got="$( printf '%s' "$got" | tr '\n' ';' | sed 's/;$//' )"
     if [ "$got" = "$want" ]; then ok "($r) --$v=$s rows are exactly [${want:-none}]"
     else no "($r) --$v=$s rows are [${got:-none}], want [${want:-none}]"; fi
 }
+# reaches_fn ROOT SEL NAME FILE_ERE — the callees name the FUNCTION NAME (at a file matching FILE_ERE) and no
+# struct/class/enum/typedef of that name
+reaches_fn(){
+    local r="$1" s="$2" n="$3" fre="$4"
+    local f got; f="$( answer "$r" callees "$s" )"; ran_ok "$r" callees "$s" "$f" || return; got="$( rows "$f" )"
+    if [ "$got" = "NOROOT" ]; then no "($r) --callees=$s produced no <callees> answer about a symbol"; return; fi
+    if printf '%s\n' "$got" | grep -qE "^fn $n ($fre)\$"; then ok "($r) $s → the FUNCTION $n"
+    else no "($r) $s does not reach the function $n: $( printf '%s' "$got" | tr '\n' ';' )"; fi
+    if printf '%s\n' "$got" | grep -qE "^(cls|struct|enum|union|type|typedef) $n "; then
+        no "($r) $s still lists the type $n: $( printf '%s' "$got" | tr '\n' ';' )"
+    else
+        ok "($r) $s does not list a struct/enum/typedef $n"
+    fi
+}
 
 # ── census: one per root, written FIRST so no arm reads a missing file ─────────────────────────────────────────
-for r in go js ts tsimport py c cpp rs; do
-    if ! rw "$r" --pin-census="$TMP/$r.tsv" >/dev/null; then no "($r) the census run exited non-zero"; fi
+ROOTS="go gonomod js ts tsimport py c cpp rs"
+for r in $ROOTS; do
+    if ! rw "$r" --pin-census="$TMP/$r.tsv" >"$TMP/$r.map.xml"; then no "($r) the census run exited non-zero"; fi
     if [ ! -s "$TMP/$r.tsv" ]; then no "($r) the census run wrote no census — every census arm for this root would be vacuous"; fi
 done
 # ext_row ROOT FILE CALLER CALLEE — the census holds a `C external` row for that caller and callee with no target
@@ -159,6 +203,7 @@ externals(){
     local r="$1" file="$2" caller="$3"; shift 3
     local c
     for c in "$@"; do
+        printf '%s\n' "$caller:$c" >>"$TMP/$r.nexp"
         if ext_row "$r" "$file" "$caller" "$c"; then ok "(G) ($r) census: $caller → $c is a C external row"
         else no "(G) ($r) census: no C external row for $file $caller → $c (bound, declined or dropped instead)"; fi
     done
@@ -169,6 +214,7 @@ lacks go callees algo/algo.go:Collect "append hist/history.go" "max term/termina
 lacks go callees algo/drain.go:Drain "delete hist/cache.go" "len hist/cache.go" "close hist/cache.go"
 lacks go callees tui/screen.go:Open "NewScreen tui/screen.go" "Split tui/screen.go" "len hist/cache.go"
 lacks go callees tui/paint.go:Paint "NewScreen tui/screen.go"
+lacks go callees own/extra.go:Twice "len hist/cache.go"
 echo "--- (A) near misses: true edges kept"
 exactly go callees own/own.go:Pick "fn min own/own.go;fn score own/own.go"
 has go callees util/copy.go:Dup "fn copy util/copy.go"
@@ -176,6 +222,11 @@ lacks go callees util/copy.go:Dup "len hist/cache.go"
 exactly go callees hist/history.go:Remember "method append hist/history.go"
 exactly go callees own/hook.go:Fire "var hook own/hook.go"
 exactly go callees algo/route.go:Route "fn Pick own/own.go"
+has go callees own/extra.go:Twice "fn min own/own.go" "fn score own/own.go" "var hook own/hook.go"
+exactly go callees dot/dot.go:UseDot "fn Pick own/own.go"
+exactly go callees algo/usesub.go:UseSub "fn Helper sub/lib/lib.go"
+exactly go callees algo/fnval.go:UseFnVal "fn apply algo/fnval.go"
+exactly gonomod callees app/app.go:Run "fn Pick own/own.go"
 
 echo "=== (B) JS: globals, required packages, accessors ==="
 lacks js callees lib/response.js:length "stringify lib/query.js"
@@ -187,6 +238,8 @@ lacks js callees tests/response.test.js:checkStatus "request helpers/context.js"
 exactly js callees lib/globals.js:summarize ""
 lacks js callees lib/encode.js:toQuery "stringify lib/query.js"
 lacks js callees lib/encode.js:readCookies "parse lib/query.js"
+lacks js callees lib/aliases.js:a "stringify lib/query.js"
+lacks js callees lib/aliases.js:b "fetch lib/shadow.js"
 echo "--- (B) near misses: true edges kept"
 exactly js callees tests/context.test.js:makeCtx "fn request helpers/context.js"
 exactly js callees tests/context.test.js:encodeQuery "fn stringify lib/query.js"
@@ -196,6 +249,8 @@ exactly js callees lib/arrow.js:clean "fn normalize lib/arrow.js"
 exactly js callees lib/response.js:parseType "method from lib/content-type.js"
 has js callees lib/response.js:redirect "method set lib/response.js"
 has js callees lib/request.js:host "method get lib/request.js"
+exactly js callees esm/ns.mjs:nsUse "fn stringify lib/query.js"
+exactly js callees esm/ns.mjs:defUse "fn max lib/util.js"
 
 echo "=== (C) TS: globals and outside packages ==="
 lacks ts callees src/utils/token.ts:fetchKeys "fetch src/base.ts"
@@ -209,45 +264,43 @@ exactly ts callees src/app.ts:serve "cls App src/base.ts;method dispatch src/bas
 exactly ts callees src/client.ts:probe ""
 exactly ts callees src/client.ts:check ""
 exactly tsimport callees src/use.ts:load "fn fetch src/client.ts"
+exactly ts callees src/ns.ts:nsUse "fn stringify src/helpers.ts"
+exactly ts callees src/ns.ts:nsVerify "fn verify src/utils/token.ts"
+exactly ts callees src/script.ts:report "fn track src/globals.d.ts"
 
 echo "=== (D) Python: an imported function beats same-named methods; a bare call never reaches a method ==="
 exactly py callees src/ui/widget.py:prune_children "fn match src/ui/css/match.py"
+exactly py callees src/ui/star.py:use_star "fn match src/ui/css/match.py"
 lacks py callees src/ui/widget.py:run_all "process src/ui/worker.py"
 echo "--- (D) near misses: true edges kept, and the builtin pins"
 exactly py callees src/ui/use_lists.py:grow "fn append src/ui/lists.py"
 exactly py callees src/ui/use_lists.py:twice "fn helper src/ui/use_lists.py"
 exactly py callees src/ui/worker.py:Worker "fn _default src/ui/worker.py"
+exactly py callees src/ui/star.py:use_var "var handler src/ui/star.py"
+exactly py callees src/ui/star.py:build "cls Worker src/ui/worker.py"
+exactly py callees src/ui/star.py:fmt "fn format src/ui/text.py"
 lacks py callees src/ui/widget.py:read_config "open src/ui/worker.py"
 lacks py callees src/ui/report.py:render "format src/ui/text.py"
 
 echo "=== (E) C: a call never reaches a struct or an enum; C++ construction is untouched ==="
-f="$( answer c callees copy.c:copy_command )"; got="$( rows "$f" )"
-if [ "$got" = "NOROOT" ]; then no "(c) --callees=copy.c:copy_command produced no <callees> answer"
-else
-    if printf '%s\n' "$got" | grep -qE '^fn opts_parse (arguments\.c|mux\.h)$'; then
-        ok "(c) copy_command → the FUNCTION opts_parse"
-    else
-        no "(c) copy_command does not reach the function opts_parse: $( printf '%s' "$got" | tr '\n' ';' )"
-    fi
-    if printf '%s\n' "$got" | grep -qE '^(cls|struct|enum|type|typedef) opts_parse '; then
-        no "(c) copy_command still lists struct opts_parse: $( printf '%s' "$got" | tr '\n' ';' )"
-    else
-        ok "(c) copy_command does not list struct opts_parse"
-    fi
-fi
+reaches_fn c copy.c:copy_command opts_parse 'arguments\.c|mux\.h'
+reaches_fn c usemacro.c:clampit region 'region\.c|usemacro\.c'
+has c callees usemacro.c:clampit "macro CLAMP macro.h"
 exactly c callees copy.c:classify "fn window_count window.c"
 exactly cpp callees use.cpp:origin "cls Point point.hpp;fn Point point.hpp"
 
 echo "=== (R) Rust: no implicit receiver either — a bare call never reaches a method ==="
 lacks rs callees src/lib.rs:draw "render src/history.rs"
 exactly rs callees src/lib.rs:paint "fn helper src/lib.rs;method render src/history.rs"
+exactly rs callees src/assoc.rs:build "method new src/assoc.rs;method render src/history.rs"
+exactly rs callees src/assoc.rs:count "method width src/assoc.rs"
 
 echo "=== (F) propagation: the decoys' callers and impact ==="
 exactly go callers hist/history.go:append "fn Remember hist/history.go"
 lacks go impact hist/history.go:append "Collect algo/algo.go"
 lacks go impact hist/cache.go:len "Collect algo/algo.go" "Drain algo/drain.go" "Open tui/screen.go" "Dup util/copy.go"
 exactly go callers util/copy.go:copy "fn Dup util/copy.go"
-exactly js callers lib/query.js:stringify "fn emit lib/shadow.js;fn encodeQuery tests/context.test.js"
+exactly js callers lib/query.js:stringify "fn emit lib/shadow.js;fn encodeQuery tests/context.test.js;fn nsUse esm/ns.mjs"
 exactly js callers helpers/stream.js:destroy ""
 exactly ts callers src/base.ts:fetch ""
 exactly py callers src/ui/fuzzy.py:match ""
@@ -258,6 +311,7 @@ externals go util/copy.go Dup len
 externals go algo/drain.go Drain delete len close
 externals go tui/screen.go Open NewScreen Split len
 externals go tui/paint.go Paint NewScreen
+externals go own/extra.go Twice len
 externals js lib/response.js length stringify
 externals js lib/response.js redirect URL
 externals js lib/request.js host URL
@@ -267,6 +321,8 @@ externals js tests/response.test.js checkStatus request
 externals js lib/globals.js summarize log keys max from resolve
 externals js lib/encode.js toQuery stringify
 externals js lib/encode.js readCookies parse
+externals js lib/aliases.js a stringify
+externals js lib/aliases.js b fetch
 externals ts src/utils/token.ts fetchKeys fetch
 externals ts src/utils/token.ts decodePart parse
 externals ts src/utils/sig.ts checkSig verify
@@ -275,7 +331,16 @@ externals tsimport src/remote.ts pull fetch
 externals py src/ui/widget.py run_all process
 externals c copy.c classify find_type
 externals rs src/lib.rs draw render
-for r in go js ts tsimport py c cpp rs; do
+for r in $ROOTS; do
+    hdr="$( grep -oE '<!-- files=[^>]*-->' "$TMP/$r.map.xml" | head -1 )"
+    if [ -z "$hdr" ]; then no "(G) ($r) the census run printed no map header"; continue; fi
+    hx="$( printf '%s' "$hdr" | grep -oE ' external=[0-9]+' | grep -oE '[0-9]+$' )"; hx="${hx:-0}"   # absent = 0
+    cx="$( grep -m1 '^# dispositions ' "$TMP/$r.tsv" | grep -oE ' external=[0-9]+' | grep -oE '[0-9]+$' )"
+    nx="$( sort -u "$TMP/$r.nexp" 2>/dev/null | wc -l | tr -d ' ' )"
+    if [ -z "$cx" ]; then no "(G) ($r) the census dispositions carry no external= count"
+    elif [ "$hx" != "$cx" ]; then no "(G) ($r) header external=$hx but census external=$cx — two derivations disagree"
+    elif [ "$hx" -lt "$nx" ]; then no "(G) ($r) header external=$hx is below the $nx external call(s) this gate expects"
+    else ok "(G) ($r) header external=$hx == census external=$cx >= $nx expected"; fi
     DL="$( grep -m1 '^# dispositions ' "$TMP/$r.tsv" 2>/dev/null )"
     if [ -z "$DL" ]; then no "(G) ($r) the census carries no '# dispositions' line"; continue; fi
     if python3 - "$DL" <<'PY'
@@ -294,15 +359,15 @@ PY
 done
 
 echo "=== (H) MCP twins (fresh TMPDIR: the MCP cache lives there) ==="
-mcp_json(){
+mkdir -p "$TMP/mcp"
+# mcp_names TOOL ARGS FIELD OUT — the de-duplicated "name@file" entries of one array of the answer, sorted and
+# ";"-joined, into OUT; the server's exit status into OUT.rc; NOJSON when there is no such array
+mcp_names(){
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
-        | TMPDIR="$TMP/mcp" "$BIN" --mcp 2>/dev/null | tail -1
-}
-mkdir -p "$TMP/mcp"
-# mcp_names TOOL ARGS FIELD — the "name@file" entries of one array of the answer, sorted, ";"-joined; NOJSON if none
-mcp_names(){
-    mcp_json "$1" "$2" | python3 -c '
+        | TMPDIR="$TMP/mcp" "$BIN" --mcp >"$4.raw" 2>/dev/null
+    printf '%s' "$?" >"$4.rc"
+    tail -1 "$4.raw" | python3 -c '
 import json, sys
 try:
     r = json.load( sys.stdin ); d = json.loads( r[ "result" ][ "content" ][ 0 ][ "text" ] )
@@ -311,27 +376,31 @@ except Exception:
 arr = d.get( sys.argv[ 1 ] )
 if arr is None:
     print( "NOJSON" ); sys.exit( 0 )
-print( ";".join( sorted( "%s@%s" % ( e.get( "name" ), e.get( "file" ) ) for e in arr ) ) )' "$3"
+print( ";".join( sorted( { "%s@%s" % ( e.get( "name" ), e.get( "file" ) ) for e in arr } ) ) )' "$3" >"$4"
 }
 # margs ROOT SELECTOR — the tool arguments (built by printf: no brace expansion can split them)
 margs(){ printf '{"path":"%s","symbol":"%s"}' "$CORPUS/$1" "$2"; }
-mcp_is(){
-    local what="$1" got="$2" want="$3"
-    if [ "$got" = "NOJSON" ]; then no "(H) $what: no JSON answer with that array"
-    elif [ "$got" = "$want" ]; then ok "(H) $what = [${want:-none}]"
-    else no "(H) $what = [${got:-none}], want [${want:-none}]"; fi
+# mcp_twin ROOT CLI_VERB SEL TOOL FIELD WANT — CLI rows (as name@file) == WANT, and the MCP array == the CLI rows
+mcp_twin(){
+    local r="$1" v="$2" sel="$3" tool="$4" field="$5" want="$6"
+    local f got cli out mrc mcp
+    f="$( answer "$r" "$v" "$sel" )"; ran_ok "$r" "$v" "$sel" "$f" || return; got="$( rows "$f" )"
+    if [ "$got" = "NOROOT" ]; then no "(H) ($r) --$v=$sel produced no answer about a symbol"; return; fi
+    cli="$( printf '%s\n' "$got" | awk 'NF == 3 { print $2 "@" $3 }' | sort -u | tr '\n' ';' | sed 's/;$//' )"
+    out="$TMP/mcp.$r.$tool.$( printf '%s' "$sel" | tr '/:.' '___' )"
+    mcp_names "$tool" "$( margs "$r" "$sel" )" "$field" "$out"
+    mrc="$( cat "$out.rc" 2>/dev/null )"; mcp="$( cat "$out" 2>/dev/null )"
+    if [ "$mrc" != "0" ]; then no "(H) ($r) MCP $tool $sel: the server exited rc=${mrc:-unknown}"; return; fi
+    if [ "$mcp" = "NOJSON" ]; then no "(H) ($r) MCP $tool $sel: no JSON answer with $field"; return; fi
+    if [ "$cli" != "$want" ]; then no "(H) ($r) CLI --$v=$sel names [${cli:-none}], want [${want:-none}]"
+    elif [ "$mcp" != "$cli" ]; then no "(H) ($r) MCP $tool $sel $field = [${mcp:-none}] but the CLI names [${cli:-none}]"
+    else ok "(H) ($r) MCP $tool $sel $field == CLI --$v == [${want:-none}]"; fi
 }
-mcp_is "find_referencing_symbols hist/history.go:append calledBy" \
-    "$( mcp_names find_referencing_symbols "$( margs go hist/history.go:append )" calledBy )" \
-    "Remember@hist/history.go"
-mcp_is "find_symbol Collect calls" \
-    "$( mcp_names find_symbol "$( margs go algo/algo.go:Collect )" calls )" ""
-mcp_is "find_symbol Pick calls (near miss)" \
-    "$( mcp_names find_symbol "$( margs go own/own.go:Pick )" calls )" "min@own/own.go;score@own/own.go"
-mcp_is "find_symbol prune_children calls" \
-    "$( mcp_names find_symbol "$( margs py src/ui/widget.py:prune_children )" calls )" "match@src/ui/css/match.py"
-mcp_is "find_symbol fetchKeys calls" \
-    "$( mcp_names find_symbol "$( margs ts src/utils/token.ts:fetchKeys )" calls )" ""
+mcp_twin go callers hist/history.go:append find_referencing_symbols calledBy "Remember@hist/history.go"
+mcp_twin go callees algo/algo.go:Collect find_symbol calls ""
+mcp_twin go callees own/own.go:Pick find_symbol calls "min@own/own.go;score@own/own.go"
+mcp_twin py callees src/ui/widget.py:prune_children find_symbol calls "match@src/ui/css/match.py"
+mcp_twin ts callees src/utils/token.ts:fetchKeys find_symbol calls ""
 
 echo "=== (K) the predicates can fail ==="
 printf '<callees of="x" defs="1"><s t="method" n="append" p="hist/history.go:6"/></callees>' >"$TMP/k1.xml"
@@ -350,5 +419,11 @@ else ok "(K) ext_row rejects a bound census row"; fi
 printf 'C\texternal\t1\t0\t-\talgo/algo.go::Collect#1\tappend\t\t10\n' >"$TMP/k.tsv"
 if ext_row k algo/algo.go Collect append; then ok "(K) ext_row reads a planted external row back"
 else no "(K) ext_row missed a planted external row"; fi
+printf '1' >"$TMP/k4.rc"
+if ( ran_ok k callees x "$TMP/k4" ) >/dev/null; then no "(K) ran_ok accepted a run that exited 1"
+else ok "(K) ran_ok fails a run that exited non-zero"; fi
+rm -f "$TMP/k5.rc"
+if ( ran_ok k callees x "$TMP/k5" ) >/dev/null; then no "(K) ran_ok accepted a run with no recorded exit status"
+else ok "(K) ran_ok fails a run with no recorded exit status"; fi
 
 if [ "$fail" -eq 0 ]; then echo "ALL PASS"; else echo "FAILURES ABOVE"; exit 1; fi
