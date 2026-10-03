@@ -451,6 +451,23 @@ cat >"$FX/jsm/c.js" <<'EOF'
 function reqFn(x) { return x; }
 module.exports = { reqFn };        // @JM_CJS
 EOF
+# The import rule's near misses: the imported module exports a NON-function of that name while another directory's
+# same-STEM module defines a function of it; and a bare package specifier whose name an in-tree file happens to define.
+mkdir -p "$FX/jsm/other" "$FX/jsm/pkgs"
+cat >"$FX/jsm/d.js" <<'EOF'
+export const notFn = 1;
+EOF
+cat >"$FX/jsm/other/d.js" <<'EOF'
+export function notFn(x) { return x; }
+EOF
+cat >"$FX/jsm/pkgs/lodashish.js" <<'EOF'
+export function pkgFn(x) { return x; }
+EOF
+cat >"$FX/jsm/e.js" <<'EOF'
+import { notFn } from './d.js';     // d.js's notFn is a const
+import { pkgFn } from 'lodashish';  // a bare package specifier: outside the tree, whatever an in-tree file defines
+export const USES = [notFn, pkgFn]; // @JM_NEAR
+EOF
 
 cat >"$FX/jsx/App.jsx" <<'EOF'
 function handleClick(e) { return e; }
@@ -592,9 +609,19 @@ def alias_fn(req):
 EOF
 cat >"$FX/pyi/uses_import.py" <<'EOF'
 from handlers_mod import imp_fn, alias_fn as af  # @PI_IMPORT not a row
+from consts_mod import pv
 
 IMPORTED = [imp_fn]  # @PI_TABLE
 ALIASED = [af]  # @PI_ALIAS F3
+NEAR = [pv]  # @PI_NEAR consts_mod.pv is a module variable
+EOF
+cat >"$FX/pyi/consts_mod.py" <<'EOF'
+pv = 1
+EOF
+mkdir -p "$FX/pyi/elsewhere"
+cat >"$FX/pyi/elsewhere/consts_mod.py" <<'EOF'
+def pv():
+    return 2
 EOF
 
 # Cross-file, linkage and cross-language collisions (review fix 3).
@@ -965,6 +992,10 @@ arm "F3 floor (JS): aliasFn spelled af — no row" jsm --callers=aliasFn attr:de
 arm "JM3 callers reqFn: the CommonJS export row only — a destructured require binding is F3" \
     jsm --callers=reqFn attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@JM_CJS;into=module.exports.reqFn' 'novr:bind=@JM_TABLE' 'novr:bind=@JM_REQUIRE'
 arm "JM4 negatives: an ES export clause is no row" jsm --callers=esOnly attr:defs=1 noattr:value_refs nvr:0
+arm "JM6 negatives: an import of a module whose same-named export is a CONST never reaches another directory's same-stem function" \
+    jsm --callers=other/d.js:notFn attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@JM_NEAR'
+arm "JM7 negatives: a bare package specifier resolves to no in-tree file, whatever a tree file defines" \
+    jsm --callers=pkgFn attr:defs=1 noattr:value_refs nvr:0
 arm "JM5 negatives: export default is no row" jsm --callers=esDefault attr:defs=1 noattr:value_refs nvr:0
 
 echo "-- JSX / TSX"
@@ -1048,6 +1079,8 @@ echo "-- Python imports"
 arm "PI1 callers imp_fn: an imported name used as a value (IMPORTED[0]); the import statement is no row" \
     pyi --callers=imp_fn attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@PI_TABLE;into=IMPORTED[0]' 'novr:bind=@PI_IMPORT'
 arm "F3 floor (Py): alias_fn imported as af — no row" pyi --callers=alias_fn attr:defs=1 noattr:value_refs nvr:0
+arm "PI3 negatives: an imported module VARIABLE never reaches another package's same-named module function" \
+    pyi --callers=elsewhere/consts_mod.py:pv attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@PI_NEAR'
 
 # ── Go: map and struct literals, a slice of funcs, an http handler, a callback ────────────────────────────
 echo "-- Go"
