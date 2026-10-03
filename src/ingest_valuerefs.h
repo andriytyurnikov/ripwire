@@ -121,6 +121,7 @@ struct VrScope
 {
     TSNode                        node {};
     bool                          isFunction = false;
+    bool                          isClass    = false;   // a class body: its names are attributes, never visible inside its methods
     std::vector<std::string_view> decls;           // every name this scope declares (parameters included)
     std::vector<std::string_view> params;          // positional parameter names, in order ("" when unnamed)
     std::string_view              fnName;          // the function's own name, when it has one
@@ -178,7 +179,6 @@ public:
 
         VrScope file;
         file.node = root;
-        collectDecls( root, file.decls );
         m_scopes.push_back( std::move( file ) );
 
         TSTreeCursor cur = ts_tree_cursor_new( root );
@@ -294,6 +294,28 @@ private:
         return declaratorName( ts_node_is_null( inner ) ? ts_node_named_child( d, 0 ) : inner, depth + 1 );
     }
 
+    // A prototype (`int helper( int );`, `int *make( void );`) declares a FUNCTION, not an object: it hides nothing.
+    // A function POINTER wraps its name in parentheses first (`int (*fp)( int )`) and is an object — the walk stops at
+    // the parenthesized declarator and answers false.
+    bool declaresFunction( TSNode d, int depth = 0 ) const noexcept
+    {
+        if( ts_node_is_null( d ) || depth > 16 )
+        {
+            return false;
+        }
+        const char* t = ts_node_type( d );
+        if( kindIs( t, "function_declarator" ) )
+        {
+            const char* inner = ts_node_type( child( d, m_fDeclarator ) );
+            return kindIs( inner, "identifier" ) || kindIs( inner, "field_identifier" ) || kindIs( inner, "qualified_identifier" );
+        }
+        if( kindIs( t, "pointer_declarator" ) || kindIs( t, "reference_declarator" ) )
+        {
+            return declaresFunction( child( d, m_fDeclarator ), depth + 1 );
+        }
+        return false;
+    }
+
     // The identifiers a binding PATTERN declares (JS destructuring, Python targets, Go identifier lists).
     void patternNames( TSNode n, std::vector<std::string_view>& out, int depth = 0 ) const
     {
@@ -382,7 +404,8 @@ private:
                     {
                         do
                         {
-                            if( ts_tree_cursor_current_field_id( &c.cur ) == m_fDeclarator )
+                            if( ts_tree_cursor_current_field_id( &c.cur ) == m_fDeclarator
+                                && !declaresFunction( ts_tree_cursor_current_node( &c.cur ) ) )
                             {
                                 const std::string_view nm = declaratorName( ts_tree_cursor_current_node( &c.cur ) );
                                 if( !nm.empty() )
@@ -446,7 +469,7 @@ private:
                 {
                     patternNames( ts_node_named_child( n, 0 ), out );
                 }
-                else if( ( kindIs( t, "import_from_statement" ) || kindIs( t, "import_statement" ) ) && m_scopes.size() > 0 )
+                else if( ( kindIs( t, "import_from_statement" ) || kindIs( t, "import_statement" ) ) && m_scopes.size() > 1 )
                 {
                     // An import INSIDE a function binds a local; at file scope it is resolved through the import table.
                     ChildCursor c( n );
@@ -493,53 +516,6 @@ private:
             }
             case VrFam::None: break;
         }
-    }
-
-    // Every name declared inside `scopeNode`, NOT descending into a nested scope or a class body.
-    void collectDecls( TSNode scopeNode, std::vector<std::string_view>& out ) const
-    {
-        TSTreeCursor  cur   = ts_tree_cursor_new( scopeNode );
-        std::uint32_t depth = 0;
-        for( ;; )
-        {
-            const TSNode n = ts_tree_cursor_current_node( &cur );
-            const char*  t = ts_node_type( n );
-            const bool   isRoot = depth == 0;
-            bool descend = depth < kVrMaxDepth;
-            if( !isRoot && scopeKindOf( t ) != ScopeKind::None )
-            {
-                descend = false;   // a nested scope collects its own; a class body is not this scope's
-            }
-            else
-            {
-                harvest( n, t, out );
-            }
-            if( descend && ts_tree_cursor_goto_first_child( &cur ) )
-            {
-                ++depth;
-                continue;
-            }
-            bool done = false;
-            for( ;; )
-            {
-                if( depth == 0 )
-                {
-                    done = true;
-                    break;
-                }
-                if( ts_tree_cursor_goto_next_sibling( &cur ) )
-                {
-                    break;
-                }
-                ts_tree_cursor_goto_parent( &cur );
-                --depth;
-            }
-            if( done )
-            {
-                break;
-            }
-        }
-        ts_tree_cursor_delete( &cur );
     }
 
     std::vector<std::string_view> pyParamNames( TSNode params ) const
@@ -682,21 +658,39 @@ private:
         {
             a.namedIndex = m_anc.back().childNamed++;
         }
-        const ScopeKind sk      = m_anc.empty() ? ScopeKind::None : scopeKindOf( a.kind );
-        const bool      fnScope = sk == ScopeKind::Function;
-        if( fnScope || sk == ScopeKind::Block )
+        // DECLARE ON ENCOUNTER (one walk, not a pre-pass per scope — the pre-pass doubled the node visits and cost
+        // ~10% of a cold Python/JS run): every scope this walk tracks is opened here, and every declaring node adds
+        // its names to the innermost open scope as it is entered, i.e. before the uses below it are visited. The
+        // languages declare before use (C, Go, JS let/const; a Python local used before its assignment is an
+        // UnboundLocalError), with one exception handled where it opens: a Python comprehension's element precedes
+        // its `for` clause, so a Block scope pre-reads its for-clause targets.
+        const ScopeKind sk = m_anc.empty() ? ScopeKind::None : scopeKindOf( a.kind );
+        if( sk != ScopeKind::None )
         {
             VrScope s;
             s.node       = n;
-            s.isFunction = fnScope;
-            if( fnScope )
+            s.isFunction = sk == ScopeKind::Function;
+            s.isClass    = sk == ScopeKind::Class;
+            if( s.isFunction )
             {
                 functionSignature( n, a.kind, s );
             }
-            collectDecls( n, s.decls );
+            else if( sk == ScopeKind::Block )
+            {
+                ChildCursor c( n );
+                forEachNamedChild( n, c.cur, [ & ]( TSNode k )
+                {
+                    if( kindIs( ts_node_type( k ), "for_in_clause" ) )
+                    {
+                        patternNames( child( k, m_fLeft ), s.decls );
+                    }
+                    return true;
+                } );
+            }
             m_scopes.push_back( std::move( s ) );
             a.opensScope = true;
         }
+        harvest( n, a.kind, m_scopes.back().decls );
         m_anc.push_back( a );
         const std::size_t i = m_anc.size() - 1;
         if( m_fam == VrFam::Py && kindIs( a.kind, "decorated_definition" ) )
@@ -737,7 +731,12 @@ private:
     {
         for( std::size_t k = m_scopes.size(); k > 1; --k )
         {
-            if( std::ranges::find( m_scopes[k - 1].decls, name ) != std::ranges::end( m_scopes[k - 1].decls ) )
+            const VrScope& sc = m_scopes[k - 1];
+            if( sc.isClass && k != m_scopes.size() )
+            {
+                continue;   // a class attribute is not visible inside the class's methods
+            }
+            if( std::ranges::find( sc.decls, name ) != sc.decls.end() )
             {
                 return k - 1;
             }
@@ -985,6 +984,12 @@ private:
         {
             return;
         }
+        // The shadow test FIRST: most identifiers in a value position are a parameter or local (`f(x)`), and the
+        // position's slot text (callee, container) is only worth building for a name that can still be a function.
+        if( declaringScope( name ) != 0 )
+        {
+            return;   // a parameter or local of that name hides the function
+        }
         std::size_t j = i;
         while( j > 1 && transparent( j ) )
         {
@@ -994,10 +999,6 @@ private:
         if( !classify( i, j, s ) )
         {
             return;
-        }
-        if( declaringScope( name ) != 0 )
-        {
-            return;   // a parameter or local of that name hides the function
         }
         const bool fileShadow = std::ranges::find( m_scopes.front().decls, name ) != std::ranges::end( m_scopes.front().decls );
 
@@ -1476,11 +1477,11 @@ private:
             sc.pending.push_back( std::move( r ) );
             return;
         }
-        if( std::ranges::find( m_scopes.front().decls, x ) != std::ranges::end( m_scopes.front().decls ) )
-        {
-            r.qualifier = "f";
-            m_filePending.push_back( std::move( r ) );
-        }
+        // Not declared in any enclosing function: a file-scope container — declared above, or BELOW this function
+        // (a Python/JS table usually follows the functions that index it). The file-end filter keeps it only when this
+        // file fed that container a function value.
+        r.qualifier = "f";
+        m_filePending.push_back( std::move( r ) );
     }
 
     VrFam                          m_fam;

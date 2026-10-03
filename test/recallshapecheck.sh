@@ -604,6 +604,11 @@ static int stored(int x) { return x; }
 static int (*tbl[])(int) = { stored };          /* @CXA_TBL */
 int use_tbl(int i) { return tbl[i](i); }
 int ext_fn(int x) { return x; }                 /* external linkage: other files may name it */
+int far_fn(int x) { return x; }                 /* external linkage, named from c.c through a prototype */
+EOF
+cat >"$FX/cx/c.c" <<'EOF'
+int far_fn(int);                                /* a PROTOTYPE declares a function: it hides nothing */
+int (*proto_tbl[])(int) = { far_fn };           /* @CXC_PROTO */
 EOF
 cat >"$FX/cx/b.c" <<'EOF'
 static int stored = 7;                          /* a non-function global named like a.c's static function */
@@ -896,6 +901,8 @@ arm "CX5 callers pa.py:py_val: not pb.py's same-named module variable" \
     cx --callers=pa.py:py_val attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@CXQ_A;into=PT[0]' 'novr:bind=@CXQ_B'
 arm "CX7 callers a.c:ext_fn: an extern function is hidden in b.c by b.c's own file-scope object of that name — no row" \
     cx --callers=a.c:ext_fn attr:count=0 noattr:value_refs nvr:0 'novr:bind=@CXB_EXT'
+arm "CX8 callers a.c:far_fn: an extern function named through a prototype in c.c is a row (the prototype hides nothing)" \
+    cx --callers=a.c:far_fn attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@CXC_PROTO;into=proto_tbl[0]'
 arm "CX6 safe-delete a.c:handler_a: still a dead-code candidate with risk=none-found" \
     cx --safe-delete=a.c:handler_a attr:callers=0 attr:dead_code_candidate=1 attr:risk=none-found noattr:value_refs
 

@@ -317,12 +317,23 @@ private:
             return {};
         }
         const VrLangFamily  fam = valueRefFamily( r.lang );
-        std::vector<NodeId> sameFile, other;
+        // A C/C++ PROTOTYPE (a bodyless declaration) names the function its definition lives in: it is the target only
+        // when no definition with a body is visible — a prototype in this file never hides the extern definition.
+        std::vector<NodeId> sameFile, other, declsHere;
         for( const NodeId id : it->second )
         {
             const Symbol& s = m_ing.symbols[id];
             if( valueRefFamily( s.lang ) != fam )
             {
+                continue;
+            }
+            const bool prototype = fam == VrLangFamily::C && s.sigEndByte >= s.endByte;
+            if( prototype )
+            {
+                if( s.fileId == r.fileId )
+                {
+                    declsHere.push_back( id );
+                }
                 continue;
             }
             ( s.fileId == r.fileId ? sameFile : other ).push_back( id );
@@ -334,7 +345,7 @@ private:
         const bool fileShadow = r.qualifier.size() >= 2 && r.qualifier[1] == '1';
         if( fileShadow || other.empty() )
         {
-            return {};
+            return fileShadow ? std::vector<NodeId>{} : declsHere;
         }
         const std::string_view refPath = m_ing.files[ r.fileId ];
         std::vector<NodeId>    out;
@@ -400,7 +411,7 @@ private:
         }
         std::sort( out.begin(), out.end() );
         out.erase( std::unique( out.begin(), out.end() ), out.end() );
-        return out;
+        return out.empty() ? declsHere : out;
     }
 
     const IngestResult&                                  m_ing;
