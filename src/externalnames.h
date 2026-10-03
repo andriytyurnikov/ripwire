@@ -56,6 +56,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <span>
 #include <string_view>
@@ -335,16 +336,26 @@ static_assert( isStrictlySortedTable( kJsGlobalFunctionNames ), "kJsGlobalFuncti
 static_assert( isStrictlySortedTable( kJsGlobalAliasNames ), "kJsGlobalAliasNames must be strictly sorted (binary search)" );
 static_assert( isStrictlySortedTable( kGoBuiltinNames ), "kGoBuiltinNames must be strictly sorted (binary search)" );
 
-// FE-A: membership in one of the sorted tables above (graph.h FalseEdgeRules reads them by name), and "is `name` a JS/TS
-// global at all" — an object (`JSON`, also a constructor when called bare) or a function (`fetch`).
-inline bool inSortedTable( std::span<const std::string_view> table, std::string_view name ) noexcept
+// FE-A: which JS/TS global table holds `name` (graph.h FalseEdgeRules, ingest_jsimports.h) — an object (`JSON`; also a
+// constructor when called bare), a function (`fetch`), or a name for the global object itself (`globalThis`).
+enum class JsGlobal : std::uint8_t { None, Object, Function, GlobalObject };
+inline JsGlobal jsGlobalKindOf( std::string_view name ) noexcept
 {
-    return std::ranges::binary_search( table, name, rw::sortutil::svLess );
+    const auto holds = [ name ]( std::span<const std::string_view> table ) { return std::ranges::binary_search( table, name, rw::sortutil::svLess ); };
+    if( holds( kJsGlobalObjectNames ) )
+    {
+        return JsGlobal::Object;
+    }
+    if( holds( kJsGlobalFunctionNames ) )
+    {
+        return JsGlobal::Function;
+    }
+    return holds( kJsGlobalAliasNames ) ? JsGlobal::GlobalObject : JsGlobal::None;
 }
 inline bool isJsGlobalName( std::string_view name ) noexcept
 {
-    const std::span<const std::string_view> tables[] = { kJsGlobalObjectNames, kJsGlobalFunctionNames };
-    return std::ranges::any_of( tables, [ & ]( std::span<const std::string_view> t ) { return inSortedTable( t, name ); } );
+    const JsGlobal kind = jsGlobalKindOf( name );
+    return kind == JsGlobal::Object || kind == JsGlobal::Function;
 }
 
 }   // namespace externalnames

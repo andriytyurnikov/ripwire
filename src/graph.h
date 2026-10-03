@@ -1909,6 +1909,15 @@ inline ExternalVetoTables buildExternalVetoTables( const IngestResult& ing )
     return t;
 }
 
+// "<id>#name" into the caller's reused buffer — the key the Phase-5 and FE-A tables are spelled in (no allocation).
+inline const std::string& fileNameKey( std::string& key, std::uint32_t id, std::string_view name )
+{
+    key.clear();
+    Narrower::appendUint( key, id );
+    key.append( 1, '#' ).append( name );
+    return key;
+}
+
 // ── Phase 5: the external-name VETO predicate (docs/EVALS.md "Phase 5", mechanism 1) ───────────────────
 // `isExternalBound` says whether a call the ladder would otherwise SPRAY by name is provably bound outside
 // the indexed tree. Every branch that returns true is a name-resolution FACT of the language, never a guess
@@ -1935,19 +1944,16 @@ struct ExternalVeto
 
     bool hasLocal( const Reference& ref, std::string_view name ) const
     {
-        key.clear();  Narrower::appendUint( key, ref.fromSymbol );  key.push_back( '#' );  key.append( name );
-        return localNameSet.find( key ) != localNameSet.end();
+        return localNameSet.contains( fileNameKey( key, ref.fromSymbol, name ) );
     }
     char importVerdict( const Reference& ref, std::string_view name ) const
     {
-        key.clear();  Narrower::appendUint( key, ref.fileId );  key.push_back( '#' );  key.append( name );
-        const auto it = tables.importBind.find( key );
+        const auto it = tables.importBind.find( fileNameKey( key, ref.fileId, name ) );
         return ( it == tables.importBind.end() ) ? '\0' : it->second;
     }
     bool pythonDefEvidence( const Reference& ref ) const
     {
-        key.clear();  Narrower::appendUint( key, ref.fileId );  key.push_back( '#' );  key.append( ref.calleeName );
-        if( tables.fileScopeDef.find( key ) != tables.fileScopeDef.end() )
+        if( tables.fileScopeDef.contains( fileNameKey( key, ref.fileId, ref.calleeName ) ) )
         {
             return true;   // a same-file module-level def of the builtin's name shadows the builtin
         }
@@ -2793,16 +2799,6 @@ struct DispositionTally
 // Go package whose name differs from its path's last element is not recognised as an import (its calls keep the
 // ladder); a JS `require` inside a function body and browser-only globals are not modelled; a JS script's top-level
 // function reached from another script by a bare global-table name would read as external.
-// "<id>#name" into the caller's reused buffer — the key every FE-A table is spelled in (jsImportKey's shape, no allocation).
-inline const std::string& fileNameKey( std::string& key, std::uint32_t id, std::string_view name )
-{
-    key.clear();
-    Narrower::appendUint( key, id );
-    key.push_back( '#' );
-    key.append( name );
-    return key;
-}
-
 struct FalseEdgeRules
 {
     enum class Verdict : std::uint8_t { Keep, Narrow, External, Local };   // Local: no reachable candidate and no proof the name is
@@ -2990,7 +2986,8 @@ struct FalseEdgeRules
             case Lang::Go:
             {
                 // only a predeclared function is provably outside the tree; anything else is a local closure or a miss
-                return externalnames::inSortedTable( externalnames::kGoBuiltinNames, r.calleeName ) ? Verdict::External : Verdict::Local;
+                const bool predeclared = std::ranges::binary_search( externalnames::kGoBuiltinNames, std::string_view( r.calleeName ), rw::sortutil::svLess );
+                return predeclared ? Verdict::External : Verdict::Local;
             }
             case Lang::JavaScript: case Lang::TypeScript:
             {
@@ -3086,9 +3083,10 @@ struct FalseEdgeRules
         {
             return Verdict::Keep;
         }
-        const bool globalObject = externalnames::inSortedTable( externalnames::kJsGlobalObjectNames, root );
-        const bool globalAlias  = externalnames::inSortedTable( externalnames::kJsGlobalAliasNames, root ) && externalnames::isJsGlobalName( r.calleeName );
-        return ( globalObject || globalAlias ) ? Verdict::External : Verdict::Keep;
+        const externalnames::JsGlobal kind = externalnames::jsGlobalKindOf( root );
+        const bool viaGlobal = kind == externalnames::JsGlobal::Object
+                            || ( kind == externalnames::JsGlobal::GlobalObject && externalnames::isJsGlobalName( r.calleeName ) );
+        return viaGlobal ? Verdict::External : Verdict::Keep;
     }
     // JS/TS bare call: through an outside alias, or to a global no binding of the file hides
     Verdict jsBareDecide( const Reference& r ) const
@@ -3103,7 +3101,7 @@ struct FalseEdgeRules
     {
         if( a.fromIdentifier )   // `const { x } = G`: foreign iff G is a global object no binding in the file hides
         {
-            return externalnames::inSortedTable( externalnames::kJsGlobalObjectNames, a.source ) && !jsFileBinds( r, a.source );
+            return externalnames::jsGlobalKindOf( a.source ) == externalnames::JsGlobal::Object && !jsFileBinds( r, a.source );
         }
         return jsModuleIsForeign( a.source, jsVocabulary );
     }
