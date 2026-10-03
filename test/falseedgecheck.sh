@@ -38,7 +38,8 @@
 #            and a name destructured from require('cookie') never reach an in-repo function, getter, method or object
 #            property. Near misses keep: a destructured relative require, a relative-module receiver, relative ES
 #            namespace and default imports (esm/), a file-local `const JSON` shadow, a same-file `function fetch`, a
-#            const arrow function, `ContentType.from` on the in-repo class, `this.set`/`this.get`.
+#            const arrow function, `ContentType.from` on the in-repo class, `this.set`/`this.get`, and an object's METHOD
+#            destructured from a relative require (`const { tidy } = require( './methods' ); tidy( s )`).
 #   (C) TS:  the global fetch never reaches a class FIELD named fetch, JSON.parse never reaches an exported `parse`,
 #            crypto.subtle.verify never reaches an exported `verify`, `import * as qs from 'qs'` never reaches an
 #            in-repo `stringify`; a file that imports nothing does not reach another file's exported `fetch` (root
@@ -251,6 +252,7 @@ has js callees lib/response.js:redirect "method set lib/response.js"
 has js callees lib/request.js:host "method get lib/request.js"
 exactly js callees esm/ns.mjs:nsUse "fn stringify lib/query.js"
 exactly js callees esm/ns.mjs:defUse "fn max lib/util.js"
+exactly js callees lib/usemethods.js:cleanAll "method tidy lib/methods.js"
 
 echo "=== (C) TS: globals and outside packages ==="
 lacks ts callees src/utils/token.ts:fetchKeys "fetch src/base.ts"
