@@ -21,6 +21,7 @@
 #include "gitmine.h"
 #include "lexical.h"
 #include "recall.h"
+#include "valuerefs.h"          // reference-as-value round: the per-index ValueRefIndex cache (valueRefIndexOf)
 #include "situ.h"
 #include "workspace.h"          // multi-root `paths` array (A11): root hygiene + labels + merge
 #include "infra/statclock.h"    // rw::saturatingNanoseconds — the staleness stat reads without signed overflow past 2262
@@ -528,6 +529,14 @@ struct McpIndex
     // working-set personalization (feature 2, Cody-style): the uncommitted-diff mask `rank` was teleport-biased
     // toward, as of the LAST rebuild — kept so mcpStale() can detect "same tree, different diff" (see below).
     std::uint64_t                     workingSetHash = 0;   // FNV-1a of the changed-file id list used to build `rank`
+
+    // Reference-as-value round: the value-reference index (src/valuerefs.h) is O(references) to build, which on a large
+    // tree is most of a warm 1-hop call's cost — so it is built once per index CONTENT and reused. Keyed on the S1
+    // content stamp and the reference count it was built from; a rebuilt index (any content change moves contentHash)
+    // never reuses it. Pure cache: it is a function of `ing`, so no output byte depends on whether it was warm.
+    mutable std::shared_ptr<const ValueRefIndex> valueRefs;
+    mutable std::uint64_t                        valueRefsStamp = 0;
+    mutable std::size_t                          valueRefsRefCount = 0;
 
     // ── P1-15 incremental-pass disclosure (the `_reingest` envelope field; mcpReingestField below).
     //
@@ -1098,6 +1107,18 @@ inline void maybePrefetchHeadSnapshot( const std::string& root, std::size_t file
         catch( ... ) { /* optional work — drop silently (§2b rule 3) */ }
         if( timingsOn ) { rw::emitTo( stderr, "ripwire-prefetch done root={}\n", root.c_str() ); std::fflush( stderr ); }
     } ).detach();
+}
+
+// The value-reference index of `ix`, built on first use and reused while the index content is unchanged.
+inline const ValueRefIndex& valueRefIndexOf( const McpIndex& ix )
+{
+    if( !ix.valueRefs || ix.valueRefsStamp != ix.contentHash || ix.valueRefsRefCount != ix.ing.references.size() )
+    {
+        ix.valueRefs         = std::make_shared<const ValueRefIndex>( ix.ing );
+        ix.valueRefsStamp    = ix.contentHash;
+        ix.valueRefsRefCount = ix.ing.references.size();
+    }
+    return *ix.valueRefs;
 }
 
 // the cached index for `root`, rebuilt only when stale (otherwise returned as-is, no parse, no graph rebuild).

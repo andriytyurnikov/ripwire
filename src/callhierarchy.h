@@ -25,6 +25,7 @@
 #include "model.h"
 #include "valuerefs.h" // the reference-as-value rows both surfaces serve beside the call rows
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -109,7 +110,8 @@ inline std::pair<std::string_view, bool> callHierarchyNextSelector( const Ingest
     return { name, true };
 }
 
-inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph& g, std::string_view selector, bool wantCallers )
+inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph& g, std::string_view selector, bool wantCallers,
+                                            const ValueRefIndex* valueIndex = nullptr )   // the MCP server passes its cached one
 {
     CallHierarchyRows out;
     // X9(b): "file:name" disambiguates here (the same rule --around/--lego/--edit-check use through
@@ -181,7 +183,8 @@ inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph
     // Reference-as-value round: the <vr> rows beside the call rows — the binding sites of `matches` (callers), or what
     // `matches` stores/passes and may call through (callees). Never merged into `rows`: they are not calls.
     {
-        const ValueRefIndex vri( ing );
+        const std::optional<ValueRefIndex> local = valueIndex == nullptr ? std::optional<ValueRefIndex>( std::in_place, ing ) : std::nullopt;
+        const ValueRefIndex&               vri   = valueIndex != nullptr ? *valueIndex : *local;
         out.valueRefs = wantCallers ? valueRefCallerRows( ing, vri, out.matches ) : valueRefCalleeRows( ing, vri, out.matches );
     }
     if( wantCallers )

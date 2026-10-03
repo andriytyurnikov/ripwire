@@ -693,7 +693,7 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
     const IngestResult& ing = ix.ing;
     const Graph&        g   = ix.g;
 
-    const CallHierarchyRows chRows = rw::callHierarchyRows( ing, g, name, /*wantCallers=*/referencingOnly );
+    const CallHierarchyRows chRows = rw::callHierarchyRows( ing, g, name, /*wantCallers=*/referencingOnly, &valueRefIndexOf( ix ) );
     if( chRows.matches.empty() )
     {
         return {};
@@ -702,7 +702,7 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
     // collected with a second pass in the callee direction — one computation each, never a hand-rolled walk.
     const CallHierarchyRows chCallers = referencingOnly
                                             ? CallHierarchyRows{}
-                                            : rw::callHierarchyRows( ing, g, name, /*wantCallers=*/true );
+                                            : rw::callHierarchyRows( ing, g, name, /*wantCallers=*/true, &valueRefIndexOf( ix ) );
     const std::vector<NodeId>& calledBy = referencingOnly ? chRows.rows : chCallers.rows;
     const std::vector<NodeId>& calls    = chRows.rows;
 
@@ -2701,8 +2701,7 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     ImportTier imports = impactImportTier( ing, seeds );
     sizeImportTier( imports, page.limit, symbol );   // cut-fix C: limit sizes the tier, as on the CLI
     // Reference-as-value round: SYM's binding sites, the CLI --impact's value_refs=/<vrs> by the same call.
-    const ValueRefIndex imVri( ing );
-    const ValueRefRows  imValueRefs = valueRefCallerRows( ing, imVri, seeds );
+    const ValueRefRows  imValueRefs = valueRefCallerRows( ing, valueRefIndexOf( ix ), seeds );
     rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause,
                   reach.empty() ? "" : kImpactDepthLegend,           // 0.6.5: exactly when d=/by_depth= ride, as on the CLI
                   kImpactImportTierLegend,
@@ -2979,7 +2978,7 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
     // here while the CLI still reports it through the name filter — a surface divergence, not a narrowing.
     std::vector<NodeId> elixirDefs = resolveAllByNameQualified( ing, symbol );
     std::erase_if( elixirDefs, [ & ]( NodeId node ) { return ing.symbols[ node ].lang != Lang::Elixir; } );
-    const UsesValueFilter valueFilter( ing, sym, defs );   // the CLI --uses' value-site filter, shared (valuerefs.h)
+    const UsesValueFilter valueFilter( ing, sym, defs, &valueRefIndexOf( ix ) );   // the CLI --uses' value-site filter, shared (valuerefs.h)
     for( std::uint32_t refIndex = 0; refIndex < ing.references.size(); ++refIndex )
     {
         const Reference& r = ing.references[refIndex];
@@ -3164,7 +3163,7 @@ inline std::optional<std::string> pathText( const std::string& root, const std::
     // verb has no legend of its own either, and the two dialects must not differ on what they explain.
     // H5: the same brief floor legend + marker the CLI --path prints (verbs_navigate.h) — one wording, two transports.
     // Reference-as-value round: the CLI --path's to_value_refs=, by the same call.
-    const std::size_t ptToValueRefs = toValueRefsCount( ing, pth.empty(), dstDefs );
+    const std::size_t ptToValueRefs = toValueRefsCount( ing, pth.empty(), dstDefs, &valueRefIndexOf( ix ) );
     rw::emitTo( mem, "<!-- ripwire path: one DIRECTED call path from= to to= (each <s> a hop); reachable= is 0 and hops= 0 when the "
                        "graph holds none. {}{}{}-->{}", unprovenDefsVerbLegend( UnprovenDefsVerb::Path, unprovenDefs > 0 ).c_str(),
                   toValueRefsLegend( ptToValueRefs > 0 ),

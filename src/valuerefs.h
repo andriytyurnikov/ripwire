@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -688,9 +689,10 @@ inline std::string valueRefsJson( const IngestResult& ing, const ValueRefRows& r
 class UsesValueFilter
 {
 public:
-    UsesValueFilter( const IngestResult& ing, std::string_view name, std::span<const NodeId> valueDefs )
+    UsesValueFilter( const IngestResult& ing, std::string_view name, std::span<const NodeId> valueDefs, const ValueRefIndex* cached = nullptr )
     {
-        const ValueRefIndex vri( ing );
+        const std::optional<ValueRefIndex> local = cached == nullptr ? std::optional<ValueRefIndex>( std::in_place, ing ) : std::nullopt;
+        const ValueRefIndex&               vri   = cached != nullptr ? *cached : *local;
         for( std::uint32_t i = 0; i < ing.references.size(); ++i )
         {
             const Reference& r = ing.references[i];
@@ -736,9 +738,13 @@ private:
 
 // --path / path_between: with NO directed call path (`unreachable`), how often `dstDefs` are used as values; 0 when a
 // path exists, so the attribute is absent and the answer byte-identical.
-inline std::size_t toValueRefsCount( const IngestResult& ing, bool unreachable, std::span<const NodeId> dstDefs )
+inline std::size_t toValueRefsCount( const IngestResult& ing, bool unreachable, std::span<const NodeId> dstDefs, const ValueRefIndex* cached = nullptr )
 {
-    return unreachable ? valueRefCallerRows( ing, ValueRefIndex( ing ), dstDefs ).rows.size() : 0;
+    if( !unreachable )
+    {
+        return 0;
+    }
+    return cached != nullptr ? valueRefCallerRows( ing, *cached, dstDefs ).rows.size() : valueRefCallerRows( ing, ValueRefIndex( ing ), dstDefs ).rows.size();
 }
 
 inline std::string valueRefsCountAttrXml( std::size_t n ) { return countFieldOrEmpty( "value_refs", n, /*json=*/false ); }
