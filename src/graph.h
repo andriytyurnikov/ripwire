@@ -2778,8 +2778,8 @@ struct DispositionTally
 //       with no go.mod above the caller proves nothing and keeps the ladder.
 // Never retargets a decided edge and never declines: a removed candidate is one the call cannot reach, an emptied set is
 // external= (one `C external` census row), and every other call keeps the unchanged ladder.
-// CONSERVATIVE KEEPS. A method of the caller's own class (or of the class whose body is the caller) survives rule (1):
-// Python evaluates a decorator in class scope, and the ladder's answer there is kept rather than guessed at.
+// CLASS-BODY KEEP. A function of the class whose BODY is the caller survives rule (1): Python evaluates a class body as a
+// scope, so `DEFAULTS = _default()` there reaches the `_default` defined above it.
 // STATED FLOORS (named in test/falseedgecheck.sh's header): implicit-receiver languages (Java, C#, C++, Kotlin, Swift,
 // Ruby, ObjC) are untouched — a bare call there reaches the enclosing class's methods; PHP, Lua and Zig have no arm; a
 // Go package whose name differs from its path's last element is not recognised as an import (its calls keep the
@@ -2856,15 +2856,12 @@ struct FalseEdgeRules
         return s.kind == SymKind::Method || s.kind == SymKind::Field
             || ( s.lang == Lang::Python && s.kind == SymKind::Function && !s.scope.empty() && classNames.find( s.scope ) != classNames.end() );
     }
-    // CONSERVATIVE KEEP: the candidate belongs to the caller's own class, or to the class whose body is the caller.
+    // CLASS-BODY KEEP: a call in a class BODY (the caller is the class itself — Python's `DEFAULTS = _default()`) reaches
+    // the functions defined earlier in that body. A METHOD's bare call does not reach its siblings (that needs `self.`).
     bool callerOwnClass( const Symbol& caller, const Symbol& cand ) const
     {
-        if( cand.scope.empty() )
-        {
-            return false;
-        }
         const bool callerIsClass = caller.kind == SymKind::Class || caller.kind == SymKind::Struct || caller.kind == SymKind::Interface;
-        return cand.scope == ( callerIsClass ? caller.name : caller.scope );
+        return callerIsClass && !cand.scope.empty() && cand.scope == caller.name;
     }
     bool cannotReach( const Reference& r, const Symbol& caller, const Symbol& cand, std::string_view callerDir ) const
     {

@@ -47,7 +47,9 @@
 #            `verify`/`fetch`, `new App()` + `app.dispatch()`, an ambient `declare function track` (globals.d.ts)
 #            called from a file that imports nothing; ESM default/named imports of outside packages stay unbound (pin).
 #   (D) Python (src/ layout): an imported or STAR-imported module function `match` is the edge — not the two
-#            same-named methods; a bare `process()` that only a METHOD defines has no edge. Near misses keep: imported
+#            same-named methods; a bare `process()` that only a METHOD defines has no edge, and neither has a method's
+#            bare `helper()` beside its own class's and a sibling class's `helper` (siblings.py — the shape the S6-C
+#            locality fixtures used before FE-A; they moved to Kotlin, where a bare call IS a `this` call). Near misses keep: imported
 #            in-repo `append` and `format`, a same-module helper, a module-level callable VARIABLE, a bare class
 #            construction `Worker()`, a class-body call. Pins: bare builtins `open`/`format` reach neither the method
 #            nor the unimported module function.
@@ -274,6 +276,7 @@ echo "=== (D) Python: an imported function beats same-named methods; a bare call
 exactly py callees src/ui/widget.py:prune_children "fn match src/ui/css/match.py"
 exactly py callees src/ui/star.py:use_star "fn match src/ui/css/match.py"
 lacks py callees src/ui/widget.py:run_all "process src/ui/worker.py"
+lacks py callees src/ui/siblings.py:run "helper src/ui/siblings.py"
 echo "--- (D) near misses: true edges kept, and the builtin pins"
 exactly py callees src/ui/use_lists.py:grow "fn append src/ui/lists.py"
 exactly py callees src/ui/use_lists.py:twice "fn helper src/ui/use_lists.py"
@@ -331,6 +334,7 @@ externals ts src/utils/sig.ts checkSig verify
 externals ts src/client.ts encode stringify
 externals tsimport src/remote.ts pull fetch
 externals py src/ui/widget.py run_all process
+externals py src/ui/siblings.py run helper
 externals c copy.c classify find_type
 externals rs src/lib.rs draw render
 for r in $ROOTS; do
