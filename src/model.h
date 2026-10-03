@@ -358,9 +358,21 @@ inline bool isJsTsBuiltinMember( std::string_view ctor, std::string_view name ) 
 //             68 files, so the most-depended-upon data structure in this repo read as a graph isolate.
 //             Distinct from Extends (a base clause) and from isCompose (a member variable's declared type) —
 //             those two are SPECIFIC declaration forms and are unchanged; this is the general mention.
-enum class RefRole : std::uint8_t { Call, Read, Write, Import, Extends, Macro, Type };
+//   Value   — reference-as-value round (src/ingest_valuerefs.h, ported from codebase-memory-mcp): a function NAMED in
+//             a value position — an initialiser (struct field, dict/object/array/map literal), a call argument, an
+//             assignment's right-hand side, a parameter default, a return, a comparison, a JSX attribute, a decorator.
+//             NOT a call and never in the CSR: it powers the <vr>/value_refs= disclosure on --callers/--callees/
+//             --impact/--safe-delete/--path, role="value" on --uses, and --dead-code's value-ref-excluded=. Role-specific
+//             field reuse (graph.h valueRefIndex reads exactly these): fieldName = the slot as written (into=),
+//             recvVar = the simple container identifier, composeRel = the normalised key, qualifier = scope char +
+//             file-shadow flag, argCount = the argument index.
+//   Through — a call THROUGH a value: a called parameter, `tbl[k](…)` / `tbl.k(…)` on a container that received a
+//             function value. name = the container, fieldName = the written callee, composeRel = the key,
+//             qualifier = p|l|f, argCount = the parameter index. Joined to Value rows only (called_by=/through=, a
+//             may-call clue); never a use site, never in the CSR.
+enum class RefRole : std::uint8_t { Call, Read, Write, Import, Extends, Macro, Type, Value, Through };
 // The number of RefRole enumerators — the bound readRef validates a cached role byte against (see kSymKindCount).
-inline constexpr std::size_t kRefRoleCount = static_cast<std::size_t>( RefRole::Type ) + 1;
+inline constexpr std::size_t kRefRoleCount = static_cast<std::size_t>( RefRole::Through ) + 1;
 static_assert( enumCountIsExact<RefRole, kRefRoleCount>(), "kRefRoleCount must name the LAST RefRole enumerator — move it with the append" );
 static_assert( sizeof( RefRole ) == 1, "RefRole must be a single byte (SoA-friendly, smallest int that fits)" );
 
@@ -376,6 +388,8 @@ inline const char* refRoleTag( RefRole r ) noexcept
         case RefRole::Extends: return "extends";
         case RefRole::Macro:   return "macro";
         case RefRole::Type:    return "type";
+        case RefRole::Value:   return "value";
+        case RefRole::Through: return "through";
     }
     return "read";   // a byte past the enum; every enumerator is named above, so a NEW role is a -Werror=switch error
 }

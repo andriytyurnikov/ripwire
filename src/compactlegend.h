@@ -325,6 +325,17 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     { "bodyless_defs",     "bodyless_defs=K: K of defs= have no body, so no callees to read" },
     { "unproven_defs",     "unproven_defs=K: K same-named defs not tied to that file, in no count or row (bare name shows them)" },
     { "declined_calls",    "declined_calls=K: K call sites left unbound (no evidence chose one def), in no count or row" },
+    // Reference-as-value round (graphlegend.h kValueRefs*Legend, src/valuerefs.h): every term absent at zero, present-only.
+    // Each says what a value row does NOT mean in the same breath (checklist 3): matched by name, not a proven call.
+    { "value_refs",        "value_refs=N: N vr rows, the function used as a VALUE (stored or passed), matched by name; not a proven call, in no count or reach" },
+    { "total",             "vrs total=/shown=/capped=/next=: the value-reference window; capped=1 rows cut, next= pages every site", false, "vrs" },
+    { "into",              "vr in_id= bind= into=: enclosing symbol, binding site file:line, where the value lands", false, "vr" },
+    { "called_by",         "called_by=: functions that may call through that slot (a called parameter, tbl[k]() or tbl.k())", false, "vr" },
+    { "to",                "vr to= def=: the function used as a value and its definition; sites=N binding sites one to=/through= pair joins", false, "vr" },
+    { "through",           "through=: the written callee this function may call it through", false, "vr" },
+    { "to_value_refs",     "to_value_refs=N: to= is used as a value N times (matched by name); a run through such a slot is not a proven call and no hop here" },
+    { "value-ref-excluded", "value-ref-excluded=N: internal functions kept off because a table, field or argument holds them (matched by name, not a proven call); a floor" },
+    { "role",              "u role=value: the function is used as a VALUE there (stored or passed), matched by name; not a proven call", false, "u", MapHeaderRead::No, "value" },
     // #220 part 1: the FILE graph's gauge (graphlegend.h importsUnresolvedAttrXml), absent at zero, on the --deps/--arch/
     // --impact roots and the MCP impact twin. What it means for the numbers is the reading BESIDE it, never this row:
     // graph_partial= on --deps/--arch (next row), counts_floor= on --impact (its own row above; importers= only rises).

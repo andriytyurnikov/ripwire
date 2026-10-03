@@ -268,6 +268,7 @@ inline bool namespaceCompatible( RefRole role, SymKind kind ) noexcept
             return kind == SymKind::Macro;
         }
         case RefRole::Call: case RefRole::Read: case RefRole::Write: case RefRole::Import:
+        case RefRole::Value: case RefRole::Through:   // never in the call loop; graph.h valueRefIndex narrows by kind itself
         {
             return true;   // un-narrowed — see the doctrine above; a NEW role is a -Werror=switch decision here
         }

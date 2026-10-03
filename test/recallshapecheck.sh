@@ -343,6 +343,10 @@ namespace ns { int qf(int x) { return x; } }
 struct Cls { static int sm(int x) { return x; } };
 static int run_q(int (*f)(int)) { return f(1); }
 int useQ() { return run_q(ns::qf) + run_q(&Cls::sm); }                           // @X_F2 qualified values (floor)
+static int keepX(int v) { return v; }
+int negLam() { auto g = [lone = 3]() { return lone; }; return g(); }              // @X_N5 an init-capture named like the function
+int negCap(int lone) { auto h = [lone]() { return keepX(lone); }; return h(); }  // @X_N6 a captured parameter
+int negFor(std::vector<int>& v) { int s = 0; for (int lone : v) { s += keepX(lone); } return s; }   // @X_N7 a range-for variable
 EOF
 
 # Controls: direct calls only — no answer here may carry a value-reference attribute, row or legend clause.
@@ -1057,7 +1061,7 @@ arm "X1 callers cmpLess: the std::sort comparator argument" \
     cpp --callers=cmpLess attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@X_SORT;into=std::sort#arg2;in_id=sortAll'
 arm "X2 callers myOpen: a designated initialiser" \
     cpp --callers=myOpen attr:count=0 attr:value_refs=1 nvr:1 'vr:bind=@X_TABLE;into=table.open'
-arm "X3 negatives: lone (a string, a comment, decltype) has its one call and no value row" \
+arm "X3 negatives: lone (a string, a comment, decltype, an init-capture, a captured parameter, a range-for variable) has its one call and no value row" \
     cpp --callers=lone attr:count=1 ns:1 noattr:value_refs nvr:0
 arm "F2 floor: ns::qf passed as a qualified value — no row" cpp --callers=qf attr:defs=1 noattr:value_refs nvr:0
 arm "F2 floor: &Cls::sm passed as a qualified value — no row" cpp --callers=sm attr:defs=1 noattr:value_refs nvr:0
@@ -1102,7 +1106,7 @@ arm "D2 callees legend (compact): through=, to=, sites=, may call" \
     c --callees=use_literal 'legend:through=' 'legend:to=' 'legend:sites=' 'legend:may call' 'legend:not a proven call'
 arm "D2 impact legend (compact)" c --impact=my_open 'legend:value_refs=' 'legend:not a proven call'
 arm "D2 safe-delete legend (compact)" c --safe-delete=my_open 'legend:value_refs=' 'legend:not a proven call'
-arm "D2 uses legend (compact) defines role=value" c --uses=my_open 'legend:|value' 'legend:not a proven call'
+arm "D2 uses legend (compact) defines role=value" c --uses=my_open 'legend:role=value' 'legend:not a proven call'
 arm "D2 dead-code legend (compact) defines value-ref-excluded=" c --dead-code 'legend:value-ref-excluded=' 'legend:not a proven call'
 arm "D2 path legend (compact) defines to_value_refs=" c --path=use_callback,on_event 'legend:to_value_refs=' 'legend:not a proven call'
 arm "D2 runaway legend defines the <vrs> window" big --callers=hot 'legend:vrs' 'legend:capped='

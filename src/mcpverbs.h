@@ -801,6 +801,23 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
     {
         out += ",\"calls\":" + rowArray( calls, pwPrimary );
     }
+    // Reference-as-value round: the CLI's <vrs> window, the same rows (callhierarchy.h computed them once): valueRefs =
+    // where the symbol is USED AS A VALUE (the --callers side), valueCallees = what it stores/passes and may call
+    // through (the --callees side, find_symbol only). Absent when empty; value_refs is the callers-side count, beside
+    // count= on find_referencing_symbols and never in it.
+    {
+        const VrRender          vr { sqSingleRoot, sqRootPrefix };
+        const ValueRefRows&     callerSide = referencingOnly ? chRows.valueRefs : chCallers.valueRefs;
+        if( referencingOnly )
+        {
+            out += valueRefsCountKeyJson( callerSide.rows.size() );
+        }
+        out += valueRefsJson( ing, callerSide, true, vr, "valueRefs", "--uses=" + name );
+        if( !referencingOnly )
+        {
+            out += valueRefsJson( ing, chRows.valueRefs, false, vr, "valueCallees", "--uses=" + name );
+        }
+    }
     // §H4 §3.4: find_symbol / find_referencing_symbols are the MCP twins of --callees / --callers, so the
     // calledBy/calls arrays are the SAME floor the CLI rows are. JSON carries no comment node, so the marker
     // travels as the key alone; the wording that explains it lives in these two verbs' tools/list
@@ -2683,7 +2700,10 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     // Measured before the legend (#220 part 1): its imports_unresolved= decides whether that clause rides.
     ImportTier imports = impactImportTier( ing, seeds );
     sizeImportTier( imports, page.limit, symbol );   // cut-fix C: limit sizes the tier, as on the CLI
-    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause,
+    // Reference-as-value round: SYM's binding sites, the CLI --impact's value_refs=/<vrs> by the same call.
+    const ValueRefIndex imVri( ing );
+    const ValueRefRows  imValueRefs = valueRefCallerRows( ing, imVri, seeds );
+    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause,
                   reach.empty() ? "" : kImpactDepthLegend,           // 0.6.5: exactly when d=/by_depth= ride, as on the CLI
                   kImpactImportTierLegend,
                   impactTsImportLegend( imports.importsUnresolved, imports.tsconfigUnread ).c_str(),   // #220: exactly when the root carries them, as on the CLI
@@ -2691,6 +2711,7 @@ inline std::optional<std::string> impactText( const std::string& root, const std
                   kTestedLensBlindSpotLegend,                       // F-02: rides with the partition, byte-identical to the CLI twin
                   unprovenDefsVerbLegend( UnprovenDefsVerb::Impact, unprovenDefs > 0 ).c_str(),   // H1: exactly when the root carries unproven_defs=, as on the CLI
                   declinedCallsLegendWithGate( declinedCalls > 0, g.gateDeclinedCalls > 0 ),         // exactly when the root carries declined_calls=, as on the CLI
+                  valueRefsReachLegend( !imValueRefs.rows.empty() ),                                  // exactly when the root carries value_refs=, as on the CLI
                   graphCountDisclosure( rw::graphGaugeClauses( g ) ).c_str(), renderDisclosure( prD, DiscloseAs::LegendClause ).c_str() );
     // r27-emitters §P2.1: the listing is capped at 40 by rank. Without shown=/capped= a 40-row answer to
     // "is it safe to change X?" reads as the WHOLE blast radius when it can be 3% of it. Same attributes,
@@ -2706,10 +2727,11 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     const bool         imSingleRoot = ing.realPaths.empty();
     const std::string  imRootPrefix = imSingleRoot ? sarif::rootPrefixOf( root ) : std::string();
     const std::string  imRootAttr   = imSingleRoot ? ( " root=\"" + ex( root ) + "\"" ) : std::string();
-    rw::emitTo( mem, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{}{}{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}{}>",
+    rw::emitTo( mem, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{}{}{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}{}{}>",
                   ex( symbol ).c_str(), seeds.size(), reach.size(), unprovenDefsAttrXml( unprovenDefs ).c_str(),   // H1: where the CLI root carries it
                   byDepthAttrXml( byDepth ),                                                                        // 0.6.5: the CLI root's by_depth=
-                  imports.xmlAttrs.c_str(), radiusTested, radiusUntested, declinedCallsAttrXml( declinedCalls ).c_str(), imRootAttr.c_str(),
+                  imports.xmlAttrs.c_str(), radiusTested, radiusUntested, declinedCallsAttrXml( declinedCalls ).c_str(),
+                  valueRefsCountAttrXml( imValueRefs.rows.size() ), imRootAttr.c_str(),
                   pageDisclosure( ipab, sizeof( ipab ), shownRows, show.size(), ipw.end, page.limit, page.offset, true ),
                   graphCountFloorAttrXml( g ).c_str(), renderDisclosure( prD, DiscloseAs::XmlAttrs ).c_str(),   // M15: gauge + marker
                   nextAttrXml( nextFlag( "--safe-delete=", symbol ) ).c_str()  );   // P3 (L7): the CLI twin's next=, same root attribute set (mcpclidiffcheck)
@@ -2723,7 +2745,7 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     // different element (see the CLI arm and kImpactImportTierLegend for why they are never one number).
     emitImportRowsXml( mem, ing, std::span<const std::uint32_t>( imports.files ).first( imports.shown ), imRootPrefix,
                        std::span<const char>( imports.lazy ).first( imports.shown ) );
-    rw::emitRaw( mem, "</impact>" );
+    rw::emitTo( mem, "{}</impact>", valueRefsXml( ing, imValueRefs, true, VrRender{ imSingleRoot, imRootPrefix }, "--uses=" + symbol ) );
     return mcpAnswerText( stream );   // nullopt = the buffer lost bytes (dispatch answers -32603), "" stays not-found
 }
 
@@ -2957,8 +2979,14 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
     // here while the CLI still reports it through the name filter — a surface divergence, not a narrowing.
     std::vector<NodeId> elixirDefs = resolveAllByNameQualified( ing, symbol );
     std::erase_if( elixirDefs, [ & ]( NodeId node ) { return ing.symbols[ node ].lang != Lang::Elixir; } );
-    for( const Reference& r : ing.references )
+    const UsesValueFilter valueFilter( ing, sym, defs );   // the CLI --uses' value-site filter, shared (valuerefs.h)
+    for( std::uint32_t refIndex = 0; refIndex < ing.references.size(); ++refIndex )
     {
+        const Reference& r = ing.references[refIndex];
+        if( valueFilter.skip( refIndex, r ) )
+        {
+            continue;
+        }
         const bool elixirPath = ( r.lang == Lang::Elixir && !elixirDefs.empty() );
         if( elixirPath ? !elixirResolver.reachesAny( r, elixirDefs ) : r.calleeName != sym )
         {
@@ -3019,7 +3047,8 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
                        "Reference-name-based (same heuristic level as call edges) — verify in source if a name is overloaded. "
                        "external=\"1\" means SYM has no definition in the indexed tree under ANY spelling (stdlib/third-party); "
                        "qualified file:name and \"::\" spellings whose bare name IS defined refuse instead (the CLI uses verb narrows them). "
-                       "{}{}-->{}", kUsesLegendOpen,
+                       "{}{}{}-->{}", kUsesLegendOpen,
+                  usesValueRoleLegend( std::any_of( sites.begin(), sites.end(), []( const UseSite& u ) { return u.role == RefRole::Value; } ) ),
                   capLegendClause( computePageDisclosure( upageRows, sites.size(), upw.end,
                                                           page.limit, page.offset, usDiscloseCap ).active ),
                   graphCountDisclosure( rw::graphGaugeClauses( ix.g ) ).c_str(),
@@ -3134,14 +3163,21 @@ inline std::optional<std::string> pathText( const std::string& root, const std::
     // R-E fix (2026-08-19): the same shared root-relative clause the CLI --path twin now leads with — this
     // verb has no legend of its own either, and the two dialects must not differ on what they explain.
     // H5: the same brief floor legend + marker the CLI --path prints (verbs_navigate.h) — one wording, two transports.
+    // Reference-as-value round: the CLI --path's to_value_refs=, by the same call.
+    const std::size_t ptToValueRefs = pth.empty() ? valueRefCallerRows( ing, ValueRefIndex( ing ), dstDefs ).rows.size() : 0;
     rw::emitTo( mem, "<!-- ripwire path: one DIRECTED call path from= to to= (each <s> a hop); reachable= is 0 and hops= 0 when the "
-                       "graph holds none. {}{}-->{}", unprovenDefsVerbLegend( UnprovenDefsVerb::Path, unprovenDefs > 0 ).c_str(),
+                       "graph holds none. {}{}{}-->{}", unprovenDefsVerbLegend( UnprovenDefsVerb::Path, unprovenDefs > 0 ).c_str(),
+                  toValueRefsLegend( ptToValueRefs > 0 ),
                   graphCountFloorBrief( rw::graphGaugeClauses( g ) ).c_str(), rootRelPathsLegend( ptSingleRoot ) );
     rw::emitTo( mem, "<path from=\"{}\" to=\"{}\" from_p=\"{}\" to_p=\"{}\" from_defs=\"{}\" to_defs=\"{}\"{} reachable=\"{}\" hops=\"{}\"{}{}",
                   ex( from ).c_str(), ex( to ).c_str(), loc( srcUsed ).c_str(), loc( dstUsed ).c_str(),
                   srcDefs.size(), dstDefs.size(), unprovenDefsAttrXml( unprovenDefs ).c_str(),   // H1: as the CLI root carries it
                   pth.empty() ? 0 : 1, pth.empty() ? std::size_t( 0 ) : pth.size() - 1, ptRootAttr.c_str(),
                   graphCountFloorAttrXml( g ).c_str()  );   // M15: gauge + marker
+    if( ptToValueRefs > 0 )
+    {
+        rw::emitTo( mem, " to_value_refs=\"{}\"", ptToValueRefs );   // absent at zero, as on the CLI
+    }
     if( pth.empty() )
     {
         rw::emitTo( mem, " hint=\"no directed call path — try the connect verb on {},{} (undirected: finds a shared caller), or uses/impact for non-call references\"",

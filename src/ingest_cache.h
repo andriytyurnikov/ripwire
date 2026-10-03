@@ -296,7 +296,10 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 132;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 140;          // bump on any grammar/.scm/extraction change
+                                                      // 140 = lane refval-edges (reference-as-value round): RefRole::Value /
+                                                      //    RefRole::Through rows from ingest_valuerefs.h, in BOTH families.
+                                                      //    A lane-local number above train 24's 133 — the train renumbers.
                                                       // 132 = 2026-10-02 (train 23): cache-key hygiene, not an extraction change. Every
                                                       //   branch build of this train's work ran at 129, and unmerged branch builds already
                                                       //   ran at 130 and 131 with different extraction; 132 is above all of them, so no

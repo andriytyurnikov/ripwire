@@ -23,6 +23,7 @@
 #include "filter.h"    // pathTierIndexOver / compareTierThenPath — the tier-then-path row order both surfaces serve
 #include "graph.h"     // resolveAllByNameQualified, the CSR, testSymbolForwardReach / countTestedIn / isTestedByReach
 #include "model.h"
+#include "valuerefs.h" // the reference-as-value rows both surfaces serve beside the call rows
 
 #include <string>
 #include <string_view>
@@ -79,6 +80,7 @@ struct CallHierarchyRows
     std::size_t         bodylessDefs  = 0;
     std::size_t         unprovenDefs  = 0;
     std::size_t         declinedCalls = 0;
+    ValueRefRows        valueRefs;     // reference-as-value round: <vr> rows, never in `rows` or any count above
 };
 
 // The ONE selector derivation for both callers emitters and their legend condition.
@@ -176,6 +178,12 @@ inline CallHierarchyRows callHierarchyRows( const IngestResult& ing, const Graph
     // widely-called that callee is elsewhere, not how central it is to the body that calls it. Guarded on
     // wantCallers so callees (and find_symbol's `calls`) keep the tier/path order above, byte-identical to
     // origin/main.
+    // Reference-as-value round: the <vr> rows beside the call rows — the binding sites of `matches` (callers), or what
+    // `matches` stores/passes and may call through (callees). Never merged into `rows`: they are not calls.
+    {
+        const ValueRefIndex vri( ing );
+        out.valueRefs = wantCallers ? valueRefCallerRows( ing, vri, out.matches ) : valueRefCalleeRows( ing, vri, out.matches );
+    }
     if( wantCallers )
     {
         rankBeforeCap( ing, out.rows, [ & ]( NodeId r ) { return ing.symbols[r].fileId; },
