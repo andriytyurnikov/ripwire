@@ -1185,7 +1185,7 @@ shadow and the value-reference slot text take 143, above 141's full-use file tag
 binding kinds need no bump of their own) and `kQSnapCacheScheme` 15 → 17
 (the `--quality-delta` error-masking and placeholder changes, then the dead kind agreeing with `--dead-code` on functions
 held as values). Every ingest cache written by an earlier build is refused and re-indexed once, and every
-cached quality snapshot is recomputed. The session legend dictionary is `dictv=DICTV_PLACEHOLDER`.
+cached quality snapshot is recomputed. The session legend dictionary is `dictv=04d7833c60d2d5bd entries=784`.
 
 ### Fixed — a call the language resolves outside the tree no longer binds to a same-named in-repo definition
 

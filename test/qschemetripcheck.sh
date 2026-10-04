@@ -34,6 +34,12 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-10-04, train 26a (PR #373, Ruby method lookup, merged onto main 255dc199): RE-DERIVED ONCE on the merged tree with
+#   UPDATE_GOLDEN=1 (hash 9fe75d7e33…283213). The only watched text that moved is the kParserVer declaration: 143 -> 148,
+#   above the branch's 145 and the 145–147 other branch builds have used (148's full-use file tag is 149); quality.h's
+#   kIngestParserVerMirror moves with it. kCacheVersion stays main's 28 (the branch side said 27). kQSnapCacheScheme
+#   stays 17: what a Snapshot means is unchanged — with kParserVer set back to 143, the merged tree hashes to main's pin
+#   32240f4552…2dafcc. The two feat/ruby-method-lookup entries below are the branch's own history.
 # 2026-10-04, train 25 review fixes: RE-DERIVED with UPDATE_GOLDEN=1 (hash 32240f4552…2dafcc). kParserVer 141 -> 143 (two
 #   extraction changes: a declaration named like the JS global object is a JsShadow binding; value-reference slot text
 #   is cut on a UTF-8 boundary and JS string keys are capped) with quality.h's mirror; 143 because 141's full-use file
