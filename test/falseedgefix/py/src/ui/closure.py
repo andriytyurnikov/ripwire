@@ -12,7 +12,10 @@ class Tree:
             # label_width is the enclosing method's local (the bound method): a true edge
             return label_width(x)
 
-        return [line_width(x) for x in xs]
+        widest = 0
+        for x in xs:
+            widest = max(widest, line_width(x))
+        return widest
 
 
 def wrap(reparse):
