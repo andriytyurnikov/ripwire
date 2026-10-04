@@ -15,6 +15,7 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+
 ### Added — MCP `grep` rows carry the matched text and a `fetch_body` handle (CLI parity)
 
 The MCP `grep` hit row was `{file, line, in}`: no matched text, so an agent re-read every file it had just searched, and
@@ -26,27 +27,6 @@ pin, minted from the index's own byte hash) or `handle_omitted` with the CLI leg
 `grepEncHandleCandidate`). Keys are appended after the historic ones; the CLI `--grep` answer is byte-identical. The
 `tools/list` description names the new fields. Gate: `mcptwinclaimscheck` (D); `shallowhistorycheck` sections 7–9 cover
 the three items above.
-
-### Fixed — a call the language resolves outside the tree no longer binds to a same-named in-repo definition
-
-The call graph bound a call to the in-repo definitions of its spelling even where the language's own name lookup
-cannot reach them, and every graph verb (`--callers`, `--callees`, `--impact`, `--path`, the map, the MCP twins) showed
-the result as a confident edge. Three shapes are now resolved the way the language resolves them:
-- a call with no receiver reaches no method, accessor or field in Go, Python, JavaScript/TypeScript or Rust, and a C
-  call reaches no struct or enum (`append( xs, x )` is not a call of a method named `append`; the C call of the
-  function `opts_parse()` now reaches the function, not `struct opts_parse`); a bare Go call reaches its own package
-  only; a Python name imported from a module reaches that module's definition rather than a same-named method;
-- a JavaScript/TypeScript call on a global object (`JSON.parse`, `Buffer.from`, `crypto.subtle.verify`) or to a global
-  function (`fetch`) in a file that neither imports nor declares that name;
-- a call through `require( 'pkg' )`, `import * as ns from 'pkg'` or a name destructured from a global object, and a Go
-  call through an import whose path no go.mod in the tree contains.
-Such a call has no edge and is counted `external=` where the language proves the target is outside the tree (a
-builtin, a global, an outside package or `use`, a Go predeclared function, a C library name), `unresolved=` otherwise. A
-call through a parameter or local of the calling function or of a function enclosing it (a closure), a name an import
-binds from inside the tree, and every implicit-receiver language (Java, C#, C++, Kotlin, Swift, Ruby, Objective-C) keep
-the previous resolution. On four public repositories the change keeps every caller of eight sampled definitions and
-adds callers the previous resolution declined; total call sites are unchanged. Gate: `test/falseedgecheck.sh`; the
-locality tie-break fixtures (`test/lpinfix`, `test/pincensusfix`) now use Kotlin, where a bare call is a `this` call.
 
 ### Added — a function used as a VALUE is a disclosed `<vr>` row, never a silent zero
 
@@ -541,6 +521,39 @@ build of unreleased work has used, so no cache such a build wrote is read as thi
 (the `--quality-delta` error-masking and placeholder changes, then the dead kind agreeing with `--dead-code` on functions
 held as values). Every ingest cache written by an earlier build is refused and re-indexed once, and every
 cached quality snapshot is recomputed. The session legend dictionary is `dictv=66409821069cf5cb entries=775`.
+
+### Fixed — a call the language resolves outside the tree no longer binds to a same-named in-repo definition
+
+The call graph bound a call to the in-repo definitions of its spelling even where the language's own name lookup
+cannot reach them, and every graph verb (`--callers`, `--callees`, `--impact`, `--path`, the map, the MCP twins) showed
+the result as a confident edge. Three shapes are now resolved the way the language resolves them:
+- a call with no receiver reaches no method, accessor or field in Go, Python, JavaScript/TypeScript or Rust, and a C
+  call reaches no struct or enum (`append( xs, x )` is not a call of a method named `append`; the C call of the
+  function `opts_parse()` now reaches the function, not `struct opts_parse`); a bare Go call reaches its own package
+  only; a Python name imported from a module reaches that module's definition rather than a same-named method;
+- a JavaScript/TypeScript call on a global object (`JSON.parse`, `Buffer.from`, `crypto.subtle.verify`) or to a global
+  function (`fetch`) in a file that neither imports nor declares that name;
+- a call through `require( 'pkg' )`, `import * as ns from 'pkg'` or a name destructured from a global object, and a Go
+  call through an import whose path no go.mod in the tree contains.
+Such a call has no edge and is counted `external=` where the language proves the target is outside the tree (a
+builtin, a global, an outside package or `use`, a Go predeclared function, a C library name), `unresolved=` otherwise. A
+name an import binds from inside the tree, and every implicit-receiver language (Java, C#, C++, Kotlin, Swift, Ruby,
+Objective-C), keep the previous resolution; so does, in Python, a call through a parameter or local of the calling
+function or of a function enclosing it (a closure). Go, Rust, C, JavaScript and TypeScript record no parameter for this
+rule, and no local except a TypeScript `const`, so a call through one there (`function wrap( cb ) { return () => cb(); }`,
+`func wrap( cb func() ) { cb() }`) no longer binds to a same-named method, struct or enum and counts `unresolved=`. On
+four public repositories the change keeps every caller of eight sampled definitions and adds callers the previous
+resolution declined; total call sites are unchanged. Gate: `test/falseedgecheck.sh`; the
+locality tie-break fixtures (`test/lpinfix`, `test/pincensusfix`) now use Kotlin, where a bare call is a `this` call.
+
+### Fixed — test infrastructure: the quality-snapshot scheme tripwire hashes the function it names
+
+`test/qschemetripcheck.sh` hashes the source of the functions whose change must bump `kQSnapCacheScheme`. Its extractor
+tested only a candidate's first line for a trailing `;`, so `computeSnapshot`'s two-line forward declaration was taken
+as the definition and the hash covered the next function instead: the dead-set builder itself was never watched. The
+extractor now reads the whole signature before deciding it is a prototype; two arms are red on the old extractor (a
+wrapped prototype is skipped; every watched capture is exactly one function), and the other 16 watched functions hash
+byte-identically under both. The pin is re-derived once.
 
 ### Fixed — test infrastructure: a gate killed mid-run no longer leaves its harness spinning (expandrangecheck, diagnoticecheck)
 

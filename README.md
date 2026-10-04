@@ -2743,9 +2743,11 @@ compiler. These limits follow:
 - A name that has several definitions at the same resolution tier produces one edge per candidate.
   Each edge carries the weight `1/k`. The symbol carries `amb="K"`. The header totals the events in
   `ambiguous=`.
-- Two further gauges sit beside `ambiguous=`. `unresolved=` counts calls whose in-repo definitions
-  were all language-filtered. `unindexed=` counts files no grammar could read, whose calls raise
-  neither of the other two.
+- Two further gauges sit beside `ambiguous=`. `unresolved=` counts calls left with no edge and no
+  proof that the target is outside the tree: every same-named in-repo definition is language-filtered
+  or out of the language's lookup (a method for a receiverless call, another Go package). `external=`
+  counts the calls the language does prove are outside (a builtin or global, an outside import).
+  `unindexed=` counts files no grammar could read, whose calls raise neither of the other two.
 
 The output uses these disclosure rules without exception:
 
