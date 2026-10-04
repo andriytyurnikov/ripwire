@@ -158,8 +158,8 @@ has(){
     if [ "$got" = "NOROOT" ]; then no "($r) --$v=$s produced no <$v> answer about a symbol"; return; fi
     local row
     for row in "$@"; do
-        if printf '%s\n' "$got" | grep -qxF "$row"; then ok "($r) --$v=$s keeps the true edge [$row]"
-        else no "($r) --$v=$s lost the true edge [$row]: $( printf '%s' "$got" | tr '\n' ';' )"; fi
+        if printf '%s\n' "$got" | grep -qxF "$row"; then ok "($r) --$v=$s keeps the pinned row [$row]"
+        else no "($r) --$v=$s lost the pinned row [$row]: $( printf '%s' "$got" | tr '\n' ';' )"; fi
     done
 }
 # exactly ROOT VERB SEL "t n file;t n file" — the exact row set (";"-separated, sorted); "" = no rows at all

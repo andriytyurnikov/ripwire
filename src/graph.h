@@ -2908,7 +2908,9 @@ struct DispositionTally
 //       Go adds PACKAGE scope: a bare call reaches its own package (directory) only — an unexported name always, an
 //       exported one unless the file dot-imports (a dot import brings exported names alone). The candidates the rule
 //       removes are dropped BEFORE the ladder, so when exactly one function is reachable it is the edge (Python's
-//       imported or star-imported `match`, C's `opts_parse`); when none is, the call is EXTERNAL.
+//       imported or star-imported `match`, C's `opts_parse`); when none is, the call is EXTERNAL only on proof the name is
+//       bound outside the tree (kindDecide: a Go predeclared, Python builtin or C library name, an outside import or
+//       `use`), and unresolved= otherwise (a parameter, a local, a closure: FalseEdgeRules::Verdict::Local).
 //   (2) GLOBALS. A JS/TS call on a global object (`JSON.parse`, `Buffer.from`, `crypto.subtle.verify`) or to a global
 //       function (`fetch( u )`), in a file that binds no name of that spelling (no import, require, declaration,
 //       parameter or local — ingest_jsimports.h records each), is a call into the runtime: EXTERNAL. Through an alias of
@@ -2921,7 +2923,7 @@ struct DispositionTally
 //       own test). A Go `pkg.F()` through an import whose path no in-tree go.mod module contains is EXTERNAL; a tree
 //       with no go.mod above the caller proves nothing and keeps the ladder.
 // Never retargets a decided edge and never declines: a removed candidate is one the call cannot reach, an emptied set is
-// external= (one `C external` census row), and every other call keeps the unchanged ladder.
+// external= with proof (one `C external` census row) or unresolved= without, and every other call keeps the unchanged ladder.
 // CLASS-BODY KEEP. A function of the class whose BODY is the caller survives rule (1): Python evaluates a class body as a
 // scope, so `DEFAULTS = _default()` there reaches the `_default` defined above it.
 // STATED FLOORS (named in test/falseedgecheck.sh's header): implicit-receiver languages (Java, C#, C++, Kotlin, Swift,
