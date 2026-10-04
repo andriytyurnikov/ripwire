@@ -46,6 +46,10 @@
 #       (`def self.from`) answers no call on its constant, which is refused.
 #   (g) `class << Clock` opens another object's singleton: its defs read as top-level defs, which no call with a receiver
 #       reaches, so `Clock.tick` is refused (activesupport's `class << Benchmark; def ms`).
+#   (h) a mixin's own singleton methods (`def self.x`) are read as class methods of each class that includes it. That
+#       is what Ruby does for one written inside a concern's `included do … end` block, which runs on the includer
+#       (`Engine.configurations`), but not for one in the module's body, which stays the module's: `Speaker.shout`
+#       binds to `Shouting.shout`, where Ruby raises NoMethodError. The tree does not tell the two apart.
 #
 # Usage:  test/rubyclassrecvcheck.sh   |   RIPWIRE_BIN=asan/ripwire test/rubyclassrecvcheck.sh
 # Exits non-zero on any failure. Self-contained via mktemp.
@@ -470,6 +474,40 @@ class << Clock
 end
 RUBY
 
+# floor (h): a mixin's own singleton methods are read as the includer's class methods — right for a def self.x inside
+# a concern's included block (it runs on the includer), wrong for one in the module body (it stays the module's)
+cat > "$FIX/lib/configurable.rb" <<'RUBY'
+module Configurable
+  extend ActiveSupport::Concern
+
+  included do
+    def self.configurations
+      {}
+    end
+  end
+
+  module ClassMethods
+    def configure
+      1
+    end
+  end
+end
+
+class Engine
+  include Configurable
+end
+
+module Shouting
+  def self.shout
+    1
+  end
+end
+
+class Speaker
+  include Shouting
+end
+RUBY
+
 cat > "$FIX/lib/helpers.rb" <<'RUBY'
 def format_amount( n )
   n.to_s
@@ -501,6 +539,8 @@ class Decoy
   def done?( x ); end
   def tool_reset; end
   def from( h ); end
+  def configurations; end
+  def shout; end
 end
 RUBY
 
@@ -550,6 +590,8 @@ class Caller
     Report.strike? # @concern_precedence
     Clock.tick # @foreign_singleton_floor
     Sub::Failure.new( "m" ) # @ancestor_const
+    Engine.configurations # @included_singleton_floor
+    Speaker.shout # @module_singleton_floor
   end
 end
 
@@ -720,6 +762,8 @@ only    print_me      Printable::print_me     $CALLER include_floor    "floor (b
 refused tool_reset    $CALLER runtime_extend_floor "floor (e): Tool.extend( Tool::Ext ) at run time is in no lookup"
 refused from          lib/filters.rb data_block_floor "floor (f): Filters = Data.define do … end is opened by no file"
 refused tick          $CALLER foreign_singleton_floor "floor (g): class << Clock is no open of Clock"
+only    configurations Configurable::configurations $CALLER included_singleton_floor "floor (h): a def self.x in a concern's included block is the includer's class method"
+only    shout         Shouting::shout         $CALLER module_singleton_floor "floor (h): Shouting's module-body def self.shout is read as Speaker's too, though Ruby raises NoMethodError"
 only    helper        Util::helper            $CALLER module_floor     "floor (c): a module's method answers a call on the module"
 only    new           Failure::initialize     $CALLER ancestor_const   "Sub::Failure is Base::Failure, through Sub's superclass"
 
