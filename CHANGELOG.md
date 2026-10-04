@@ -109,6 +109,10 @@ Stated floors, each pinned by `test/rubyclassrecvcheck.sh`:
 - **(f)** A class that `Struct.new( … ) do … end` or `Data.define( … ) do … end` builds is opened by no file, so a def in
   its block answers no call on its constant.
 - **(g)** `class << Clock` opens another object's singleton. Its defs read as top-level defs, which no receiver reaches.
+- **(h)** A mixin's own singleton methods (`def self.x`) answer a call on each class that includes it. That is what Ruby
+  does for one written inside a concern's `included do … end` block, which runs on the includer, but not for one in the
+  module's body, which stays the module's: there a call on the includer raises NoMethodError in Ruby and binds here. The
+  tree does not tell the two apart.
 
 Lifted: `test/rubyinheritcheck.sh` floor (c) and `test/rubyrecvnarrowcheck.sh` floor (b), the final-segment probe that
 calls on a class shared. `UsesAlpha.beta_make` no longer pins Beta::Base's method, and `Left::Shared.go` reaches Left's
@@ -485,7 +489,9 @@ Sampled against the source:
 Stated floors, each pinned by `test/rubyreachcheck.sh`:
 - **(a)** A class whose lookup can leave the class refuses nothing (see above).
 - **(b)** A class that writes the delegation DSL is exempt. Indexing delegated names as methods needs a call-to-self-only
-  visibility, so a receiver call of that name is not taken as evidence; that is a later round's job.
+  visibility, so a receiver call of that name is not taken as evidence; that is a later round's job. The DSL call itself
+  is no exception: on activesupport a `delegate :x, to: :y` line has two namesakes in reach, core_ext's `Module#delegate`
+  and `Notifications::Fanout`'s `attr_reader :delegate`, and declines.
 - **(c)** Instance and class methods share one name space: `extend M` and `include M` both put M in reach.
 - **(d)** Inside `instance_eval`, `class_eval`, `instance_exec` or `Class.new` blocks the rule reads the lexical self,
   as Rule 1 always has.
@@ -573,6 +579,15 @@ A known limit of the ladder, not of these rounds: a method Rails **generates** (
 ActiveModel's `errors`, Devise's `current_user`) has no in-tree definition. A call to it can therefore land on the
 one unrelated in-tree method of that name. For example, app A's 269 `errors` edges to one concern's
 `def errors; end` stub grow to 455.
+
+The same fix puts every attr accessor on the name ladder, so the untyped-receiver limit also reaches calls that bound
+nothing before. On activerecord `connection_class.name` now reaches `Column#name`, and on activesupport the cache's
+`entry.value` splits between `Duration#value` and `Scalar#value`; in a sample taken in review, about 4 in 10 such newly
+bound calls named `Class#name` or another class's reader. An accessor can also become a second definer: `ActiveRecord::Base.configurations` (a
+`def self.configurations` in `Core`) now meets `DatabaseConfigurations`' `attr_reader :configurations` on the ladder,
+since `ActiveRecord::Base` extends `DynamicMatchers`, whose `method_missing` leaves its class-object lookup open (the
+class-object entry above). Of the 13 methods that called `Core.configurations`, 5 now split between the two and 7
+decline; the 13th, `configs.configurations` in `DatabaseConfigurations#build_configs`, now reaches the reader, as it should.
 
 `kParserVer` 129 → 130. New records, same layout: `kCacheVersion` stays 27, and Ruby caches re-parse once.
 
