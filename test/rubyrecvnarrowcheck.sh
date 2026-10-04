@@ -278,7 +278,11 @@ echo "=== a MISS invents no edge ==="
 E="$( rowOf 'n="external_call" ' )"
 echo "$E" | grep -q '<c ' && no "Time.now minted an edge — neither Time nor now is defined in this tree: $E" || ok "Time.now → no edge (out-of-tree receiver, unchanged)"
 MM="$( rowOf 'n="missing_method_call" ' )"
-if [ "$( edgesTo "$MM" report )" -eq 0 ]
+# An absence arm must fail on a missing row: an empty rowOf counts zero edges, which alone would read as a PASS.
+if [ -z "$MM" ]
+then
+    no "the missing_method_call row is missing from the map — the zero-edge check below would pass on nothing"
+elif [ "$( edgesTo "$MM" report )" -eq 0 ]
 then
     ok "Calc.report → no edge: Calc's lookup defines no report, and Tally's class method is no method of Calc (parser version 137)"
 else
@@ -322,9 +326,13 @@ IC="$( rowOf 'n="instance_call" ' )"
 [ "$( edgesTo "$IC" scale )" -eq 2 ] && ok "c.scale( 7 ) → unchanged 2-way split (a variable receiver has no type in Ruby; floor, stated)" \
     || no "c.scale( 7 ) produced $( edgesTo "$IC" scale ) scale edges — this round must not move a variable receiver: $IC"
 CC="$( rowOf 'n="chain_call" ' )"
-CCL="$( "$BIN" "$FIX" --no-cache --callers=Calc::scale 2>/dev/null )"
-CTL="$( "$BIN" "$FIX" --no-cache --callers=Tally::scale 2>/dev/null )"
-if echo "$CCL" | grep -q 'n="chain_call"' && ! echo "$CTL" | grep -q 'n="chain_call"'
+CCL="$( "$BIN" "$FIX" --no-cache --callers=Calc::scale 2>/dev/null )"; CCL_RC=$?
+CTL="$( "$BIN" "$FIX" --no-cache --callers=Tally::scale 2>/dev/null )"; CTL_RC=$?
+# The Tally half is an absence: a crash or refusal leaves CTL empty, which `! grep` alone reads as a PASS.
+if [ "$CCL_RC" -ne 0 ] || [ "$CTL_RC" -ne 0 ]
+then
+    no "--callers=Calc::scale / --callers=Tally::scale exited $CCL_RC / $CTL_RC — the absence half cannot be read off a failed run"
+elif echo "$CCL" | grep -q 'n="chain_call"' && ! echo "$CTL" | grep -q 'n="chain_call"'
 then
     ok "Calc.new.scale( 8 ) → Calc::scale alone (floor (c) lifted: the receiver the code builds is a Calc — test/rubytypedrecvcheck.sh)"
 else

@@ -409,7 +409,11 @@ echo "=== floor (c): the base WALK — an out-of-tree base walks nowhere; a call
 CO="$( rowOf 'n="call_out_of_tree_base" ' )"
 # since parser version 137 a call on a class reads the class object's lookup (test/rubyclassrecvcheck.sh): Rec's leaves the
 # tree at ActiveRecord::Base, so the call is refused as external — once an honest split over Space::Base.make and Unrelated.make
-if [ "$( edgesTo "$CO" make )" -eq 0 ]
+# An absence arm must fail on a missing row: an empty rowOf counts zero edges, which alone would read as a PASS.
+if [ -z "$CO" ]
+then
+    no "the call_out_of_tree_base row is missing from the map — the zero-edge check below would pass on nothing"
+elif [ "$( edgesTo "$CO" make )" -eq 0 ]
 then
     ok "Rec.make has no edge: ActiveRecord::Base is not Space::Base, so the walk no longer pins it, and the lookup leaves the tree"
 else
@@ -419,7 +423,10 @@ CA="$( rowOf 'n="call_alpha" ' )"
 [ "$( edgesTo "$CA" alpha_make )" -eq 1 ] && ok "UsesAlpha.alpha_make → exactly one edge (the walk reaches Alpha::Base)" \
     || no "UsesAlpha.alpha_make produced $( edgesTo "$CA" alpha_make ) edges: $CA"
 CB="$( rowOf 'n="call_beta_through_alpha" ' )"
-if [ "$( edgesTo "$CB" beta_make )" -eq 0 ]
+if [ -z "$CB" ]
+then
+    no "the call_beta_through_alpha row is missing from the map — the zero-edge check below would pass on nothing"
+elif [ "$( edgesTo "$CB" beta_make )" -eq 0 ]
 then
     ok "UsesAlpha.beta_make has no edge — a call on a class walks fully-qualified constants (parser version 137), and Alpha::Base defines no beta_make"
 else
