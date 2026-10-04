@@ -58,10 +58,14 @@
 #   (h) LIFTED at parser version 145: a mixin's own singleton method (`def self.x` in the module's body) stays the
 #       module's (`Speaker.shout` is refused, `Shouting.shout` answers), while one written inside a concern's
 #       `included do … end` block, which runs on the includer, is the includer's (`Engine.configurations`).
-#   (i) an instance's lookup — a receiver the code builds (`svc = Service.new( 9 ); svc.call`), a bare call in an
-#       instance method — still reads the class's singleton methods as its own: `svc.call` splits between `def self.call`
-#       and the instance `call`, where Ruby runs the instance's. (The class object's lookup tells the two sides apart; an
-#       instance's does not yet.)
+#   (i) LIFTED (parser version 145, a resolver change): a call to self answers from what self is — the class object in a
+#       singleton method, an instance in a class's other defs — and a receiver the code builds is an instance:
+#       `svc = Service.new( 9 ); svc.call` reaches the instance `call`, not `def self.call`, and a bare `new` in a class
+#       method reaches its class's initialize (refused when neither the class nor one below it has one). A name only the
+#       other side defines declines: self may be another's in a block. Left as before: an instance method of a module, a
+#       def a concern defines for its includers, a class body, a module or a FactoryBot build as a receiver, and what a
+#       lookup holding a method_missing misses. The superclass a class writes is never the class itself (`class Creation <
+#       Creation` inside `module MySQL`).
 #   (j) a method_missing that only an instance answers (an instance method of the class or of a module it includes) still
 #       leaves a call on the class object to the name ladder when the lookup misses: `Proxy.anything` binds by name, where
 #       Ruby raises NoMethodError.
@@ -82,7 +86,7 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"
-for d in app/mailers app/models app/services app/services/alerts/senders lib/billing lib/shipping lib/mail_integration lib/bank_integration spec
+for d in app/mailers app/models app/services app/services/alerts/senders lib/adapters lib/billing lib/shipping lib/mail_integration lib/bank_integration spec
 do
     mkdir -p "$FIX/$d"
 done
@@ -226,6 +230,19 @@ module Billing
     def self.issue( n )
       n
     end
+
+    def void
+      true
+    end
+  end
+end
+RUBY
+
+# a top-level class of the described class's final name: described_class keeps only `Invoice`, which names this one
+cat > "$FIX/lib/invoice.rb" <<'RUBY'
+class Invoice
+  def self.void
+    false
   end
 end
 RUBY
@@ -678,6 +695,184 @@ class Dual
 end
 RUBY
 
+# a call to self answers from what self is: the class object in a singleton method, an instance in any other def
+cat > "$FIX/lib/job.rb" <<'RUBY'
+class Job
+  def self.run
+    2
+  end
+
+  def self.prepare
+    0
+  end
+end
+RUBY
+
+# the instance half in a reopening, so each arm names its def by file
+cat > "$FIX/lib/job_instance.rb" <<'RUBY'
+class Job
+  def initialize( x )
+    @x = x
+  end
+
+  def run
+    1
+  end
+
+  def perform
+    1
+  end
+end
+RUBY
+
+# a class whose initialize is outside the tree, building itself in a class method; its delegation DSL leaves step 2's
+# reach open (rubyreachcheck floor (b)), so Builder's def self.new is a class-side namesake in reach
+cat > "$FIX/lib/gauge.rb" <<'RUBY'
+class Gauge
+  include ActiveModel::Model
+  delegate :to_s, to: :value
+
+  def self.build( v )
+    new( value: v ) # @class_self_new_out_of_tree
+  end
+end
+RUBY
+
+# a class method building self: a subclass's initialize runs when self is the subclass; with none anywhere, Object's
+cat > "$FIX/lib/card.rb" <<'RUBY'
+class CardPresenter
+  def self.present( list )
+    list.map { |x| new( x ) } # @class_self_new_cone
+  end
+end
+
+class WideCardPresenter < CardPresenter
+  def initialize( x )
+    @x = x
+  end
+end
+
+class Blank
+  def self.make
+    new # @class_self_new_no_initialize
+  end
+end
+RUBY
+
+# self has no one side in a module's instance method (ActiveRecord's ConnectionHandling, extended onto Base): its call to
+# a class method the includer's concern defines stays where the ladder had it
+cat > "$FIX/lib/handling.rb" <<'RUBY'
+module Sharding
+  extend ActiveSupport::Concern
+
+  included do
+    def self.current_shard
+      :default
+    end
+  end
+end
+
+module Handling
+  def connected?
+    current_shard # @module_method_self
+  end
+end
+
+class Store2
+  extend Handling
+  include Sharding
+end
+RUBY
+
+# a singleton method_missing forwards a class's call to an instance (ActiveRecord::Migration): a bare call in a class
+# method that the class object's lookup misses is left as before, not declined for its side
+cat > "$FIX/lib/migration_like.rb" <<'RUBY'
+class Migrator
+  class << self
+    def method_missing( name, *args )
+      new.public_send( name, *args )
+    end
+
+    def maintain
+      quiet # @singleton_missing_miss
+    end
+  end
+
+  def quiet
+    1
+  end
+end
+RUBY
+
+# no class is its own superclass: `class Creation < Creation` inside `module MySQL` names the outer Creation
+cat > "$FIX/lib/adapters/creation.rb" <<'RUBY'
+module Adapters
+  class Creation
+    def column_options( o )
+      o
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/lib/adapters/mysql_creation.rb" <<'RUBY'
+module Adapters
+  module MySQL
+    class Creation < Creation
+      def visit_add( o )
+        column_options( o ) # @superclass_of_own_name
+      end
+    end
+  end
+end
+RUBY
+
+cat > "$FIX/lib/adapters/postgres_creation.rb" <<'RUBY'
+module Adapters
+  module Postgres
+    class Creation < Creation
+      def column_options( o )
+        super
+      end
+    end
+  end
+end
+RUBY
+
+# the callers in a third reopening: neither run is this file's own
+cat > "$FIX/lib/job_calls.rb" <<'RUBY'
+class Job
+  def self.perform( x )
+    run # @class_self_run
+    new( x ) # @class_self_new
+  end
+
+  class << self
+    def enqueue
+      run # @singleton_class_self_run
+    end
+  end
+
+  def work
+    run # @instance_self_run
+    self.run # @instance_self_dot_run
+    prepare # @instance_self_class_only
+  end
+end
+RUBY
+
+cat > "$FIX/lib/batch.rb" <<'RUBY'
+class Batch < Job
+  def self.run
+    3
+  end
+
+  def perform
+    run # @inherited_instance_run
+  end
+end
+RUBY
+
 cat > "$FIX/lib/helpers.rb" <<'RUBY'
 def format_amount( n )
   n.to_s
@@ -723,6 +918,8 @@ class Decoy
   def encode( x ); end
   def escape_text( s ); end
   def pick; end
+  def prepare; end
+  def perform; end
 end
 RUBY
 
@@ -795,7 +992,10 @@ class Caller
     Proxy.anything # @instance_missing_floor
     Dual.pick # @same_level_floor
     svc = Service.new( 9 )
-    svc.call # @instance_side_floor
+    svc.call # @built_instance_call
+    job = Job.new( 1 )
+    job.run # @built_instance_run
+    job.perform # @built_instance_perform
   end
 end
 
@@ -813,6 +1013,14 @@ end
 RSpec.describe Billing::Invoice do
   it "issues" do
     described_class.issue( 2 ) # @described_qualified
+  end
+end
+
+RSpec.describe Billing::Invoice do
+  subject( :invoice ) { described_class.new }
+
+  it "voids" do
+    invoice.void # @described_new_namesake
   end
 end
 
@@ -937,6 +1145,54 @@ only    tier          Ranked::tier            $CALLER class_methods_block "a cla
 only    grade         ClassMethods::grade     $CALLER class_methods_before_superclass "an extended module answers before the superclass's singleton"
 only    encode        Codec::encode           $CALLER extend_self_include "extend self: what the module includes answers a call on it"
 
+echo "=== a call to self, or on a built instance, answers from its own side (floor (i) lifted, parser version 145) ==="
+JOB=lib/job.rb; JOBI=lib/job_instance.rb; JOBC=lib/job_calls.rb
+only    run           $JOB::Job::run          $JOBC   class_self_run   "a bare call in def self.perform is the class object's: def self.run"
+only    new           Job::initialize         $JOBC   class_self_new   "a bare new in a singleton method is Class#new: it runs initialize"
+only    run           $JOB::Job::run          $JOBC   singleton_class_self_run "a def in class << self is the class object's too"
+GAUGEN="$( line lib/gauge.rb class_self_new_out_of_tree )"
+GAUGE="$( rows lib/gauge.rb "$GAUGEN" new )"
+if [ -z "$GAUGEN" ]
+then
+    no "fixture marker @class_self_new_out_of_tree missing in lib/gauge.rb"
+elif ! printf '%s\n' "$GAUGE" | grep -q "::new#"
+then
+    ok "@class_self_new_out_of_tree :new binds no class's def self.new by name: Class#new runs an initialize"
+else
+    no "@class_self_new_out_of_tree :new binds a def self.new by name; census: $( printf '%s' "$GAUGE" | tr '\t\n' ' ;' )"
+fi
+refused new           lib/card.rb class_self_new_no_initialize "a bare new with no initialize in the class or below it runs Object's: outside the tree"
+CARDN="$( line lib/card.rb class_self_new_cone )"
+CARD="$( rows lib/card.rb "$CARDN" new )"
+if [ -n "$CARDN" ] && ! printf '%s\n' "$CARD" | grep -q "^external"
+then
+    ok "@class_self_new_cone :new is not refused: self may be a class below, whose initialize runs"
+else
+    no "@class_self_new_cone :new is refused, or its marker is missing; census: $( printf '%s' "$CARD" | tr '\t\n' ' ;' )"
+fi
+only    run           $JOBI::Job::run         $JOBC   instance_self_run "a bare call in an instance method is the instance's: def run"
+only    run           $JOBI::Job::run         $JOBC   instance_self_dot_run "self.run in an instance method is the instance's"
+PREPN="$( line $JOBC instance_self_class_only )"
+PREP="$( rows $JOBC "$PREPN" prepare )"
+if [ -z "$PREPN" ]
+then
+    no "fixture marker @instance_self_class_only missing in $JOBC"
+elif ! printf '%s\n' "$PREP" | grep -q "::Job::prepare#"
+then
+    ok "@instance_self_class_only :prepare reaches no def self.prepare: an instance answers none (declined, not refused: self may be another's in a block)"
+else
+    no "@instance_self_class_only :prepare reaches def self.prepare from an instance method; census: $( printf '%s' "$PREP" | tr '\t\n' ' ;' )"
+fi
+only    run           $JOBI::Job::run         lib/batch.rb inherited_instance_run "Batch's def self.run hides nothing from an instance: Job#run answers"
+only    call          lib/service_instance.rb::Service::call $CALLER built_instance_call "svc = Service.new: the instance call, not def self.call"
+only    run           $JOBI::Job::run         $CALLER built_instance_run "a built Job is an instance: def run"
+only    perform       $JOBI::Job::perform     $CALLER built_instance_perform "a built Job is an instance: def perform, not def self.perform (job_calls.rb)"
+
+only    current_shard Sharding::current_shard lib/handling.rb module_method_self "a module's instance method has no one self: its call keeps the includer's class method"
+only    quiet         Migrator::quiet         lib/migration_like.rb singleton_missing_miss "a singleton method_missing may forward a miss to an instance: left as before"
+only    column_options lib/adapters/creation.rb::Creation::column_options lib/adapters/mysql_creation.rb superclass_of_own_name "class Creation < Creation in module MySQL names the outer Creation, not the sibling Postgres one"
+only    void          lib/billing/invoice.rb::Invoice::void $SPEC described_new_namesake "described_class.new is a Billing::Invoice, not the top-level Invoice's def self.void"
+
 echo "=== a base that forwards to an instance: the instances' lookup answers ==="
 only    welcome       UserMailer::welcome     $CALLER mailer           "ActionMailer::Base's class object runs the instance method"
 only    user=         Current::user=          $CALLER current          "ActiveSupport::CurrentAttributes forwards to the instance"
@@ -1008,13 +1264,6 @@ then
     ok "floor (k) pinned: Dual.pick splits between the two modules Dual extends"
 else
     no "floor (k): Dual.pick no longer splits between First and Second; census: $( printf '%s' "$DUAL" | tr '\t\n' ' ;' )"
-fi
-SIDE="$( rows $CALLER "$( line $CALLER instance_side_floor )" call )"
-if printf '%s\n' "$SIDE" | grep -qF "lib/service.rb::Service::call#" && printf '%s\n' "$SIDE" | grep -qF "lib/service_instance.rb::Service::call#"
-then
-    ok "floor (i) pinned: svc.call on a Service.new splits between def self.call and the instance call"
-else
-    no "floor (i): svc.call no longer splits between def self.call and the instance call; census: $( printf '%s' "$SIDE" | tr '\t\n' ' ;' )"
 fi
 only    new           Failure::initialize     $CALLER ancestor_const   "Sub::Failure is Base::Failure, through Sub's superclass"
 
