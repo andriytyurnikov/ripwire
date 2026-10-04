@@ -970,13 +970,30 @@ enum class LocalBindKind : std::uint8_t
                    //     RubyBareCallWalk::noteDeclaredCall). Read by graph.h RubyTopSelf ONLY. APPENDED, as above.
     RubySingletonDef, // parser version 137: a Ruby SINGLETON method — `def self.m`, a def or an accessor inside `class << self`
                    //     — at startByte, the def's own start (Symbol::sigStartByte); var=the method, typeName empty
-                   //     (ingest_binds.h rubyNoteSingletonDef, captureRubySingletonAccessors). A name the delegation DSL
+                   //     (ingest_binds.h rubyNoteClassSideDef, captureRubySingletonAccessors). A name the delegation DSL
                    //     defines in a `class << self` has no def: typeName=the owning class, var=the name (empty for
                    //     `delegate_missing_to`, every name). Read by graph.h's class-object lookup ONLY
-                   //     (rubyClassObjectDefs). APPENDED, as above.
+                   //     (rubyClassObjectDefs). APPENDED, as above. Parser version 145: a def that is a class method of
+                   //     each class INCLUDING its module rather than one of the module carries importedName
+                   //     kRubyIncluderMark — a singleton def inside a concern's `included do … end`, which defines it on
+                   //     the includer itself — or kRubyClassMethodsMark — a def inside its `class_methods do … end`, which
+                   //     ActiveSupport::Concern extends onto the includer (ingest_binds.h rubyDefSide).
+    RubyClassMixin, // parser version 145: a mixin the CLASS OBJECT's lookup reaches rather than its instances' — the constant
+                   //     of an `extend M`, or of an `include`/`prepend` inside `class << self` — at startByte, the
+                   //     constant's own start, where ingest_relations.h captureRubyMixinBases puts its inherit reference;
+                   //     var and typeName empty; importedName=kRubyIncluderMark when the directive sits in a concern's
+                   //     `included do … end`, which extends the includer, not the concern. A module body's `extend self`
+                   //     has no constant: var="self", at the directive's own start byte (ingest_binds.h
+                   //     captureRubyClassMixins). Read by graph.h's class-object lookup ONLY (rubyFqnAncestry). APPENDED,
+                   //     as above.
 };
 // The number of LocalBindKind enumerators — the bound readBind validates a cached kind byte against (see kSymKindCount).
-inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubySingletonDef ) + 1;
+inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::RubyClassMixin ) + 1;
+// The importedName of a Ruby class-object binding that acts on each class INCLUDING the module, not on the module
+// (LocalBindKind::RubySingletonDef, RubyClassMixin; parser version 145): written in a concern's `included do`, or a def
+// in its `class_methods do`.
+inline constexpr std::string_view kRubyIncluderMark     = "included";
+inline constexpr std::string_view kRubyClassMethodsMark = "class_methods";
 static_assert( enumCountIsExact<LocalBindKind, kLocalBindKindCount>(), "kLocalBindKindCount must name the LAST LocalBindKind enumerator — move it with the append" );
 
 inline constexpr const char* kFnBindLambdaTarget  = "(lambda)";    // parens are illegal in identifiers, so

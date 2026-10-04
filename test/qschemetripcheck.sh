@@ -34,6 +34,10 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-10-04, feat/ruby-method-lookup (PR #373 review: include and extend sides): RE-PINNED with UPDATE_GOLDEN=1 (hash
+#   2aaf4390cb…4f692eeb). kParserVer 142 -> 145: a Ruby extraction change (RubyClassMixin bindings, the includer mark), above
+#   main's 143 and 144; kCacheVersion stays 27, kQSnapCacheScheme stays 16; quality.h's kIngestParserVerMirror moves with
+#   it. The train may renumber.
 # 2026-10-04, feat/ruby-method-lookup rebased onto main 2720d1c5: RE-DERIVED ONCE with UPDATE_GOLDEN=1 (hash
 #   494bccc1ca…be6c147e). kParserVer 133 -> 142: the branch's eight Ruby extraction steps carried 130–137, and 142 is
 #   above those, main's 133 and train 25's 141; kCacheVersion stays 27, kQSnapCacheScheme stays 16; quality.h's
