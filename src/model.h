@@ -718,6 +718,14 @@ struct Reference
                                           //   (a compose ref is never a call ref, and the compose readers all gate
                                           //   on isCompose), so one slot carries both; "" otherwise
     std::string   composeRel;             // "creates" (value/inline) or "uses" (reference/pointer) when isCompose; "" otherwise
+    // FE-A (test/falseedgecheck.sh): Go, JS/TS, Rust and C record no receiver SHAPE for a member call — `x.f()`, `JSON.parse()`,
+    //   `h.render()`, C's `ops->open()` keep recv == None, exactly like a bare `f()` (ingest_binds.h receiverOf: widening recv would move every
+    //   recv==None guard). These two fields tell the shapes apart WITHOUT touching recv: memberCall is true when the callee
+    //   is the field of a member access, and memberRoot is the receiver chain's ROOT identifier as written (`crypto` for
+    //   `crypto.subtle.verify()`, `this`, a package alias), "" when the root is not an identifier (a call, a literal,
+    //   `new X()`). Read only by graph.h's FalseEdgeRules. false/"" for every other language and every non-call ref.
+    bool          memberCall = false;
+    std::string   memberRoot;
 };
 
 // A physical dependency: one #include / import directive (file → target). The target is the raw
@@ -860,9 +868,16 @@ enum class LocalBindKind : std::uint8_t
     ElixirDefault,  // var=callable name/arity, importedName=full name/arity, typeName=module; no synthetic symbol.
     ElixirImport,   // typeName=module, var=all/only/except/functions/macros; importedName=newline-delimited name/arities.
                    // spanStart/spanEnd delimit lexical visibility, starting after the directive.
+    ModuleAlias,   // FE-A (test/falseedgecheck.sh): a FILE-SCOPE name bound to a module, a module member or a member of a
+                   //     global object outside ES named-import syntax. var = the local name; typeName = the module as written
+                   //     (`import * as qs from 'qs'`, `const qs = require( 'qs' )`, `const { parse } = require( 'cookie' )`,
+                   //     Go `import c "x/y"`) — or, when isFromAssignment, the IDENTIFIER the name was destructured from
+                   //     (`const { stringify } = JSON`); importedName = the member it names, "*" for the whole module. Go:
+                   //     var "." is a dot import. fromSymbol kNoNode, spans {0,0}. Read only by graph.h FalseEdgeRules;
+                   //     every other binding consumer filters by kind or skips file-scope records. APPENDED (cache u8).
 };
 // The number of LocalBindKind enumerators — the bound readBind validates a cached kind byte against (see kSymKindCount).
-inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::ElixirImport ) + 1;
+inline constexpr std::size_t kLocalBindKindCount = static_cast<std::size_t>( LocalBindKind::ModuleAlias ) + 1;
 static_assert( enumCountIsExact<LocalBindKind, kLocalBindKindCount>(), "kLocalBindKindCount must name the LAST LocalBindKind enumerator — move it with the append" );
 
 inline constexpr const char* kFnBindLambdaTarget  = "(lambda)";    // parens are illegal in identifiers, so
@@ -873,7 +888,8 @@ struct Binding
     NodeId        fromSymbol = kNoNode;   // enclosing function/method (the binding's scope); kNoNode if file-scope
     std::uint32_t fileId     = 0;
     LocalBindKind kind       = LocalBindKind::Type;
-    bool          isFromAssignment = false;   // kind==Type: read off a C++ ASSIGNMENT's callee (`x = f( … )`), not a declaration —
+    bool          isFromAssignment = false;   // kind==ModuleAlias: typeName is an IDENTIFIER, not a module (`const { a } = JSON`).
+                                              // kind==Type: read off a C++ ASSIGNMENT's callee (`x = f( … )`), not a declaration —
                                               //   a function's name as often as a class's, so buildGraph drops it unless a class of
                                               //   that name exists (resolve.h assignmentNamesNoClass). Rides the padding after `kind`.
     std::uint32_t startByte  = 0;         // the record's own position (RawBind::startByte). ONE declaration's

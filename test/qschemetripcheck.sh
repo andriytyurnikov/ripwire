@@ -39,6 +39,12 @@ PIN="$ROOT/test/qschemetrip.hash"
 #   merged lanes' extraction changes (130 body-less C/C++ type specifier span; 131 TS/TSX await/unary type-argument
 #   calls) and train 23's 132; kCacheVersion stays 27, kQSnapCacheScheme stays 16; quality.h's kIngestParserVerMirror
 #   moves with it.
+# 2026-10-03, lane/fe-a-false-edges fix round: RE-DERIVED with UPDATE_GOLDEN=1 (hash 41dd4678dd…3e069f). kParserVer 134 -> 135 (the
+#   lane's Rust path-call extraction change; its earlier binaries ran 134 with the old extraction). kCacheVersion stays 28.
+# 2026-10-03, lane/fe-a-false-edges: RE-DERIVED with UPDATE_GOLDEN=1 (hash 30b29982af…87fa82). kParserVer 132 -> 134 (FE-A
+#   extraction: member-call shape, ModuleAlias bindings, global-name shadows; 133 is train 24's), kCacheVersion 27 -> 28
+#   (the ref record gains memberCall/memberRoot); quality.h's mirrors move with them; kQSnapCacheScheme stays 16. The
+#   train renumbers and re-derives.
 # 2026-10-02, train 23 (map data sections + edit-check pairing merged): RE-DERIVED ONCE on the merged tree with
 #   UPDATE_GOLDEN=1 (hash e355d7b821…1518a2). kParserVer 129 -> 132 for cache-key hygiene only (branch builds already ran
 #   at 129, 130 and 131; no extraction change); kCacheVersion stays 27, kQSnapCacheScheme stays 16; quality.h's
