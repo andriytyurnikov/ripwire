@@ -2232,6 +2232,10 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
             else if( le.lang == Lang::Ruby )
             { // enclosing class/module → id= addressability, per-class overload sets, editCheckImplicitReceiver
                 d.scope = rubyEnclosingScopeOf( nameNode, src );   // (test/rubyscopecheck.sh)
+                if( kind == SymKind::Method || kind == SymKind::Function )
+                {
+                    rubyNoteClassSideDef( defNode, fileId, d.name, src, binds );   // a class object's method (test/rubyclassrecvcheck.sh)
+                }
             }
             else if( le.lang == Lang::Kotlin )
             { // enclosing class/object/companion-object → same P2-D Rule-1 narrowing Python/Ruby get;
@@ -2352,6 +2356,10 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
                     r.fieldName = std::move( rs.field );                                 //   depth-2 intermediate field; "" otherwise
                     r.viaArrow  = rs.viaArrow;                                           //   `p->m()`: Rule 2b's smart-pointer pointee needs it
                     r.memberCall = rs.member;  r.memberRoot = std::move( rs.root );      //   FE-A: a Go/JS/TS/Rust member call and its receiver root
+                    if( le.lang == Lang::Ruby && r.recv == RecvKind::NamedVar )
+                    {
+                        r.fieldName = rubyReceiverWrittenPath( nameNode, r.recvVar, src );   // parser version 137: a constant's path as written
+                    }
                     auto [ ac, ak ] = callArity( nameNode, le.lang, src );               // B2.2: call-site positional arg count
                     r.argCount = ac;  r.argCountKnown = ak;                              //   → arity filter in graph.h
                 }
@@ -2399,9 +2407,28 @@ void captureTagsFacts( TSQueryCursor* cursor, const LangEntry& le, std::uint32_t
     // Parser version 121 (test/rubyattrscheck.sh): the Ruby attr family's Var defs. Appended after the
     // dead/field folds — neither touches Ruby (no preprocessor; Var is not a Field kind) — and inside the
     // same defs window, so the lex build and cache round-trip treat these defs like captured ones.
+    // Parser version 130 (test/rubybarecallcheck.sh): Ruby's bare-word calls, by Ruby's own local rule, into the
+    // same refs window — the tags query cannot tell a bare call from a local read (both are an (identifier)).
+    // Parser version 132 (test/rubytypedrecvcheck.sh): the same walk types each call receiver the file builds, written
+    // into the call references this window holds; and FactoryBot's factory definitions, into binds.
+    // Parser version 135 (test/rubyrakejbuildercheck.sh): `helper_method` declarations into binds, and a Jbuilder
+    // template's `json` — a local, typed JbuilderTemplate — in the refs window.
+    // Parser version 137 (test/rubyclassrecvcheck.sh): the accessors a `class << self` declares, into binds as singleton
+    // methods — beside each singleton def, which the def capture above notes.
+    // Parser version 145 (test/rubyclassrecvcheck.sh): the mixins the class object's lookup reaches — an `extend`, an
+    // `include` in `class << self` — into binds, beside the inherit reference each mixin already is.
     if( le.lang == Lang::Ruby )
     {
         captureRubyAttrDefs( root, fileId, src, defs );
+        captureRubyBareCalls( root, fileId, src, refs );
+        captureRubyFactories( root, fileId, src, binds );
+        captureRubyHelperMethods( root, fileId, src, binds );
+        captureRubySingletonAccessors( root, fileId, src, binds );
+        captureRubyClassMixins( root, fileId, src, binds );
+        if( le.ext == kJbuilderExt )
+        {
+            typeRubyJbuilderLocal( fileId, refs );
+        }
     }
 }
 

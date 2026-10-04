@@ -302,7 +302,15 @@ constexpr std::uint32_t kCacheVersion = 28;           // 28: FE-A (test/falseedg
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 143;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 148;          // bump on any grammar/.scm/extraction change
+                                                      // 148 = 2026-10-04 (train 26a: PR #373, Ruby method lookup, merged onto main's 143):
+                                                      //   cache-key hygiene. The branch's Ruby extraction steps ran as 130–137,
+                                                      //   142 and 145 (its notes below); main used 130–143 for other lanes, and
+                                                      //   lanes in flight hold 145–147. 148 (rich file tag 149) is above every one
+                                                      //   of them, so no cache another build wrote is read as this build's.
+                                                      //   kCacheVersion stays main's 28 (the branch said 27: its appended
+                                                      //   LocalBindKind values follow ModuleAlias here, and the parser number
+                                                      //   already keys every blob); kQSnapCacheScheme stays main's 17.
                                                       // 143 = 2026-10-04 (train 25 review fixes): two extraction changes —
                                                       //   a declaration named like the global object (`var self = this`, a
                                                       //   parameter `window`) is now a JsShadow binding, and a value-reference
@@ -329,6 +337,83 @@ constexpr std::uint32_t kParserVer    = 143;          // bump on any grammar/.sc
                                                       //   global-destructure aliases and Go import specs are ModuleAlias bindings; JsShadow
                                                       //   also covers declarations spelled like a JS global (externalnames.h tables — a
                                                       //   table edit is an extraction change). 133 is train 24's; the train renumbers.
+                                                      // --- PR #373 branch numbers (lane-local; 130–137 there are NOT main's 130–137) ---
+                                                      // 145 = 2026-10-04 (test/rubyclassrecvcheck.sh, PR #373 review): a
+                                                      //   Ruby mixin the class object's lookup reaches — an `extend`, an
+                                                      //   `include` in `class << self` — mints a LocalBindKind::
+                                                      //   RubyClassMixin binding at its constant (an appended kind), and a
+                                                      //   RubySingletonDef binding carries importedName "included" when
+                                                      //   its def is each includer's class method (a singleton def in a
+                                                      //   concern's `included do`, a def in `class_methods do`, which now
+                                                      //   mints one). Above main's 143 and 144. Same layout: kCacheVersion
+                                                      //   stays 27, kQSnapCacheScheme stays 16. A Ruby cache written at 142
+                                                      //   lacks them and must re-parse.
+                                                      // 142 = 2026-10-04 (the Ruby method-lookup branch rebased onto main 2720d1c5):
+                                                      //   cache-key hygiene, not an extraction change. The branch's eight
+                                                      //   Ruby extraction steps carried 130–137 (the notes below keep
+                                                      //   them); main took 130–133 for other lanes, and train 25 uses
+                                                      //   134, 135, 140 and 141. 142 is above all of them, so no cache
+                                                      //   another build wrote is read as this build's. Same layout:
+                                                      //   kCacheVersion stays 27, kQSnapCacheScheme stays 16.
+                                                      // 137 = 2026-10-02 (test/rubyclassrecvcheck.sh): a Ruby call whose
+                                                      //   receiver is a constant written with a path keeps the path in
+                                                      //   RawRef::fieldName (`Billing::Invoice.issue` → "Billing::
+                                                      //   Invoice"; recvVar keeps "Invoice"), and a singleton method —
+                                                      //   `def self.m`, a def or an accessor in `class << self` — mints a
+                                                      //   LocalBindKind::RubySingletonDef binding (an appended kind), both
+                                                      //   read by graph.h's class-object lookup. Same layout: kCacheVersion
+                                                      //   unchanged (27). A Ruby cache written at 136 lacks them and must
+                                                      //   re-parse.
+                                                      // 136 = 2026-10-02 (test/rubyrspectargetcheck.sh): RSpec's matcher
+                                                      //   builders (`receive`, `change`, … model.h kRspecTargets) type
+                                                      //   their receivers in an example group, and a call on a chain
+                                                      //   rooted at one is typed as the root (ingest_binds.h
+                                                      //   rubyMatcherChainType). Same layout: kCacheVersion unchanged
+                                                      //   (27). A Ruby cache written at 135 holds the untyped chains.
+                                                      // 135 = 2026-10-02 (test/rubyrakejbuildercheck.sh): `.rake` and
+                                                      //   `.jbuilder` files index as Ruby; a Jbuilder template's `json`
+                                                      //   is a local typed JbuilderTemplate, and `helper_method :m` at
+                                                      //   class-body position mints a LocalBindKind::RubyHelperMethod
+                                                      //   binding (an appended kind). New records, same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 134
+                                                      //   lacks them and must re-parse.
+                                                      // 134 = 2026-10-02 (test/rubydeclrefcheck.sh): a Rails callback,
+                                                      //   validation condition or rescue_from handler named by SYMBOL
+                                                      //   mints a Ruby call RawRef at the symbol, and `send( :m )` and
+                                                      //   its kin a renamed copy of their own call RawRef
+                                                      //   (ingest_binds.h noteDeclaredCall, sendTargets). New records,
+                                                      //   same layout: kCacheVersion unchanged (27). A Ruby cache
+                                                      //   written at 133 lacks them and must re-parse.
+                                                      // 133 = 2026-10-02 (test/rubyrspectargetcheck.sh): inside an
+                                                      //   RSpec example group, a receiver built by `expect`, `allow`,
+                                                      //   `expect_any_instance_of`, `allow_any_instance_of` or a bare
+                                                      //   `is_expected` carries RSpec's target class as its type
+                                                      //   (model.h kRspecTargets). Same layout: kCacheVersion
+                                                      //   unchanged (27). A Ruby cache written at 132 holds those
+                                                      //   receivers untyped and must re-parse.
+                                                      // 132 = 2026-10-02 (test/rubytypedrecvcheck.sh): a Ruby call
+                                                      //   receiver the file BUILDS (`Client.new`, a finder, a FactoryBot
+                                                      //   build, a let or local holding one) carries its type in the
+                                                      //   call RawRef's recvVar (model.h rubyTypedRecvToken), and each
+                                                      //   FactoryBot `factory` mints a RawBind of the APPENDED kind
+                                                      //   LocalBindKind::RubyFactory (ingest_binds.h). Same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 131
+                                                      //   holds untyped receivers and no factories and must re-parse.
+                                                      // 131 = 2026-10-02 (test/rubyreachcheck.sh): a Ruby MIXIN is an
+                                                      //   ancestor — `include`/`extend`/`prepend` at class-DSL
+                                                      //   position mints one inherit RawRef per constant, at the
+                                                      //   constant's byte (ingest_relations.h captureRubyMixinBases).
+                                                      //   New records, same layout: kCacheVersion unchanged (27). A
+                                                      //   Ruby cache written at 130 holds none of them and must re-parse.
+                                                      // 130 = 2026-10-01 (test/rubybarecallcheck.sh): Ruby's BARE-WORD call — an
+                                                      //   identifier with no receiver, arguments or parentheses, which
+                                                      //   tree-sitter-ruby parses as the same (identifier) a local read
+                                                      //   is — mints a receiver-less call RawRef wherever Ruby's own
+                                                      //   lexical rule says it is not a local (ingest_binds.h
+                                                      //   captureRubyBareCalls). New records, same layout:
+                                                      //   kCacheVersion unchanged (27). A Ruby cache written at 129
+                                                      //   holds none of them and must re-parse.
+                                                      // --- end of PR #373 branch numbers; main's history continues ---
                                                       // 133 = 2026-10-02 (train 24): cache-key hygiene above every branch build's number. Two
                                                       //   merged lanes changed extraction under their own numbers: 130 (a body-less C/C++
                                                       //   enum/struct/union/class specifier in a function signature keeps its own span, so
