@@ -302,7 +302,15 @@ constexpr std::uint32_t kCacheVersion = 28;           // 28: FE-A (test/falseedg
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 140;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 141;          // bump on any grammar/.scm/extraction change
+                                                      // 141 = 2026-10-04 (train 25): cache-key hygiene above every branch build's number.
+                                                      //   Two merged lanes changed extraction under their own numbers: FE-A 134/135
+                                                      //   (member-call shape, ModuleAlias bindings, Rust path calls; kCacheVersion 28)
+                                                      //   and refval-edges 140 (reference-as-value rows; kQSnapCacheScheme 17); main
+                                                      //   was 133. 141 is above all of them, so no cache a branch build wrote is ever
+                                                      //   read as this build's. kCacheVersion stays FE-A's 28: every ingest key also
+                                                      //   carries kParserVer (lean 141 / rich 142 file tags, and a refval-edges rich
+                                                      //   blob was c27p141 — a different format number, so never this build's c28p141).
                                                       // 140 = lane refval-edges (reference-as-value round): RefRole::Value /
                                                       //    RefRole::Through rows from ingest_valuerefs.h, in BOTH families.
                                                       //    A lane-local number above train 24's 133 — the train renumbers.
