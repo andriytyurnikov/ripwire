@@ -180,7 +180,7 @@ the declaring class or module (`ingest_binds.h captureRubyHelperMethods`).
 JbuilderTemplate. A read of it is no call. A call on it (`json.summary …`, `json.partial! …`) is a key the class's
 method_missing writes, and is refused as external unless the tree opens JbuilderTemplate.
 
-Measured with `--no-cache`, `feat/ruby-declarative-refs` (cce90ffd, parser version 134) against this change, both runs
+Measured with `--no-cache`, the Rails declared-call change below (parser version 134) against this change, both runs
 on one snapshot of each tree.
 
 | Corpus | Files added (`.jbuilder` / `.rake`) | Edges | Call-graph isolated | Template sites: an edge / refused | Task-file sites: an edge / refused |
@@ -245,7 +245,7 @@ concern's `included do` block counts; a def does not.
 The `send` family resolves exactly as the call written out would. The call's own reference is copied, renamed, and
 placed at the symbol, typed receiver included, so `helper.try( :assist )` answers from `Helper`.
 
-Measured with `--no-cache`, `feat/ruby-rspec-expectations` (d8a02633, parser version 133) against this change, both runs
+Measured with `--no-cache`, the RSpec expectation-target change below (parser version 133) against this change, both runs
 on one snapshot of each tree.
 
 | Corpus | Edges | Call-graph isolated | Sites gaining an edge (declarations / `send` family) | Newly refused |
@@ -305,7 +305,7 @@ reopened `Object`, `Kernel` or `BasicObject` can answer. Otherwise the method Ru
 refused as external. A tree that opens the class (RSpec's own source, or a patch) answers from it, as from any in-tree
 class. A tree that defines a method named after the builder (`def expect`) types nothing from that name.
 
-Measured with `--no-cache`, `feat/ruby-typed-receivers` (7604c222, parser version 132) against this change, both runs on
+Measured with `--no-cache`, the typed-receiver change below (parser version 132) against this change, both runs on
 one snapshot of each tree. Call sites are keyed by (file, line, callee) with `--pin-census`.
 
 | Corpus | Edges | Call-graph isolated | Edges lost (refused) | Newly refused (no edge before) |
@@ -372,7 +372,7 @@ method — the method Ruby runs is outside the tree. The type is used only when 
   activerecord's `Encryption::Cipher`, `Stripe::Customer` is not an app's `Customer` model;
 - no class in its lookup defining the method that built it: a `def self.find` may return anything.
 
-Measured with `--no-cache`, `feat/ruby-rails-definers` (255828cf, parser version 131) against these changes, both runs on
+Measured with `--no-cache`, the method-lookup change below (parser version 131) against these changes, both runs on
 one snapshot of each tree. Edges and isolated symbols are `--report` totals. Call sites are keyed by (file, line,
 callee) with `--pin-census`.
 
@@ -463,7 +463,7 @@ What the rule leaves alone:
   `Delegator` or a Draper decorator.
 - **A call outside any class**: a script's top level, or an RSpec example group's blocks.
 
-Measured with `--no-cache`, `feat/ruby-bare-calls` (472cb6fc, parser version 130) against these changes. Edges and
+Measured with `--no-cache`, the bare-word-call changes below (parser version 130) against these changes. Edges and
 isolated symbols are `--report` totals. Call sites are keyed by (file, line, callee) with `--pin-census`.
 
 | Corpus | Edges | Call-graph isolated | Sites gaining an edge | Retargeted | Refused (`external=`) |
@@ -994,10 +994,11 @@ per page instead. Gate: `test/impactdepthcheck.sh`.
 
 ### Changed — the versions this release moves, stated once
 
-`kParserVer` 124 → 133 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
-span fix and the TypeScript `await f<T>(x)` / `!f<T>(x)` calls each took a number of their own on their branches, and 133
-then sits above every number a branch build of unreleased work has used, so no cache such a build wrote is read as this
-release's), `kCacheVersion` 25 → 27
+`kParserVer` 124 → 142 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
+span fix and the TypeScript `await f<T>(x)` / `!f<T>(x)` calls each took a number of their own on their branches, as did
+the Ruby method-lookup changes, one per step from 130 to 137: bare-word calls, mixins, typed receivers, RSpec targets,
+Rails declared calls, Rake and Jbuilder files, RSpec matcher chains, class objects. 142 then sits above every number a
+branch build of unreleased work has used, so no cache such a build wrote is read as this release's), `kCacheVersion` 25 → 27
 (the function-literal fix's record changes) and `kQSnapCacheScheme` 15 → 16 (the `--quality-delta` error-masking and
 placeholder changes). Every ingest cache written by an earlier build is refused and re-indexed once, and every
 cached quality snapshot is recomputed. The session legend dictionary is `dictv=66409821069cf5cb entries=775`.

@@ -296,7 +296,14 @@ constexpr std::uint32_t kCacheVersion = 27;           // 27: same record layout 
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 137;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 142;          // bump on any grammar/.scm/extraction change
+                                                      // 142 = 2026-10-04 (the Ruby method-lookup branch rebased onto main 2720d1c5):
+                                                      //   cache-key hygiene, not an extraction change. The branch's eight
+                                                      //   Ruby extraction steps carried 130–137 (the notes below keep
+                                                      //   them); main took 130–133 for other lanes, and train 25 uses
+                                                      //   134, 135, 140 and 141. 142 is above all of them, so no cache
+                                                      //   another build wrote is read as this build's. Same layout:
+                                                      //   kCacheVersion stays 27, kQSnapCacheScheme stays 16.
                                                       // 137 = 2026-10-02 (test/rubyclassrecvcheck.sh): a Ruby call whose
                                                       //   receiver is a constant written with a path keeps the path in
                                                       //   RawRef::fieldName (`Billing::Invoice.issue` → "Billing::
