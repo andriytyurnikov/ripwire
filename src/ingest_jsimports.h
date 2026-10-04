@@ -257,9 +257,10 @@ inline void captureJsModuleAliases( TSNode stmt, std::string_view src, HashMap<s
     }
 }
 
-// FE-A: add to `names` every JS/TS global (externalnames.h kJsGlobalObjectNames / kJsGlobalFunctionNames) the file spells
-// as an identifier token — the set whose declarations the shadow walk records. One linear token scan; comments and
-// strings over-include (a harmless extra name the walk then finds no declaration of).
+// FE-A: add to `names` every JS/TS global (externalnames.h kJsGlobalObjectNames / kJsGlobalFunctionNames, and the names
+// of the global object itself, kJsGlobalAliasNames: `var self = this` hides `self` exactly as `const JSON = …` hides
+// JSON) the file spells as an identifier token — the set whose declarations the shadow walk records. One linear token
+// scan; comments and strings over-include (a harmless extra name the walk then finds no declaration of).
 inline void jsNoteGlobalSpellings( TSNode root, std::string_view src, HashMap<std::string, char>& names )
 {
     const std::uint32_t end = std::min<std::uint32_t>( ts_node_end_byte( root ), static_cast<std::uint32_t>( src.size() ) );
@@ -270,7 +271,7 @@ inline void jsNoteGlobalSpellings( TSNode root, std::string_view src, HashMap<st
         const std::uint32_t start = at;
         while( at < end && namesplit::isIdentChar( src[ at ] ) ) { ++at; }
         const std::string_view token = src.substr( start, at - start );
-        if( externalnames::isJsGlobalName( token ) ) { names.try_emplace( std::string( token ), 1 ); }
+        if( externalnames::jsGlobalKindOf( token ) != externalnames::JsGlobal::None ) { names.try_emplace( std::string( token ), 1 ); }
     }
 }
 

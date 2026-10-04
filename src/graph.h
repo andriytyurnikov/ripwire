@@ -3352,10 +3352,11 @@ inline std::string goModulePathOf( std::string_view text )
         while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' ) ) { line.remove_prefix( 1 ); }
         if( !line.starts_with( "module" ) || line.size() < 7 || ( line[ 6 ] != ' ' && line[ 6 ] != '\t' ) ) { continue; }
         line.remove_prefix( 7 );
+        line = line.substr( 0, line.find( "//" ) );   // the comment goes FIRST: `module x // c` and `module "x" // c` are x
         while( !line.empty() && ( line.front() == ' ' || line.front() == '\t' ) ) { line.remove_prefix( 1 ); }
         while( !line.empty() && ( line.back() == ' ' || line.back() == '\t' || line.back() == '\r' ) ) { line.remove_suffix( 1 ); }
         if( line.size() >= 2 && line.front() == '"' && line.back() == '"' ) { line = line.substr( 1, line.size() - 2 ); }
-        return std::string( line.substr( 0, line.find( "//" ) ) );
+        return std::string( line );
     }
     return {};
 }
@@ -3373,7 +3374,8 @@ inline std::vector<std::string> goModuleTreePaths( std::string_view text )
     {
         std::size_t end = text.find( '\n', at );
         end = end == std::string_view::npos ? text.size() : end;
-        std::string_view line = trimWs( text.substr( at, end - at ) );
+        std::string_view line = text.substr( at, end - at );
+        line = trimWs( line.substr( 0, line.find( "//" ) ) );   // a comment is no directive: `// a => ./b` names nothing
         at = end + 1;
         if( line.starts_with( "replace" ) )
         {

@@ -34,13 +34,17 @@
 #            module's `lib.Helper()` (sub/go.mod); a module a LOCAL go.mod `replace` maps into the tree
 #            (`lib.Shape()` via example.com/vendored); a function passed as a value. Root gonomod/ has NO go.mod: its
 #            full-path import of an in-tree package keeps its edge (an unknown module path proves nothing outside).
+#            Root gomodcomment/: a `module x // c` line and a nested `module "y" // c` are x and y (near miss: cmx is
+#            not under cm); root goreplace/: a module only a local `replace` names (its directory has no go.mod).
 #   (B) JS:  JSON.stringify, `const { stringify } = JSON`, `new URL()`, Buffer.from, `globalThis.fetch`, console/Math/
 #            Object/Array/Promise members, require('destroy'), require('supertest'), a receiver from require('qs')
 #            and a name destructured from require('cookie') never reach an in-repo function, getter, method or object
 #            property. Near misses keep: a destructured relative require, a relative-module receiver, relative ES
 #            namespace and default imports (esm/), a file-local `const JSON` shadow, a same-file `function fetch`, a
 #            const arrow function, `ContentType.from` on the in-repo class, `this.set`/`this.get`, and an object's METHOD
-#            destructured from a relative require (`const { tidy } = require( './methods' ); tidy( s )`).
+#            destructured from a relative require (`const { tidy } = require( './methods' ); tidy( s )`), and a
+#            declaration named like the global object (`var self = this`, `const window`, a parameter `global`); the
+#            undeclared `self.process()` beside them is external (also in TS: src/selfalias.ts).
 #   (C) TS:  the global fetch never reaches a class FIELD named fetch, JSON.parse never reaches an exported `parse`,
 #            crypto.subtle.verify never reaches an exported `verify`, `import * as qs from 'qs'` never reaches an
 #            in-repo `stringify`; a file that imports nothing does not reach another file's exported `fetch` (root
@@ -187,7 +191,7 @@ reaches_fn(){
 }
 
 # ── census: one per root, written FIRST so no arm reads a missing file ─────────────────────────────────────────
-ROOTS="go gonomod js ts tsimport py c cpp rs"
+ROOTS="go gonomod gomodcomment goreplace js ts tsimport py c cpp rs"
 for r in $ROOTS; do
     if ! rw "$r" --pin-census="$TMP/$r.tsv" >"$TMP/$r.map.xml"; then no "($r) the census run exited non-zero"; fi
     if [ ! -s "$TMP/$r.tsv" ]; then no "($r) the census run wrote no census — every census arm for this root would be vacuous"; fi
@@ -237,6 +241,16 @@ exactly go callees algo/usesub.go:UseSub "fn Helper sub/lib/lib.go"
 exactly go callees algo/fnval.go:UseFnVal "fn apply algo/fnval.go"
 exactly gonomod callees app/app.go:Run "fn Pick own/own.go"
 exactly go callees algo/vendored.go:UseVendored "fn Shape vendored/lib/lib.go"
+echo "--- (A2) go.mod spellings: a trailing comment on the module line, a quoted path, a replace-only module"
+# A `module x // c` line is x (the comment goes before the trim and the unquote): the in-module call keeps its edge,
+# also for a nested `module "y" // c`. Near miss: a path that only STARTS with the module path (cmx, not cm/) is still
+# outside — a cut that over-trims the module path (at the first '/') would put it in the tree and fail this arm.
+exactly gomodcomment callees app/app.go:Run "fn Shape lib/lib.go"
+exactly gomodcomment callees quoted/app/app.go:Use "fn Mark quoted/lib/lib.go"
+lacks gomodcomment callees app/near.go:Near "Shape lib/lib.go"
+# goreplace/ keeps the replace-only shape the go/ root had before it became buildable Go: legacy/ has no go.mod, so
+# the replace line is the only source of example.com/legacy (twin of the old UseVendored arm)
+exactly goreplace callees app/app.go:UseLegacy "fn Shape legacy/lib/lib.go"
 
 echo "=== (B) JS: globals, required packages, accessors ==="
 lacks js callees lib/response.js:length "stringify lib/query.js"
@@ -250,6 +264,7 @@ lacks js callees lib/encode.js:toQuery "stringify lib/query.js"
 lacks js callees lib/encode.js:readCookies "parse lib/query.js"
 lacks js callees lib/aliases.js:a "stringify lib/query.js"
 lacks js callees lib/aliases.js:b "fetch lib/shadow.js"
+lacks js callees lib/selfalias.js:onMessage "process lib/selfalias.js"
 echo "--- (B) near misses: true edges kept"
 exactly js callees tests/context.test.js:makeCtx "fn request helpers/context.js"
 exactly js callees tests/context.test.js:encodeQuery "fn stringify lib/query.js"
@@ -262,6 +277,11 @@ has js callees lib/request.js:host "method get lib/request.js"
 exactly js callees esm/ns.mjs:nsUse "fn stringify lib/query.js"
 exactly js callees esm/ns.mjs:defUse "fn max lib/util.js"
 exactly js callees lib/usemethods.js:cleanAll "method tidy lib/methods.js"
+# a declaration named like the global object (`var self = this`, a `const window`, a parameter `global`) is a value:
+# the call reaches the in-repo method. The undeclared `self.process` in onMessage is the global object's (lacks above).
+exactly js callees lib/selfalias.js:run "method process lib/selfalias.js"
+exactly js callees lib/selfalias.js:runWin "method process lib/selfalias.js"
+exactly js callees lib/selfalias.js:viaParam "method process lib/selfalias.js"
 
 echo "=== (C) TS: globals and outside packages ==="
 lacks ts callees src/utils/token.ts:fetchKeys "fetch src/base.ts"
@@ -269,6 +289,7 @@ lacks ts callees src/utils/token.ts:decodePart "parse src/utils/cookie.ts"
 lacks ts callees src/utils/sig.ts:checkSig "verify src/utils/token.ts"
 lacks ts callees src/client.ts:encode "stringify src/helpers.ts"
 lacks tsimport callees src/remote.ts:pull "fetch src/client.ts"
+lacks ts callees src/selfalias.ts:onTick "process src/selfalias.ts"
 echo "--- (C) near misses: true edges kept, and the outside-package pins"
 exactly ts callees src/app.ts:readCookie "fn parse src/utils/cookie.ts"
 exactly ts callees src/app.ts:serve "cls App src/base.ts;method dispatch src/base.ts"
@@ -278,6 +299,8 @@ exactly tsimport callees src/use.ts:load "fn fetch src/client.ts"
 exactly ts callees src/ns.ts:nsUse "fn stringify src/helpers.ts"
 exactly ts callees src/ns.ts:nsVerify "fn verify src/utils/token.ts"
 exactly ts callees src/script.ts:report "fn track src/globals.d.ts"
+exactly ts callees src/selfalias.ts:run "method process src/selfalias.ts"
+exactly ts callees src/selfalias.ts:viaWindow "method process src/selfalias.ts"
 
 echo "=== (D) Python: an imported function beats same-named methods; a bare call never reaches a method ==="
 exactly py callees src/ui/widget.py:prune_children "fn match src/ui/css/match.py"
@@ -346,6 +369,9 @@ externals ts src/utils/token.ts decodePart parse
 externals ts src/utils/sig.ts checkSig verify
 externals ts src/client.ts encode stringify
 externals tsimport src/remote.ts pull fetch
+externals js lib/selfalias.js onMessage process
+externals ts src/selfalias.ts onTick process
+externals gomodcomment app/near.go Near Shape
 # a Python name no import, local or module def binds and that is no builtin: no in-repo target, but nothing proves it is
 # outside the tree either (a closure variable, a star import of an unresolved module) — so it is no census row at all
 # (counted unresolved=), never a C external row and never a bound one
