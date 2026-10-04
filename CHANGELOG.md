@@ -15,6 +15,85 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a Ruby class object's lookup tells `include` from `extend`, in Ruby's order, and a `method_missing` answers only what it misses
+
+The class-object lookup in the entry below walked a class's mixins without telling how each one came in. So an
+included module's instance method answered a call on the class (that entry's floor (b)), and so did a module-body
+`def self.x` of a module the class includes (floor (h)). Ruby raises NoMethodError for both. A `method_missing` anywhere
+in the lookup also sent every call on the class to the name ladder, even a name the lookup defines, though Ruby calls
+`method_missing` only on a miss. `ActiveRecord::Base` extends `DynamicMatchers`, so every class method of `Base` went to
+the ladder. That is why `Base.configurations` split or declined against `DatabaseConfigurations`' reader (the bare-word
+entry gives the counts).
+
+**At ingest** (`ingest_binds.h captureRubyClassMixins`, `rubyDefSide`):
+- each mixin the class object's lookup reaches mints a `LocalBindKind::RubyClassMixin` binding at its constant: an
+  `extend`, an `include` inside `class << self`, and a module's `extend self`;
+- a def that a concern defines for its includers carries a mark on its `RubySingletonDef` binding: `included` for a
+  `def self.x` in `included do`, `class_methods` for a def in `class_methods do`.
+
+**The lookup** (`graph.h RubyClassObjects::sideLookup`) walks each ancestor on the side it joins, in Ruby's order:
+- first the class's own singleton methods, with what an included concern's `included do` defines there;
+- then the modules it extends, level by level: an `extend`, a concern's `class_methods do` and nested `ClassMethods`,
+  and a module that an `included do` extends;
+- only then its superclass's, one round per class up the chain.
+
+What no longer answers a call on the class object:
+- an included module's instance methods;
+- a module's own `def self.x`, or the modules that module extends;
+- on a concern itself, the class methods it gives its includers.
+
+An instance's lookup (what `C.new` runs as `initialize`, or a forwarding base's name) holds no extended module, and
+searches a class's included modules before its superclass. A `method_missing` in the lookup now answers only a name
+nothing there defines, which is left to the ladder as before. A `class << self` delegation still leaves its name there.
+
+Measured with `--no-cache`, against the entry below (0b6118a6), both runs on one snapshot of each tree:
+
+| Corpus | Edges | Call-graph isolated | `declined=` | Call sites changed |
+| --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 11,482 → 11,478 | 2,422 → 2,421 | 4,728 → 4,704 | 82 |
+| activesupport 7.2.3.2 `lib/` | 3,414 → 3,417 | 1,267 → 1,266 | 1,386 → 1,380 | 23 |
+| Rails app A | 27,498 → 27,503 | 18,591 → 18,589 | 39,342 → 39,336 | 8 |
+| Rails app B | 26,044 → 26,044 | 5,737 → 5,736 | 34,560 → 34,560 | 6 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | | |
+
+Every changed call site was read against the source, all 119 of them rather than a sample:
+- **activerecord**: 21 changed target, 27 gained an edge where they declined, and 34 keep their target but are now
+  decided by the lookup rather than by name.
+  - `ActiveRecord::Base.configurations`, `.connection_handler`, `.lease_connection`, `.establish_connection` and the
+    like now reach `Core`'s `included do` defs or the `ConnectionHandling` that `Base` extends.
+  - Of the 13 callers of `Core.configurations` on `main`, the 12 that were right are single edges again. The 13th keeps
+    the reader, and the 9 sites in the `.rake` file join them. The two bare calls in `QueryCache::ClassMethods` still
+    split, since their `self` is any includer.
+  - `inspection_filter` reaches `Core`'s `ClassMethods`, not the instance reader. `CommandRecorder.new` reaches its
+    `initialize`.
+  - All 82 were right.
+- **activesupport**: 16 changed target and 6 gained an edge. `Duration.new`, `TimeWithZone.new`, `OptionMerger.new` and
+  the like are classes with a `method_missing`; they now reach their `initialize`, not `TaggedLogging.new` or
+  `TimeZone.new`. One call is newly refused: `ERB::Util.html_escape`, which a `singleton_class.prepend` supplies (floor
+  (e)). It bound before only because the misread `prepend` of the instance side reached the same module.
+- **The applications**: two calls on a subclass now reach the class method that its included concern's `ClassMethods`
+  defines, which Ruby searches before the superclass's (they bound to the superclass's before). 12 calls to `new` on
+  classes with a `method_missing` now reach their `initialize`, 6 of them instead of a controller's `new` action. All
+  14 were right.
+
+Lifted: floors (b) and (h) of the entry below, whose arms are kept, inverted. Floor (c) is lifted in part: `extend self`
+is read.
+
+Stated floors, each pinned by `test/rubyclassrecvcheck.sh`:
+- **(c)** A module's every instance method answers a call on the module: `module_function` is not read.
+- **(e)** A module mixed in by a call rather than a class-body directive is in no lookup. That covers
+  `Tool.extend( Tool::Ext )` and `singleton_class.prepend M` in the body (activesupport's `ERB::Util`).
+- **(i)** An instance's lookup still reads the class's singleton methods as its own. That covers a receiver the code
+  builds (`svc = Service.new( 9 ); svc.call`) and a bare call in an instance method. So `svc.call` splits between
+  `def self.call` and the instance `call`, where Ruby runs the instance's.
+- **(j)** A `method_missing` that only an instance answers still leaves a call on the class object to the ladder when the
+  lookup misses: `Proxy.anything` binds by name, where Ruby raises NoMethodError.
+- **(k)** Two modules extended at one level answer their union: `Dual.pick` splits between `First` and `Second`, where
+  Ruby takes the later `extend`.
+
+`kParserVer` 142 → 145, above `main`'s 143 and 144. New records, same layout: `kCacheVersion` stays 27, and Ruby caches
+re-parse once.
+
 ### Changed — a Ruby call on a class answers from the class object's lookup: `C.new` runs `initialize`, a lookup that leaves the tree is refused
 
 A call whose receiver is a constant (`Report.generate`, `User.where( … )`, `Service.new( x )`, `JSON.parse( s )`) is
@@ -56,7 +135,8 @@ Struct's `new`), and the call is refused as external.
 Left as before:
 - a SCREAMING constant's value (`LIMITS = Limits.new`, a value of a class nothing types);
 - a class object that may answer any name: a `method_missing` in its lookup, or the name a `class << self` delegates
-  (activerecord's `ExplainRegistry.collect?`).
+  (activerecord's `ExplainRegistry.collect?`). The entry above narrows the first: a `method_missing` answers only what
+  the lookup misses.
 
 Measured with `--no-cache`, the RSpec matcher-chain change below (parser version 136) against this change, both runs on
 one snapshot of each tree.
@@ -588,6 +668,8 @@ bound calls named `Class#name` or another class's reader. An accessor can also b
 since `ActiveRecord::Base` extends `DynamicMatchers`, whose `method_missing` leaves its class-object lookup open (the
 class-object entry above). Of the 13 methods that called `Core.configurations`, 5 now split between the two and 7
 decline; the 13th, `configs.configurations` in `DatabaseConfigurations#build_configs`, now reaches the reader, as it should.
+The include-and-extend entry at the top of this section consults that `method_missing` only after the lookup misses,
+which puts the 12 back on `Core`'s def as single edges.
 
 `kParserVer` 129 → 130. New records, same layout: `kCacheVersion` stays 27, and Ruby caches re-parse once.
 
@@ -1009,11 +1091,12 @@ per page instead. Gate: `test/impactdepthcheck.sh`.
 
 ### Changed — the versions this release moves, stated once
 
-`kParserVer` 124 → 142 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
+`kParserVer` 124 → 145 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
 span fix and the TypeScript `await f<T>(x)` / `!f<T>(x)` calls each took a number of their own on their branches, as did
 the Ruby method-lookup changes, one per step from 130 to 137: bare-word calls, mixins, typed receivers, RSpec targets,
-Rails declared calls, Rake and Jbuilder files, RSpec matcher chains, class objects. 142 then sits above every number a
-branch build of unreleased work has used, so no cache such a build wrote is read as this release's), `kCacheVersion` 25 → 27
+Rails declared calls, Rake and Jbuilder files, RSpec matcher chains, class objects, then 145 for the review's
+include-and-extend change. 145 sits above every number a branch build of unreleased work has used, so no cache such a
+build wrote is read as this release's), `kCacheVersion` 25 → 27
 (the function-literal fix's record changes) and `kQSnapCacheScheme` 15 → 16 (the `--quality-delta` error-masking and
 placeholder changes). Every ingest cache written by an earlier build is refused and re-indexed once, and every
 cached quality snapshot is recomputed. The session legend dictionary is `dictv=66409821069cf5cb entries=775`.
