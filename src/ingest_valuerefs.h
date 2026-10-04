@@ -648,6 +648,63 @@ private:
         }
     }
 
+    // A scope as it opens, with the names that are in scope before the walk reaches their declaring node: a function's
+    // parameters; a C++ class's members (complete-class context); a Python comprehension's for-clause targets.
+    VrScope openScope( TSNode n, const char* kind, ScopeKind sk ) const
+    {
+        VrScope s;
+        s.node       = n;
+        s.isFunction = sk == ScopeKind::Function;
+        s.isClass    = sk == ScopeKind::Class;
+        if( s.isFunction )
+        {
+            functionSignature( n, kind, s );
+        }
+        else if( s.isClass && m_fam == VrFam::C )
+        {
+            preReadClassMembers( n, s.decls );
+        }
+        else if( sk == ScopeKind::Block )
+        {
+            ChildCursor c( n );
+            forEachNamedChild( n, c.cur, [ & ]( TSNode k )
+            {
+                if( kindIs( ts_node_type( k ), "for_in_clause" ) )
+                {
+                    patternNames( child( k, m_fLeft ), s.decls );
+                }
+                return true;
+            } );
+        }
+        return s;
+    }
+
+    // A C++ class body is a complete-class context: a data member declared BELOW a member function is still in scope
+    // inside it (`int get() { return total; } int total = 0;`), so the class scope reads its member declarations as it
+    // opens instead of waiting to encounter them.
+    void preReadClassMembers( TSNode cls, std::vector<std::string_view>& out ) const
+    {
+        ChildCursor c( cls );
+        forEachNamedChild( cls, c.cur, [ & ]( TSNode body )
+        {
+            if( !kindIs( ts_node_type( body ), "field_declaration_list" ) )
+            {
+                return true;
+            }
+            ChildCursor m( body );
+            forEachNamedChild( body, m.cur, [ & ]( TSNode k )
+            {
+                const char* kt = ts_node_type( k );
+                if( kindIs( kt, "field_declaration" ) )
+                {
+                    harvest( k, kt, out );
+                }
+                return true;
+            } );
+            return true;
+        } );
+    }
+
     // ── the walk ───────────────────────────────────────────────────────────────────────────────────────
     void enter( TSNode n, TSFieldId field )
     {
@@ -668,51 +725,7 @@ private:
         const ScopeKind sk = m_anc.empty() ? ScopeKind::None : scopeKindOf( a.kind );
         if( sk != ScopeKind::None )
         {
-            VrScope s;
-            s.node       = n;
-            s.isFunction = sk == ScopeKind::Function;
-            s.isClass    = sk == ScopeKind::Class;
-            if( s.isFunction )
-            {
-                functionSignature( n, a.kind, s );
-            }
-            else if( s.isClass && m_fam == VrFam::C )
-            {
-                // A C++ class body is a complete-class context: a data member declared BELOW a member function is
-                // still in scope inside it (`int get() { return total; } int total = 0;`), so the class scope
-                // pre-reads its member declarations instead of waiting to encounter them.
-                ChildCursor c( n );
-                forEachNamedChild( n, c.cur, [ & ]( TSNode body )
-                {
-                    if( kindIs( ts_node_type( body ), "field_declaration_list" ) )
-                    {
-                        ChildCursor m( body );
-                        forEachNamedChild( body, m.cur, [ & ]( TSNode k )
-                        {
-                            const char* kt = ts_node_type( k );
-                            if( kindIs( kt, "field_declaration" ) )
-                            {
-                                harvest( k, kt, s.decls );
-                            }
-                            return true;
-                        } );
-                    }
-                    return true;
-                } );
-            }
-            else if( sk == ScopeKind::Block )
-            {
-                ChildCursor c( n );
-                forEachNamedChild( n, c.cur, [ & ]( TSNode k )
-                {
-                    if( kindIs( ts_node_type( k ), "for_in_clause" ) )
-                    {
-                        patternNames( child( k, m_fLeft ), s.decls );
-                    }
-                    return true;
-                } );
-            }
-            m_scopes.push_back( std::move( s ) );
+            m_scopes.push_back( openScope( n, a.kind, sk ) );
             a.opensScope = true;
         }
         harvest( n, a.kind, m_scopes.back().decls );
