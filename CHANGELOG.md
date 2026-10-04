@@ -48,6 +48,85 @@ the previous resolution. On four public repositories the change keeps every call
 adds callers the previous resolution declined; total call sites are unchanged. Gate: `test/falseedgecheck.sh`; the
 locality tie-break fixtures (`test/lpinfix`, `test/pincensusfix`) now use Kotlin, where a bare call is a `this` call.
 
+### Added — a function used as a VALUE is a disclosed `<vr>` row, never a silent zero
+
+A function stored in a struct-field initialiser, an object-literal, dict or map table, a function-pointer array or
+a variable, or passed as an argument or to a decorator, is referenced as a value. The index captured only
+call-shaped references, so on such a function `--callers`, `--callees`, `--impact` and `--uses` answered
+`count="0" graph_unresolved="0"`. `--safe-delete` said `dead_code_candidate="1" risk="none-found"`, and
+`--dead-code` listed the function, although a dispatch table held it.
+
+- **Capture.** Those positions are now captured for C, C++, JavaScript/JSX, TypeScript/TSX, Python and Go. So is
+  a call THROUGH such a value (a called parameter, `tbl[k](…)`, `tbl.k(…)`). The mechanism is ported from
+  codebase-memory-mcp's reference-as-value usages (MIT; THIRD_PARTY.md).
+- **Separate rows, not edges.** They are their own rows, never call edges: `count=`, `reaches=`, PageRank and the
+  default map are unchanged.
+  - `value_refs=N` sits beside the counts.
+  - A `<vrs total= shown= capped= next=>` window (64 rows, `next=` pages every site) holds `<vr>` rows.
+  - A `--callers` row gives the binding site (`bind=` file:line), where the value lands (`into=`: `table.open`,
+    `DISPATCH["get"]`, `run#arg0`, `@register` …) and the functions that may call through that slot
+    (`called_by=`).
+  - A `--callees` row adds `to=`, `def=`, `through=` (the written callee of the call through a parameter or
+    table) and `sites=`.
+- **Other verbs.**
+  - `--impact` and `--safe-delete` disclose the rows.
+  - A value use counts in `--safe-delete`'s `uses=` and keeps it off `dead_code_candidate`/`risk="none-found"`.
+  - `--dead-code` excludes such functions, counted in `value-ref-excluded=`. `--quality-delta`'s dead-code kind
+    applies the same rule, with the same counter on its root (and the cached quality snapshot's scheme moves), so the
+    two verbs answer one question one way. A Python wrapper decorator does not count as a use: `@classmethod`,
+    `@staticmethod`, `@property`, `@cached_property`, `@abstractmethod`, an accessor's `.setter`/`.getter`/`.deleter`,
+    `@overload` and `@functools.wraps` hand the function back to its own name. Its row is still shown. A registering
+    decorator (`@app.route`, `@register`) does count.
+  - `--verify 'unused(X)'` now answers `refuted` for a function a table or argument holds: its `role="value"`
+    sites are the evidence (it was `not-established` before, for C and JS).
+  - `--uses` shows the site as `role="value"` (a decorator row is a fact about the definition and stays on
+    `--callers` only).
+  - `--path` adds `to_value_refs=` when no call path exists.
+  - The rows also appear in CLI `--json`, in MCP `find_referencing_symbols`/`find_symbol` (`valueRefs`,
+    `valueCallees`), and in MCP `impact`, `uses` and `path_between`.
+- **Matching.** Rows are matched by name with the call graph's visibility rules:
+  - same file first;
+  - a class member is never matched by a bare name outside its class: only a Python class body, or a C++ class
+    body or a member function of the same class, sees its members bare. JS/TS and Go members are never bare (the
+    JS call graph binds a bare call to a method by name; these rows deliberately do not). One shape is still
+    indexed as a plain function: a JS/TS object-literal property (`{ run: () => … }`). A bare `run` in the same
+    file can match it ahead of an imported `run`. It did not occur in the django, webpack or ripwire short-name reads;
+  - a C/C++ `static` stays in its file;
+  - a JS/TS/Python name needs a named import, resolved by the import graph's own module resolver;
+  - Go stays in its package.
+- **What hides a function.** A same-named parameter, local, capture, loop variable or file-scope object hides it.
+  Strings, comments, keys, keyword labels, type positions and import/export statements are not value uses.
+- **What a row means.** Every legend says a row is matched by name, that `called_by=`/`through=` may call, and
+  that a row is not a proven call.
+- **Floors (stated, gated).** These are not rows:
+  - a typed-receiver field call (`p->open(x)`);
+  - a member or qualified value (`obj.f`, `ns::f`);
+  - an import alias;
+  - a function used as the object of a member access (`f.bind`);
+  - a macro body;
+  - a class used as a value;
+  - a C++ member function defined OUT of its class (`int T::f() { … }`) does not see T's data members, so a data
+    member named like a free function can still read as that function there.
+  Every decorated def is a row: the capture is syntactic and cannot tell a registering decorator from
+  `@property`.
+- **Byte identity.** An answer with no value reference is byte-identical. On 33 sampled commands over this
+  tree, django and webpack, 30 were identical. The 3 that differed are in scope: a read row became
+  `role="value"`; a callee answer gained 2 rows; `--dead-code` dropped 4 functions that a `NODE_SET_METHOD`
+  argument or a CommonJS `module.exports` table holds.
+- **Cost.** A cold default map costs +3.6% CPU on this tree, +6.3% on django and +5.2% on webpack (median of 5,
+  `sim/refval_cpu.sh`).
+- **Cache.** `kParserVer` moves.
+- **Manifest.** The `tools/list` manifest grows 46,581 → 46,722 B: the two find descriptions name `valueRefs` as
+  not a proven call.
+
+Gate: `test/recallshapecheck.sh`. It has 177 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
+- positives;
+- near-miss negatives for every guard, each proven able to fail by a mutation (`sim/refval_mutate.sh`);
+- named floors;
+- controls;
+- the runaway window;
+- CLI == JSON == MCP parity diffs.
+
 ### Added — `Class.method` and `Class#method` are selectors wherever `Class::method` is
 
 Agents and documentation name a method `Class.method` (Python, JS, Java) or `Class#method` (Ruby, JSDoc), and every

@@ -16,10 +16,10 @@ it once, marked `×N`.
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 233 | 92 | 128 | **105** |
+| 236 | 94 | 128 | **108** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 233 + 7 is the 240 constants this generator parses out of `src/`.
+are not counted as caps, and 236 + 7 is the 243 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -37,8 +37,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **130 of 233 caps are classified
-(45 INDEXING, 41 OUTPUT, 44 BOUNDARY); the remaining 103 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **130 of 236 caps are classified
+(45 INDEXING, 41 OUTPUT, 44 BOUNDARY); the remaining 106 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -88,7 +88,7 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 
 ## Caps, by file
 
-One table for each of the 92 files that declare a cap — the 233 caps counted above, and no parameter.
+One table for each of the 94 files that declare a cap — the 236 caps counted above, and no parameter.
 
 ### `src/abicheck.h`
 
@@ -501,6 +501,15 @@ Discloses: **none**
 | --- | --- | --- | --- |
 | `kSideDepthStd` | `256` | INDEXING | FFI / routes / bindings — their own guard |
 | `kSideDepthUses` | `512` | INDEXING | value-uses — twice the others, as it always was |
+
+### `src/ingest_valuerefs.h`
+
+Discloses: **none**
+
+| constant | value | class | note |
+| --- | --- | --- | --- |
+| `kVrMaxDepth` | `512` | — | the value-uses pass's own depth guard (ingest_sidecap.h kSideDepthUses) |
+| `kVrTextCap` | `96` | — | a written slot / callee longer than this is cut with "…" |
 
 ### `src/jsrunner.h`
 
@@ -925,6 +934,14 @@ Discloses: `name_ladder_capped`
 | `kNameCandidateCap` | `8` | OUTPUT | — |
 | `kTestHopBasenameRowCap` | `3` | OUTPUT | — |
 | `kTestHopCalleeRowCap` | `5` | OUTPUT | — |
+
+### `src/valuerefindex.h`
+
+Discloses: **none**
+
+| constant | value | class | note |
+| --- | --- | --- | --- |
+| `kValueRefRowCap` | `64` | — | — |
 
 ### `src/verbs_change.h`
 

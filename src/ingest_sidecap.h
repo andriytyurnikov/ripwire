@@ -1649,6 +1649,11 @@ void captureSideFacts( const LangEntry& le, std::uint32_t fileId, std::string_vi
         }
 #endif
 
+        // Reference-as-value round: a function NAMED in a value position (an initialiser, an argument, an
+        // assignment, a decorator…) and every call THROUGH such a value. Both lean and rich families capture it —
+        // --callers/--callees/--impact/--dead-code read it — and neither role enters the call graph (model.h RefRole).
+        captureValueRefs( le.lang, fileId, src, root, refs );
+
         // #72 follow-up: everything the side passes just appended for THIS file, filtered through the one
         // decided-dead rule.
         //   refs  — captureIncludes' import sites plus the value-use / type-mention rows and the type-alias records.

@@ -751,7 +751,7 @@ $ ./build/ripwire . --callers=DoesNotExist
 <!-- ripwire callers: NOT FOUND, an answer and a refusal at once. found=0: no indexed definition matched the selector echoed on this element, so nothing was listed or counted. Zero means none found, not none exists: an unindexed file, a typo or an uncommitted rename can each hide the definition. near=: the indexed name to retry with; near_renamed=1: the working tree renamed the selector to it (a DEFINITION of the selector left a changed file that now defines near=; a mere mention is not a rename). On the CLI the exit status stays 1, a refusal, and stderr carries the same diagnosis; over MCP this document rides the refusal's error data. --><callers of="DoesNotExist" found="0"/>
 ```
 
-**Shaped by:** `--no-route`, `--callees`, `--uses`, `--impact`, `--expand`, `--edit-check`, `--slice-flow`, `--at`
+**Shaped by:** `--no-route`, `--callees`, `--uses`, `--impact`, `--expand`, `--dead-code`, `--edit-check`, `--slice-flow`
 
 **Caveats (stated by the binary):**
 
@@ -2774,7 +2774,7 @@ $ ./build/ripwire . --owners
 
 **Answers:** list internal functions with no caller anywhere in the indexed tree internal source functions with no caller found in the indexed tree — a name-based graph reading, not a confidence score (dynamic dispatch, reflection and macro-generated callers are invisible to it);
 
-=DIR scopes to whole path components (dir or filename) and REFUSES a filter that names nothing indexed. A symbol whose definition is produced by a SELF-REGISTERING test/benchmark macro is never reported: doctest TEST_CASE/ TEST_CASE_FIXTURE/SCENARIO, gtest TEST/TEST_F/TEST_P, Catch2, Google Benchmark — a static initializer registers them, so a name-based call graph cannot see the caller and every one of them would be a false positive. Extend the list for your own framework with `.ripwire_config`'s one key, `register_macros = NAME[, NAME...]` (one directive per line, # comments). The exemption is DISCLOSED, never silent: register-macro-excluded="N" rides the report and prints even at 0. Exempt from dead-code only — such a symbol still participates in clone detection. A LEADING ./ anchors DIR at the repo ROOT (=./src matches only the top-level src/ subtree); a bare name (=src) matches that component ANYWHERE in the tree, including nested (test/fixture/src/…)
+=DIR scopes to whole path components (dir or filename) and REFUSES a filter that names nothing indexed. A symbol whose definition is produced by a SELF-REGISTERING test/benchmark macro is never reported: doctest TEST_CASE/ TEST_CASE_FIXTURE/SCENARIO, gtest TEST/TEST_F/TEST_P, Catch2, Google Benchmark — a static initializer registers them, so a name-based call graph cannot see the caller and every one of them would be a false positive. Extend the list for your own framework with `.ripwire_config`'s one key, `register_macros = NAME[, NAME...]` (one directive per line, # comments). The exemption is DISCLOSED, never silent: register-macro-excluded="N" rides the report and prints even at 0. Exempt from dead-code only — such a symbol still participates in clone detection. A function a table, field or argument holds as a VALUE (--callers' <vr> rows) is not reported either: value-ref-excluded="N" counts them, absent at 0 (matched by name, not a proven call). A LEADING ./ anchors DIR at the repo ROOT (=./src matches only the top-level src/ subtree); a bare name (=src) matches that component ANYWHERE in the tree, including nested (test/fixture/src/…)
 
 **Try it**
 

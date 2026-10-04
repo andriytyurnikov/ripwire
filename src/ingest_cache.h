@@ -302,7 +302,10 @@ constexpr std::uint32_t kCacheVersion = 28;           // 28: FE-A (test/falseedg
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 135;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 140;          // bump on any grammar/.scm/extraction change
+                                                      // 140 = lane refval-edges (reference-as-value round): RefRole::Value /
+                                                      //    RefRole::Through rows from ingest_valuerefs.h, in BOTH families.
+                                                      //    A lane-local number above train 24's 133 — the train renumbers.
                                                       // 135 = 2026-10-03 (lane FE-A fix round): Rust path calls (`<T as Trait>::f()`) are member
                                                       //   calls — an extraction change; this lane's own earlier binaries ran 134 with the old
                                                       //   extraction, so their caches must never be read as this build's.
@@ -1707,8 +1710,7 @@ static_assert( std::size( kCacheRejectNames ) == static_cast<std::size_t>( Cache
 
 inline const char* cacheRejectName( CacheReject r ) noexcept
 {
-    const std::size_t i = static_cast<std::size_t>( r );
-    return i < std::size( kCacheRejectNames ) ? kCacheRejectNames[i] : "corrupt-frame";
+    return enumTableAt( kCacheRejectNames, r, "corrupt-frame" );   // infra/enumcount.h: the shared bounded table lookup
 }
 
 // A validated, still-open v15 blob: everything a caller needs to pull records out of it by pathHash.
