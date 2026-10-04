@@ -39,8 +39,10 @@
 #       module's bare call to another helper module's method is refused as external.
 #   (k) a core class's own ancestry is not modelled beyond every self's roots (BasicObject, Object, Kernel, and Module
 #       and Class): a reopened `class Array` calling a reopened `module Enumerable`'s method is refused as external.
-#   (c) instance and class methods share one name space here, as everywhere in the graph: `extend M` and `include M`
-#       both put M in reach, so an instance method's call to an extended module's method is admitted.
+#   (c) PARTLY LIFTED at parser version 145 (test/rubyclassrecvcheck.sh floor (i)): a call to self in a class's def answers
+#       first from its own side's lookup (an instance's in an instance method, the class object's in a singleton method),
+#       and among the namesakes it reaches by name an instance admits no singleton method. Still: `extend M` and `include M`
+#       both put M in reach, so when that lookup misses, an instance method's call to an extended module's method is admitted.
 #   (d) inside `instance_eval`/`class_eval`/`instance_exec` blocks self changes; the rule reads the lexical self, as
 #       Rule 1 always has, so a DSL block run against another in-tree object has its calls there refused as external.
 #   (e) reach is read by class NAME, as the inheritance graph is keyed: two classes sharing a name share their reach,

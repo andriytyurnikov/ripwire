@@ -728,7 +728,7 @@ struct Reference
                                           //   NamedVar, parser version 137): the path as written (`Billing::Invoice.issue`
                                           //   → "Billing::Invoice"; `described_class` → the group's constant whole),
                                           //   recvVar keeping the final segment every class is keyed by (graph.h
-                                          //   RubyClassObjects::receiverFqn); no chain or compose reader reads a NamedVar's
+                                          //   RubyClassObjects::ofIndexed); no chain or compose reader reads a NamedVar's
     std::string   composeRel;             // "creates" (value/inline) or "uses" (reference/pointer) when isCompose; "" otherwise
 };
 
