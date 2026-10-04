@@ -660,9 +660,21 @@ private:
         {
             functionSignature( n, kind, s );
         }
-        else if( s.isClass && m_fam == VrFam::C )
+        else if( s.isClass && m_fam == VrFam::C && !ts_node_is_null( fieldChild( n, NodeField::Body ) ) )
         {
-            preReadClassMembers( n, s.decls );
+            // A C++ class body is a complete-class context: a data member declared BELOW a member function is still in
+            // scope inside it (`int get() { return total; } int total = 0;`), so the members are read as the class opens.
+            const TSNode body = fieldChild( n, NodeField::Body );
+            ChildCursor  c( body );
+            forEachNamedChild( body, c.cur, [ & ]( TSNode k )
+            {
+                const char* kt = ts_node_type( k );
+                if( kindIs( kt, "field_declaration" ) )
+                {
+                    harvest( k, kt, s.decls );
+                }
+                return true;
+            } );
         }
         else if( sk == ScopeKind::Block )
         {
@@ -677,28 +689,6 @@ private:
             } );
         }
         return s;
-    }
-
-    // A C++ class body is a complete-class context: a data member declared BELOW a member function is still in scope
-    // inside it (`int get() { return total; } int total = 0;`), so the class scope reads its member declarations as it
-    // opens instead of waiting to encounter them.
-    void preReadClassMembers( TSNode cls, std::vector<std::string_view>& out ) const
-    {
-        const TSNode body = fieldChild( cls, NodeField::Body );   // field_declaration_list; null on a forward declaration
-        if( ts_node_is_null( body ) )
-        {
-            return;
-        }
-        ChildCursor c( body );
-        forEachNamedChild( body, c.cur, [ & ]( TSNode k )
-        {
-            const char* kt = ts_node_type( k );
-            if( kindIs( kt, "field_declaration" ) )
-            {
-                harvest( k, kt, out );
-            }
-            return true;
-        } );
     }
 
     // ── the walk ───────────────────────────────────────────────────────────────────────────────────────
