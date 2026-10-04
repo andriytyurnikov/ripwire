@@ -1463,6 +1463,158 @@ EOF
 )"
 verdict "D10 MCP tools/list: find_referencing_symbols and find_symbol describe valueRefs as not a proven call" "$res"
 
+# ── review fixes (CodeRabbit on the reference-as-value round) ──────────────────────────────────────────────────────
+# RW: a written slot is cut on a UTF-8 boundary, gets "…" only when really cut, and a JS string key is capped like the
+#    Python one. Each pair is a positive (the cut) beside its near miss (a text one byte shorter or longer).
+# RO: a --callees tie (one site, one name, one through, several definitions) is ordered by the definition's path, so the
+#    64-row window shows the same rows under every standard library.
+# RF: a container fed many times (the fed lists are deduplicated and binary-searched) still matches, an unfed one never.
+# RV: the MCP server's value-reference index is rebuilt after EVERY index rebuild — a chmod (ctime only) or a new
+#    non-source file (a directory mtime) rebuilds with unchanged file content, and the old index then read freed
+#    bindings (heap-use-after-free under ASan) — and is NOT rebuilt on a warm reuse.
+echo "-- review fixes"
+mkdir -p "$FX/cut" "$FX/cutjs" "$FX/tie" "$FX/fed" "$FX/vri"
+python3 - "$FX" >"$TMP/cut.expect" <<'EOF'
+import os, sys
+fx = sys.argv[1]
+cases = { "cut": ( "a" * 80 + "é" * 20 ), "exact": "b" * 94, "over": "b" * 95 }
+with open( os.path.join( fx, "cut", "reg.py" ), "w", encoding="utf-8" ) as f:
+    for name in cases:
+        f.write( "def h_%s(x):\n    return x\n\n" % name )
+    for name, key in cases.items():
+        f.write( "T_%s = {\"%s\": h_%s}\n" % ( name, key, name ) )
+js = { "long": "c" * 300, "exact": "d" * 96, "cut": "x" * 95 + "ä" }
+with open( os.path.join( fx, "cutjs", "reg.js" ), "w", encoding="utf-8" ) as f:
+    for name in js:
+        f.write( "function j_%s(x) { return x; }\n" % name )
+    for name, key in js.items():
+        f.write( "const J_%s = { \"%s\": j_%s };\n" % ( name, key, name ) )
+    f.write( "module.exports = { J_long, J_exact, J_cut };\n" )
+E = "…"
+# the cleaned key literal (quotes included, kVrTextCap = 96 bytes) cut back to the start of the character the cap falls in
+print( "T_cut[\"" + "a" * 80 + "é" * 7 + E + "]" )        # 1 + 80 + 7*2 = 95 bytes: byte 96 is an é continuation byte
+print( "T_exact[\"" + "b" * 94 + "\"]" )                      # exactly 96 bytes: whole, no ellipsis
+print( "T_over[\"" + "b" * 95 + E + "]" )                     # 97 bytes: cut at 96
+print( "J_long." + "c" * 96 + E )
+print( "J_exact." + "d" * 96 )
+print( "J_cut." + "x" * 95 + E )                              # byte 96 is the ä continuation byte: back off to 95
+EOF
+i=0; while IFS= read -r want; do i=$(( i + 1 )); exp[$i]="$want"; done <"$TMP/cut.expect"
+arm "RW1 callers h_cut: a non-ASCII key cut at the cap ends on a whole character, then …" cut --callers=h_cut attr:value_refs=1 "vr:into=${exp[1]}"
+arm "RW2 callers h_exact (near miss): a 96-byte key is whole — no … when nothing was cut" cut --callers=h_exact attr:value_refs=1 "vr:into=${exp[2]}"
+arm "RW3 callers h_over (near miss): a 97-byte key is still cut" cut --callers=h_over attr:value_refs=1 "vr:into=${exp[3]}"
+arm "RW4 callers j_long: a JS string key is capped like the Python one" cutjs --callers=j_long attr:value_refs=1 "vr:into=${exp[4]}"
+arm "RW5 callers j_exact (near miss): a 96-byte JS key is whole" cutjs --callers=j_exact attr:value_refs=1 "vr:into=${exp[5]}"
+arm "RW6 callers j_cut: a JS key cut inside a character backs off to its start" cutjs --callers=j_cut attr:value_refs=1 "vr:into=${exp[6]}"
+cli cut --callers=h_cut "$TMP/cli.cut.xml"
+# strict decode (a partial sequence raises), and neither the emitter's '?' nor U+FFFD stands in for a cut character
+res="$( python3 -c '
+import sys
+b = open( sys.argv[1], "rb" ).read()
+try:
+    s = b.decode( "utf-8" )
+except UnicodeDecodeError as e:
+    print( "FAIL not valid UTF-8: %s" % e ); raise SystemExit
+print( "FAIL a replacement stands before the ellipsis" if ( "?\u2026" in s or "\ufffd" in s ) else "OK" if "\u00e9\u2026" in s else "FAIL no whole-character cut in the answer" )' "$TMP/cli.cut.xml" 2>&1 )"
+verdict "RW7 the CLI answer with the cut is strict UTF-8 and ends the cut on a whole character (no ? / U+FFFD before …)" "$res"
+mcp_call find_referencing_symbols '{"path":"'"$FX/cut"'","symbol":"h_cut"}' >"$TMP/mcp.cut.json"
+verdict "RW8 MCP find_referencing_symbols(h_cut).valueRefs == CLI (the same whole-character cut)" "$( python3 "$TMP/par.py" json "$TMP/cli.cut.xml" "$TMP/mcp.cut.json" valueRefs )"
+
+for k in $( seq -w 1 70 ); do mkdir -p "$FX/tie/d$k"; printf 'int helper(int x) { return x + %d; }\n' "$(( 10#$k ))" >"$FX/tie/d$k/h.c"; done
+printf 'typedef int (*fn_t)(int);\nstatic fn_t fp;\nvoid setup(void) { fp = helper; }   /* @O_BIND */\n' >"$FX/tie/main.c"
+arm "RO1 callees setup: 70 same-named definitions, one site — a 64-row window over 70" tie --callees=setup \
+    el:vrs:total=70 el:vrs:shown=64 el:vrs:capped=1 nvr:64 'vr:to=helper;def=d01/h.c:1;bind=@O_BIND;into=fp'
+cli tie --callees=setup "$TMP/cli.tie.xml"
+res="$( python3 - "$TMP/cli.tie.xml" <<'EOF'
+import re, sys
+defs = re.findall( r'<vr [^>]*\bdef="([^"]*)"', open( sys.argv[1], encoding="utf-8" ).read() )
+want = [ "d%02d/h.c:1" % k for k in range( 1, 65 ) ]
+print( "OK" if defs == want else "FAIL rows are not the first 64 definitions in path order: %r" % defs[:8] )
+EOF
+)"
+verdict "RO2 callees setup: the tied rows are in definition-path order, so the window shows d01..d64 on every toolchain" "$res"
+
+cat >"$FX/fed/fed.js" <<'EOF'
+function fa() { return 1; }
+function fb() { return 2; }
+function fc() { return 3; }
+function fx() { return 4; }
+function fp() { return 5; }
+function fq() { return 6; }
+const zeta = {};
+const alpha = {};
+const unfed = {};
+zeta.a = fa;
+zeta.b = fb;
+zeta.c = fc;
+alpha.x = fx;
+function goZ(k) { return zeta[k](); }
+function goA(k) { return alpha[k](); }
+function goU(k) { return unfed[k](); }
+function local(k) { const m = {}; const n = {}; m.p = fp; m.q = fp; n.r = fq; return m[k]() + n[k](); }
+EOF
+arm "RF1 callees goZ: a file-scope container fed three times reaches all three" fed --callees=goZ el:vrs:total=3 nvr:3 \
+    'vr:to=fa;through=zeta[k]' 'vr:to=fb;through=zeta[k]' 'vr:to=fc;through=zeta[k]'
+arm "RF2 callees goA: a container fed AFTER another one fed many times still matches (sorted, deduplicated fed list)" \
+    fed --callees=goA el:vrs:total=1 nvr:1 'vr:to=fx;through=alpha[k]'
+arm "RF3 callees goU (negative): a container no function was stored in reaches nothing" fed --callees=goU attr:defs=1 nvr:0 noel:vrs
+arm "RF4 callees local: a function-scope container fed twice, beside another" fed --callees=local el:vrs:total=3 nvr:3 \
+    'vr:to=fp;into=m.p;through=m[k]' 'vr:to=fp;into=m.q;through=m[k]' 'vr:to=fq;into=n.r;through=n[k]'
+
+printf 'export function cb(x) { return x + 1; }\n' >"$FX/vri/a.js"
+printf 'export function run(f, x) { return f(x); }\n' >"$FX/vri/r.js"
+printf "import { run } from './r.js';\nimport { cb } from './a.js';\nexport function go() { return run(cb, 1); }\n" >"$FX/vri/b.js"
+res="$( python3 - "$BIN" "$FX/vri" cb <<'EOF'
+import hashlib, json, os, stat, subprocess, sys, tempfile, time
+binp, d, sym = sys.argv[1:4]
+tmp = tempfile.mkdtemp()
+errf = open( os.path.join( tmp, "err.txt" ), "w+" )
+p = subprocess.Popen( [ binp, "--mcp" ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf, text=True,
+                      env=dict( os.environ, RIPWIRE_MCP_TIMINGS="1", TMPDIR=tmp ) )
+def call( i, method, params=None ):
+    msg = { "jsonrpc": "2.0", "id": i, "method": method }
+    if params is not None: msg[ "params" ] = params
+    try:
+        p.stdin.write( json.dumps( msg ) + "\n" ); p.stdin.flush()
+    except ( BrokenPipeError, ValueError ):
+        return None
+    line = p.stdout.readline()
+    return json.loads( line ) if line else None
+def fs( i ):
+    r = call( i, "tools/call", { "name": "find_symbol", "arguments": { "path": d, "symbol": sym } } )
+    if r is None or "error" in r: return "NORESP"
+    v = json.loads( r[ "result" ][ "content" ][ 0 ][ "text" ] ).get( "valueRefs" )
+    return hashlib.sha1( json.dumps( v, sort_keys=True ).encode() ).hexdigest() if v else "NOROWS"
+call( 1, "initialize" )
+rows = [ fs( 2 ), fs( 3 ) ]
+time.sleep( 1.1 )
+f = os.path.join( d, "b.js" ); m = os.stat( f ).st_mode
+os.chmod( f, m ^ stat.S_IXUSR ); os.chmod( f, m )                     # ctime moves; content and mtime do not
+rows.append( fs( 4 ) )
+time.sleep( 1.1 )
+open( os.path.join( d, "notes.txt" ), "w" ).write( "x\n" )           # a directory mtime moves; no source changes
+rows.append( fs( 5 ) )
+try: p.stdin.close()
+except BrokenPipeError: pass
+try: p.wait( timeout=120 )
+except subprocess.TimeoutExpired: p.kill(); print( "FAIL the MCP server did not exit within 120 s" ); sys.exit( 0 )
+errf.seek( 0 ); err = errf.read()
+lines = [ l for l in err.splitlines() if l.startswith( "ripwire-timing verb=find_symbol " ) ]
+got = [ ( dict( x.split( "=", 1 ) for x in l.split()[ 1: ] ).get( "rebuilt" ), dict( x.split( "=", 1 ) for x in l.split()[ 1: ] ).get( "vri" ) ) for l in lines ]
+print( json.dumps( { "rows": rows, "got": got, "rc": p.returncode,
+                     "san": err.count( "ERROR: AddressSanitizer" ) + err.count( "runtime error:" ) } ) )
+EOF
+)"
+vri_arm(){   # vri_arm LABEL PYEXPR — PYEXPR over s (the session summary) must be true
+    local r; r="$( python3 -c 'import json, sys; s = json.loads( sys.argv[1] ); print( "OK" if eval( sys.argv[2] ) else "FAIL session: %r" % s )' "$res" "$2" 2>&1 )"
+    verdict "$1" "$r"
+}
+vri_arm "RV1 MCP session: the cold find_symbol builds the index and the value-ref index (rebuilt=1 vri=1)" 's["got"][0] == ["1","1"] and s["rows"][0] not in ("NORESP","NOROWS")'
+vri_arm "RV2 MCP session (negative): a warm find_symbol reuses both (rebuilt=0 vri=0), same rows" 's["got"][1] == ["0","0"] and s["rows"][1] == s["rows"][0]'
+vri_arm "RV3 MCP session: a chmod rebuilds the index with unchanged content — the value-ref index is rebuilt too (vri=1), same rows" 's["got"][2] == ["1","1"] and s["rows"][2] == s["rows"][0]'
+vri_arm "RV4 MCP session: a new non-source file rebuilds the index — the value-ref index is rebuilt too (vri=1), same rows" 's["got"][3] == ["1","1"] and s["rows"][3] == s["rows"][0]'
+vri_arm "RV5 MCP session: the server exited 0 with no sanitizer report (meaningful on an ASan build)" 's["rc"] == 0 and s["san"] == 0'
+
 echo
 if [ "$fail" -eq 0 ]; then echo "recallshapecheck: ALL PASS ($n CLI arms + parity)"; else echo "recallshapecheck: FAIL"; fi
 exit "$fail"

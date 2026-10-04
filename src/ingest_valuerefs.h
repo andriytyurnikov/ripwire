@@ -55,7 +55,10 @@ inline constexpr std::uint32_t kVrMaxDepth   = 512;   // the value-uses pass's o
 inline constexpr std::size_t   kVrTextCap    = 96;    // a written slot / callee longer than this is cut with "…"
 
 // A written slot or callee, made attribute-safe: whitespace runs collapse to one space (an XML attribute may not
-// carry a raw newline) and the text is capped. Escaping is the emitter's job.
+// carry a raw newline) and the text is capped. Escaping is the emitter's job. The cut is serialize.h
+// truncateUtf8WithEllipsis's (that header is not reachable from the ingest side): "…" only when text was really cut —
+// a text of exactly kVrTextCap bytes is whole — and never inside a UTF-8 sequence (a lead byte without its
+// continuation bytes would reach into=/through= as an invalid character).
 inline std::string vrClean( std::string_view s )
 {
     std::string out;
@@ -75,13 +78,27 @@ inline std::string vrClean( std::string_view s )
             space = false;
         }
         out.push_back( c );
-        if( out.size() >= kVrTextCap )
+        if( out.size() > kVrTextCap )
         {
+            std::size_t cut = kVrTextCap;   // back off to the start of the sequence the cap falls inside
+            while( cut > 0 && ( static_cast<unsigned char>( out[cut] ) & 0xC0u ) == 0x80u )
+            {
+                --cut;
+            }
+            out.resize( cut );
             out += "\xE2\x80\xA6";   // …
             break;
         }
     }
+    ENSURES( out.size() <= kVrTextCap + 3, "a cleaned text is at most the cap plus the 3-byte ellipsis" );
     return out;
+}
+
+// A `fed` list (VrScope::fed, m_fileFed) as a sorted set: the Through filters then binary-search it.
+inline void vrSortUnique( std::vector<std::string>& v )
+{
+    std::ranges::sort( v );
+    v.erase( std::ranges::unique( v ).begin(), v.end() );
 }
 
 // The content of a string literal as written: prefix letters (b, f, r, u) and the quote pair stripped.
@@ -213,10 +230,13 @@ public:
             }
         }
 
-        // File-scope calls through a container survive only when this file fed that container a function value.
+        // File-scope calls through a container survive only when this file fed that container a function value. A
+        // container fed N times is listed N times: sorted and deduplicated once, each pending call is a binary search
+        // (membership only — m_out keeps m_filePending's order).
+        vrSortUnique( m_fileFed );
         for( RawRef& t : m_filePending )
         {
-            if( std::ranges::find( m_fileFed, std::string_view( t.name ) ) != m_fileFed.end() )
+            if( std::ranges::binary_search( m_fileFed, t.name ) )
             {
                 m_out.push_back( std::move( t ) );
             }
@@ -738,9 +758,10 @@ private:
         if( m_anc.back().opensScope )
         {
             VrScope& s = m_scopes.back();
+            vrSortUnique( s.fed );   // as the file-scope filter: membership only, s.pending keeps its order
             for( RawRef& t : s.pending )
             {
-                if( std::ranges::find( s.fed, std::string_view( t.name ) ) != s.fed.end() )
+                if( std::ranges::binary_search( s.fed, t.name ) )
                 {
                     m_out.push_back( std::move( t ) );
                 }
@@ -970,7 +991,7 @@ private:
             const std::string content( vrStringContent( w ) );
             if( m_fam == VrFam::Js )
             {
-                into = "." + content;
+                into = "." + vrClean( content );   // capped like every other written slot (the Python branch below)
                 key  = "." + content;
             }
             else

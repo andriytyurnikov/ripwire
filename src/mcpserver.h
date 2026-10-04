@@ -658,6 +658,7 @@ inline int runMcpHttp( const McpHttpConfig& cfg )
             const std::chrono::steady_clock::time_point t0 =
                 timingsOn ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             const std::uint64_t rebuildAtStart = timingsOn ? mcpRebuildCounter().load( std::memory_order_relaxed ) : 0;
+            const std::uint64_t vriAtStart     = timingsOn ? mcpValueRefBuildCounter().load( std::memory_order_relaxed ) : 0;
 
             const McpDispatchResult r = dispatchMcpLine( req.body, cfg.topK, cfg.stable, cfg.noRedact, policy );
             if( r.isNotification )
@@ -674,7 +675,8 @@ inline int runMcpHttp( const McpHttpConfig& cfg )
                 const double wallMs = std::chrono::duration< double, std::milli >(
                                           std::chrono::steady_clock::now() - t0 ).count();
                 const unsigned rebuilt = ( mcpRebuildCounter().load( std::memory_order_relaxed ) != rebuildAtStart ) ? 1u : 0u;
-                rw::emitTo( stderr, "ripwire-timing verb={} wall_ms={:.3f} rebuilt={}\n", r.timingVerb.c_str(), wallMs, rebuilt );
+                const unsigned vri     = ( mcpValueRefBuildCounter().load( std::memory_order_relaxed ) != vriAtStart ) ? 1u : 0u;
+                rw::emitTo( stderr, "ripwire-timing verb={} wall_ms={:.3f} rebuilt={} vri={}\n", r.timingVerb.c_str(), wallMs, rebuilt, vri );
                 std::fflush( stderr );
             }
         }

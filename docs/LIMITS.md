@@ -6,7 +6,8 @@
 Every compile-time cap in `src/`, what it bounds, and whether its file discloses a truncation when
 it fires. A cap is a **routing decision**: it decides what an agent can and cannot find. Set one
 where the pathological tail is, never near the typical case — and when it fires, say so
-(`*_capped="1"` with a `*_total=`), because a silent cut reads to the caller as "none exists".
+(`*_capped="1"` with a `*_total=`), because a silent cut reads to the caller as "none exists". A file that emits
+a window (`<x total= shown= capped=>`, or its JSON twin's `"capped":`) discloses `capped`.
 
 A row is pinned by what a cap IS — its file, name, value, class and note — never by the line it sits
 on, so a comment rewritten or a helper deleted above a cap changes no row here and cannot stale this
@@ -16,7 +17,7 @@ it once, marked `×N`.
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 236 | 94 | 128 | **108** |
+| 236 | 94 | 135 | **101** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
 are not counted as caps, and 236 + 7 is the 243 constants this generator parses out of `src/`.
@@ -92,7 +93,7 @@ One table for each of the 94 files that declare a cap — the 236 caps counted a
 
 ### `src/abicheck.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -133,7 +134,7 @@ Discloses: **none**
 
 ### `src/cli.h`
 
-Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `mention_idents_capped`, `mention_syms_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
+Discloses: `capped`, `bridges_capped`, `files_capped`, `inc_capped`, `mention_idents_capped`, `mention_syms_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -192,7 +193,7 @@ Discloses: **none**
 
 ### `src/darkflags.h`
 
-Discloses: `reads_capped`
+Discloses: `capped`, `reads_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -221,7 +222,7 @@ Discloses: **none**
 
 ### `src/docdrift.h`
 
-Discloses: `failed_capped`, `weak_capped`
+Discloses: `capped`, `failed_capped`, `weak_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -237,7 +238,7 @@ Discloses: `failed_capped`, `weak_capped`
 
 ### `src/editcheck.h`
 
-Discloses: `unflagged_capped`
+Discloses: `capped`, `unflagged_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -253,7 +254,7 @@ Discloses: **none**
 
 ### `src/editpreview.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -289,7 +290,7 @@ Discloses: **none**
 
 ### `src/fieldaffinity.h`
 
-Discloses: `aggs_capped`, `as_loops_capped`, `as_query_capped`
+Discloses: `capped`, `aggs_capped`, `as_loops_capped`, `as_query_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -310,7 +311,7 @@ Discloses: **none**
 
 ### `src/flipimpact.h`
 
-Discloses: `hosts_capped`
+Discloses: `capped`, `hosts_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -374,7 +375,7 @@ Discloses: **none**
 
 ### `src/handoff.h`
 
-Discloses: `syms_capped`
+Discloses: `capped`, `syms_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -529,7 +530,7 @@ Discloses: **none**
 
 ### `src/lanes.h`
 
-Discloses: `blast_capped`, `symbols_capped`, `tests_capped`
+Discloses: `capped`, `blast_capped`, `symbols_capped`, `tests_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -594,7 +595,7 @@ Discloses: `hits_capped`
 
 ### `src/mcpedit.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -621,7 +622,7 @@ Discloses: **none**
 
 ### `src/mcpverbs.h`
 
-Discloses: `blast_radius_capped`, `calledBy_capped`, `coboost_commits_capped`, `forgotten_capped`, `hits_capped`, `siblings_capped`, `terms_capped`, `unindexed_candidates_capped`
+Discloses: `capped`, `blast_radius_capped`, `calledBy_capped`, `coboost_commits_capped`, `forgotten_capped`, `hits_capped`, `siblings_capped`, `terms_capped`, `unindexed_candidates_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -693,7 +694,7 @@ Discloses: `cells_capped`, `decls_capped`
 
 ### `src/packtask.h`
 
-Discloses: `mention_syms_capped`, `ranking_capped`
+Discloses: `capped`, `mention_syms_capped`, `ranking_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -702,7 +703,7 @@ Discloses: `mention_syms_capped`, `ranking_capped`
 
 ### `src/pageview.h`
 
-Discloses: `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`, `modules_capped`, `symbols_capped`
+Discloses: `capped`, `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`, `modules_capped`, `symbols_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -737,7 +738,7 @@ Discloses: `hits_capped`
 
 ### `src/prcontext.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -757,7 +758,7 @@ Discloses: **none**
 
 ### `src/qualitypanel.h`
 
-Discloses: `findings_capped`
+Discloses: `capped`, `findings_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -849,7 +850,7 @@ Discloses: **none**
 
 ### `src/serialize.h`
 
-Discloses: `calls_capped`, `inc_capped`, `sibs_capped`
+Discloses: `capped`, `calls_capped`, `inc_capped`, `sibs_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -889,7 +890,7 @@ Discloses: `partners_capped`, `tests_capped`, `untested_capped`
 
 ### `src/skillscan.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -935,9 +936,9 @@ Discloses: `name_ladder_capped`
 | `kTestHopBasenameRowCap` | `3` | OUTPUT | — |
 | `kTestHopCalleeRowCap` | `5` | OUTPUT | — |
 
-### `src/valuerefindex.h`
+### `src/valuerefs.h`
 
-Discloses: **none**
+Discloses: `capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -945,7 +946,7 @@ Discloses: **none**
 
 ### `src/verbs_change.h`
 
-Discloses: `seed_files_capped`
+Discloses: `capped`, `seed_files_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -961,7 +962,7 @@ Discloses: **none**
 
 ### `src/verbs_for.h`
 
-Discloses: `coboost_commits_capped`, `terms_capped`
+Discloses: `capped`, `coboost_commits_capped`, `terms_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -969,7 +970,7 @@ Discloses: `coboost_commits_capped`, `terms_capped`
 
 ### `src/verbs_lint.h`
 
-Discloses: `count_capped`, `ellipsis_capped`, `findings_capped`, `hits_capped`, `rows_capped`
+Discloses: `capped`, `count_capped`, `ellipsis_capped`, `findings_capped`, `hits_capped`, `rows_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -977,7 +978,7 @@ Discloses: `count_capped`, `ellipsis_capped`, `findings_capped`, `hits_capped`, 
 
 ### `src/verbs_navigate.h`
 
-Discloses: `importers_capped`
+Discloses: `capped`, `importers_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |

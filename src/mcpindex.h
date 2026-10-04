@@ -531,12 +531,13 @@ struct McpIndex
     std::uint64_t                     workingSetHash = 0;   // FNV-1a of the changed-file id list used to build `rank`
 
     // Reference-as-value round: the value-reference index (src/valuerefs.h) is O(references) to build, which on a large
-    // tree is most of a warm 1-hop call's cost — so it is built once per index CONTENT and reused. Keyed on the S1
-    // content stamp and the reference count it was built from; a rebuilt index (any content change moves contentHash)
-    // never reuses it. Pure cache: it is a function of `ing`, so no output byte depends on whether it was warm.
+    // tree is most of a warm 1-hop call's cost — so it is built on first use and reused until `ing` is replaced. It
+    // holds pointers into `ing` (ValueRefIndex::m_importsByFile keeps `const Binding*`), so EVERY write of `ing` drops
+    // it first: getIndex's rebuild and releaseMcpIndexMemory. Keying it on contentHash was not enough — a rebuild with
+    // unchanged file content (a directory mtime moved, or only a file's ctime after a chmod) keeps contentHash and the
+    // reference count, and the old index then read the freed bindings. Pure cache: it is a function of `ing`, so no
+    // output byte depends on whether it was warm.
     mutable std::shared_ptr<const ValueRefIndex> valueRefs;
-    mutable std::uint64_t                        valueRefsStamp = 0;
-    mutable std::size_t                          valueRefsRefCount = 0;
 
     // ── P1-15 incremental-pass disclosure (the `_reingest` envelope field; mcpReingestField below).
     //
@@ -818,6 +819,7 @@ inline void releaseMcpIndexMemory()
 {
     McpIndex& ix = mcpIndexSlot();
     ix.valid = false;
+    ix.valueRefs.reset();   // it points into `ing` (see McpIndex::valueRefs) — and it is resident bulk too
     ix.ing   = IngestResult{};
     ix.g     = Graph{};
     std::vector<float>().swap( ix.rank );
@@ -832,6 +834,14 @@ inline void releaseMcpIndexMemory()
 // harness reads it before/after each request to attribute per-request wall time to "rebuilt" vs "warm".
 // Relaxed: the only reader is the same-thread timing print in runMcp, ordered by the request it wraps.
 inline std::atomic<std::uint64_t>& mcpRebuildCounter()
+{
+    static std::atomic<std::uint64_t> n{ 0 };
+    return n;
+}
+
+// The same RIPWIRE_MCP_TIMINGS observable for the value-reference index (valueRefIndexOf): a monotone count of builds.
+// The timing line's vri=1 says this request built it — once after every getIndex() rebuild, never on a warm reuse.
+inline std::atomic<std::uint64_t>& mcpValueRefBuildCounter()
 {
     static std::atomic<std::uint64_t> n{ 0 };
     return n;
@@ -1109,14 +1119,14 @@ inline void maybePrefetchHeadSnapshot( const std::string& root, std::size_t file
     } ).detach();
 }
 
-// The value-reference index of `ix`, built on first use and reused while the index content is unchanged.
+// The value-reference index of `ix`, built on first use and reused until `ix.ing` is replaced (every writer of `ing`
+// resets it — see McpIndex::valueRefs).
 inline const ValueRefIndex& valueRefIndexOf( const McpIndex& ix )
 {
-    if( !ix.valueRefs || ix.valueRefsStamp != ix.contentHash || ix.valueRefsRefCount != ix.ing.references.size() )
+    if( !ix.valueRefs )
     {
-        ix.valueRefs         = std::make_shared<const ValueRefIndex>( ix.ing );
-        ix.valueRefsStamp    = ix.contentHash;
-        ix.valueRefsRefCount = ix.ing.references.size();
+        ix.valueRefs = std::make_shared<const ValueRefIndex>( ix.ing );
+        mcpValueRefBuildCounter().fetch_add( 1, std::memory_order_relaxed );
     }
     return *ix.valueRefs;
 }
@@ -1152,6 +1162,10 @@ inline const McpIndex& getIndex( const std::string& root )
     // read at the same moment and for the same reason as the line above. Rebuild path only — nothing here
     // touches the warm reuse that returned above.
     const McpRebuildBaseline a3Before = mcpRebuildBaseline( ix, isIncrementalPass );
+
+    // `ing` is about to be replaced: the value-reference index points into it (McpIndex::valueRefs), so it goes first —
+    // whether or not the file content moved.
+    ix.valueRefs.reset();
 
     // Multi-root workspace key (A11): per-root ingest (each with ITS OWN mcpCachePath blob — an edit in
     // one root never reparses another) merged into one IngestResult; else the single-root path unchanged.

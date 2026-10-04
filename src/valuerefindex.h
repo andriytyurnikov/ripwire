@@ -23,10 +23,6 @@
 namespace rw
 {
 
-// The default display window of the <vrs> rows (the runaway guard): value_refs= and total= stay whole, the rows
-// beyond it are counted (capped="1") and the next= verb (--uses=SYM) pages every site.
-inline constexpr std::size_t kValueRefRowCap = 64;
-
 using VrLangFamily = ValueRefFamily;   // model.h: the armed-language table the capture indexes too
 
 // A Through key matches a Value key: "*" (a computed subscript) reaches every keyed or indexed slot, "" (a bare
@@ -620,7 +616,13 @@ inline ValueRefRows valueRefCallerRows( const IngestResult& ing, const ValueRefI
     }
     std::sort( out.rows.begin(), out.rows.end(), [ & ]( const ValueRefRow& a, const ValueRefRow& b )
     {
-        return vrBindLess( ing, ing.references[a.ref], ing.references[b.ref] );
+        const Reference& ra = ing.references[a.ref];
+        const Reference& rb = ing.references[b.ref];
+        if( ra.fileId != rb.fileId || ra.startByte != rb.startByte )
+        {
+            return vrBindLess( ing, ra, rb );
+        }
+        return a.ref < b.ref;   // two value references at one site: parse order within the file (a total order)
     } );
     return out;
 }
@@ -692,7 +694,24 @@ inline ValueRefRows valueRefCalleeRows( const IngestResult& ing, const ValueRefI
         {
             return vrBindLess( ing, ra, rb );
         }
-        return a.to != b.to ? ing.symbols[a.to].name < ing.symbols[b.to].name : a.through < b.through;
+        if( a.to != b.to && ing.symbols[a.to].name != ing.symbols[b.to].name )
+        {
+            return ing.symbols[a.to].name < ing.symbols[b.to].name;
+        }
+        if( a.through != b.through )
+        {
+            return a.through < b.through;
+        }
+        // same site, same name, same through: two definitions of one name (`fp = helper;` with a `helper` in each of
+        // two files). std::sort leaves equal rows in an order each standard library picks differently, and the 64-row
+        // window would then show a toolchain-dependent subset — so the definition's path, then its line, decide.
+        const Symbol& ta = ing.symbols[a.to];
+        const Symbol& tb = ing.symbols[b.to];
+        if( ta.fileId != tb.fileId )
+        {
+            return ing.files[ta.fileId] < ing.files[tb.fileId];
+        }
+        return ta.line < tb.line;
     } );
     return out;
 }

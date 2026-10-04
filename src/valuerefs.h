@@ -47,6 +47,11 @@ inline std::string vrPath( const IngestResult& ing, std::uint32_t fileId, const 
     return std::string( rr.singleRoot ? sarif::rootRelativeUri( ing.files[fileId], rr.rootPrefix ) : std::string_view( ing.files[fileId] ) );
 }
 
+// The default display window of the <vrs> rows (the runaway guard): value_refs= and total= stay whole, the rows
+// beyond it are counted (capped="1") and the next= verb (--uses=SYM) pages every site. It lives beside the two
+// renderers that apply it and emit that disclosure (valueRefsXml, valueRefsJson).
+inline constexpr std::size_t kValueRefRowCap = 64;
+
 // The <vrs total= shown= capped= [next=]> window and its rows, or "" when there is no row (byte identity).
 inline std::string valueRefsXml( const IngestResult& ing, const ValueRefRows& rows, bool callersSide, const VrRender& rr,
                                  std::string_view nextVerb, std::size_t cap = kValueRefRowCap )
