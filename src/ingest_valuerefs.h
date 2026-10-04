@@ -684,23 +684,19 @@ private:
     // opens instead of waiting to encounter them.
     void preReadClassMembers( TSNode cls, std::vector<std::string_view>& out ) const
     {
-        ChildCursor c( cls );
-        forEachNamedChild( cls, c.cur, [ & ]( TSNode body )
+        const TSNode body = fieldChild( cls, NodeField::Body );   // field_declaration_list; null on a forward declaration
+        if( ts_node_is_null( body ) )
         {
-            if( !kindIs( ts_node_type( body ), "field_declaration_list" ) )
+            return;
+        }
+        ChildCursor c( body );
+        forEachNamedChild( body, c.cur, [ & ]( TSNode k )
+        {
+            const char* kt = ts_node_type( k );
+            if( kindIs( kt, "field_declaration" ) )
             {
-                return true;
+                harvest( k, kt, out );
             }
-            ChildCursor m( body );
-            forEachNamedChild( body, m.cur, [ & ]( TSNode k )
-            {
-                const char* kt = ts_node_type( k );
-                if( kindIs( kt, "field_declaration" ) )
-                {
-                    harvest( k, kt, out );
-                }
-                return true;
-            } );
             return true;
         } );
     }
