@@ -302,7 +302,14 @@ constexpr std::uint32_t kCacheVersion = 28;           // 28: FE-A (test/falseedg
                                                       //    (Py `pkg.mod`, TS `./x`, Rust `crate::a::b`/`mod:x`) —
                                                       //    a target FORMAT change → old caches must be rejected.
                                                       // 4: Include gained a `bool isAngle` (quote/angle) field
-constexpr std::uint32_t kParserVer    = 141;          // bump on any grammar/.scm/extraction change
+constexpr std::uint32_t kParserVer    = 143;          // bump on any grammar/.scm/extraction change
+                                                      // 143 = 2026-10-04 (train 25 review fixes): two extraction changes —
+                                                      //   a declaration named like the global object (`var self = this`, a
+                                                      //   parameter `window`) is now a JsShadow binding, and a value-reference
+                                                      //   slot text (into=/through=) is cut on a UTF-8 boundary, gets "…" only
+                                                      //   when really cut, and a JS string key is capped too. 143, not 142:
+                                                      //   141's RICH file tag was 142 (parserVerFor below adds 1), and a lean
+                                                      //   142 would have read those blobs as its own.
                                                       // 141 = 2026-10-04 (train 25): cache-key hygiene above every branch build's number.
                                                       //   Two merged lanes changed extraction under their own numbers: FE-A 134/135
                                                       //   (member-call shape, ModuleAlias bindings, Rust path calls; kCacheVersion 28)

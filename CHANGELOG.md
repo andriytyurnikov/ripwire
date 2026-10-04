@@ -513,10 +513,11 @@ per page instead. Gate: `test/impactdepthcheck.sh`.
 
 ### Changed — the versions this release moves, stated once
 
-`kParserVer` 124 → 141 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
+`kParserVer` 124 → 143 (the function-literal fix takes 128; #338 and #325 take 129; the body-less C/C++ type-specifier
 span fix and the TypeScript `await f<T>(x)` / `!f<T>(x)` calls each took a number of their own on their branches, as did
-the false-edge resolution (134, 135) and the value-reference rows (140), and 141 then sits above every number a branch
-build of unreleased work has used, so no cache such a build wrote is read as this release's), `kCacheVersion` 25 → 28
+the false-edge resolution (134, 135) and the value-reference rows (140); 141 sat above every number a branch build of
+unreleased work had used, and the review fixes to the global-object shadow and the value-reference slot text take 143,
+above 141's full-use file tag 142, so no cache such a build wrote is read as this release's), `kCacheVersion` 25 → 28
 (the function-literal fix's record changes, then the false-edge fix's member-call fields) and `kQSnapCacheScheme` 15 → 17
 (the `--quality-delta` error-masking and placeholder changes, then the dead kind agreeing with `--dead-code` on functions
 held as values). Every ingest cache written by an earlier build is refused and re-indexed once, and every

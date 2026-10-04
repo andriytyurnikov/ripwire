@@ -34,6 +34,10 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-10-04, train 25 review fixes: RE-DERIVED with UPDATE_GOLDEN=1 (hash 32240f4552…2dafcc). kParserVer 141 -> 143 (two
+#   extraction changes: a declaration named like the JS global object is a JsShadow binding; value-reference slot text
+#   is cut on a UTF-8 boundary and JS string keys are capped) with quality.h's mirror; 143 because 141's full-use file
+#   tag was 142. kQSnapCacheScheme stays 17: what a Snapshot means is unchanged, and every key carries the parser mirror.
 # 2026-10-04, train 25, extractor fix: RE-DERIVED with UPDATE_GOLDEN=1 (hash d1a2878ce0…44e6c8). No source or scheme
 #   change: extract_fn now reads a candidate's whole signature before deciding it is a prototype, so computeSnapshot's
 #   two-line forward declaration is skipped and its REAL definition is hashed for the first time since the import
