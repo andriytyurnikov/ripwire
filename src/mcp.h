@@ -2893,7 +2893,7 @@ inline int runMcp( const McpStdioConfig& config )
     // MEASURE-FIRST instrumentation (RIPWIRE_MCP_TIMINGS, off by default → byte-identical + silent server, same
     // discipline as ingest.cpp's RIPWIRE_CACHE_STATS). When set, emit ONE stderr TSV line per handled request:
     //   ripwire-timing verb=<v> wall_ms=<f> rebuilt=<0|1> vri=<0|1>
-    // (vri=1: this request built the value-reference index — mcpValueRefBuildCounter, mcpindex.h.)
+    // (McpRequestTiming, mcpindex.h, writes it; vri=1: this request built the value-reference index.)
     // stderr only, so the JSON-RPC stdout stream is untouched and every determinism/protocol gate is unaffected.
     // NOTE: the design specified a `--mcp-timings` CLI flag; cli.h/main.cpp are owned by a concurrent agent this
     // round, so we use the env var instead (recorded in bench/PROFILE.md's appendix) — same zero-cost-off contract.
@@ -2923,10 +2923,7 @@ inline int runMcp( const McpStdioConfig& config )
         }
 
         // per-request timing capture (only when the env observable is on — zero clock/atomic work otherwise).
-        const std::chrono::steady_clock::time_point t0 =
-            timingsOn ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-        const std::uint64_t rebuildAtStart = timingsOn ? mcpRebuildCounter().load( std::memory_order_relaxed ) : 0;
-        const std::uint64_t vriAtStart     = timingsOn ? mcpValueRefBuildCounter().load( std::memory_order_relaxed ) : 0;
+        const McpRequestTiming timing( timingsOn );
 
         const McpDispatchResult r = dispatchMcpLine( line, config.topK, config.stable, config.noRedact, policy );
         if( r.isNotification )
@@ -2939,18 +2936,8 @@ inline int runMcp( const McpStdioConfig& config )
         std::fflush( stdout );
 
         // MEASURE-FIRST per-request timing line (stderr only, env-gated). Emitted AFTER the protocol response is
-        // flushed so it can never interleave into the JSON-RPC stdout stream. rebuilt=1 iff a full getIndex()
-        // rebuild fired somewhere in this request's handling (staleness / post-edit path).
-        if( timingsOn )
-        {
-            const double wallMs = std::chrono::duration< double, std::milli >(
-                                      std::chrono::steady_clock::now() - t0 ).count();
-            const unsigned rebuilt = ( mcpRebuildCounter().load( std::memory_order_relaxed ) != rebuildAtStart ) ? 1u : 0u;
-            const unsigned vri     = ( mcpValueRefBuildCounter().load( std::memory_order_relaxed ) != vriAtStart ) ? 1u : 0u;
-            rw::emitTo( stderr, "ripwire-timing verb={} wall_ms={:.3f} rebuilt={} vri={}\n",
-                          r.timingVerb.c_str(), wallMs, rebuilt, vri );
-            std::fflush( stderr );
-        }
+        // flushed so it can never interleave into the JSON-RPC stdout stream (McpRequestTiming, mcpindex.h).
+        timing.emit( r.timingVerb );
     }
     return 0;
 }

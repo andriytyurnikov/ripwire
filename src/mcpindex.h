@@ -538,6 +538,7 @@ struct McpIndex
     // reference count, and the old index then read the freed bindings. Pure cache: it is a function of `ing`, so no
     // output byte depends on whether it was warm.
     mutable std::shared_ptr<const ValueRefIndex> valueRefs;
+    mutable std::uint64_t                        valueRefBuilds = 0;   // monotone: McpRequestTiming's vri= reads it
 
     // ── P1-15 incremental-pass disclosure (the `_reingest` envelope field; mcpReingestField below).
     //
@@ -839,13 +840,42 @@ inline std::atomic<std::uint64_t>& mcpRebuildCounter()
     return n;
 }
 
-// The same RIPWIRE_MCP_TIMINGS observable for the value-reference index (valueRefIndexOf): a monotone count of builds.
-// The timing line's vri=1 says this request built it — once after every getIndex() rebuild, never on a warm reuse.
-inline std::atomic<std::uint64_t>& mcpValueRefBuildCounter()
+// The RIPWIRE_MCP_TIMINGS line of one request, shared by the stdio loop (runMcp) and the HTTP server (runMcpHttp):
+//   ripwire-timing verb=<v> wall_ms=<f> rebuilt=<0|1> vri=<0|1>
+// rebuilt=1: a full getIndex() rebuild fired while the request was handled (mcpRebuildCounter). vri=1: the request built
+// the value-reference index (McpIndex::valueRefBuilds) — once after every rebuild, never on a warm reuse. Off (the env
+// unset): no clock read, no counter read, nothing printed. stderr only, after the response is out.
+struct McpRequestTiming
 {
-    static std::atomic<std::uint64_t> n{ 0 };
-    return n;
-}
+    explicit McpRequestTiming( bool timingsOn )
+        : m_on( timingsOn )
+    {
+        if( m_on )
+        {
+            m_t0          = std::chrono::steady_clock::now();
+            m_rebuildAt0  = mcpRebuildCounter().load( std::memory_order_relaxed );
+            m_vriAt0      = mcpIndexSlot().valueRefBuilds;
+        }
+    }
+    void emit( std::string_view verb ) const
+    {
+        if( !m_on )
+        {
+            return;
+        }
+        const double   wallMs  = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - m_t0 ).count();
+        const unsigned rebuilt = mcpRebuildCounter().load( std::memory_order_relaxed ) != m_rebuildAt0 ? 1u : 0u;
+        const unsigned vri     = mcpIndexSlot().valueRefBuilds != m_vriAt0 ? 1u : 0u;
+        rw::emitTo( stderr, "ripwire-timing verb={} wall_ms={:.3f} rebuilt={} vri={}\n", verb, wallMs, rebuilt, vri );
+        std::fflush( stderr );
+    }
+
+private:
+    bool                                  m_on = false;
+    std::chrono::steady_clock::time_point m_t0{};
+    std::uint64_t                         m_rebuildAt0 = 0;
+    std::uint64_t                         m_vriAt0     = 0;
+};
 
 // P1-15 — the `_reingest` envelope field for a response whose handling ran an INCREMENTAL pass, or "" when
 // it did not. `passesAtEntry` is McpIndex::incrementalPasses as read before the verb ran; a difference means
@@ -1126,7 +1156,7 @@ inline const ValueRefIndex& valueRefIndexOf( const McpIndex& ix )
     if( !ix.valueRefs )
     {
         ix.valueRefs = std::make_shared<const ValueRefIndex>( ix.ing );
-        mcpValueRefBuildCounter().fetch_add( 1, std::memory_order_relaxed );
+        ++ix.valueRefBuilds;
     }
     return *ix.valueRefs;
 }

@@ -627,6 +627,35 @@ inline ValueRefRows valueRefCallerRows( const IngestResult& ing, const ValueRefI
     return out;
 }
 
+// The --callees row order, a total order on content: the binding site, then the target's name, then through=. Rows tied
+// on all three are two definitions of one name (`fp = helper;` with a `helper` in each of two files): std::sort leaves
+// equal rows in an order each standard library picks differently, and the 64-row window would then show a
+// toolchain-dependent subset — so the definition's path, then its line, decide.
+inline bool vrCalleeRowLess( const IngestResult& ing, const ValueRefRow& a, const ValueRefRow& b )
+{
+    const Reference& ra = ing.references[a.ref];
+    const Reference& rb = ing.references[b.ref];
+    if( ra.fileId != rb.fileId || ra.startByte != rb.startByte )
+    {
+        return vrBindLess( ing, ra, rb );
+    }
+    const Symbol& ta = ing.symbols[a.to];
+    const Symbol& tb = ing.symbols[b.to];
+    if( ta.name != tb.name )
+    {
+        return ta.name < tb.name;
+    }
+    if( a.through != b.through )
+    {
+        return a.through < b.through;
+    }
+    if( ta.fileId != tb.fileId )
+    {
+        return ing.files[ta.fileId] < ing.files[tb.fileId];
+    }
+    return ta.line < tb.line;
+}
+
 // --callees side: the functions `fns` store/pass as values (through= absent unless the same function also calls
 // through that very slot), and the functions they may call through a parameter or a container (through= the written
 // callee; one row per (to, through), bind= its first site, sites= the count).
@@ -686,33 +715,7 @@ inline ValueRefRows valueRefCalleeRows( const IngestResult& ing, const ValueRefI
     {
         out.rows.push_back( std::move( r ) );
     }
-    std::sort( out.rows.begin(), out.rows.end(), [ & ]( const ValueRefRow& a, const ValueRefRow& b )
-    {
-        const Reference& ra = ing.references[a.ref];
-        const Reference& rb = ing.references[b.ref];
-        if( ra.fileId != rb.fileId || ra.startByte != rb.startByte )
-        {
-            return vrBindLess( ing, ra, rb );
-        }
-        if( a.to != b.to && ing.symbols[a.to].name != ing.symbols[b.to].name )
-        {
-            return ing.symbols[a.to].name < ing.symbols[b.to].name;
-        }
-        if( a.through != b.through )
-        {
-            return a.through < b.through;
-        }
-        // same site, same name, same through: two definitions of one name (`fp = helper;` with a `helper` in each of
-        // two files). std::sort leaves equal rows in an order each standard library picks differently, and the 64-row
-        // window would then show a toolchain-dependent subset — so the definition's path, then its line, decide.
-        const Symbol& ta = ing.symbols[a.to];
-        const Symbol& tb = ing.symbols[b.to];
-        if( ta.fileId != tb.fileId )
-        {
-            return ing.files[ta.fileId] < ing.files[tb.fileId];
-        }
-        return ta.line < tb.line;
-    } );
+    std::sort( out.rows.begin(), out.rows.end(), [ & ]( const ValueRefRow& a, const ValueRefRow& b ) { return vrCalleeRowLess( ing, a, b ); } );
     return out;
 }
 

@@ -552,8 +552,7 @@ struct UseSite { std::uint32_t fileId; std::uint32_t line; rw::RefRole role; std
 // that never matched the row's own root-relative p=, the map's id=, or a git path — the M6/L1/M0-5 finding.
 inline std::pair<std::vector<UseSite>, std::size_t>
 collectUseSites( const rw::IngestResult& ing, const UsesSelector& sel, std::span<const char> isChosenCaller,
-                 std::string_view rootForId = {}, std::span<const rw::NodeId> valueDefs = {},
-                 const rw::ValueRefIndex* valueRefIndex = nullptr )
+                 std::string_view rootForId = {}, std::span<const rw::NodeId> valueDefs = {} )
 {
     using namespace rw;
     std::vector<UseSite> sites;
@@ -561,8 +560,7 @@ collectUseSites( const rw::IngestResult& ing, const UsesSelector& sel, std::span
     const ElixirResolver elixirResolver( ing );
     // Reference-as-value round: valuerefs.h UsesValueFilter — role="value" sites the resolver binds to the selector's
     // definitions (the same rows --callers shows), never a Through, never a duplicate read row at a value site.
-    // `valueRefIndex`: a caller that already built the index over `ing` (--safe-delete) lends it; null builds one.
-    const UsesValueFilter valueFilter( ing, sel.siteMatchName, valueDefs, valueRefIndex );
+    const UsesValueFilter valueFilter( ing, sel.siteMatchName, valueDefs );
     for( std::uint32_t refIndex = 0; refIndex < ing.references.size(); ++refIndex )
     {
         const Reference& r = ing.references[refIndex];
@@ -983,10 +981,8 @@ std::optional<int> runSafeDelete( const MainDispatch& d )
     // selector grammar, unchanged.
     const UsesSelector        sel            = resolveUsesSelector( ing, cfg.safeDeleteSym, defs );
     const std::vector<char>   isChosenCaller = ( sel.fileQualified || sel.scopeNarrowed ) ? usesChosenCallers( ing, g, defs ) : std::vector<char>{};
-    const rw::ValueRefIndex   sdVri( ing );   // built once: the use-site filter below and the value-ref rows share it
     const auto                sitesPair      = collectUseSites( ing, sel, isChosenCaller,
-                                                                 sdSingleRoot ? std::string_view( cfg.roots[0] ) : std::string_view{}, defs,
-                                                                 &sdVri );
+                                                                 sdSingleRoot ? std::string_view( cfg.roots[0] ) : std::string_view{}, defs );
                                                                                                // .second (the un-narrowed
                                                                                                // call-site total) is not read here;
                                                                                                // .in_id is unused on this verb too, root
@@ -1020,6 +1016,7 @@ std::optional<int> runSafeDelete( const MainDispatch& d )
     // guessing which definition it would apply to.
     // Reference-as-value round: a function a table, field or argument holds is not dead — its value sites are uses
     // (sites above) and they keep dead_code_candidate at 0, exactly as --dead-code's value-ref-excluded= does.
+    const rw::ValueRefIndex sdVri( ing );
     const rw::ValueRefRows  sdValueRefs = rw::valueRefCallerRows( ing, sdVri, defs );
     bool deadCodeCandidate = false;
     if( defs.size() == 1 && callerIds.empty() && sdValueRefs.rows.empty() )
