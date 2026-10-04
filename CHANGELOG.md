@@ -520,7 +520,7 @@ build of unreleased work has used, so no cache such a build wrote is read as thi
 (the function-literal fix's record changes, then the false-edge fix's member-call fields) and `kQSnapCacheScheme` 15 → 17
 (the `--quality-delta` error-masking and placeholder changes, then the dead kind agreeing with `--dead-code` on functions
 held as values). Every ingest cache written by an earlier build is refused and re-indexed once, and every
-cached quality snapshot is recomputed. The session legend dictionary is `dictv=66409821069cf5cb entries=775`.
+cached quality snapshot is recomputed. The session legend dictionary is `dictv=c3238871035e60e6 entries=784`.
 
 ### Fixed — a call the language resolves outside the tree no longer binds to a same-named in-repo definition
 
