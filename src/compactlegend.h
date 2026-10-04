@@ -431,7 +431,7 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     // these fields go (kDeclinedMapLegend, kIgnoredLegend, kExtentSuspectHdrLegend, kMacroBlankedHdrLegend, the absent-if-0
     // half of the always-on legend, kMaxTokensFitLegend). Header-ONLY: several are quoted attributes elsewhere.
     { "declined",          "declined=K: K calls left unbound (no evidence chose one def)", false, {}, MapHeaderRead::Only },
-    { "external",          "external=K: K calls the language proves outside the tree (builtin, global, outside import), no edge; no proof is unresolved=", false, {}, MapHeaderRead::Only },
+    { "external",          "external=K: K calls the language proves outside the tree, no edge", false, {}, MapHeaderRead::Only },
     { "locality_pinned",   "locality_pinned=K: K calls pinned by locality alone (a guess)", false, {}, MapHeaderRead::Only },
     { "extent_suspect_syms", "extent_suspect_syms=K: K defs failed containment, corpus-wide", false, {}, MapHeaderRead::Only },
     { "macro_blanked_files", "macro_blanked_files=K: K files indexed from a macro-blanked re-parse", false, {}, MapHeaderRead::Only },
@@ -513,7 +513,7 @@ inline constexpr CompactCompletenessTerm kCompactCompletenessTerms[] =
     { "from_label",        "from_label=/to_label=: the label= of a=/b=", true, "bridge" },
     { "to",                "<bridge to= to_label=>: a peer module's id and label=", true, "bridge" },
     { "edges",             "<bridge edges=>: call edges between the two, either direction", true, "bridge" },
-    { "files",             "files=/symbols=: files and symbols indexed; edges= distinct call edges; shown= symbols printed, a merged row counting each def; ambiguous= calls split over several defs, corpus-wide; unresolved= calls with in-tree evidence and no edge (defs all language-filtered or out of the language's lookup, or import/pointer binding refused); order= rows by rank (important-first, important-last; (auto:fill) = flipped past a size threshold) or by path (stable)", false, {}, MapHeaderRead::Only },
+    { "files",             "files=/symbols=: files and symbols indexed; edges= distinct call edges; shown= symbols printed, a merged row counting each def; ambiguous= calls split over several defs, corpus-wide; unresolved= calls with in-tree evidence and no edge (defs all language-filtered or out of reach, or import/pointer binding refused); order= rows by rank (important-first, important-last; (auto:fill) = flipped past a size threshold) or by path (stable)", false, {}, MapHeaderRead::Only },
     { "roots",             "roots=N: N workspace roots", false, {}, MapHeaderRead::Only },
     { "changed",           "changed=K: K indexed git-changed files seed the PageRank teleport (0: uniform, incl. no git)", false, {}, MapHeaderRead::Only },
     { "skipped_oversize",  "skipped_oversize=K: K files over a size ceiling, not indexed", false, {}, MapHeaderRead::Only },

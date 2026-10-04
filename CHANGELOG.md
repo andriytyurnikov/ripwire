@@ -96,7 +96,7 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
 - **Cost.** A cold default map costs +3.6% CPU on this tree, +6.3% on django and +5.2% on webpack (median of 5,
   `sim/refval_cpu.sh`).
 - **Cache.** `kParserVer` moves.
-- **Manifest.** The `tools/list` manifest grows 46,581 → 46,722 B: the two find descriptions name `valueRefs` as
+- **Manifest.** The `tools/list` manifest grows 46,591 → 46,732 B: the two find descriptions name `valueRefs` as
   not a proven call.
 
 Gate: `test/recallshapecheck.sh`. It has 177 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
