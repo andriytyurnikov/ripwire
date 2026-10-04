@@ -762,6 +762,12 @@ struct Sorter {
     void sortAll(std::vector<int>& v) { std::sort(v.begin(), v.end(), lessThan); } // @XM_SAME a member of the SAME class is in scope
 };
 int useCount() { return count(1); }
+static int total(int x) { return x; }
+struct Late {
+    int get() const { return keepX(total); }                                       // @XM_LATE a member declared BELOW is in scope
+    int total = 0;
+};
+int useTotal() { return total(2); }
 EOF
 cat >"$FX/jsmem/m.js" <<'EOF'
 class Runner {
@@ -1199,6 +1205,8 @@ arm "RX1 negatives: memcpy( data, … ) in FixedStr is its member array — neve
     cppmem --callers=data attr:defs=1 noattr:value_refs nvr:0 'novr:bind=@XM_DATA'
 arm "RX2 negatives: a C++ data member named count shadows the free function count inside its class" \
     cppmem --callers=count attr:count=1 noattr:value_refs nvr:0 'novr:bind=@XM_FIELD'
+arm "RX4 negatives: a C++ class body is a complete-class context — a data member declared below the method still shadows" \
+    cppmem --callers=total attr:count=1 noattr:value_refs nvr:0 'novr:bind=@XM_LATE'
 arm "RX3 a static member of the SAME class is in scope: std::sort(…, lessThan)" \
     cppmem --callers=lessThan attr:value_refs=1 nvr:1 'vr:bind=@XM_SAME;into=std::sort#arg2'
 arm "RJ1 negatives: { load: require } is the global require — never the class method Runner#require" \
@@ -1209,9 +1217,9 @@ arm "RJ2 negatives: [source] is the file-scope let — never the class method Ru
 # ── --verify and --quality-delta read the same value uses (final review R4, R2) ──────────────────────────
 echo "-- verify / quality-delta"
 arm "V1 verify unused(my_open): a value use REFUTES 'unused' (the role=value sites are the evidence)" \
-    c --verify=unused(my_open) attr:verdict=refuted 'u:role=value;p=@C_TABLE'
+    c '--verify=unused(my_open)' attr:verdict=refuted 'u:role=value;p=@C_TABLE'
 arm "V2 verify unused(truly_dead): nothing holds it — the verdict is unchanged" \
-    c --verify=unused(truly_dead) attr:verdict=not-established nu:0
+    c '--verify=unused(truly_dead)' attr:verdict=not-established nu:0
 
 # R2: --quality-delta's dead kind applies the --dead-code verb's rule — a static a struct table holds is not dead there
 # either (one fact, two verbs, one answer). A two-commit repo: the second commit adds the table-held static and a truly
@@ -1250,6 +1258,43 @@ print( "FAIL " + " | ".join( fails ) if fails else "OK" )
 EOF
 )"
     verdict "Q1 quality-delta dead kind: the table-held static is value-ref-excluded=1, the truly dead one is still a row" "$res"
+fi
+
+# Q2: a registering decorator holds the function; a WRAPPER decorator (@staticmethod, @functools.wraps…) only hands it
+# back to its own name, so it does not exclude the function from the dead kind (qualitycheck's inherited-hook arm).
+QP="$FX/qdpy"; mkdir -p "$QP"
+(
+    cd "$QP" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'def base():\n    return 1\n' > m.py && git add -A && git commit -qm base \
+    && printf '%s\n' 'import functools' 'REG = []' 'def register(f):' '    REG.append(f)' '    return f' \
+                     '@register' 'def held_by_registry(x):' '    return x' \
+                     '@functools.wraps(print)' 'def only_wrapped(x):' '    return x' \
+                     'class Box:' '    @staticmethod' '    def never_called(x):' '        return x' >> m.py \
+    && git add -A && git commit -qm add
+) >/dev/null 2>&1 || no "Q0 the Python quality-delta fixture repository could not be built"
+( cd "$QP" && "$BIN" . --quality-delta=HEAD~1..HEAD --no-cache --legend=compact >"$TMP/qdpy.xml" 2>"$TMP/qdpy.err" )
+qdrc=$?
+if [ "$qdrc" -gt 2 ]; then
+    no "Q2 --quality-delta exited $qdrc ($(head -c 200 "$TMP/qdpy.err"))"
+else
+    res="$( python3 - "$TMP/qdpy.xml" <<'EOF'
+import re, sys
+t = open( sys.argv[1] ).read()
+root = re.search( r"<quality-delta[^>]*>", t )
+rows = re.findall( r'<r kind="dead-code" sym="([^"]*)"', t )
+fails = []
+m = re.search( r'value-ref-excluded="(\d+)"', root.group( 0 ) ) if root else None
+if m is None or m.group( 1 ) != "1":
+    fails.append( "value-ref-excluded=%r (want '1')" % ( m.group( 1 ) if m else None ) )
+for want in ( "never_called", "only_wrapped" ):
+    if not any( s.endswith( want ) for s in rows ):
+        fails.append( "no dead-code row for %s (a wrapper decorator is not a value use): %r" % ( want, rows ) )
+if any( s.endswith( "held_by_registry" ) for s in rows ):
+    fails.append( "a dead-code row for held_by_registry, which @register holds: %r" % rows )
+print( "FAIL " + " | ".join( fails ) if fails else "OK" )
+EOF
+)"
+    verdict "Q2 quality-delta: @register holds held_by_registry (excluded); @staticmethod/@functools.wraps defs stay dead rows" "$res"
 fi
 
 # ── Runaway guard (review fix 8): one function stored 300 times ─────────────────────────────────────────

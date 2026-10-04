@@ -676,6 +676,30 @@ private:
             {
                 functionSignature( n, a.kind, s );
             }
+            else if( s.isClass && m_fam == VrFam::C )
+            {
+                // A C++ class body is a complete-class context: a data member declared BELOW a member function is
+                // still in scope inside it (`int get() { return total; } int total = 0;`), so the class scope
+                // pre-reads its member declarations instead of waiting to encounter them.
+                ChildCursor c( n );
+                forEachNamedChild( n, c.cur, [ & ]( TSNode body )
+                {
+                    if( kindIs( ts_node_type( body ), "field_declaration_list" ) )
+                    {
+                        ChildCursor m( body );
+                        forEachNamedChild( body, m.cur, [ & ]( TSNode k )
+                        {
+                            const char* kt = ts_node_type( k );
+                            if( kindIs( kt, "field_declaration" ) )
+                            {
+                                harvest( k, kt, s.decls );
+                            }
+                            return true;
+                        } );
+                    }
+                    return true;
+                } );
+            }
             else if( sk == ScopeKind::Block )
             {
                 ChildCursor c( n );

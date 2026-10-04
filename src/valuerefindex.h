@@ -40,6 +40,27 @@ inline bool vrKeyMatches( std::string_view throughKey, std::string_view valueKey
     return throughKey == valueKey;
 }
 
+// A decorator row (`into=@NAME`) whose decorator only wraps the function and binds it back to its own name: the
+// builtin descriptors, abc/typing markers, property accessors and functools.wraps. Keyed on the last dotted segment,
+// so `@abc.abstractmethod`, `@functools.cached_property` and `@x.setter` all match.
+inline bool vrIsWrapperDecorator( std::string_view into ) noexcept
+{
+    if( !into.starts_with( '@' ) )
+    {
+        return false;
+    }
+    std::string_view last = into.substr( 1 );
+    if( const std::size_t dot = last.rfind( '.' ); dot != std::string_view::npos )
+    {
+        last = last.substr( dot + 1 );
+    }
+    static constexpr std::string_view kWrappers[] = {
+        "classmethod", "staticmethod", "property", "cached_property", "abstractmethod", "abstractproperty",
+        "abstractclassmethod", "abstractstaticmethod", "setter", "getter", "deleter", "overload", "override", "wraps",
+    };
+    return std::ranges::find( kWrappers, last ) != std::end( kWrappers );
+}
+
 // The index every verb queries. Built from one IngestResult in O(refs + symbols); no graph needed.
 class ValueRefIndex
 {
@@ -116,10 +137,22 @@ public:
         return out;
     }
 
-    // True when at least one value reference resolves to `def`.
+    // True when at least one value reference resolves to `def` and can make it reachable: the dead-set question
+    // (--dead-code, --quality-delta). A Python descriptor/typing WRAPPER decorator row does not count. `@classmethod`,
+    // `@property` or `@functools.wraps` hands the function back to the same name, so it is still reached only by a
+    // call. A registering decorator (`@app.route`, `@register`) is the value use this exclusion exists for. The row
+    // itself is still served (ruling 5); the wrapper FLOOR for rows is a follow-up.
     bool isValueReferenced( NodeId def ) const
     {
-        return m_valuesByTarget.find( def ) != m_valuesByTarget.end();
+        const auto it = m_valuesByTarget.find( def );
+        if( it == m_valuesByTarget.end() )
+        {
+            return false;
+        }
+        return std::ranges::any_of( it->second, [ & ]( std::uint32_t k )
+        {
+            return !vrIsWrapperDecorator( m_ing.references[ m_values[k] ].fieldName );
+        } );
     }
 
     // The resolved targets of value reference `refIdx` (an index into ing.references).

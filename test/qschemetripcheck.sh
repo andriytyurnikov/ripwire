@@ -34,6 +34,18 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-10-03, lane/refval-edges fix round (R2 of its final review): kQSnapCacheScheme 16 -> 17. A function a value
+#   holds (a struct/dict/object table entry, a callback argument; valuerefindex.h isValueReferenced) leaves the
+#   Snapshot's dead set, so a v16 blob would carry the old, wider set. The pinned hash does NOT move, and that is a
+#   gap in this gate, not a refactor: extract_fn's forward-declaration skip tests only the FIRST signature line.
+#   computeSnapshot's two-line forward declaration therefore starts the capture, which then runs on into
+#   computeHeadSnapshot, so the hashed "computeSnapshot" text is computeHeadSnapshot's body and the real
+#   dead-set builder is not watched. The scheme moved anyway. The extractor fix is left to its own change,
+#   since it re-pins for every lane.
+# 2026-10-02, lane/refval-edges (a3ef443a): RE-DERIVED with UPDATE_GOLDEN=1 (hash 6ffa0ec399…ee4815). kParserVer
+#   132 -> 140 (lane-local; a train renumbers it): RefRole::Value / RefRole::Through references are extracted for
+#   C/C++, JS/TS, Python and Go. quality.h's kIngestParserVerMirror moves with it (qextractionkeycheck).
+#   kCacheVersion stays 27; no hashed quality.h function changed in that commit.
 # 2026-10-02, train 23 (map data sections + edit-check pairing merged): RE-DERIVED ONCE on the merged tree with
 #   UPDATE_GOLDEN=1 (hash e355d7b821…1518a2). kParserVer 129 -> 132 for cache-key hygiene only (branch builds already ran
 #   at 129, 130 and 131; no extraction change); kCacheVersion stays 27, kQSnapCacheScheme stays 16; quality.h's

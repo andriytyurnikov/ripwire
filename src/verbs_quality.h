@@ -867,7 +867,8 @@ inline void emitQualityDeltaLegend( const QualityDeltaLegendParts& p )
     if( p.anyValueRefExcluded )
     {
         rw::emitRaw( stdout, "value-ref-excluded= is a FLOOR, not a finding: symbols this run kept out of the dead-code kind only because a table, "
-                             "field or argument holds them as a VALUE (matched by name; it is not a proven call; the callers verb lists the sites), "
+                             "field, argument or registering decorator holds them as a VALUE (matched by name; it is not a proven call; the callers "
+                             "verb lists the sites; @classmethod-style wrappers do not count), "
                              "the --dead-code verb's own rule. Never gates; absent at zero. " );
     }
 

@@ -40,7 +40,10 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
   - A value use counts in `--safe-delete`'s `uses=` and keeps it off `dead_code_candidate`/`risk="none-found"`.
   - `--dead-code` excludes such functions, counted in `value-ref-excluded=`. `--quality-delta`'s dead-code kind
     applies the same rule, with the same counter on its root (and the cached quality snapshot's scheme moves), so the
-    two verbs answer one question one way.
+    two verbs answer one question one way. A Python wrapper decorator does not count as a use: `@classmethod`,
+    `@staticmethod`, `@property`, `@cached_property`, `@abstractmethod`, an accessor's `.setter`/`.getter`/`.deleter`,
+    `@overload` and `@functools.wraps` hand the function back to its own name. Its row is still shown. A registering
+    decorator (`@app.route`, `@register`) does count.
   - `--verify 'unused(X)'` now answers `refuted` for a function a table or argument holds: its `role="value"`
     sites are the evidence (it was `not-established` before, for C and JS).
   - `--uses` shows the site as `role="value"` (a decorator row is a fact about the definition and stays on
@@ -52,7 +55,9 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
   - same file first;
   - a class member is never matched by a bare name outside its class: only a Python class body, or a C++ class
     body or a member function of the same class, sees its members bare. JS/TS and Go members are never bare (the
-    JS call graph binds a bare call to a method by name; these rows deliberately do not);
+    JS call graph binds a bare call to a method by name; these rows deliberately do not). One shape is still
+    indexed as a plain function: a JS/TS object-literal property (`{ run: () => … }`). A bare `run` in the same
+    file can match it ahead of an imported `run`. It did not occur in the django, webpack or ripwire short-name reads;
   - a C/C++ `static` stays in its file;
   - a JS/TS/Python name needs a named import, resolved by the import graph's own module resolver;
   - Go stays in its package.
@@ -81,7 +86,7 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
 - **Manifest.** The `tools/list` manifest grows 46,581 → 46,722 B: the two find descriptions name `valueRefs` as
   not a proven call.
 
-Gate: `test/recallshapecheck.sh`. It has 162 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
+Gate: `test/recallshapecheck.sh`. It has 177 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
 - positives;
 - near-miss negatives for every guard, each proven able to fail by a mutation (`sim/refval_mutate.sh`);
 - named floors;
