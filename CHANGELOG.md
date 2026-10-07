@@ -15,6 +15,88 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Changed — a Ruby call to self, or on an instance the code builds, answers from its own side: an instance never reaches `def self.m`
+
+The entry below left one floor open, (i). A call to self, or on a receiver the code builds, read a class's defs from both
+sides alike. In the service-object pattern (`def self.call( x ) = new( x ).call` beside `def call`), `svc.call` split
+between `def self.call` and the instance `call`. A bare call in an instance method did the same, and a bare `new( x )` in
+a class method bound to some other class's `new` or was refused.
+
+**What self is** (`graph.h RubyClassObjects::selfCall`, `typedLookup`):
+- In a singleton method (`def self.m`, a def in `class << self`), self is the class object. Its call answers from the
+  class object's lookup (the entry below), so a bare `new( x )` there reaches the class's `initialize`.
+- In a class's other defs, self is an instance. So is a receiver the code builds (`C.new`, a finder). Such a call answers
+  from the instances' lookup: the class's instance methods, what it includes, then its superclasses', by fully-qualified
+  constant.
+
+Rule 1 and its base walk, which read both sides of a class alike, step aside. What that lookup misses goes to the name
+ladder. The ladder now keeps only the namesakes that answer on the side self stands on (`answersOn`). If none is left the
+call declines rather than being refused, since self may be another object inside a block.
+
+A bare `new` the class object's lookup misses is refused as external, as `C.new` is, when no class in reach below it
+defines an `initialize`. When one does, the call declines, since self may be that class.
+
+**Where self has no one side** the call is left as before:
+- an instance method of a module (self is an includer's instance, or a class object the module extends);
+- a def a concern defines for its includers;
+- a class body;
+- a module, or a FactoryBot build, as a receiver: a factory keeps only its class's final segment, which the call site
+  cannot place;
+- a name the lookup misses when a `method_missing` holds it open.
+
+A built receiver's lookup by constant is trusted only when it finds the method. `described_class` keeps only the final
+segment too, so on a miss the old lookup by name runs, keeping its instance methods.
+
+**Also fixed:** no class is its own superclass. `class SchemaCreation < SchemaCreation` inside `module MySQL` now names
+the outer `SchemaCreation` (`resolve.h rubyResolveBaseConstant`). Before, the constant index read the class itself, so
+the walk never reached the outer class.
+
+Measured with `--no-cache`, against the entry below (162255eb), both runs on one snapshot of each tree:
+
+| Corpus | Edges | Call-graph isolated | `declined=` | `external=` | Call sites changed |
+| --- | --- | --- | --- | --- | --- |
+| activerecord 7.2.3.2 `lib/` | 11,478 → 11,297 | 2,421 → 2,418 | 4,704 → 4,717 | 1,181 → 1,167 | 125 |
+| activesupport 7.2.3.2 `lib/` | 3,417 → 3,421 | 1,266 → 1,261 | 1,380 → 1,388 | 967 → 954 | 41 |
+| Rails app A | 27,503 → 27,382 | 18,589 → 18,584 | 39,336 → 39,355 | 39,578 → 39,554 | 260 |
+| Rails app B | 26,044 → 26,146 | 5,736 → 5,623 | 34,560 → 34,577 | 49,253 → 49,093 | 203 |
+| this repo's `src/` (C++), a JavaScript app, a Python repo | default map byte-identical | | | | |
+
+Where edges fall, splits collapse to one target: 208 target edges on activerecord, 204 on A. Each adapter's bare
+`quote`, `execute` and `internal_exec_query` now reaches the module its adapter includes, not every adapter's. Where
+edges rise, a service object's `new( … ).call` now reaches its `initialize`: 148 sites on B had been refused.
+
+Checked against the source:
+- **activerecord:** a sample of 20 of the 98 changed sites, and every other changed site.
+  - 20 of 20 sampled were right.
+  - The 14 newly bound calls are bare `new` in class methods reaching their class's `initialize`.
+  - 12 of the 13 that lost an edge had been bound to a namesake in an unrelated class, or to a method Rails defines at
+    run time. The 13th is a template method whose two subclass overrides had split, and now declines.
+- **activesupport:** all 41, all right. `Duration.days`' `new` reaches `Duration#initialize`, not `TaggedLogging.new`.
+  `Time#change`'s bare `zone` no longer binds to the class method `Time.zone`.
+- **The applications:** 20 changed and 20 gained per application, and every site that lost an edge.
+  - Changed: 16 of 20 and 20 of 20 right. A's other 4 were wrong before and after: a property Hashie generates, bound
+    by name.
+  - Gained: 20 of 20 on each.
+  - Lost: all 24 (19 on A, 5 on B) had been bound to an unrelated namesake or a generated method, except one
+    template-method pick that now declines.
+
+The newly bound and the declined sites are read by the same rules.
+
+Lifted: floor (i) of the entry below, and in part floor (c) of `test/rubyreachcheck.sh` (instance and class methods
+shared one name space). Its arm is kept, as an instance's call to an extended module's method is still admitted when
+the lookup misses.
+
+Stated floors, each pinned by `test/rubyclassrecvcheck.sh`:
+- **(i)** A side is known only where self is one class. An instance method of a module, a def a concern defines for its
+  includers, and a module or a FactoryBot build as a receiver are left as before.
+
+Not pinned, and older than these changes: the ladder's locality tie-break can cut a split down to the definer nearest the
+caller by file. That covers two definers at one level of a lookup (floor (k) pins the split itself), and a template
+method's subclass overrides, which a call to self in the base class reaches by name.
+
+`kParserVer` stays: this changes the resolver, not what ingest records (145 on its branch, 148 in this release, as for
+the entry below).
+
 ### Changed — a Ruby class object's lookup tells `include` from `extend`, in Ruby's order, and a `method_missing` answers only what it misses
 
 The class-object lookup in the entry below walked a class's mixins without telling how each one came in. So an
@@ -85,7 +167,7 @@ Stated floors, each pinned by `test/rubyclassrecvcheck.sh`:
   `Tool.extend( Tool::Ext )` and `singleton_class.prepend M` in the body (activesupport's `ERB::Util`).
 - **(i)** An instance's lookup still reads the class's singleton methods as its own. That covers a receiver the code
   builds (`svc = Service.new( 9 ); svc.call`) and a bare call in an instance method. So `svc.call` splits between
-  `def self.call` and the instance `call`, where Ruby runs the instance's.
+  `def self.call` and the instance `call`, where Ruby runs the instance's. Lifted by the entry above.
 - **(j)** A `method_missing` that only an instance answers still leaves a call on the class object to the ladder when the
   lookup misses: `Proxy.anything` binds by name, where Ruby raises NoMethodError.
 - **(k)** Two modules extended at one level answer their union: `Dual.pick` splits between `First` and `Second`, where

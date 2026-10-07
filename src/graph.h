@@ -3255,6 +3255,16 @@ inline RubyTopSelf buildRubyTopSelf( const IngestResult& ing, const RubySelfReac
 // a `class << self` delegates, and a name nothing in the lookup defines when a method_missing there may answer it — Ruby
 // calls a method_missing only when its lookup misses, so a def the lookup finds answers first (ActiveRecord::Base, which
 // extends DynamicMatchers, still answers `configurations` from Core's `included do`).
+//
+// A CALL TO SELF AND A RECEIVER THE CODE BUILDS stand on one side too (parser version 145, test/rubyclassrecvcheck.sh floor
+// (i); RubyClassObjects::selfCall, typedLookup): self in a singleton method is the class object, answered by `lookup`
+// above; self in a class's other defs, and a receiver built by `C.new` or a finder, is an instance, answered by its
+// instances' lookup (sideLookup on the instance side) — so `svc.call` reaches the instance `call`, not `def self.call`,
+// and a bare `new` in a class method reaches its class's initialize. Rule 1 and its base walk, which read a class's defs
+// of both sides alike, step aside. What that lookup misses goes to the ladder, which keeps only the namesakes that answer
+// on the side (answersOn); none left — the call declines, as self may be another's in a block. No side, as before: an
+// instance method of a module (its includers', or a class object it extends), a def a concern defines for its includers,
+// a class body, a module or FactoryBot build as a receiver, and a lookup holding a method_missing for what it misses.
 
 // Which side of a Ruby lookup a walk stands on at a class or module (RubyClassObjects::sideLookup; parser version 145).
 enum class RubySide : std::uint8_t
@@ -3269,6 +3279,7 @@ enum class RubySide : std::uint8_t
     Instance,              // an instance's lookup (what Class#new's initialize is, a forwarding base's name): any instance
                            //   method
 };
+inline constexpr std::size_t kRubySideCount = static_cast<std::size_t>( RubySide::Instance ) + 1;
 
 // How a Ruby ancestor joins the lookup of the class or module that writes it (RubyClassObjects::fqnSides).
 enum class RubyAncestry : std::uint8_t
@@ -3280,6 +3291,7 @@ enum class RubyAncestry : std::uint8_t
     IncluderExtend,   // `extend` in a concern's `included do`: the includer's class object
     ClassMethods,     // a concern's nested ClassMethods, which ActiveSupport::Concern extends onto the includer
 };
+inline constexpr std::size_t kRubyAncestryCount = static_cast<std::size_t>( RubyAncestry::ClassMethods ) + 1;
 
 // One step of a lookup walk (RubyClassObjects::sideLookup): a constant, and the side the walk stands on there.
 using RubySideStep = std::pair<const std::string*, RubySide>;
@@ -3288,15 +3300,13 @@ struct RubyAncestorEdge
 {
     std::string  fqn;
     RubyAncestry how = RubyAncestry::Superclass;
-
-    auto operator<=>( const RubyAncestorEdge& ) const = default;
 };
 
 // The side a walk standing on `from` reaches an ancestor on across `how`, or nullopt when that ancestor is in no lookup from
 // there: a module's own body-level `extend` is the module's, a concern's ClassMethods its includers', and an instance's
 // lookup holds no extended module. (A concern's `class_methods do` block is no ancestor: sideSteps steps to it.) Rows
 // follow RubySide's order, columns RubyAncestry's.
-inline constexpr std::optional<RubySide> kRubySideAcross[ 5 ][ 5 ] = {
+inline constexpr std::optional<RubySide> kRubySideAcross[ kRubySideCount ][ kRubyAncestryCount ] = {
     //                     Superclass              Include                 Extend                  IncluderExtend          ClassMethods
     /* ClassObject */    { RubySide::ClassObject,  RubySide::Included,     RubySide::Extended,     std::nullopt,           std::nullopt },
     /* Included */       { std::nullopt,           RubySide::Included,     std::nullopt,           RubySide::Extended,     RubySide::Extended },
@@ -3307,6 +3317,9 @@ inline constexpr std::optional<RubySide> kRubySideAcross[ 5 ][ 5 ] = {
 
 inline std::optional<RubySide> rubySideAcross( RubySide from, RubyAncestry how ) noexcept
 {
+    // The table's one reader proves both extents (in a body, not at namespace scope, where a call is a <file-scope> symbol).
+    static_assert( enumCountIsExact<RubySide, kRubySideCount>(), "kRubySideCount must name the LAST RubySide — move it with the append" );
+    static_assert( enumCountIsExact<RubyAncestry, kRubyAncestryCount>(), "kRubyAncestryCount must name the LAST RubyAncestry — move it with the append" );
     return kRubySideAcross[ unsigned( from ) ][ unsigned( how ) ];
 }
 
@@ -3335,6 +3348,25 @@ inline bool rubyAnswersOn( RubySide side, char bits ) noexcept
     }
     return !singleton && !includers;   // Extended and Instance: an instance method of what the walk stands on
 }
+
+// What a Ruby call answers from on the side its receiver stands on (RubyClassObjects::selfCall, typedLookup).
+struct RubySideAnswer
+{
+    std::optional<RubySide>        side;            // the side, when the lookup could be walked: the receiver's class resolves
+                                                    //   to a constant the tree opens
+    const rw::SmallVec<NodeId, 2>* hit  = nullptr;  // what answers in the tree then; nullptr when nothing does
+    bool                           open = false;    // a method_missing in the lookup (or, on a class object, a `class << self`
+                                                    //   delegation of the name) may answer what it misses
+};
+
+// How RubySelfReach's cut, read on a side (RubyClassObjects::reachableOnSide), left a call's candidates.
+enum class RubyCut : std::uint8_t
+{
+    Unchanged,   // every candidate stands
+    Cut,         // some fell: `out` holds the rest (empty: none is in reach — the method Ruby runs is outside the tree)
+    Declined,    // some are in reach, but none answers on the side self stands on: `out` holds them. Self may not be what the
+                 //   def says (a block run with another self, `instance_exec`), or the method be generated: the call declines
+};
 
 // What a call on a receiver whose every answer the tree knows reaches (rubyClosedLookup).
 struct RubyClosedLookup
@@ -3380,7 +3412,7 @@ struct RubyClassObjects
     HashMap<std::string, std::vector<RubyAncestorEdge>>    fqnSides;          // the same, each with how it joins the lookup
     Reference                                              initializeCall;    // a Ruby call of `initialize`: what C.new runs
     mutable HashMap<std::string, std::vector<std::string>> fqnAncestorsMemo;
-    mutable rw::SmallVec<NodeId, 2>                        hits, rootHits;
+    mutable rw::SmallVec<NodeId, 2>                        hits, rootHits, sideHits;
     mutable std::vector<const std::string*>                walkLevel, walkNext;
     mutable HashMap<std::string_view, char>                walkSeen;
     mutable std::vector<RubySideStep>                      sideLevel, sideNext, sideRound;
@@ -3392,6 +3424,14 @@ struct RubyClassObjects
     const rw::SmallVec<NodeId, 2>*  definerLookup( const RubyClassObject& object, const Reference& asked, bool classObject ) const;
     const rw::SmallVec<NodeId, 2>*  rootLookup( const Reference& r ) const;                             // a reopened root's
     bool                            delegates( const RubyClassObject& object, std::string_view callee ) const;   // a class << self delegates it
+    RubySideAnswer                  selfCall( const Reference& r ) const;                               // a call to self in a def
+    RubySideAnswer                  typedLookup( const Reference& r, const std::string& cls ) const;    // a receiver the code builds
+    bool                            isClass( const std::string& fqn ) const;                            // a class, not a module
+    bool                            answersOn( NodeId c, RubySide side ) const;                         // may c answer that side
+    const rw::SmallVec<NodeId, 2>*  onSide( const rw::SmallVec<NodeId, 2>* ids, RubySide side ) const;   // those of ids that may
+    template<class In, class Out>
+    RubyCut                         reachableOnSide( const RubyTopSelf& top, const std::string& self, std::optional<RubySide> side, const In& ids, Out& out ) const;
+    std::string                     fqnOfWritten( const Reference& r, std::string_view written ) const;
     bool                            missingAnswers( const RubyClassObject& object ) const;   // a method_missing may answer a miss
     template<class Probe>
     const rw::SmallVec<NodeId, 2>*  levelLookup( const HashMap<std::string, std::vector<std::string>>& edges, const std::string& start, Probe&& probe ) const;
@@ -3406,7 +3446,6 @@ struct RubyClassObjects
     template<class Pred>
     bool                            anyAncestor( const std::string& cls, Pred&& pred ) const;
     bool                            pathOpened( std::string_view written ) const;
-    std::string                     receiverFqn( const Reference& r ) const;
     std::string                     lexicalConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const;
     std::string                     inheritedConstant( const std::vector<RubyOpenRec>& opens, std::uint32_t site, std::string_view written ) const;
     std::string                     ancestorConstant( std::string_view head, std::string_view rest ) const;
@@ -3563,11 +3602,12 @@ inline RubyClassObject RubyClassObjects::of( const Reference& r ) const
     return { nullptr, {}, true };
 }
 
-// The class object by fully-qualified constant (receiverFqn), keyed beside it by its final segment as RubySelfReach keys
+// The class object by fully-qualified constant (the receiver as written, or its path — Reference::fieldName — read from the
+// call site by fqnOfWritten), keyed beside it by its final segment as RubySelfReach keys
 // every class; external when the constant resolves to nothing the tree opens.
 inline RubyClassObject RubyClassObjects::ofIndexed( const Reference& r ) const
 {
-    std::string       fqn  = receiverFqn( r );
+    std::string       fqn  = fqnOfWritten( r, r.fieldName.empty() ? std::string_view( r.recvVar ) : std::string_view( r.fieldName ) );
     const std::size_t last = fqn.rfind( "::" );
     const auto        cls  = fqn.empty() ? typed.reach.classNames.end() : typed.reach.classNames.find( fqn.substr( last == std::string::npos ? 0 : last + 2 ) );
     return cls != typed.reach.classNames.end() ? RubyClassObject { &cls->first, std::move( fqn ), false } : RubyClassObject { nullptr, {}, true };
@@ -3844,9 +3884,11 @@ inline std::string RubyClassObjects::zeitwerkConstant( std::string_view written 
 
 // The fully-qualified constant r's constant receiver names, as Ruby resolves it from the call site: lexically, then through
 // ancestors, then by Zeitwerk's directories. Empty when none answers — a `Point = Struct.new( … )` constant, a gem's class.
-inline std::string RubyClassObjects::receiverFqn( const Reference& r ) const
+
+// The fully-qualified constant `written` names from r's call site: lexically (the innermost class or module open around it,
+// its enclosing ones, the top level), then through the ancestors of that open, then by Zeitwerk's directories.
+inline std::string RubyClassObjects::fqnOfWritten( const Reference& r, std::string_view written ) const
 {
-    const std::string_view written = r.fieldName.empty() ? std::string_view( r.recvVar ) : std::string_view( r.fieldName );
     if( r.fileId >= bases.ix.opensByFile.size() )
     {
         return {};
@@ -3930,6 +3972,128 @@ inline bool RubyClassObjects::ownedBy( NodeId c, const std::string& fqn ) const
     const std::vector<RubyOpenRec>& opens = bases.ix.opensByFile[ s.fileId ];
     const std::uint32_t             o     = rubyInnermostOpen( opens, s.sigStartByte );
     return o != kNoFile && opens[ o ].fqn == fqn;
+}
+
+// Does the constant `fqn` name a class (not a module) — is any open of it a class symbol?
+inline bool RubyClassObjects::isClass( const std::string& fqn ) const
+{
+    const auto it = bases.classesByFqn.find( fqn );
+    return it != bases.classesByFqn.end() && std::ranges::any_of( it->second, [ this ]( NodeId c ) { return ing.symbols[ c ].kind == SymKind::Class; } );
+}
+
+// A Ruby call to self (a receiver-less or `self.` call, RubySelfReach::judges) inside a def, read on the side self stands
+// on there (parser version 145): the class object in a singleton method (`def self.m`, a def in `class << self`) — the
+// class's or the module's — answered by its lookup (`lookup`: its singleton methods, what it extends, Class#new's
+// initialize, a reopened root); an instance in any other def of a CLASS, answered by its instances' lookup (the class's
+// instance methods, what it includes, its superclasses', then a reopened instance root). No side where self is no one
+// class: an instance method of a module (its includers', or a class object it extends), a def a concern defines for its
+// includers, a class body, the top level — and none where the tree keeps no constant index.
+inline RubySideAnswer RubyClassObjects::selfCall( const Reference& r ) const
+{
+    const Symbol* caller = r.fromSymbol != kNoNode ? &ing.symbols[ r.fromSymbol ] : nullptr;
+    if( caller == nullptr || !RubySelfReach::judges( r, caller->scope ) || caller->lang != Lang::Ruby || caller->fileId >= bases.ix.opensByFile.size()
+        || !( caller->kind == SymKind::Method || caller->kind == SymKind::Function ) || ( defSides[ r.fromSymbol ] & ( kRubyDefIncluder | kRubyDefBlock ) ) != 0 )
+    {
+        return {};
+    }
+    const std::vector<RubyOpenRec>& opens = bases.ix.opensByFile[ caller->fileId ];
+    const std::uint32_t             o     = rubyInnermostOpen( opens, caller->sigStartByte );
+    const std::string*              fqn   = o != kNoFile ? &opens[ o ].fqn : nullptr;
+    const std::size_t               cut   = fqn != nullptr ? fqn->rfind( "::" ) : std::string::npos;
+    const auto cls = fqn != nullptr ? typed.reach.classNames.find( fqn->substr( cut == std::string::npos ? 0 : cut + 2 ) ) : typed.reach.classNames.end();
+    const bool singleton = ( defSides[ r.fromSymbol ] & kRubyDefSingleton ) != 0;
+    if( cls == typed.reach.classNames.end() || ( !singleton && !isClass( *fqn ) ) )
+    {
+        return {};
+    }
+    const RubyClassObject object { &cls->first, *fqn, false };
+    if( singleton )
+    {
+        return { RubySide::ClassObject, lookup( r, object ), missingAnswers( object ) || delegates( object, r.calleeName ) };
+    }
+    const rw::SmallVec<NodeId, 2>* hit = sideLookup( *fqn, RubySide::Instance, r.calleeName );
+    return { RubySide::Instance, hit != nullptr ? hit : typed.rootLookup( r ), missingAnswers( object ) };
+}
+
+// What a call on a receiver the code builds (of class `cls`, RubyTypedReceivers::classOf) answers from: an instance's
+// lookup (sideLookup on the instance side) from the class its type names at the call site, read by fully-qualified
+// constant as a constant receiver is, then a reopened instance root. No side where the tree keeps no constant index, the
+// constant names nothing it opens, or it names a module — which has no instances: RSpec's implicit `subject` for a
+// described module is the module itself — nor for a FactoryBot build, whose factory keeps only its class's final
+// segment (RubyTypedReceivers::factoryClass), which the call site cannot place. Open either way when a method_missing is
+// in the class's lookup.
+inline RubySideAnswer RubyClassObjects::typedLookup( const Reference& r, const std::string& cls ) const
+{
+    const std::optional<RubyTypedRecv> built = rubyTypedRecvOf( r );
+    const bool                         open  = anyInLookup( cls, missingOwners );
+    if( !built || built->factory )
+    {
+        return { std::nullopt, nullptr, open };
+    }
+    const std::string fqn = fqnOfWritten( r, rubyTypedWritten( *built ) );
+    if( fqn.empty() || !opened( fqn ) || !isClass( fqn ) )
+    {
+        return { std::nullopt, nullptr, open };
+    }
+    const rw::SmallVec<NodeId, 2>* hit = sideLookup( fqn, RubySide::Instance, r.calleeName );
+    return { RubySide::Instance, hit != nullptr ? hit : typed.rootLookup( r ), open };
+}
+
+// May the Ruby def c answer a call standing on `side` (an instance, or the class object), among the namesakes a call to self
+// reaches by name once self's own lookup missed? An instance answers no singleton method and no class method a concern
+// gives its includers. A class object answers only a class-side def (a singleton method, a concern's class method for its
+// includers), a top-level def or a reopened root's: a module's instance method answers it only through an `extend`, which
+// its lookup already walked. Any def of another language: yes.
+inline bool RubyClassObjects::answersOn( NodeId c, RubySide side ) const
+{
+    const Symbol& s    = ing.symbols[ c ];
+    const char    bits = c < defSides.size() ? defSides[ c ] : char( 0 );
+    if( s.lang != Lang::Ruby )
+    {
+        return true;
+    }
+    if( side == RubySide::Instance )
+    {
+        return ( bits & ( kRubyDefSingleton | kRubyDefIncluder | kRubyDefBlock ) ) == 0;
+    }
+    const auto root = [ &s ]( std::string_view r ) { return s.scope == r; };
+    return ( bits & ( kRubyDefSingleton | kRubyDefIncluder | kRubyDefBlock ) ) != 0 || s.scope.empty() || std::ranges::any_of( kRubyInstanceRoots, root )
+        || s.scope == "Module" || s.scope == "Class";
+}
+
+
+// Those of `ids` that may answer a call standing on `side` (answersOn), or nullptr when none does.
+inline const rw::SmallVec<NodeId, 2>* RubyClassObjects::onSide( const rw::SmallVec<NodeId, 2>* ids, RubySide side ) const
+{
+    sideHits.clear();
+    for( const NodeId c : ids != nullptr ? std::span<const NodeId>( ids->data(), ids->size() ) : std::span<const NodeId> {} )
+    {
+        if( answersOn( c, side ) )
+        {
+            sideHits.push_back( c );
+        }
+    }
+    return sideHits.empty() ? nullptr : &sideHits;
+}
+
+// RubySelfReach's cut (RubyTopSelf::reachableOf) of `ids` into `out`, then — when the side self stands on is known — only
+// what answers on that side (answersOn).
+template<class In, class Out>
+inline RubyCut RubyClassObjects::reachableOnSide( const RubyTopSelf& top, const std::string& self, std::optional<RubySide> side, const In& ids, Out& out ) const
+{
+    const bool cut     = top.reachableOf( self, ids, out );
+    const auto answers = [ & ]( NodeId c ) { return answersOn( c, *side ); };
+    if( !side || out.empty() )
+    {
+        return cut ? RubyCut::Cut : RubyCut::Unchanged;
+    }
+    if( std::none_of( out.begin(), out.end(), answers ) )
+    {
+        return RubyCut::Declined;
+    }
+    const std::size_t before = out.size();
+    out.resize( std::size_t( std::remove_if( out.begin(), out.end(), [ & ]( NodeId c ) { return !answers( c ); } ) - out.begin() ) );
+    return cut || out.size() < before ? RubyCut::Cut : RubyCut::Unchanged;
 }
 
 // What a call reaches on a receiver whose every answer the tree knows: one of RSpec's targets or a template's `json`, which
@@ -4204,10 +4368,12 @@ inline void rubyFqnAncestry( const IngestResult& ing, const RubyBaseScope& bases
             out[ fqn->substr( 0, cut ) ].push_back( { *fqn, RubyAncestry::ClassMethods } );
         }
     }
+    const auto key = []( const RubyAncestorEdge& e ) { return std::tie( e.fqn, e.how ); };
     for( auto& [ k, v ] : out )
     {
-        std::sort( v.begin(), v.end() );
-        v.erase( std::unique( v.begin(), v.end() ), v.end() );
+        std::ranges::sort( v, {}, key );
+        const auto dup = std::ranges::unique( v, {}, key );
+        v.erase( dup.begin(), dup.end() );
     }
 }
 
@@ -5932,7 +6098,38 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // otherwise narrowed stays false and we fall through to the unchanged name-based-fallback ladder. Skipped when the call
         // was already pinned by an explicit `A::` qualifier (canonical) — that is the more specific signal.
         // (`narrowed` is declared above the L3 fn-binding block, which fires ahead of Rule 1.)
-        if( !scipPinned && !canonical && !narrowed )
+        // Ruby: a call to self inside a def answers from what self is there — the class object in a singleton method, an
+        // instance in a class's other defs (RubyClassObjects::selfCall; parser version 145). Rule 1 and its base walk, which
+        // read a class's defs of both sides alike, step aside for it.
+        const RubySideAnswer rubySelfCall     = !scipPinned && !canonical && !narrowed ? rubyClasses.selfCall( r ) : RubySideAnswer {};
+        bool                 rubySideNarrowed = false;   // the side-aware lookup chose the candidates: right by construction
+        if( rubySelfCall.side )
+        {
+            narrowed         = narrowTo( rubySelfCall.hit, r, cand );
+            rubySideNarrowed = narrowed;
+        }
+        // A bare `new` in a class method is Class#new: it runs the first initialize self's instances find, and self may be a
+        // class below this one. None in the class's lookup and none in reach below it — Ruby's is outside the tree, as for
+        // `C.new`; one below it — the call declines. Never another class's `def self.new` by name.
+        if( rubySelfCall.side == RubySide::ClassObject && rubySelfCall.hit == nullptr && !rubySelfCall.open && r.calleeName == kRubyNew )
+        {
+            const auto inits = byName.find( std::string( kRubyInitialize ) );
+            rubyReachable.clear();
+            if( inits != byName.end() )
+            {
+                rubyTop.reachableOf( rubyReach.selfOf( ing, r ), inits->second, rubyReachable );
+            }
+            if( rubyReachable.empty() )
+            {
+                disposition = vetoExternal( r );
+                continue;
+            }
+            ++g.declinedOut[ r.fromSymbol ];
+            internDeclinedList( g, declinedListsByHash, std::span<const NodeId>( rubyReachable.data(), rubyReachable.size() ) );
+            disposition = CallDisposition::Declined;
+            continue;
+        }
+        if( !scipPinned && !canonical && !narrowed && !rubySelfCall.side )
         {
             narrowed = narrowTo( narrower.rule1ClassMember( r, callerSelfScope( ing, r ) ), r, cand );
         }
@@ -5940,7 +6137,7 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         // class itself defines no `m` — and `super().m()` (RecvKind::SuperObj) walks the bases ONLY. See
         // Narrower::rule1BaseWalk. A `super()` miss is a VETO: the MRO left the indexed tree, and the spray below
         // would hand the site to the caller's own class — the one class `super()` skips by definition.
-        if( !scipPinned && !canonical && !narrowed )
+        if( !scipPinned && !canonical && !narrowed && !rubySelfCall.side )
         {
             narrowed = narrowTo( narrower.rule1BaseWalk( r, callerSelfScope( ing, r ), r.lang == Lang::Ruby ? rubyUp : chaUp, chaUpDeclared ), r, cand );
         }
@@ -5949,12 +6146,20 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             disposition = vetoExternal( r );
             continue;
         }
-        // Ruby: a receiver the code builds answers from its class's lookup (RubyTypedReceivers) — and, when that defines
-        // nothing, from what the class's instances reach (the RubySelfReach cut below, read with the class as self).
+        // Ruby: a receiver the code builds is an instance, and answers from its class's instances' lookup — by
+        // fully-qualified constant where the tree keeps an index (RubyClassObjects::typedLookup) and that finds the method;
+        // else by name (RubyTypedReceivers), only its instance methods when the class is known: a type written as its final
+        // segment alone (`described_class`'s, which ingest keeps so) may name another class from the call site. When that
+        // defines nothing too, from what the class's instances reach (the RubySelfReach cut below, read with the class as
+        // self).
         const std::string* const rubyTyped = !scipPinned && !canonical && !narrowed ? rubyTypes.classOf( r ) : nullptr;
+        RubySideAnswer           rubyBuilt;
         if( rubyTyped != nullptr )
         {
-            narrowed = narrowTo( rubyTypes.lookup( r, *rubyTyped ), r, cand );
+            rubyBuilt        = rubyClasses.typedLookup( r, *rubyTyped );
+            rubySideNarrowed = rubyBuilt.side && narrowTo( rubyBuilt.hit, r, cand );
+            narrowed         = rubySideNarrowed
+                            || narrowTo( rubyBuilt.side ? rubyClasses.onSide( rubyTypes.lookup( r, *rubyTyped ), *rubyBuilt.side ) : rubyTypes.lookup( r, *rubyTyped ), r, cand );
         }
         else if( const RubyClosedLookup closed = !scipPinned && !canonical && !narrowed ? rubyClosedLookup( r, rubyTypes, rubyClasses ) : RubyClosedLookup {}; closed.closed )
         {
@@ -5965,6 +6170,11 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
             }
             narrowed = true;
         }
+        // the side self stands on, for the RubySelfReach cuts below: a built instance's, or the call to self's, wherever the
+        // side-aware lookup could be walked. None once that lookup chose the candidates (C.new's initialize and a forwarding
+        // base's instance method are right there, on the other side), nor where a method_missing may answer what it misses.
+        const RubySideAnswer&         rubyAsked = rubyTyped != nullptr ? rubyBuilt : rubySelfCall;
+        const std::optional<RubySide> rubySide  = rubySideNarrowed || rubyAsked.open ? std::nullopt : rubyAsked.side;
         const std::string* const rubySelf = rubyTyped != nullptr ? rubyTyped
                                           : r.lang == Lang::Ruby && r.fromSymbol != kNoNode && RubySelfReach::judges( r, callerSelfScope( ing, r ) )
                                                 ? &rubyReach.selfOf( ing, r )
@@ -6080,10 +6290,19 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
                                  && reachableByName( ing, *baseIds, r, reachScratch )
                                  && !( r.role == RefRole::Call && r.qualifier.empty() && bindingTier.empty() && externalVeto.isExternalBound( r ) );
         const rw::SmallVec<NodeId, 2>* nameIds = localsYield ? &reachScratch : baseIds;
-        // Ruby: Rule 3 and the ladder choose only among what self's method lookup can reach (RubySelfReach) — a narrow
-        // to an unreachable namesake must not hide a reachable one.
-        if( !scipPinned && !canonical && !narrowed && nameIds != nullptr && rubySelf != nullptr
-            && rubyTop.reachableOf( *rubySelf, *nameIds, rubyReachable ) )
+        // Ruby: Rule 3 and the ladder choose only among what self's method lookup can reach (RubySelfReach), on the side
+        // self stands on when that is known — a narrow to an unreachable namesake must not hide a reachable one.
+        const RubyCut rubyCut = !scipPinned && !canonical && !narrowed && nameIds != nullptr && rubySelf != nullptr
+                                    ? rubyClasses.reachableOnSide( rubyTop, *rubySelf, rubySide, *nameIds, rubyReachable )
+                                    : RubyCut::Unchanged;
+        if( rubyCut == RubyCut::Declined )
+        {
+            ++g.declinedOut[ r.fromSymbol ];   // in reach, but on the other side of self: no edge, and no claim it is outside
+            internDeclinedList( g, declinedListsByHash, std::span<const NodeId>( rubyReachable.data(), rubyReachable.size() ) );
+            disposition = CallDisposition::Declined;
+            continue;
+        }
+        if( rubyCut == RubyCut::Cut )
         {
             if( rubyReachable.empty() )
             {
@@ -6178,10 +6397,19 @@ inline Graph buildGraph( const IngestResult& ing, const ScipOverlay* scip = null
         }
 
         // ---- Ruby: the same cut over the assembled set, for the paths above that re-read the whole name list ----------
-        if( !scipPinned && !canonical && !cand.empty() && rubySelf != nullptr
-            && rubyTop.reachableOf( *rubySelf, cand, filtScratch ) )
+        if( const RubyCut cut = !scipPinned && !canonical && !cand.empty() && rubySelf != nullptr
+                                    ? rubyClasses.reachableOnSide( rubyTop, *rubySelf, rubySide, cand, filtScratch )
+                                    : RubyCut::Unchanged;
+            cut != RubyCut::Unchanged )
         {
             cand.swap( filtScratch );
+            if( cut == RubyCut::Declined )
+            {
+                ++g.declinedOut[ r.fromSymbol ];
+                internDeclinedList( g, declinedListsByHash, cand );
+                disposition = CallDisposition::Declined;
+                continue;
+            }
             if( cand.empty() )
             {
                 disposition = vetoExternal( r );
