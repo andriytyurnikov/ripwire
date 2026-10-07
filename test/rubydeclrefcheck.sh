@@ -34,7 +34,8 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 
-DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
+DIR="$( mktemp -d )" || { echo "cannot create a temporary directory — the fixture has nowhere to go"; exit 2; }
+trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"
 for d in app/controllers app/models/concerns app/jobs app/helpers lib
 do
@@ -360,6 +361,8 @@ then
 fi
 cmp -s "$DIR/cold.xml" "$DIR/warm.xml" && ok "warm run == cold run" \
     || no "the warm cache disagrees with the cold run"
+cmp -s "$MAP" "$DIR/cold.xml" && ok "cold cache run == the --no-cache map" \
+    || no "the cold cache run disagrees with the --no-cache map (both cached runs could agree on a wrong graph)"
 
 echo "=== --callers: a callback method has its class as a caller ==="
 "$BIN" "$FIX" --no-cache --callers=User::normalize_name >"$DIR/callers.xml" 2>/dev/null

@@ -50,7 +50,8 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 
-DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
+DIR="$( mktemp -d )" || { echo "cannot create a temporary directory — the fixture has nowhere to go"; exit 2; }
+trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"; mkdir -p "$FIX/lib" "$FIX/spec"
 
 # Every method name is defined on TWO classes, so an unpinned call is a split or a decline and a pinned one names
@@ -426,6 +427,48 @@ RSpec.describe Cask::Tab do
 end
 RUBY
 
+# A QUALIFIED group's local described_class (train 26a, CodeRabbit on #378): ingest writes the group's path beside the
+# call (Reference::fieldName) even where the local declines, and only rubyConstantReceiver's constant-name check keeps
+# the resolver from reading it. The local must still decline; the same group's un-redefined call still pins.
+cat > "$FIX/lib/ledger.rb" <<'RUBY'
+module Ns
+  class Ledger
+    def self.q_loc( a )
+      a
+    end
+
+    def self.q_pos( a )
+      a
+    end
+  end
+end
+
+class Tally
+  def self.q_loc( a )
+    a
+  end
+
+  def self.q_pos( a )
+    a
+  end
+end
+RUBY
+
+cat > "$FIX/spec/qloc_spec.rb" <<'RUBY'
+RSpec.describe Ns::Ledger do
+  it "calls through a local of the same name" do
+    described_class = Tally
+    described_class.q_loc( 1 )
+  end
+end
+RUBY
+
+cat > "$FIX/spec/qpos_spec.rb" <<'RUBY'
+RSpec.describe Ns::Ledger do
+  it { described_class.q_pos( 1 ) }
+end
+RUBY
+
 MAP="$DIR/map.xml"
 "$BIN" "$FIX" --no-cache >"$MAP" 2>"$DIR/map.err"
 if [ $? -eq 0 ]; then ok "default map exits 0"; else no "default map exited non-zero: $( cat "$DIR/map.err" )"; fi
@@ -493,6 +536,22 @@ untouched local_spec.rb   r_mparam "a method parameter def helper( described_cla
 untouched local_spec.rb   r_masgn  "a multiple-assignment target described_class, other = … redefines it (floor (e), stated)"
 untouched local_spec.rb   r_opasgn "described_class ||= Tally binds a local too (floor (e), stated)"
 untouched local_spec.rb   r_self   "described_class = described_class.r_self — the right side already reads the local (floor (e), stated)"
+
+echo "=== floor (e) in a QUALIFIED group: the group's path written beside a local is never read ==="
+calls "$FIX" "Ledger::q_pos" qpos_spec.rb; qp=$?
+calls "$FIX" "Tally::q_pos"  qpos_spec.rb; qt=$?
+if [ "$qp" -ne 2 ] && [ "$qt" -ne 2 ]
+then
+    [ "$qp" -eq 0 ] && [ "$qt" -eq 1 ] && ok "qpos_spec.rb: describe Ns::Ledger — described_class.q_pos pins to Ledger (the control: the qualified group is read)" \
+        || no "qpos_spec.rb: described_class.q_pos — Ledger caller=$( [ "$qp" -eq 0 ] && echo yes || echo no ), Tally caller=$( [ "$qt" -eq 0 ] && echo yes || echo no ) — want Ledger alone"
+fi
+calls "$FIX" "Ledger::q_loc" qloc_spec.rb; lp=$?
+calls "$FIX" "Tally::q_loc"  qloc_spec.rb; lt=$?
+if [ "$lp" -ne 2 ] && [ "$lt" -ne 2 ]
+then
+    [ "$lp" -eq "$lt" ] && ok "qloc_spec.rb: a local described_class = Tally in describe Ns::Ledger is not pinned to one class (floor (e), stated)" \
+        || no "qloc_spec.rb: described_class.q_loc reaches Ledger=$( [ "$lp" -eq 0 ] && echo yes || echo no ) Tally=$( [ "$lt" -eq 0 ] && echo yes || echo no ) — the local must decline"
+fi
 
 echo "=== floor (e) is Ruby's local scoping, and matches the name as a whole word ==="
 pins scope_spec.rb  m_pre   Calc   Tally "a site BEFORE the local's assignment still reads RSpec's method"

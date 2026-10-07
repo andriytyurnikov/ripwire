@@ -2246,7 +2246,10 @@ inline std::string rubyReceiverWrittenPath( TSNode nameNode, std::string_view fi
     }
     if( kindIs( ts_node_type( recv ), "identifier" ) && pattern::nodeText( recv, src ) == "described_class" )
     {
-        written = rspecDescribedPath( recv, src );   // classifyRubyReceiver named the group's constant: its path beside it
+        // The group's path. Also written where classifyRubyReceiver declined (a local or redefined described_class), but
+        // never read there: rubyConstantReceiver (graph.h) reads it only beside a constant recvVar, and a declined one keeps
+        // `described_class` (test/rubydescribedclasscheck.sh qloc_spec). Not writing it moves extraction output (kParserVer).
+        written = rspecDescribedPath( recv, src );
     }
     else if( isRubyConstantNode( recv ) )
     {

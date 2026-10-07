@@ -84,7 +84,8 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 
-DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
+DIR="$( mktemp -d )" || { echo "cannot create a temporary directory — the fixture has nowhere to go"; exit 2; }
+trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"
 for d in app/mailers app/models app/services app/services/alerts/senders lib/adapters lib/billing lib/shipping lib/mail_integration lib/bank_integration spec
 do
