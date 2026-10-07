@@ -14,13 +14,15 @@
 # with no receiver or the receiver `RSpec`, that carries a block.
 #
 # Stated floors, pinned below so each stays a decision:
-#   (a) a CHAINED receiver (`described_class.new.m_chain`) is untouched — the same one-hop bound as #267's
-#       `Calc.new.scale`: the receiver is a call, not a constant.
+#   (a) a CHAINED receiver (`described_class.new.m_chain`) was untouched — the same one-hop bound as #267's
+#       `Calc.new.scale`: the receiver is a call, not a constant — until parser version 132 typed a receiver the code
+#       builds (test/rubytypedrecvcheck.sh). Its arm below is kept, INVERTED: it now pins m_chain to Calc.
 #   (b) a group with no constant (`RSpec.describe "no class"`, `RSpec.describe :sym`) names no class, so
 #       `described_class` there is left exactly as it was.
 #   (c) a `describe` call on any other receiver (`Docs.describe Calc do`) is not an RSpec example group.
-#   (d) `subject` — the implicit `described_class.new` — is NOT modeled in this round: an explicit `subject { … }`
-#       can be anything, and telling the two apart is its own round.
+#   (d) `subject` — the implicit `described_class.new` — is NOT modeled by this rule: an explicit `subject { … }`
+#       can be anything. test/rubytypedrecvcheck.sh (parser version 132) types a group's subject, explicit or
+#       implicit, as a call RECEIVER from what its block builds.
 #   (e) a REDEFINED `described_class` declines: the redefinition names what it means, and this rule does not read
 #       it, so it answers nothing rather than the group's constant. A METHOD of that name — any `:described_class`
 #       symbol (`let( :described_class ) { … }`) or `def described_class` — declines every site in the file, since a
@@ -48,7 +50,8 @@ no(){ echo "  FAIL  $1"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first (cmake --build build -j)"; exit 2; }
 
-DIR="$( mktemp -d )"; trap 'rm -rf "$DIR"' EXIT
+DIR="$( mktemp -d )" || { echo "cannot create a temporary directory — the fixture has nowhere to go"; exit 2; }
+trap 'rm -rf "$DIR"' EXIT
 FIX="$DIR/fix"; mkdir -p "$FIX/lib" "$FIX/spec"
 
 # Every method name is defined on TWO classes, so an unpinned call is a split or a decline and a pinned one names
@@ -424,6 +427,48 @@ RSpec.describe Cask::Tab do
 end
 RUBY
 
+# A QUALIFIED group's local described_class (train 26a, CodeRabbit on #378): ingest writes the group's path beside the
+# call (Reference::fieldName) even where the local declines, and only rubyConstantReceiver's constant-name check keeps
+# the resolver from reading it. The local must still decline; the same group's un-redefined call still pins.
+cat > "$FIX/lib/ledger.rb" <<'RUBY'
+module Ns
+  class Ledger
+    def self.q_loc( a )
+      a
+    end
+
+    def self.q_pos( a )
+      a
+    end
+  end
+end
+
+class Tally
+  def self.q_loc( a )
+    a
+  end
+
+  def self.q_pos( a )
+    a
+  end
+end
+RUBY
+
+cat > "$FIX/spec/qloc_spec.rb" <<'RUBY'
+RSpec.describe Ns::Ledger do
+  it "calls through a local of the same name" do
+    described_class = Tally
+    described_class.q_loc( 1 )
+  end
+end
+RUBY
+
+cat > "$FIX/spec/qpos_spec.rb" <<'RUBY'
+RSpec.describe Ns::Ledger do
+  it { described_class.q_pos( 1 ) }
+end
+RUBY
+
 MAP="$DIR/map.xml"
 "$BIN" "$FIX" --no-cache >"$MAP" 2>"$DIR/map.err"
 if [ $? -eq 0 ]; then ok "default map exits 0"; else no "default map exited non-zero: $( cat "$DIR/map.err" )"; fi
@@ -477,8 +522,10 @@ pins calc_spec.rb   m_inner Tally  Calc  "a nested describe Tally is the innermo
 pins engine_spec.rb e_run   Engine Other "a bare describe, and a scope_resolution constant named by its final segment"
 pins calc_spec.rb   m_nil   Calc   Tally "describe nil passes its parent's class through — RSpec reads nil like a String"
 
-echo "=== floors (a) chained, (b) no constant, (c) not RSpec, (e) redefined — each left exactly as it was ==="
-untouched calc_spec.rb    m_chain "described_class.new.m_chain — the receiver is a call, the #267 one-hop bound (floor (a), stated)"
+echo "=== floor (a) lifted: described_class.new is a typed receiver (parser version 132) ==="
+pins calc_spec.rb   m_chain Calc   Tally "described_class.new.m_chain — the receiver the code builds is a Calc (test/rubytypedrecvcheck.sh)"
+
+echo "=== floors (b) no constant, (c) not RSpec, (e) redefined — each left exactly as it was ==="
 untouched noclass_spec.rb m_none  "RSpec.describe \"no class\" names no class (floor (b), stated)"
 untouched noclass_spec.rb m_sym   "RSpec.describe :sym names no class (floor (b), stated)"
 untouched docs_spec.rb    m_docs  "Docs.describe Calc is not an RSpec example group (floor (c), stated)"
@@ -489,6 +536,22 @@ untouched local_spec.rb   r_mparam "a method parameter def helper( described_cla
 untouched local_spec.rb   r_masgn  "a multiple-assignment target described_class, other = … redefines it (floor (e), stated)"
 untouched local_spec.rb   r_opasgn "described_class ||= Tally binds a local too (floor (e), stated)"
 untouched local_spec.rb   r_self   "described_class = described_class.r_self — the right side already reads the local (floor (e), stated)"
+
+echo "=== floor (e) in a QUALIFIED group: the group's path written beside a local is never read ==="
+calls "$FIX" "Ledger::q_pos" qpos_spec.rb; qp=$?
+calls "$FIX" "Tally::q_pos"  qpos_spec.rb; qt=$?
+if [ "$qp" -ne 2 ] && [ "$qt" -ne 2 ]
+then
+    [ "$qp" -eq 0 ] && [ "$qt" -eq 1 ] && ok "qpos_spec.rb: describe Ns::Ledger — described_class.q_pos pins to Ledger (the control: the qualified group is read)" \
+        || no "qpos_spec.rb: described_class.q_pos — Ledger caller=$( [ "$qp" -eq 0 ] && echo yes || echo no ), Tally caller=$( [ "$qt" -eq 0 ] && echo yes || echo no ) — want Ledger alone"
+fi
+calls "$FIX" "Ledger::q_loc" qloc_spec.rb; lp=$?
+calls "$FIX" "Tally::q_loc"  qloc_spec.rb; lt=$?
+if [ "$lp" -ne 2 ] && [ "$lt" -ne 2 ]
+then
+    [ "$lp" -eq "$lt" ] && ok "qloc_spec.rb: a local described_class = Tally in describe Ns::Ledger is not pinned to one class (floor (e), stated)" \
+        || no "qloc_spec.rb: described_class.q_loc reaches Ledger=$( [ "$lp" -eq 0 ] && echo yes || echo no ) Tally=$( [ "$lt" -eq 0 ] && echo yes || echo no ) — the local must decline"
+fi
 
 echo "=== floor (e) is Ruby's local scoping, and matches the name as a whole word ==="
 pins scope_spec.rb  m_pre   Calc   Tally "a site BEFORE the local's assignment still reads RSpec's method"

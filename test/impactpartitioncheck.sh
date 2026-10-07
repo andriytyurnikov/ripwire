@@ -49,7 +49,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 cd "$ROOT"
 
 ROOT="$ROOT" python3 - "$BIN" <<'PY'
-import os, re, subprocess, sys
+import html, os, re, subprocess, sys
 sys.path.insert(0, os.path.join(os.environ.get("ROOT", "."), "test"))
 import testrowpaths                                   # THE shared tests_to_run row reader
 
@@ -79,7 +79,14 @@ SAMPLE_FILE = "src/graph.h"
 #    unions every same-named def within that one file on its own, so a within-file duplicate name is
 #    handled by the resolver, not by this script). ──────────────────────────────────────────────────────
 gq = run(["--graph-query=file(all,\"%s\")" % SAMPLE_FILE.replace(".", r"\."), "--limit=2000"])
-seed_names = sorted(set(m.group(1) for m in re.finditer(r'<s t="\w+" n="([^"]+)" p="[^"]+"', gq)))
+# n= is an XML attribute: a name such as `operator<=>` arrives as `operator&lt;=&gt;`, and the selector below is argv, so
+# each name is unescaped back to the identifier the binary indexes. Passed escaped, the selector matches nothing
+# (found="0", no reaches=) and the row-count arm below reads that as a broken partition (train 26a: a defaulted
+# operator<=>, and the <file-scope> owner a namespace-scope static_assert creates, were the first such names in src/graph.h).
+seed_names = sorted(set(html.unescape(m.group(1)) for m in re.finditer(r'<s t="\w+" n="([^"]+)" p="[^"]+"', gq)))
+escaped = [n for n in seed_names if any(c in n for c in '<>&"\'')]
+if escaped:
+    ok("sample: %d name(s) carry an XML-escaped character and are passed unescaped: %s" % (len(escaped), " ".join(escaped)))
 if len(seed_names) < 50:
     no("sample: %s defines only %d symbols (need >= 50) — pick a bigger file" % (SAMPLE_FILE, len(seed_names)))
     print("impactpartitioncheck: FAILURES"); sys.exit(1)
@@ -138,6 +145,9 @@ for name in seed_names:
         no("--impact=%s:%s produced no <impact> root" % (SAMPLE_FILE, name))
         continue
     attrs = dict(re.findall(r'(\w[\w-]*)="([^"]*)"', root.group(1)))
+    if attrs.get("found") == "0":
+        no("--impact=%s:%s: the selector matched no definition (found=0) — a seed this sample listed must resolve" % (SAMPLE_FILE, name))
+        continue
     # t= is captured (not just matched) so the loop below can single out t="modscope" — #324's <file-scope>
     # exclusion — without changing what THIS list counts: reaches= still counts every caller row, module
     # scope included, so len(rows) == reaches stays the row-count invariance it always was.
